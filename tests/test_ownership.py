@@ -127,7 +127,7 @@ class TestClaudeParity:
 
     def test_credential_blanks_and_mcp_keys_are_reserved(self):
         entries = _claude_entries()
-        for path in claude.CLAUDE_BLANKED_CREDENTIAL_PATHS:
+        for path in claude.CLAUDE_BLANKED_ENV_PATHS:
             assert entries[".".join(path)].cls == ownership.RESERVED
         assert entries[claude.MANAGED_MCP_SETTINGS_KEY].cls == ownership.RESERVED
         assert entries[claude.CLAUDE_ALLOWED_MCP_SERVERS_KEY].cls == ownership.SHARED_LIST

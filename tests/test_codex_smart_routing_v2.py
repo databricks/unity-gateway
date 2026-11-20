@@ -295,8 +295,13 @@ class TestLaunchCodex:
 
     @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize("first_prompt", [False, True])
+    @pytest.mark.parametrize(
+        "model_args",
+        [[], ["--model", "gpt-start"], ["--model=gpt-start"], ["-m", "gpt-start"]],
+        ids=["default-model", "split-model", "equals-model", "short-model"],
+    )
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, tmp_path, monkeypatch, platform_name, first_prompt
+        self, tmp_path, monkeypatch, platform_name, first_prompt, model_args
     ):
         processes = []
         interposer_args = {}
@@ -367,7 +372,7 @@ class TestLaunchCodex:
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
                 },
-                ["--search"],
+                ["--search", *model_args],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=render_overlay,
@@ -432,9 +437,9 @@ class TestLaunchCodex:
         expected_tui_args = [
             "--remote",
             "ws://127.0.0.1:41002",
-            "--model",
-            "gpt-start",
+            *([] if model_args else ["--model", "gpt-start"]),
             "--search",
+            *model_args,
         ]
         statusline_args = [
             "--config",

@@ -280,6 +280,11 @@ CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 # settings `env` value beats the shell's, so ug blanks them for the Claude process only.
 CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
+# Provider switches Claude Code also honors from the shell or user settings; a stale one left over
+# from using the provider directly routes around the gateway. ug blanks them like the credentials.
+CLAUDE_BLANKED_PROVIDER_ENV_KEYS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+CLAUDE_BLANKED_ENV_KEYS = CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS + CLAUDE_BLANKED_PROVIDER_ENV_KEYS
+CLAUDE_BLANKED_ENV_PATHS = [["env", key] for key in CLAUDE_BLANKED_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
@@ -755,6 +760,7 @@ def render_overlay(
         "CLAUDE_CODE_USE_GATEWAY": "1",
         # Also outrank the subscription login, so relayed launches blank them too.
         **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+        **dict.fromkeys(CLAUDE_BLANKED_PROVIDER_ENV_KEYS, ""),
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -2256,7 +2262,7 @@ def _managed_settings_conflicts(
     owned_paths = [
         path
         for path in owned_paths
-        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_CREDENTIAL_PATHS
+        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_ENV_PATHS
     ]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
@@ -2462,8 +2468,8 @@ def header_mod_active(*, require_current: bool = False) -> bool:
     return True
 
 
-def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
-    """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
+def _settle_blank_env_keys(desired: dict, existing: dict, *, add: bool) -> None:
+    """Add ug's blank env keys to the managed file only when asked; otherwise keep it as found.
 
     Like the header mod, they are written by ``ug configure`` and never by a plain launch: another
     writer of the file drops keys it doesn't template, and re-adding them would rewrite the
@@ -2474,15 +2480,21 @@ def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> No
         return
     existing_env = existing.get("env")
     existing_env = existing_env if isinstance(existing_env, dict) else {}
-    for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+    for key in CLAUDE_BLANKED_ENV_KEYS:
         held = existing_env.get(key)
         if add and isinstance(held, str) and held.strip():
             # Someone else's explicit value (e.g. IT's): never replace it silently.
             env[key] = held
+            if key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+                detail = (
+                    "so Claude may use it instead of the gateway credential and fail with a 401"
+                )
+            else:
+                detail = "so Claude may route around the gateway and fail with a 400"
             print_warning(
                 f"Claude Code managed settings at {_managed_settings_path()} set env.{key}; "
-                f"ug left it as is, so Claude may use it instead of the gateway credential and "
-                f"fail with a 401. Ask your administrator to remove it, or blank it yourself."
+                f"ug left it as is, {detail}. Ask your administrator to remove it, or blank it "
+                f"yourself."
             )
         elif add:
             env[key] = ""
@@ -2647,7 +2659,7 @@ def _reconcile_managed_settings(
                 ],
             ]
     # Only the explicit `ug configure` path adds the blanks.
-    _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
+    _settle_blank_env_keys(desired_settings, managed_before, add=_explicit_configure)
     if _explicit_configure:
         desired_settings.setdefault(
             CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0], CLAUDE_PARENT_SETTINGS_BEHAVIOR

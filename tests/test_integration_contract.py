@@ -274,10 +274,11 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
         assert not (smoke | full) & routing
-        assert (
-            "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
-            in routing
-        )
+        for model_option in ("saved", "split", "equals"):
+            assert (
+                "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
+                f"[{model_option}]" in routing
+            )
         assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
         for name in ("full", "managed"):
             assert "smart_routing: [false]" in jobs[name]

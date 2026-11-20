@@ -1117,15 +1117,33 @@ label and link indicator, trailing blank line, URL color, and intact long URLs. 
 checks do not establish native Windows console behavior or live dashboard navigation.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
-gateway provider on Windows while Unix launch arguments stay unchanged and routing
+gateway provider on Windows, injects a default model only when no native model argument
+is supplied, and preserves split, equals and short model options on both platforms. Routing
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
+`test_cli.py` covers forwarded model arguments under explicit enable/disable, managed
+defaults and routing presets for Claude and Codex, including pinned-root bypass of
+first-prompt routing and Isaac's config-only Codex launch arguments.
+The model-forwarding cases fix Codex's reported version at 0.165.0 so managed routing
+does not depend on an agent installed on the test runner.
+`test_smart_router.py` also runs each agent's orchestrator hook in a fresh Python
+process and requires enabled workflow context, covering hook-startup import cycles.
+`test_codex_config.py` distinguishes native options and their
+values from positional prompts and utility subcommands. It reuses UG's model/config
+syntax instead of mirroring all native options. Other options with separate values
+and existing remote attachments retain their unrouted behavior.
+Help/version flags and both remote-attachment spellings bypass routing, including
+when forwarded after UG's `--`; option-only suffixes are not mistaken for prompts.
+The launch-policy matrix uses one native model spelling per tool; shared parser,
+classifier and routed-launch tests retain the split, equals and short-form checks.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer.
 Its pre-existing user-owned catalog opts native tools into code mode, overriding the
 bundled model's direct-only preference. This transport exposes plaintext assignments:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
+The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;
+explicit variants enable routing through the CLI and override the saved root model.
 The audit's SHA-256 digest and character count identify that exact assignment without
 persisting its text. Native hook and child assertions still compare the full text.
 The production launcher supplies the native configuration, and user settings and
@@ -1947,3 +1965,17 @@ to refresh labels and the failed CI jobs. Later pushes need a new waiver; the ol
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
+
+TLS trust-store component coverage in `test_tls.py` checks precedence (`UG_TLS_TRUST_STORE`,
+saved `tls_trust_store`, default `os`), warnings for unknown values, `truststore` injection
+and removal, the `ug configure --tls-trust-store` save, `ug revert` cleanup, the certificate
+failure hint, the uv environment `ug upgrade` uses, and that each process entry point applies the
+choice. `test_tls_https.py` makes real requests from a fresh interpreter to a local HTTPS server
+signed by a disposable CA (`tls_ca.py`), with urllib, httpx, `requests`, the Databricks SDK, and
+ug's own client: an untrusted CA fails all five with an actionable reason in both modes;
+`python` with `SSL_CERT_FILE` alone leaves `requests` and the SDK failing; adding
+`REQUESTS_CA_BUNDLE` fixes them; and `os` verifies all five with the root only in the OS store.
+That last case runs on Linux (the store is a CA bundle file) and on the Windows CI runner, which
+adds the CA to the certificate store and sets `UG_TEST_OS_TRUSTED_CA_DIR`; it is skipped on macOS
+and on a Windows machine without that variable. No test goes through a real TLS-inspection proxy,
+and `ug upgrade` is not run against one.
