@@ -355,13 +355,19 @@ def copilot_app_state(state: dict) -> dict:
 def copilot_app_plugin_config(
     state: dict, desired: copilot_app.DesiredProviders
 ) -> copilot_app_plugin.PluginConfig:
-    """The plugin's config for ``desired``, with the headers ``ug copilot`` sends."""
+    """The plugin's config for ``desired``, with the headers ``ug copilot`` sends but its
+    User-Agent."""
     from ucode.agents.copilot import proxy_headers
     from ucode.databricks import databricks_cli_path, ug_binary
     from ucode.workspace import selector_headers, workspace_headers
 
     workspace = state["workspace"]
-    headers = {**proxy_headers(state), **desired.headers}
+    # Without one, the app's runtime sends its own User-Agent, as Claude Desktop does.
+    headers = {
+        name: value
+        for name, value in {**proxy_headers(state), **desired.headers}.items()
+        if name.casefold() != "user-agent"
+    }
     # Last, so an admin header can't select another workspace. The app outlives this process's
     # workspace selection, so the saved id counts too.
     headers.update(workspace_headers(workspace))
@@ -445,10 +451,7 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
             "load ug's plugin. Remove those keys."
         )
     print_success("GitHub Copilot app: installed ug's plugin with the Databricks models.")
-    print_note(
-        "Open (or restart) the GitHub Copilot app to load the Databricks models. If their names "
-        "or icons look generic, restart it once more or open Settings -> Model providers."
-    )
+    print_note("Open (or restart) the GitHub Copilot app to load the Databricks models.")
 
 
 COPILOT_APP_REMOVAL_PENDING = (

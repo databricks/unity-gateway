@@ -87,8 +87,8 @@ class TestConfigure:
         assert config["tokenCommand"][:2] == ["/opt/ug/bin/ug", "auth-token"]
         assert "/opt/databricks/bin" in config["pathDirs"]
         out = _out(capsys)
-        assert "Open (or restart) the GitHub Copilot app to load the Databricks models" in out
-        assert "restart it once more or open Settings -> Model providers" in out
+        assert "Open (or restart) the GitHub Copilot app to load the Databricks models." in out
+        assert "Settings -> Model providers" not in out
 
     def test_never_talks_to_the_running_app(self, app):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
@@ -109,7 +109,7 @@ class TestConfigure:
 
         for provider in _extension_config()["providers"]:
             headers = provider["headers"]
-            assert "copilot/1.0.91" in headers["User-Agent"]
+            assert not [name for name in headers if name.casefold() == "user-agent"]
             assert headers["x-databricks-use-coding-agent-mode"] == "true"
             assert headers["X-Team"] == "data"
             assert headers[MODEL_PROVIDER_SERVICE_HEADER] == "main.default.mps"
