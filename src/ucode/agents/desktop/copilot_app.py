@@ -146,14 +146,22 @@ def _base_path(wire: Wire, provider_service: str | None) -> str:
     return "/ai-gateway/openai/v1" if provider_service else "/ai-gateway/mlflow/v1"
 
 
+def _own_model_id(model: str) -> str:
+    """A row id for gateway model ``model`` that can't be a Copilot catalog id: the app applies its
+    own settings to a row with a catalog model's id, such as ``reasoning_effort`` for ``kimi-k3``,
+    over the row's."""
+    return model if model.count(".") >= 2 else f"databricks.{model}"
+
+
 def _model_rows(
     catalog: Iterable[CopilotModel], wire: str, *, provider_service: str | None
 ) -> list[dict[str, Any]]:
     """The app's model rows for ``catalog``'s models on ``wire``.
 
     A Claude row's id is Copilot's catalog id for the model behind it, which is what makes the app
-    apply Claude's request settings, and its wire model is the gateway's id. Ids the app would see
-    twice keep the first, with a warning."""
+    apply Claude's request settings, and its wire model is the gateway's id. Other rows get an id
+    no Copilot catalog model has (see :func:`_own_model_id`). Ids the app would see twice keep the
+    first, with a warning."""
     models = [model for model in catalog if model.wire == wire]
     labels = model_labels(models, provider_service=provider_service)
     rows: dict[str, dict[str, Any]] = {}
@@ -167,7 +175,7 @@ def _model_rows(
                 )
                 continue
         else:
-            model_id = model.registry_id
+            model_id = _own_model_id(model.id)
         if model_id in rows:
             print_warning(
                 f"Skipping {model.id} in the GitHub Copilot app: it shows as {model_id}, like "

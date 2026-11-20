@@ -213,6 +213,25 @@ class TestDesiredProviders:
         assert [m.name for p in desired.plugin for m in p.models] == [m.id for m in CATALOG]
         assert copilot_app.desired_providers(WORKSPACE, CATALOG).headers == {}
 
+    def test_only_claude_rows_use_copilot_catalog_ids(self):
+        catalog = [
+            *CATALOG,
+            CopilotModel("system.ai.kimi-k3", WIRE_COMPLETIONS),
+            CopilotModel("gpt-5.2", WIRE_RESPONSES),
+        ]
+        for desired in (
+            copilot_app.desired_providers(WORKSPACE, catalog),
+            copilot_app.desired_providers(WORKSPACE, catalog, provider_service="my-mps"),
+        ):
+            plugin_ids = {p.wire: [m.model_id for m in p.models] for p in desired.plugin}
+            assert plugin_ids == {
+                "anthropic": ["claude-sonnet-4.6"],
+                "responses": ["system.ai.gpt-5-2", "databricks.gpt-5.2"],
+                "completions": ["system.ai.glm-5", "system.ai.kimi-k3"],
+            }
+            app_ids = [row["modelId"] for p in desired.app for row in p.models]
+            assert app_ids == [model_id for ids in plugin_ids.values() for model_id in ids]
+
     def test_a_wire_without_models_gets_no_provider(self):
         desired = copilot_app.desired_providers(WORKSPACE, CATALOG[1:2])
 
@@ -354,7 +373,7 @@ class TestPluginRows:
                     else None
                 )
         gpt = {m.model_id: m for m in desired.plugin[1].models}
-        assert gpt["gpt-6"].limits == (794_000, 128_000)
+        assert gpt["system.ai.gpt-6"].limits == (794_000, 128_000)
 
     def test_only_chat_completions_models_turn_off_reasoning_effort(self):
         claude, gpt, open_models = copilot_app.desired_providers(WORKSPACE, CATALOG).plugin
