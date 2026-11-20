@@ -41,7 +41,7 @@ from utils.managed import (
     use_smart_routing_fixture,
 )
 from utils.request_recorder import record_claude_response_protocol, served_inference_request
-from utils.terminal import AgentTerminal, TerminalProcess
+from utils.terminal import AgentTerminal
 
 pytestmark = pytest.mark.harness_latest
 
@@ -1003,7 +1003,7 @@ def test_smart_router_managed_default_matches_codex_version_at_launch(
     """Scenario: launch the installed Codex with managed smart routing and no explicit opt-in.
 
     Expected: a native child and parent complete the tagged calculation. Before Codex 0.171.0,
-    declining the required upgrade blocks launch; explicit routing disable then permits native
+    declining the offered upgrade warns and continues in the same launch, permitting native
     child work without routing skills or a routing decision. Supported versions
     install both skills and complete the child with a correlated decision and orchestration
     notice. Neither version routes the first prompt.
@@ -1027,28 +1027,18 @@ def test_smart_router_managed_default_matches_codex_version_at_launch(
     if routing_supported:
         # TODO: remove once the latest recipe supports codex
         session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
-    else:
-        with TerminalProcess(
-            session, "codex", [str(session.binary), "codex"], "managed-upgrade-declined"
-        ) as gate:
-            gate.wait_for(
-                lambda screen: "Upgrade Codex if available?" in screen,
-                "the required managed-routing upgrade",
-            )
-            gate.send("n\r", "decline the required upgrade")
-            gate.wait_for(lambda _: gate.ended, "blocked launch to exit")
-            gate.child.close()
-            assert gate.child.exitstatus != 0
-            assert "Codex smart routing requires Codex 0.171.0 or newer" in " ".join(
-                ANSI.sub("", "".join(gate.output)).split()
-            )
-            session.assert_not_routed()
     with AgentTerminal(
         session,
         "codex",
-        [str(session.binary), "codex", *([] if routing_supported else ["--disable-smart-routing"])],
+        [str(session.binary), "codex"],
         "smart-router-managed-default",
     ) as tui:
+        if not routing_supported:
+            tui.wait_for(
+                lambda screen: "Upgrade Codex if available?" in screen,
+                "the offered managed-routing upgrade",
+            )
+            tui.send("n\r", "decline the offered upgrade and continue without routing")
         tui.boot()
         installed_skills = _installed_skills(session, "codex")
         assert ("smart-router" in installed_skills) is routing_supported, installed_skills
@@ -1062,11 +1052,14 @@ def test_smart_router_managed_default_matches_codex_version_at_launch(
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     launch_text = " ".join(ANSI.sub("", transcript).split())
-    assert "Upgrade Codex if available?" not in launch_text, transcript
+    assert ("Upgrade Codex if available?" in launch_text) is not routing_supported, transcript
     if routing_supported:
         assert "Running without smart routing." not in launch_text, transcript
         assert "[ROUTE]" not in session.routing_log("codex")
     else:
+        assert "Codex smart routing requires Codex 0.171.0 or newer" in launch_text, transcript
+        assert "Running without smart routing." in launch_text, transcript
+        assert session.run("--version", binary=session.which("codex")).stdout == version_output
         session.assert_not_routed()
 
 

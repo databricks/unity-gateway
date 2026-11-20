@@ -10,8 +10,10 @@ Native UI and credentialed gateway validation are separate, as described in the
 
 The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
 stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
-`test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed required
-upgrades, refusal/failure, and explicit routing disable. Routing CI pins 0.171.0.
+`test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade
+offers, refusal/failure, and explicit routing disable. Managed defaults warn and
+continue unrouted after refusal, updater failure, EOF with updater failure, or an
+update that leaves the client too old; explicit routing remains gated. Routing CI pins 0.171.0.
 These are component checks; the installed-version journeys are documented in the
 [integration guide](integration/README.md).
 
@@ -1119,13 +1121,16 @@ the Databricks provider are preserved. `test_agent_codex.py` covers the routing
 minimum version separately from ordinary launches.
 `test_codex_smart_routing_v2.py` checks the native v2 overrides take precedence over
 conflicting saved values in both launch paths, with saved files unchanged,
-and the shared upgrade flow. Codex 0.163 cannot reach execution when the upgrade is
+and the shared upgrade flow. Explicitly routed Codex 0.170 cannot reach execution when the upgrade is
 declined, fails, or leaves the version below the routing minimum. Unrecognized
 versions stop before an upgrade prompt or updater, including automatic-update mode;
 successful and automatic upgrades of known old versions allow routing.
-The managed-launch cases in `test_cli.py` exercise Codex 0.156 and 0.163 through the
-real version gate: declining blocks launch, upgrading to 0.164 allows routing, and
-`--disable-smart-routing` allows an ordinary launch without invoking the updater.
+The managed-launch cases in `test_cli.py` exercise Codex 0.156, 0.164, 0.170, and
+0.171.0-alpha.12 through the real version gate. Declining, failed/manual or automatic
+updates, EOF followed by update failure, and an update that leaves the version old
+all warn and launch unrouted with routing environment controls disabled. Upgrading
+to stable 0.171.0 allows routing. `--disable-smart-routing` allows an ordinary launch
+without invoking the updater. Every case checks launch-scoped environment restoration.
 `test_codex_routing.py` checks that long Unicode assignments reach the router and hook
 unchanged while audits contain their hash and length, and bound each reason to 1,000
 characters. Shared-writer coverage keeps Claude's full task and reason fields intact.

@@ -68,7 +68,7 @@ without asking, for example from a launcher that manages the agent install.
 
 Codex smart routing now requires 0.171.0, including existing managed-enabled
 workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
-for upgrading or launching with `--disable-smart-routing`.
+for upgrade offers and automatic fallback when managed routing is unavailable.
 
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
@@ -687,11 +687,13 @@ Routing-enabled responses are buffered until each model step completes.
 
 ### Codex smart-routing compatibility
 
-Smart-routed terminal launches require Codex **0.171.0 or newer**, including
-workspaces that already use managed routing. Earlier versions, including 0.171.0
-prereleases, must upgrade or explicitly run `ug codex --disable-smart-routing`.
-UG offers its usual upgrade prompt and checks the result before launching.
-Declining or failing the upgrade keeps the routed launch blocked.
+Smart-routed terminal launches require Codex **0.171.0 or newer**. For earlier
+versions, including 0.171.0 prereleases, UG offers its usual upgrade prompt and
+checks the result before enabling routing. When routing comes from the workspace's
+managed default, declining or failing the upgrade warns and launches Codex without
+smart routing. An update that leaves Codex below the routing minimum takes the same
+fallback. Explicit routing requests remain blocked until the upgrade succeeds or
+the user passes `--disable-smart-routing`.
 `UG_AUTO_UPGRADE_AGENT=1` runs that upgrade without asking. The stable floor provides
 native delegation and status-line provider support. Ordinary launches retain the
 0.156.0 minimum; routing CI pins 0.171.0.
@@ -700,9 +702,9 @@ A routed `ug codex app-server` cannot prompt because its stdin carries the clien
 protocol. On a known older Codex it warns on stderr and runs without smart routing.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
-version is still unknown, UG stops without offering or running an update and asks
-you to check `codex --version`. `--disable-smart-routing` also bypasses this routing
-version check.
+version is still unknown, managed routing warns and launches without routing;
+explicit routing requests stop and ask you to check `codex --version`. Neither case
+offers or runs an update. `--disable-smart-routing` also bypasses this routing version check.
 
 For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.non_code_mode_only` (set to `false`),
@@ -782,10 +784,10 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
-Managed smart routing launches Codex without routing when its installed version is too old
-or unavailable, or when it uses a ChatGPT subscription relay. These automatic fallbacks warn
-without prompting for an upgrade. Explicit routing requests still require a supported version
-and direct provider.
+Managed smart routing offers an upgrade when Codex is too old. If the upgrade is declined,
+fails, or leaves Codex too old, the same launch warns and continues without smart routing.
+An unknown version or a ChatGPT subscription relay also falls back, without an upgrade
+prompt. Explicit routing requests still require a supported version and direct provider.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 

@@ -1183,11 +1183,24 @@ class TestSubcommandRouting:
             assert result.exit_code == 0, result.output
             assert observed == [enabled, False]
 
-    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.170.0", "0.171.0-alpha.12"])
     @pytest.mark.parametrize(
-        "recovery", ["decline", "upgrade", "disable", "managed-default", "managed-upgrade"]
+        "installed_version", ["0.156.0", "0.164.0", "0.170.0", "0.171.0-alpha.12"]
     )
-    def test_codex_routing_version_requires_upgrade_or_explicit_disable(
+    @pytest.mark.parametrize(
+        "recovery",
+        [
+            "decline",
+            "upgrade",
+            "disable",
+            "managed-default",
+            "managed-upgrade",
+            "managed-failed",
+            "managed-still-old",
+            "managed-eof",
+            "managed-auto-failed",
+        ],
+    )
+    def test_codex_routing_upgrade_preserves_managed_fallback(
         self, tmp_path, monkeypatch, installed_version, recovery
     ):
         codex = cli_mod.codex_agent
@@ -1198,8 +1211,12 @@ class TestSubcommandRouting:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
         monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kwargs: version)
         monkeypatch.setattr(codex, "_launch_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: plain.append(argv))
-        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "0")
+        monkeypatch.setattr(
+            codex, "exec_or_spawn", lambda argv: plain.append((argv, _routing_env()))
+        )
+        monkeypatch.setenv(
+            agents.AUTO_UPGRADE_AGENT_ENV, "1" if recovery == "managed-auto-failed" else "0"
+        )
         monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/tools/{binary}")
 
         def update(argv, **_kwargs):
@@ -1208,7 +1225,10 @@ class TestSubcommandRouting:
                 return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
             assert argv == ["codex", "update"]
             updates.append(argv)
-            version = "0.171.0"
+            if recovery in {"managed-failed", "managed-eof", "managed-auto-failed"}:
+                raise subprocess.CalledProcessError(1, argv)
+            if recovery != "managed-still-old":
+                version = "0.171.0"
             return subprocess.CompletedProcess(argv, 0)
 
         def launch_native(*_args, **_kwargs):
@@ -1228,30 +1248,40 @@ class TestSubcommandRouting:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         env_before = _routing_env()
+        confirm_upgrade = agents.prompt_yes_no_default
+
+        def answer_upgrade(prompt, *, default):
+            if recovery == "managed-eof":
+                return confirm_upgrade(prompt, default=default)
+            return recovery not in {"decline", "managed-default"}
+
         with (
             _launch_policy_patches(managed) as calls,
             patch(
                 "ucode.agents.prompt_yes_no_default",
-                return_value=recovery in {"upgrade", "managed-upgrade"},
+                side_effect=answer_upgrade,
             ) as prompt,
         ):
             calls["launch"].side_effect = launch
             args = ["codex", "--disable-smart-routing"] if recovery == "disable" else ["codex"]
             result = runner.invoke(app, args)
 
-        assert result.exit_code == (1 if recovery in {"decline", "managed-default"} else 0), (
-            result.output
-        )
+        assert result.exit_code == (1 if recovery == "decline" else 0), result.output
         assert routed == (["0.171.0"] if recovery in {"upgrade", "managed-upgrade"} else [])
-        assert bool(plain) == (recovery == "disable")
+        managed_fallback = recovery.startswith("managed") and recovery != "managed-upgrade"
+        assert bool(plain) == (managed_fallback or recovery == "disable")
         assert updates == (
-            [["codex", "update"]] if recovery in {"upgrade", "managed-upgrade"} else []
+            [] if recovery in {"decline", "disable", "managed-default"} else [["codex", "update"]]
         )
-        assert prompt.call_count == (0 if recovery == "disable" else 1)
-        if recovery in {"decline", "managed-default"}:
+        assert prompt.call_count == (0 if recovery in {"disable", "managed-auto-failed"} else 1)
+        if managed_fallback or recovery == "decline":
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
             assert "--disable-smart-routing" in output
+            assert ("Running without smart routing." in output) is managed_fallback
+        if managed_fallback:
+            assert {key: plain[0][1][key] for key in ROUTING_OFF} == dict.fromkeys(ROUTING_OFF)
+            assert version == installed_version
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(

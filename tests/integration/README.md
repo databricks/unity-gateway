@@ -12,8 +12,8 @@ coverage. Windows native footer rendering remains untested.
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
-journey on older clients declines the upgrade, requires a blocked launch, then
-explicitly disables routing to complete native child work. The app-server protocol
+journey on older clients declines the upgrade and requires the same launch to warn
+and complete native child work without routing or an extra flag. The app-server protocol
 journey retains its known-old-client fallback without an interactive prompt.
 
 CUJ7's `test_ug_claude_saved_provider_smart_routing` and
@@ -1321,8 +1321,9 @@ their original legacy-env cases remain, and the Claude skill toggles add a manag
 which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
 first-prompt wrapper starts. Codex's managed default has two launch journeys.
 `test_smart_router_managed_default_matches_codex_version_at_launch` reads the actual native
-version. Before 0.171.0 it declines the required upgrade and requires a blocked launch,
-then explicitly disables routing and completes native child work without routing skills. On supported versions it instead requires
+version. Before 0.171.0 it declines the offered upgrade, requires a warning, and
+completes native child work in the same launch without routing skills or an explicit
+disable flag. It also verifies the installed version is unchanged. On supported versions it instead requires
 both skills, a completed routed child and parent answer, and a correlated decision. This keeps
 the same journey valid for pinned, latest-agent, and explicit-version runs. `test_smart_router_managed_default_routes_supported_codex_at_launch`
 runs in the routing-capable Codex lane and requires both skills, a completed child and parent
