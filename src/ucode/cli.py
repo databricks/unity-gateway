@@ -4426,7 +4426,11 @@ def _launch_tool(
             except Exception as exc:
                 # The speculation is best effort: a failed background token or catalog fetch
                 # falls back to the serial fetch on the live token, never fails the launch.
-                metrics.failure("models_list", exc, continued_with_fallback=True)
+                # The raised exception can only come from the non-interactive token fetch (the
+                # catalog call reports failures via error_msg instead).
+                metrics.failure(
+                    metrics.DATABRICKS_TOKEN_FETCH_OPERATION, exc, continued_with_fallback=True
+                )
                 return None
             error = speculative.error_msg
             if error and looks_like_definitive_auth_failure(error):
