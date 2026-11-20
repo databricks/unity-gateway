@@ -1979,6 +1979,6 @@ without it (no request, band from the first paint). `test_startup_validation.py`
 unsupported model list turns routing off for the session; HTTP errors, malformed responses,
 exceptions and a result past the 4 s deadline leave routing on; result-write failures are
 isolated. The smart-routing launch
-tests cover the resolved Claude model/harness list and provider.
+tests cover the resolved model/harness list and show delayed HTTP does not hold Codex startup.
 Claude's native mod tests cover the band hold, the result handling, the unsupported warning and its one-turn hide, and the 5 s fallback.
 These component tests do not establish live Gateway or classifier compatibility.
