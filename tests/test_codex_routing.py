@@ -152,12 +152,12 @@ def test_router_failure_fails_open(monkeypatch):
 
 def test_spawn_rewrite_preserves_original_input(monkeypatch):
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
-    encrypted_message = {"encrypted": "opaque-ciphertext"}
+    assignment = "Review the parser's error handling."
     payload = {
         "tool_name": "collaborationspawn_agent",
         "tool_input": {
             "task_name": "reviewer",
-            "message": encrypted_message,
+            "message": assignment,
             "fork": False,
         },
     }
@@ -195,7 +195,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     assert hook["permissionDecision"] == "allow"
     assert hook["updatedInput"] == {
         "task_name": "reviewer",
-        "message": encrypted_message,
+        "message": assignment,
         "fork": False,
         "model": "gpt-5.5",
     }
@@ -343,86 +343,38 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
     assert record["requested_model"] == "gpt-5.5"
 
 
-def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
-    # When `message` is an encrypted dict (not a plaintext string), routing
-    # falls through to `task_name` — no regression from the encrypted case.
-    captured = {}
-
-    def fake_decision(*args, **kwargs):
-        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
-        return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
-            None,
-        )
-
-    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        # Codex multi-agent v2 encrypts the assignment; only the label stays plaintext.
+        {"task_name": "reviewer", "message": {"encrypted": "opaque-ciphertext"}},
         {
-            "tool_name": "collaborationspawn_agent",
-            "tool_input": {
-                "task_name": "reviewer",
-                "message": {"encrypted": "opaque-ciphertext"},
-            },
+            "task_name": "reviewer",
+            "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69",
         },
+        {"message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69"},
+        {"task_name": "gateway_analysis", "agent_name": "gateway_analysis", "model": "gpt-6-luna"},
+    ],
+)
+def test_spawn_without_plaintext_assignment_keeps_requested_model(monkeypatch, tool_input):
+    # A label alone is not a task: routing on it sent a trivial assignment to the
+    # costliest model. Without assignment text the hook leaves the spawn untouched.
+    calls = []
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (
+            calls.append(args) or (codex_routing.RoutingDecision(model="m"), None)
+        ),
+    )
+    output = codex_routing.route_pre_tool_use(
+        {"tool_name": "collaborationspawn_agent", "tool_input": dict(tool_input)},
         workspace=WS,
         token="token",
         available_models=["databricks-gpt-5-5"],
     )
-    # Encrypted dict skipped (not a string), fell through to task_name.
-    assert captured["task"] == "reviewer"
-
-
-def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
-    captured = {}
-
-    def fake_decision(*args, **kwargs):
-        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
-        return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
-            None,
-        )
-
-    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
-        {
-            "tool_name": "collaborationspawn_agent",
-            "tool_input": {
-                "task_name": "reviewer",
-                "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69",
-            },
-        },
-        workspace=WS,
-        token="token",
-        available_models=["databricks-gpt-5-5"],
-    )
-
-    assert captured["task"] == "reviewer"
-
-
-def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
-    captured = {}
-
-    def fake_decision(*args, **kwargs):
-        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
-        return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
-            None,
-        )
-
-    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
-        {
-            "tool_name": "collaborationspawn_agent",
-            "tool_input": {
-                "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69"
-            },
-        },
-        workspace=WS,
-        token="token",
-        available_models=["databricks-gpt-5-5"],
-    )
-
-    assert captured["task"] == "Codex subagent task"
+    assert output is None
+    assert calls == []
 
 
 def test_canary_and_audit_are_written(tmp_path, monkeypatch):

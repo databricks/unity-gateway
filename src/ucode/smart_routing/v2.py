@@ -641,7 +641,6 @@ def route_claude_subagent(
             provider,
             attribution_headers=attribution,
         ),
-        default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
     )
     routing_ms = round((time.monotonic() - started) * 1000)
