@@ -68,14 +68,14 @@ def search_setup(tmp_path, monkeypatch):
     return SimpleNamespace(config_path=config_path, isaac_entry=isaac_entry)
 
 
-@pytest.mark.parametrize("discovery", ["model_services", "legacy"])
 @pytest.mark.parametrize("provider_mode", [False, True])
 @pytest.mark.parametrize(
-    ("model_names", "expected_name"),
+    ("discovery", "model_names", "expected_name"),
     [
-        (["gpt-6-astra", "gpt-5-mini", "gpt-6-luna"], "gpt-6-luna"),
-        (["gpt-6-astra", "gpt-5-mini"], "gpt-5-mini"),
-        (["gpt-6-astra", "gpt-5"], "gpt-6-astra"),
+        ("model_services", ["gpt-6-astra", "gpt-5-mini", "gpt-6-luna"], "gpt-6-luna"),
+        ("model_services", ["gpt-6-astra", "gpt-5-mini"], "gpt-5-mini"),
+        ("model_services", ["gpt-6-astra", "gpt-5"], "gpt-6-astra"),
+        ("legacy", ["gpt-6-astra", "gpt-5-mini", "gpt-6-luna"], "gpt-6-astra"),
     ],
 )
 def test_claude_only_setup_registers_search_without_prior_codex_setup(
@@ -83,7 +83,7 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
 ):
     prefix = "databricks-" if discovery == "legacy" else "system.ai."
     search_models = [prefix + name for name in model_names]
-    search_model = prefix + (model_names[0] if discovery == "legacy" else expected_name)
+    search_model = prefix + expected_name
     monkeypatch.setattr(
         cli,
         "discover_model_services",

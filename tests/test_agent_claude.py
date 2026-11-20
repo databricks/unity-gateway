@@ -1103,6 +1103,18 @@ class TestResolveWebSearchModel:
         assert claude._resolve_web_search_model({}) is None
         assert claude._resolve_web_search_model({"codex_models": []}) is None
 
+    @pytest.mark.parametrize(
+        ("models", "expected"),
+        [
+            (["", " ", "m1", "m2"], "m1"),
+            ([None, 42, False, {"name": "not-a-model"}, " m1 ", "m2"], "m1"),
+            ([None, 42, "", " "], None),
+            ([None, "", "system.ai.gpt-5-mini", " system.ai.gpt-6-luna "], "system.ai.gpt-6-luna"),
+        ],
+    )
+    def test_ignores_invalid_saved_model_entries(self, models, expected):
+        assert claude._resolve_web_search_model({"codex_models": models}) == expected
+
     def test_override_wins_over_codex_models(self):
         state = {
             "web_search_model": "winner",

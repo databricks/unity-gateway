@@ -1054,10 +1054,12 @@ catalogs. `TestConfigureSharedStateSkipDiscovery` in `test_cli.py` checks provid
 prefers UC model-service IDs, replaces a saved legacy search model, and falls back to
 serving endpoints when UC returns no GPT models or fails, preserving existing agent models.
 The discovery matrix verifies UC Luna, UC Mini, then the discovered default across both setup
-paths, and the existing default for legacy catalogs, without reordering the agent's catalog.
+paths, and one legacy fallback case per setup path, without reordering the agent's catalog.
 The discovery tests also check explicit search-model precedence and preservation of an
 existing Isaac server when no GPT model is available. These component tests mock
 external discovery and the Claude CLI; they do not establish live search coverage.
+`TestResolveWebSearchModel` in `test_agent_claude.py` checks malformed saved model entries,
+including blank/non-string names, whitespace normalization, and an entirely invalid list.
 
 `test_agent_claude.py`, `test_agent_codex.py`, and `test_managed_files.py` cover headless repair of
 conflicting managed settings, compatible/absent no-ops, policy and backup preservation, denied

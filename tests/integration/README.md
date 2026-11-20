@@ -713,8 +713,8 @@ replaces saved legacy search names with UC model-service IDs and preserves agent
 including fallback when UC discovery is empty or unavailable. Live search remains
 outside this integration suite. The component discovery matrix covers preferring UC GPT-6 Luna,
 then UC GPT-5 Mini, then the discovered default in standard and provider-mode setup. Legacy
-catalogs retain their existing default. `../test_agent_claude.py` keeps explicit overrides
-ahead of that order.
+catalogs retain their existing default, with one case per setup path. `../test_agent_claude.py`
+keeps explicit overrides ahead of that order and checks invalid saved model entries are skipped.
 
 CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including

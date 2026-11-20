@@ -204,6 +204,7 @@ def minimum_version_error() -> str | None:
 
 def select_web_search_model(models: list[str]) -> str | None:
     """Keep web search on its preferred models as new coding models become available."""
+    models = [model.strip() for model in models if isinstance(model, str) and model.strip()]
     return next(
         (model for model in WEB_SEARCH_MODEL_PREFERENCES if model in models),
         next(iter(models), None),
@@ -216,10 +217,8 @@ def _resolve_web_search_model(state: dict) -> str | None:
     if isinstance(override, str) and override.strip():
         return override.strip()
     codex_models = state.get("codex_models") or []
-    if isinstance(codex_models, list) and codex_models:
-        selected = select_web_search_model(codex_models)
-        if isinstance(selected, str) and selected.strip():
-            return selected.strip()
+    if isinstance(codex_models, list):
+        return select_web_search_model(codex_models)
     return None
 
 
