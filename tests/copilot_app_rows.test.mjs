@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
 
-import { copilotHome, readEndpoint, syncInBackground, syncOnce } from "../src/ucode/copilot_app_plugin/app-rows.mjs";
+import { copilotHome, readEndpoint, syncInBackground, syncOnce } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
 
 // The Copilot runtime's Node has a global WebSocket; Node before 22 doesn't.
 const skip = typeof WebSocket === "function" ? false : "this Node has no global WebSocket";

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode import copilot_app_plugin as plugin
+from ucode.agents.desktop import copilot_app_plugin as plugin
 
 NODE = shutil.which("node")
 PLUGIN_SOURCE = Path(plugin.__file__).parent

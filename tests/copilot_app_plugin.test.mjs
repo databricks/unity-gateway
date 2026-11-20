@@ -13,7 +13,7 @@ import {
   isAuthRejection,
   jwtExpiryMs,
   withLoginHint,
-} from "../src/ucode/copilot_app_plugin/ug-plugin.mjs";
+} from "../src/ucode/agents/desktop/copilot_app_plugin/ug-plugin.mjs";
 
 const config = {
   providers: [{ name: "p1", type: "anthropic", baseUrl: "https://ws/ai-gateway/anthropic", headers: { A: "1" } }],
