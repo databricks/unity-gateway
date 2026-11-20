@@ -430,6 +430,18 @@ class TestRefresher:
         assert lc.main(refresh_args()) == 1
         assert lc.load_entry(key) is None
 
+    def test_a_login_required_auth_failure_quietly_invalidates(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+
+        def login_required(*_a, **_k):
+            raise db_mod.DatabricksLoginRequiredError("no cached credentials")
+
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", login_required)
+        key = _key()
+        _store(key, {}, checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1)
+        assert lc.main(refresh_args()) == 1
+        assert lc.load_entry(key) is None
+
     def test_refresh_rejects_a_credentials_file_that_changed_since_spawn(self, monkeypatch):
         self._patch_lookups(monkeypatch)
 
