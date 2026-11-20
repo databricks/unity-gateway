@@ -845,6 +845,27 @@ class TestDiscoverModelServices:
         hits = [a for a in annotations if "launch_cache_hit" in a]
         assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
 
+    def test_priming_does_not_override_a_walked_memo(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        annotations: list[dict] = []
+        monkeypatch.setattr(db_mod.metrics, "annotate", lambda **kwargs: annotations.append(kwargs))
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [_model_service("system.ai.gpt-5")]}, None),
+        )
+        db_mod.discover_model_services(WS, "token")  # walks and memoizes
+        db_mod.prime_model_services_cache(
+            WS, [db_mod.ModelServiceEntry("system.ai.claude-sonnet-5", ())]
+        )
+        db_mod.discover_model_services(WS, "token")
+        hits = [a for a in annotations if "launch_cache_hit" in a]
+        # A real memoized walk stays an in-process hit, with its own entries.
+        assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
+        assert [entry.id for entry in db_mod.cached_model_service_entries(WS)] == [
+            "system.ai.gpt-5"
+        ]
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):

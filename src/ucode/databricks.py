@@ -2784,8 +2784,9 @@ def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | No
 
 def prime_model_services_cache(workspace: str, entries: list[ModelServiceEntry]) -> None:
     """Seed the listing cache from persisted launch-cache state, so discovery needs no network."""
-    _MODEL_SERVICES_CACHE.setdefault(workspace, list(entries))
-    _PRIMED_MODEL_SERVICES.add(workspace)
+    if workspace not in _MODEL_SERVICES_CACHE:
+        _MODEL_SERVICES_CACHE[workspace] = list(entries)
+        _PRIMED_MODEL_SERVICES.add(workspace)
 
 
 def clear_model_services_cache() -> None:

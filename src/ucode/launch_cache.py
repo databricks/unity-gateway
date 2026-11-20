@@ -113,6 +113,10 @@ def _read_entry(key: str, identity: dict | None = None) -> dict | None:
         return None
     if identity is not None and entry.get("identity") != identity:
         return None
+    if entry.get("generation", 0) != _read_generation():
+        # The entry predates the last clear (configure or login): dead on read,
+        # whatever order its writer's write landed in against the clear's unlink.
+        return None
     return entry
 
 
@@ -138,9 +142,12 @@ def _part_fresh(entry: dict, part: str) -> bool:
     return isinstance(checked_at, (int, float)) and time.time() - checked_at <= MAX_AGE_SECONDS
 
 
-def merge_entry(key: str, identity: dict, payload: dict) -> None:
+def merge_entry(key: str, identity: dict, payload: dict, generation: int = 0) -> None:
     """Merge ``payload`` into the entry; each part carries its own age, and a None
-    part drops that part instead of refreshing its age."""
+    part drops that part instead of refreshing its age.
+
+    The entry carries the cache ``generation`` it was written under, so a clear makes
+    it dead on read even when the writer's write lands after the clear's unlink."""
     entry = _read_entry(key) or {}
     now = time.time()
     for part, data in payload.items():
@@ -153,6 +160,7 @@ def merge_entry(key: str, identity: dict, payload: dict) -> None:
     entry["version"] = ENTRY_VERSION
     entry["key"] = key
     entry["identity"] = identity
+    entry["generation"] = generation
     entry["checked_at"] = now
     try:
         # mkstemp-created, so the replaced file is 0600 like the rest of ~/.ucode.
@@ -182,7 +190,7 @@ def try_merge_entry(key: str, identity: dict, payload: dict) -> bool:
             except TimeoutError:
                 return False
             try:
-                merge_entry(key, identity, payload)
+                merge_entry(key, identity, payload, generation=_read_generation())
             finally:
                 release_file_lock(lock_file)
     except OSError:
@@ -451,7 +459,9 @@ def _refresh_locked(key: str, identity: dict, generation: int) -> int:
             return 1
         # Only a non-empty catalog is cached, like the launch path: an empty one
         # would suppress the picker for the entry's whole age with no fallback. A
-        # failed catalog drops the cached one instead of refreshing its age.
+        # failed catalog drops the cached one instead of refreshing its age. The
+        # entry carries the generation it was fetched under, so even a write that
+        # lands after a clear reads as missing.
         payload = {
             "probe": probe_payload(probe),
             "model_services": services_payload(services),
@@ -459,7 +469,7 @@ def _refresh_locked(key: str, identity: dict, generation: int) -> int:
             if catalog.error_msg or not catalog.model_ids
             else catalog_payload(catalog),
         }
-        merge_entry(key, identity, payload)
+        merge_entry(key, identity, payload, generation=generation)
     except Exception:
         _invalidate(key, seen)
         return 1

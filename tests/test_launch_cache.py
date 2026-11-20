@@ -83,6 +83,7 @@ def _store(key: str, payload: dict, *, checked_at: float | None = None, identity
         "key": key,
         "identity": identity or _identity(),
         "checked_at": checked_at,
+        "generation": lc._read_generation(),
         **{f"{part}_checked_at": checked_at for part in payload},
     }
     lc._cache_dir().mkdir(parents=True, exist_ok=True)
@@ -218,6 +219,25 @@ class TestEntry:
         loaded = lc.load_entry(key, _identity())
         assert loaded is not None
         assert lc.entry_probe(loaded) is None
+
+    def test_an_entry_written_after_a_clear_is_dead_on_read(self):
+        key = _key()
+        _store(key, {}, checked_at=time.time())
+        lc.clear_cache()
+        assert lc.load_entry(key) is None
+        # A pre-clear refresher's write lands with the old generation: dead on read,
+        # whatever order its write landed in against the clear's unlink.
+        lc.merge_entry(key, _identity(), {"catalog": lc.catalog_payload(CATALOG)}, generation=0)
+        assert lc.load_entry(key) is None
+        assert lc.entry_catalog(lc._read_entry(key) or {}) is None
+        # A write under the current generation is alive.
+        lc.merge_entry(
+            key,
+            _identity(),
+            {"catalog": lc.catalog_payload(CATALOG)},
+            generation=lc._read_generation(),
+        )
+        assert lc.load_entry(key) is not None
 
     def test_clear_cache_removes_every_entry(self):
         lc.merge_entry(_key(), _identity(), {})
