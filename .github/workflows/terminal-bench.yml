@@ -192,7 +192,7 @@ jobs:
         with:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
       - name: Expose the Databricks CLI on Windows
         if: ${{ runner.os == 'Windows' }}
         run: |
