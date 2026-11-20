@@ -107,6 +107,55 @@ class TestExtensionConfig:
         assert entry["maxContextWindowTokens"] == 1_000_000
         assert entry["capabilities"] == {"supports": {"vision": True}}
 
+    def test_a_small_output_limit_is_left_to_the_runtime(self):
+        model = plugin.PluginModel("m", "system.ai.m", "M", (100_000, 16_000))
+        provider = plugin.PluginProvider("p", "completions", "/ai-gateway/mlflow/v1", (model,))
+        (entry,) = plugin.extension_config(_config(providers=(provider,)))["models"]
+        assert entry["maxPromptTokens"] == 100_000
+        assert "maxOutputTokens" not in entry
+        assert "maxContextWindowTokens" not in entry
+
+    def test_reasoning_effort_can_be_turned_off(self):
+        model = plugin.PluginModel("glm-5", "system.ai.glm-5", "GLM 5", reasoning_effort=False)
+        provider = plugin.PluginProvider("p", "completions", "/ai-gateway/mlflow/v1", (model,))
+        (entry,) = plugin.extension_config(_config(providers=(provider,)))["models"]
+        assert entry["capabilities"] == {"supports": {"reasoningEffort": False}}
+        assert "capabilities" not in plugin.extension_config(_config())["models"][1]
+
+    def test_app_rows_and_databricks_path(self):
+        rows = plugin.AppProviderRows(
+            provider={"id": "p", "name": "Databricks GPT", "kind": "custom", "settings": {}},
+            secret=None,
+            models=({"id": "m", "providerId": "p", "modelId": "gpt-6"},),
+        )
+        config = plugin.extension_config(
+            _config(
+                app_providers=(rows,),
+                owned_provider_ids=("p", "q"),
+                databricks_path="/usr/local/bin/databricks",
+            )
+        )
+        assert config["app"] == {
+            "providers": [
+                {
+                    "provider": {
+                        "id": "p",
+                        "name": "Databricks GPT",
+                        "kind": "custom",
+                        "settings": {},
+                    },
+                    "secret": None,
+                    "models": [{"id": "m", "providerId": "p", "modelId": "gpt-6"}],
+                }
+            ],
+            "ownedProviderIds": ["p", "q"],
+        }
+        assert config["databricksPath"] == "/usr/local/bin/databricks"
+        assert plugin.extension_config(_config())["app"] == {
+            "providers": [],
+            "ownedProviderIds": [],
+        }
+
     def test_token_command_and_hint_name_the_workspace_and_profile(self):
         config = plugin.extension_config(_config())
         assert config["tokenCommand"] == [
@@ -151,6 +200,7 @@ class TestWritePlugin:
         assert {p.name for p in extension.iterdir()} == {
             "extension.mjs",
             "ug-plugin.mjs",
+            "app-rows.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (
@@ -298,13 +348,14 @@ class TestStatus:
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestExtensionSource:
-    @pytest.mark.parametrize("name", ["extension.mjs", "ug-plugin.mjs"])
+    @pytest.mark.parametrize("name", ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs"])
     def test_syntax(self, name):
         subprocess.run([NODE, "--check", str(PLUGIN_SOURCE / name)], check=True)
 
-    def test_node_unit_tests(self):
+    @pytest.mark.parametrize("name", ["copilot_app_plugin.test.mjs", "copilot_app_rows.test.mjs"])
+    def test_node_unit_tests(self, name):
         result = subprocess.run(
-            [NODE, "--test", str(Path(__file__).with_name("copilot_app_plugin.test.mjs"))],
+            [NODE, "--test", str(Path(__file__).with_name(name))],
             capture_output=True,
             text=True,
         )

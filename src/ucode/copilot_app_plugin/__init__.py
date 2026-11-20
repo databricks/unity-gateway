@@ -1,9 +1,9 @@
 """The Databricks plugin for the GitHub Copilot desktop app.
 
 ug writes a local plugin marketplace it owns and turns it on in Copilot's ``settings.json``. The
-plugin's extension serves ug's models straight from the AI Gateway: it registers the same provider
-and model ids ug adds to the app's model picker, and mints a fresh Databricks token for every
-request with ``ug auth-token``.
+plugin's extension writes ug's providers and model rows to the app's model picker over the app's
+local WebSocket API, serves them straight from the AI Gateway under the same ids, and mints a fresh
+Databricks token for every request with ``ug auth-token``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ucode.config_io import atomic_write_json
 
@@ -30,10 +30,12 @@ Status = Literal["installed", "disabled", "not_installed", "invalid_settings"]
 
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
-_SOURCE_FILES = ("extension.mjs", "ug-plugin.mjs")
+_SOURCE_FILES = ("extension.mjs", "ug-plugin.mjs", "app-rows.mjs")
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
 UNLOAD_WAIT_S = 5.0
+# The runtime asks for 32K output tokens and fails a turn on a model that advertises fewer.
+MIN_OUTPUT_TOKENS = 32_000
 
 
 class SettingsError(RuntimeError):
@@ -51,6 +53,8 @@ class PluginModel:
     # (max prompt tokens, max output tokens); None keeps the runtime's defaults.
     limits: tuple[int, int] | None = None
     vision: bool = False
+    # False stops the runtime from sending `reasoning_effort`; None keeps its default.
+    reasoning_effort: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,16 @@ class PluginProvider:
 
 
 @dataclass(frozen=True)
+class AppProviderRows:
+    """A provider and its model rows as the app's WebSocket API takes them. The extension writes
+    them to the app's model picker."""
+
+    provider: Mapping[str, Any]
+    secret: Mapping[str, str] | None
+    models: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True)
 class PluginConfig:
     workspace: str
     ug_path: str
@@ -74,6 +88,12 @@ class PluginConfig:
     # The extension's process gets the app runtime's PATH, which may lack the directories ug and
     # the Databricks CLI live in.
     path_dirs: tuple[str, ...] = ()
+    # `ug auth-token` runs the Databricks CLI, so its directory goes on the PATH too.
+    databricks_path: str | None = None
+    app_providers: tuple[AppProviderRows, ...] = ()
+    # Every provider id ug may have written to the app; the extension deletes those not in
+    # ``app_providers``.
+    owned_provider_ids: tuple[str, ...] = ()
 
 
 def copilot_settings_path() -> Path:
@@ -131,11 +151,25 @@ def _model_entry(model: PluginModel, provider: PluginProvider) -> dict:
     if model.limits:
         prompt, output = model.limits
         entry["maxPromptTokens"] = prompt
-        entry["maxOutputTokens"] = output
-        entry["maxContextWindowTokens"] = prompt + output
+        if output >= MIN_OUTPUT_TOKENS:
+            entry["maxOutputTokens"] = output
+            entry["maxContextWindowTokens"] = prompt + output
+    supports: dict = {}
     if model.vision:
-        entry["capabilities"] = {"supports": {"vision": True}}
+        supports["vision"] = True
+    if model.reasoning_effort is not None:
+        supports["reasoningEffort"] = model.reasoning_effort
+    if supports:
+        entry["capabilities"] = {"supports": supports}
     return entry
+
+
+def _app_entry(rows: AppProviderRows) -> dict:
+    return {
+        "provider": dict(rows.provider),
+        "secret": dict(rows.secret) if rows.secret else None,
+        "models": [dict(model) for model in rows.models],
+    }
 
 
 def extension_config(config: PluginConfig) -> dict:
@@ -149,7 +183,12 @@ def extension_config(config: PluginConfig) -> dict:
         ],
         "tokenCommand": _token_command(config),
         "pathDirs": list(config.path_dirs),
+        "databricksPath": config.databricks_path,
         "loginHint": _login_hint(config),
+        "app": {
+            "providers": [_app_entry(rows) for rows in config.app_providers],
+            "ownedProviderIds": list(config.owned_provider_ids),
+        },
     }
 
 

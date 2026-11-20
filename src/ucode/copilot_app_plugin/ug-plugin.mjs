@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { delimiter } from "node:path";
+import { delimiter, dirname } from "node:path";
 
 export const REFRESH_MARGIN_MS = 120_000;
 export const DEFAULT_TOKEN_TTL_MS = 300_000;
@@ -22,7 +22,8 @@ export function jwtExpiryMs(token) {
 }
 
 export function childEnv(config, env = process.env) {
-  const path = [...(config.pathDirs || []), env.PATH].filter(Boolean).join(delimiter);
+  const databricksDir = config.databricksPath ? [dirname(config.databricksPath)] : [];
+  const path = [...(config.pathDirs || []), ...databricksDir, env.PATH].filter(Boolean).join(delimiter);
   return { ...env, PATH: path };
 }
 

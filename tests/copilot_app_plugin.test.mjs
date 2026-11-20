@@ -28,6 +28,11 @@ test("jwtExpiryMs reads exp and tolerates opaque tokens", () => {
   assert.equal(jwtExpiryMs("a.not-base64-json.b"), null);
 });
 
+test("childEnv puts the Databricks CLI's dir on PATH", () => {
+  const env = childEnv({ ...config, databricksPath: "/opt/homebrew/bin/databricks" }, { PATH: "/usr/bin" });
+  assert.equal(env.PATH, ["/opt/ug/bin", "/opt/databricks", "/opt/homebrew/bin", "/usr/bin"].join(delimiter));
+});
+
 test("childEnv puts the configured dirs ahead of PATH", () => {
   const env = childEnv(config, { PATH: "/usr/bin", HOME: "/h" });
   assert.equal(env.PATH, ["/opt/ug/bin", "/opt/databricks", "/usr/bin"].join(delimiter));
