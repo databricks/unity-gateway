@@ -147,8 +147,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 # older releases ignore it and would leave developers free to bypass the gateway.
 MINIMUM_CODEX_VERSION = (0, 156, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
-MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 171, 0)
-MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.171.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -191,14 +191,6 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def _smart_routing_version_supported(version: str) -> bool:
-    parsed = _parse_version(version)
-    return parsed is not None and (
-        parsed > MINIMUM_SMART_ROUTING_CODEX_VERSION
-        or (parsed == MINIMUM_SMART_ROUTING_CODEX_VERSION and "-" not in version.partition("+")[0])
-    )
-
-
 def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
@@ -214,11 +206,11 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
                 "or newer. Run `codex --version` to check the installation, "
                 "or launch with --disable-smart-routing."
             )
-        if _smart_routing_version_supported(version):
+        if parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
             return None
         return (
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
-            f"or newer for native delegation and status-line provider support; found {version}. "
+            f"or newer for readable delegated assignments; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
         )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
@@ -1967,8 +1959,8 @@ def _app_server_needs_newer_codex(tool_args: list[str]) -> bool:
     """
     if not is_codex_app_server_launch(tool_args):
         return False
-    version = agent_version(SPEC["binary"])
-    return _parse_version(version) is not None and not _smart_routing_version_supported(version)
+    parsed = _parse_version(agent_version(SPEC["binary"]))
+    return parsed is not None and parsed < MINIMUM_SMART_ROUTING_CODEX_VERSION
 
 
 def launch(

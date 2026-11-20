@@ -39,7 +39,6 @@ from ucode.agents import (
     configure_single_tool,
     configure_tool,
     ensure_bootstrap_dependencies,
-    ensure_minimum_version,
     ensure_provider_state,
     explicit_model_arg_value,
     install_databricks_ai_tools_for_agents,
@@ -4456,12 +4455,6 @@ def _launch_tool(
                     routing_unavailable = codex_agent.minimum_version_error(
                         smart_routing_enabled=True
                     )
-                    if routing_unavailable:
-                        ensure_minimum_version(
-                            "codex",
-                            lambda: codex_agent.minimum_version_error(smart_routing_enabled=True),
-                        )
-                        routing_unavailable = None
                 except RuntimeError as exc:
                     routing_unavailable = str(exc)
             if routing_unavailable:

@@ -283,7 +283,7 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         for name in ("full", "managed"):
             assert "smart_routing: [false]" in jobs[name]
             assert (
-                "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
+                "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
                 "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
@@ -475,7 +475,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ (matrix.test == 'test_cuj4_smart_routing.py' || "
-        "matrix.test == 'test_cuj7_model_discovery.py') && '0.171.0' || "
+        "matrix.test == 'test_cuj7_model_discovery.py') && '0.165.0' || "
         "inputs.codex_version || '0.156.0' }}"
     ) in job
 

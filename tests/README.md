@@ -1,24 +1,5 @@
 # Test suites and user journeys
 
-The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
-stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
-`test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade
-offers, refusal/failure, and explicit routing disable. Managed defaults warn and
-continue unrouted after refusal, updater failure, EOF with updater failure, or an
-update that leaves the client too old; explicit routing remains gated. Routing CI pins 0.171.0.
-These are component checks; the installed-version journeys are documented in the
-[integration guide](integration/README.md).
-
-Codex calculation routing evidence supports plaintext assignments and native encrypted
-delivery. Plaintext must match the audited assignment digest. For encrypted delivery,
-the original spawn's ciphertext must match the child's NEW_TASK receipt, and its task
-name must match the audited fallback digest. Component checks reject mismatched names,
-ciphertexts, missing delivery, and non-spawn calls. This does not establish plaintext
-routing for encrypted tasks; the dedicated native v2 assignment journey checks that separately.
-The encrypted-request matcher accepts the exact enabled-attribution suffix on a child
-task name, rejecting disabled and arbitrary suffixes. Toggle evidence still requires a
-successful state change; only an explicitly denied duplicate after that success is tolerated.
-
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
 Checks resolve external and pay-per-token destinations using selected credentials;
@@ -1129,9 +1110,7 @@ when forwarded after UG's `--`; option-only suffixes are not mistaken for prompt
 The launch-policy matrix uses one native model spelling per tool; shared parser,
 classifier and routed-launch tests retain the split, equals and short-form checks.
 
-`integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer.
-Its pre-existing user-owned catalog opts native tools into code mode, overriding the
-bundled model's direct-only preference. This transport exposes plaintext assignments:
+`integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
 The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;
@@ -1143,16 +1122,13 @@ the Databricks provider are preserved. `test_agent_codex.py` covers the routing
 minimum version separately from ordinary launches.
 `test_codex_smart_routing_v2.py` checks the native v2 overrides take precedence over
 conflicting saved values in both launch paths, with saved files unchanged,
-and the shared upgrade flow. Explicitly routed Codex 0.170 cannot reach execution when the upgrade is
+and the shared upgrade flow. Codex 0.163 cannot reach execution when the upgrade is
 declined, fails, or leaves the version below the routing minimum. Unrecognized
 versions stop before an upgrade prompt or updater, including automatic-update mode;
 successful and automatic upgrades of known old versions allow routing.
-The managed-launch cases in `test_cli.py` exercise Codex 0.156, 0.164, 0.170, and
-0.171.0-alpha.12 through the real version gate. Declining, failed/manual or automatic
-updates, EOF followed by update failure, and an update that leaves the version old
-all warn and launch unrouted with routing environment controls disabled. Upgrading
-to stable 0.171.0 allows routing. `--disable-smart-routing` allows an ordinary launch
-without invoking the updater. Every case checks launch-scoped environment restoration.
+The managed-launch cases in `test_cli.py` exercise Codex 0.156 and 0.163 through the
+real version gate: declining blocks launch, upgrading to 0.164 allows routing, and
+`--disable-smart-routing` allows an ordinary launch without invoking the updater.
 `test_codex_routing.py` checks that long Unicode assignments reach the router and hook
 unchanged while audits contain their hash and length, and bound each reason to 1,000
 characters. Shared-writer coverage keeps Claude's full task and reason fields intact.
@@ -1543,8 +1519,8 @@ Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
 suite runs the remaining live cases in separate agent and OS jobs, with cases
 serial inside each VM. Codex smoke and general full/managed coverage retain
-0.156.0. Separate required full and managed matrix rows use 0.171.0 only for
-`codex_smart_routing` cases; CUJ4 also uses 0.171.0, while other CUJs retain
+0.156.0. Separate required full and managed matrix rows use 0.165.0 only for
+`codex_smart_routing` cases; CUJ4 also uses 0.165.0, while other CUJs retain
 0.156.0. The catalog-fallback routing-off case stays on the baseline version.
 The existing workflow contract tests collect both selections and require disjoint
 case sets whose union preserves coverage. Windows' existing native-toggle exclusions remain.

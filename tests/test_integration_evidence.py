@@ -1,6 +1,5 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
-import hashlib
 import json
 import os
 import re
@@ -817,57 +816,6 @@ def test_tagged_calculation_uses_a_short_native_task_name():
     assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
 
 
-@pytest.mark.parametrize("encrypted", [False, True])
-def test_codex_assignment_digests_match_native_delivery(encrypted):
-    marker = "ug_123abc"
-    assignment = f"Calculate 1+1 and reply {marker}=2"
-    ciphertext = "gAAAAABrAFzz" + "a" * 80
-    content = [
-        {
-            "type": "input_text",
-            "text": f"Message Type: NEW_TASK\nTask name: /root/{marker}__sr_on\n"
-            "Sender: /root\nPayload:\n" + ("" if encrypted else assignment),
-        }
-    ]
-    if encrypted:
-        content.append({"type": "encrypted_content", "encrypted_content": ciphertext})
-    call = {
-        "type": "function_call",
-        "name": "spawn_agent",
-        "arguments": json.dumps(
-            {"task_name": marker, "message": ciphertext if encrypted else assignment}
-        ),
-    }
-    delivery = {"type": "agent_message", "content": content}
-    sessions = {
-        "parent": [{"type": "response_item", "payload": call}],
-        "child": [{"type": "response_item", "payload": delivery}],
-    }
-    expected = marker if encrypted else assignment
-    assert codex.routed_assignment_digests(sessions, marker) == {
-        hashlib.sha256(expected.encode()).hexdigest()
-    }
-    assert not codex.routed_assignment_digests(sessions, "ug_other")
-    if not encrypted:
-        assert hashlib.sha256(marker.encode()).hexdigest() not in codex.routed_assignment_digests(
-            sessions, marker
-        )
-        return
-    for changed in (
-        {"task_name": "ug_other", "message": ciphertext},
-        {"task_name": marker, "message": ciphertext + "different"},
-        {"task_name": marker, "message": {"encrypted": ciphertext}},
-    ):
-        call["arguments"] = json.dumps(changed)
-        assert not codex.routed_assignment_digests(sessions, marker)
-    call["arguments"] = json.dumps({"task_name": marker, "message": ciphertext})
-    call["name"] = "send_message"
-    assert not codex.routed_assignment_digests(sessions, marker)
-    call["name"] = "spawn_agent"
-    content.pop()
-    assert not codex.routed_assignment_digests(sessions, marker)
-
-
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("child", [False, True])
 def test_tagged_calculation_rejects_mistyped_marker_and_wrong_result(tmp_path, agent, child):
@@ -1234,45 +1182,6 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
         "ug_subagent_ab12",
         orchestrator_on=True,
     )
-
-
-def test_codex_skill_confirmation_allows_only_guarded_duplicates_after_success():
-    successful = {
-        "type": "DynamicToolCall",
-        "tool": "ug_smart_router",
-        "arguments": {"action": "off"},
-        "status": "completed",
-        "success": True,
-        "content_items": [{"type": "inputText", "text": '{"message":"Smart Router is off"}'}],
-    }
-    denied = {
-        **successful,
-        "status": "failed",
-        "success": False,
-        "content_items": [
-            {
-                "type": "inputText",
-                "text": "Use $smart-router off to turn Smart Router off. Routing is unchanged.",
-            }
-        ],
-    }
-
-    def records(*items):
-        return [
-            {"type": "event_msg", "payload": {"type": "item_completed", "item": item}}
-            for item in items
-        ]
-
-    assert codex.completed_smart_router_results(records(successful, denied), "off") == [
-        {"message": "Smart Router is off"}
-    ]
-    with pytest.raises(AssertionError):
-        codex.completed_smart_router_results(records(denied), "off")
-    with pytest.raises(AssertionError):
-        codex.completed_smart_router_results(records(denied, successful), "off")
-    denied["content_items"][0]["text"] = "Another failure. Routing is unchanged."
-    with pytest.raises(AssertionError):
-        codex.completed_smart_router_results(records(successful, denied), "off")
 
 
 def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():

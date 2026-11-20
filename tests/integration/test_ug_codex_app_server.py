@@ -61,7 +61,7 @@ def test_ug_codex_app_server_runs_unrouted_below_routing_floor(live_session, wor
         r"(\d+)\.(\d+)\.(\d+)", session.run("--version", binary=session.which("codex")).stdout
     )
     assert version, "`codex --version` reported no semver"
-    if tuple(map(int, version.groups())) >= (0, 171, 0):
+    if tuple(map(int, version.groups())) >= (0, 164, 0):
         return
     session.run(
         "configure",
