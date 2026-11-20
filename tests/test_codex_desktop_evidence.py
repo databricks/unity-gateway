@@ -18,6 +18,50 @@ MARKER = "b39c21"
 MODEL = "system.ai.gpt-5-6-sol"
 
 
+@pytest.mark.parametrize("failure", [None, "login", "identity"])
+def test_cli_login_removes_bypasses_and_cleans_up_after_successful_login(tmp_path, failure):
+    calls = []
+    finalizers = []
+    request = SimpleNamespace(addfinalizer=finalizers.append)
+    session = SimpleNamespace(
+        env={
+            "HOME": str(tmp_path),
+            "DATABRICKS_BEARER": "ci-token",
+            "DATABRICKS_BEARER_COMMAND": "credential-broker",
+            "DATABRICKS_CONFIG_FILE": "other-profile-file",
+        },
+        which=lambda name: tmp_path / name,
+    )
+
+    def run(*args, **kwargs):
+        assert session.env == {"HOME": str(tmp_path)}
+        assert kwargs["binary"] == tmp_path / "databricks"
+        calls.append(args)
+        if args[:2] == ("auth", "login"):
+            assert kwargs["timeout"] == 150
+            assert args[-2:] == ("--timeout", "2m")
+            if failure == "login":
+                raise AssertionError("OAuth login failed")
+        elif args[:2] == ("current-user", "me") and failure == "identity":
+            raise AssertionError("Identity verification failed")
+
+    session.run = run
+    if failure:
+        with pytest.raises(AssertionError, match="failed"):
+            codex_desktop.login_databricks_cli(session, "https://workspace.example", request)
+    else:
+        profile = codex_desktop.login_databricks_cli(session, "https://workspace.example", request)
+        assert calls[0][2:6] == ("--host", "https://workspace.example", "--profile", profile)
+        assert calls[1] == ("current-user", "me", "--profile", profile)
+    if failure == "login":
+        assert len(calls) == 1
+        assert not finalizers
+    else:
+        assert len(finalizers) == 1
+        finalizers[0]()
+        assert calls[-1] == ("auth", "logout", "--profile", calls[0][5])
+
+
 @pytest.mark.parametrize("state", ["ready", "recovers", "fails"])
 def test_windows_readiness_recheck_is_visible_and_bounded(state):
     error = [["ControlType.Text", "Couldn’t check Windows setup", ""]]

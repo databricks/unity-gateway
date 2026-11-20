@@ -367,7 +367,17 @@ a screenshot of the app window as evidence. It also requires the app's model pic
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
 Both inference cases wait for the rendered draft, click Send, and require the user prompt in
 the native rollout before the answer wait. Failed answer waits also retain rollout evidence.
-Each module also runs `test_ug_codex_desktop_*_skill_calls_mcp`: after managed configure,
+Each module also runs `test_ug_codex_desktop_*_skill_calls_mcp`: first, public
+`databricks auth login --host <workspace> --profile codex-desktop-<id> --timeout 2m`
+establishes an OAuth login in the isolated session home, and `databricks current-user me`
+verifies it. The session removes bearer and bearer-command overrides and uses the default
+CLI config location, so MCP authentication needs no forwarded auth environment. Configure
+explicitly selects that profile. Teardown logs out the unique test profile, including any
+credentials stored in the OS keyring. Browser authentication must complete on the runner; the
+existing CI service-principal credentials cannot satisfy this prerequisite. Missing login
+fails within the bounded setup step, without falling back to a bearer or starting the app.
+The original inference-only cases continue using the CI bearer.
+After managed configure,
 `ug mcp add --agents codex --names system.ai.web_search` registers the real search service.
 A user-authored skill in the session's `$CODEX_HOME/skills` points to a reference file containing a fresh query
 and completion token. Windows completes sandbox setup through the visible Continue button.
@@ -387,7 +397,8 @@ the workspace identity must have access to `system.ai.web_search`. They cover lo
 execution and MCP invocation, not UC skill downloads, connector browser sign-in or search ranking.
 `../test_codex_desktop_evidence.py` checks hidden reference inputs and rejects missing/failed
 receipts, unrelated servers/queries/turns, wrong origins/models and incomplete answers offline.
-It also rejects false submission evidence.
+It also rejects false submission evidence and checks that CLI login removes authentication
+overrides and stops on failure. These component checks do not establish a real OAuth login.
 `scripts/run_integration.py` ignores both modules unless `--desktop-app` is passed, which only the
 desktop CI jobs do, so a local run never drives a developer's installed app.
 

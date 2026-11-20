@@ -8,6 +8,7 @@ from utils.codex_desktop import (
     MCP_SERVICE,
     SKILL_NAME,
     assert_desktop_skill_mcp_session,
+    login_databricks_cli,
     wait_for_skill_answer,
     wait_for_submitted_prompt,
     write_search_skill,
@@ -108,10 +109,11 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         assert any(row.split("\t")[0].startswith("AX") for row in tree_rows), tree_rows
 
 
-def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
-    """Scenario: add web_search through ug and invoke a user-authored skill in the desktop GUI.
+def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace, request):
+    """Scenario: log in to Databricks, add web_search, and invoke a skill in the desktop GUI.
 
-    Expected: the skill's reference file supplies the otherwise-hidden query and answer token.
+    Expected: CLI OAuth login and current-user verification succeed before configuration or MCP
+    registration, with no bearer override. The skill's reference supplies the hidden query and token.
     The app displays that token and its Databricks-backed completed turn records successful
     native MCP web_search receipts with the exact query on the managed model. User onboarding
     and Send use visible controls; the rollout must record the submitted prompt before the
@@ -120,12 +122,21 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
     browser sign-in and built-in web search are outside this journey.
     """
     session = live_session
+    profile = login_databricks_cli(session, workspace, request)
     marker = fresh_id()
     query = f"Databricks Unity Catalog documentation {fresh_id()}"
     write_search_skill(session.home, query, marker)
     use_managed_config_fixture(session, "managed_workspace_default")
     session.run(
-        "configure", "--agents", "codex", "--workspace", workspace, "--skip-upgrade", timeout=240
+        "configure",
+        "--agents",
+        "codex",
+        "--workspace",
+        workspace,
+        "--profile",
+        profile,
+        "--skip-upgrade",
+        timeout=240,
     )
     session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
 
