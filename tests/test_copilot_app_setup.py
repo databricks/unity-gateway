@@ -727,6 +727,7 @@ class TestTracing:
         monkeypatch.setattr(copilot_app_tracing, "current_os", lambda: OS.LINUX)
         monkeypatch.setattr(shell_profile_env, "login_shells", lambda: ["zsh"])
         monkeypatch.setattr("ucode.agents.copilot.installed_version", lambda: (1, 0, 106))
+        monkeypatch.setattr(copilot_app_tracing, "app_runtime_version", lambda: (1, 0, 106))
         self.zshenv = shell_profile_env._home() / ".zshenv"
 
     def _provider(self) -> dict:
@@ -793,9 +794,36 @@ class TestTracing:
 
         desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
 
-        assert "GitHub Copilot CLI 1.0.98 ignores the whole settings file" in _out(capsys)
+        assert "GitHub Copilot CLI 1.0.98 would ignore the whole settings file" in _out(capsys)
         assert "telemetry" not in _settings()
         assert not self.zshenv.exists()
+
+    @pytest.mark.parametrize(
+        ("runtime", "message"),
+        [
+            (None, "can't tell which Copilot runtime the GitHub Copilot app uses"),
+            ((1, 0, 98), "Copilot runtime 1.0.98 would ignore its whole settings file"),
+        ],
+    )
+    def test_an_unknown_or_old_app_runtime_keeps_it_off(
+        self, monkeypatch, capsys, app, runtime, message
+    ):
+        from ucode.agents.desktop import copilot_app_tracing
+
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        monkeypatch.setattr(copilot_app_tracing, "app_runtime_version", lambda: runtime)
+        capsys.readouterr()
+
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+
+        assert message in _out(capsys)
+        assert "telemetry" not in _settings()
+        assert not self.zshenv.exists()
+        _register(app, self.TRACED)
+        status = desktop_setup.copilot_app_status(self.TRACED, provider=None, location=None)
+        assert status is not None
+        assert status.row.endswith("tracing not set up")
+        assert any(message in warning for warning in status.warnings)
 
     def test_revert_removes_it_with_the_plugin(self, app):
         desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
