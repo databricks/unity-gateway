@@ -145,6 +145,15 @@ def _model_rows(
     return list(rows.values())
 
 
+def _plugin_model(row: dict[str, Any]) -> PluginModel:
+    limits = None
+    if "maxPromptTokens" in row:
+        limits = (row["maxPromptTokens"], row["maxOutputTokens"])
+    return PluginModel(
+        row["modelId"], row["wireModel"], row["displayName"], limits, row["supportsVision"]
+    )
+
+
 def desired_providers(
     workspace: str, catalog: Iterable[CopilotModel], *, provider_service: str | None = None
 ) -> DesiredProviders:
@@ -179,10 +188,7 @@ def desired_providers(
                 id=provider.id,
                 wire=spec.wire,
                 base_path=base_path,
-                models=tuple(
-                    PluginModel(row["modelId"], row["wireModel"], row["displayName"])
-                    for row in rows
-                ),
+                models=tuple(_plugin_model(row) for row in rows),
             )
         )
     headers = {MODEL_PROVIDER_SERVICE_HEADER: provider_service} if provider_service else {}

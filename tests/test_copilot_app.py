@@ -140,9 +140,18 @@ class TestDesiredProviders:
         for app_provider, plugin_provider in zip(desired.app, desired.plugin, strict=True):
             assert plugin_provider.id == app_provider.id
             assert [
-                (model.model_id, model.wire_model, model.name) for model in plugin_provider.models
+                (model.model_id, model.wire_model, model.name, model.limits, model.vision)
+                for model in plugin_provider.models
             ] == [
-                (row["modelId"], row["wireModel"], row["displayName"])
+                (
+                    row["modelId"],
+                    row["wireModel"],
+                    row["displayName"],
+                    (row["maxPromptTokens"], row["maxOutputTokens"])
+                    if "maxPromptTokens" in row
+                    else None,
+                    row["supportsVision"],
+                )
                 for row in app_provider.models
             ]
             assert app_provider.settings["baseUrl"] == WORKSPACE + plugin_provider.base_path
