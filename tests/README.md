@@ -1098,8 +1098,9 @@ sign-in or TUI test.
 defaults and routing presets for Claude and Codex, including pinned-root bypass of
 first-prompt routing and Isaac's config-only Codex launch arguments.
 `test_codex_config.py` distinguishes native options and their
-values from positional prompts and utility subcommands, preserving the exclusion
-of existing remote attachments.
+values from positional prompts and utility subcommands. It reuses UG's model/config
+syntax instead of mirroring all native options. Other options with separate values
+and existing remote attachments retain their unrouted behavior.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
 the exact multiline assignment reaches the real hook, router, and native

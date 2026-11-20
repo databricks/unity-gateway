@@ -1332,6 +1332,8 @@ The existing saved-model variant remains. Component tests cover short `-m`, laun
 policy for both agents, Isaac's config-only Codex arguments, and native
 utility-subcommand and remote-attachment exclusion;
 these are not live coverage.
+The classifier reuses UG's model/config syntax; other native options with separate
+values retain their prior unrouted behavior rather than guessing their arity.
 
 The Claude route-subagent-mod journey checks that the response contains only the
 selected model and rationale and matches the decision log. The native mod applies
