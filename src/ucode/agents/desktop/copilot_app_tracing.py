@@ -185,16 +185,25 @@ def _windows_enable(
     # ug's earlier values would otherwise count as the user's own and be kept.
     stale = {name: value for name, value in previous.items() if env.get(name) != value}
     changed = bool(stale) and windows_user_env.remove_values(stale)
+    current = windows_user_env.get_values(env)
+    # A value that's already there is ug's only if ug recorded writing it; the user's own stays
+    # out of the record, so disable never deletes it.
+    ours = {
+        name: value
+        for name, value in env.items()
+        if current.get(name) == value == previous.get(name)
+    }
+    missing = {name: value for name, value in env.items() if name not in current}
+    kept = [name for name in env if name not in ours and name not in missing]
     # Recorded first, for the same reason as the profiles.
-    _save(_Record(record.profiles, record.created, {**previous, **env}))
-    set_changed, kept = windows_user_env.set_values(env)
+    _save(_Record(record.profiles, record.created, {**ours, **missing}))
+    set_changed, _ = windows_user_env.set_values(missing)
     if kept:
         print_warning(
             f"GitHub Copilot app tracing: left your own {', '.join(kept)} in place, so the app's "
             "traces may not reach the workspace."
         )
-    written = {name: value for name, value in env.items() if name not in kept}
-    return changed or set_changed, _Record(record.profiles, record.created, written)
+    return changed or set_changed, _Record(record.profiles, record.created, {**ours, **missing})
 
 
 def _windows_disable(record: _Record) -> bool:
@@ -241,7 +250,7 @@ def disable(*, keep_headers_provider: bool = False) -> bool:
     return changed
 
 
-def status() -> Status:
+def status(*, windows_opt_in: bool = False) -> Status:
     """Whether the app's traces are exported, as far as ug set it up."""
     try:
         provider = copilot_app_plugin.headers_provider()
@@ -250,6 +259,6 @@ def status() -> Status:
     record = _load()
     if not record.empty and copilot_app_plugin.is_ug_headers_provider(provider):
         return "on"
-    if current_os() == OS.WINDOWS and not record.windows_env:
+    if current_os() == OS.WINDOWS and not windows_opt_in:
         return "windows_opt_in"
     return "not_set_up"
