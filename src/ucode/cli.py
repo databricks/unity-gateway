@@ -799,6 +799,12 @@ def configure_shared_state(
     with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
+            if launch_cache_identity is not None and launch_cache_entry is not None:
+                # The fetch may have re-logged in, which clears the on-disk cache; re-read
+                # so a primed entry never predates the login it would serve through.
+                launch_cache_entry = load_entry(
+                    cache_key(launch_cache_identity), launch_cache_identity
+                )
         if launch_cache_entry is not None:
             # Serve the launch's probe and discovery from the last results; a background
             # refresher started by the launch rewrites the cache for the next one.

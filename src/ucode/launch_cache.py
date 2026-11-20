@@ -162,10 +162,15 @@ def merge_entry(key: str, identity: dict, payload: dict) -> None:
 
 
 def clear_cache() -> None:
-    """Drop every entry (configure and login invalidate; keys isolate the rest)."""
+    """Drop every entry and its lock (configure and login invalidate; keys isolate the rest).
+
+    Every lock's entry is gone once the entries are, so every lock is dead weight: the
+    key changed underneath it (a re-login or upgrade), and no launch waits on it again."""
     directory = config_io.APP_DIR / CACHE_DIR_NAME
     try:
         for path in directory.glob("*.json"):
+            path.unlink(missing_ok=True)
+        for path in directory.glob("*.lock"):
             path.unlink(missing_ok=True)
     except OSError:
         pass
@@ -299,13 +304,11 @@ def _refresh_token(workspace: str, identity: dict) -> str:
 
     The detached refresher has no terminal, so no re-auth and no custom-OAuth
     login: an auth failure gives up, and the next launch falls back as designed."""
-    from ucode.custom_oauth import _custom_cli_profile, custom_oauth_cli_enabled
+    from ucode.custom_oauth import custom_oauth_cli_enabled, custom_oauth_cli_profile
 
     custom_oauth = identity.get("custom_oauth")
     if isinstance(custom_oauth, dict) and custom_oauth_cli_enabled(custom_oauth):
-        profile = custom_oauth.get("profile") or _custom_cli_profile(
-            workspace, custom_oauth.get("client_id") or ""
-        )
+        profile = custom_oauth_cli_profile(workspace, custom_oauth)
         if not has_valid_databricks_auth(workspace, profile):
             raise RuntimeError("the custom-OAuth profile has no saved login")
         return fetch_databricks_token_untimed(workspace, profile, allow_reauth=False)
@@ -364,7 +367,9 @@ def _refresh_locked(key: str, identity: dict) -> int:
     try:
         token = _refresh_token(workspace, identity)
         probe = probe_unity_gateway_capabilities(workspace, token)
-        services, reason = list_model_service_entries(workspace, token)
+        # Only a complete walk is cached: a mid-pagination blip returns a partial
+        # listing with reason None, and a truncated one would serve for a full day.
+        services, reason = list_model_service_entries(workspace, token, complete_only=True)
         if not probe.resource_available or not services or reason is not None:
             # Never leave a failed or empty lookups result behind to serve later.
             _invalidate(key, seen)

@@ -21,6 +21,7 @@ from ucode import cli as cli_mod
 from ucode import config_io
 from ucode import databricks as db_mod
 from ucode import launch_cache as lc
+from ucode.os_compatibility import file_lock_cross_os as file_lock_mod
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
@@ -225,9 +226,12 @@ class TestEntry:
             _identity(workspace="https://other.databricks.com"),
             {},
         )
+        lock = lc._cache_dir() / f"{_key()}.lock"
+        lock.touch()
         lc.clear_cache()
         assert lc.load_entry(_key()) is None
         assert not _entries()
+        assert not lock.exists()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
     def test_cache_dir_and_entries_are_private(self):
@@ -267,9 +271,18 @@ class TestPrime:
 
 class TestConfigureIsolation:
     @staticmethod
-    def _run(monkeypatch, *, use_launch_cache, hit=False):
+    def _run(monkeypatch, *, use_launch_cache, hit=False, login_during_fetch=False):
         monkeypatch.setenv("DATABRICKS_BEARER", "bearer")
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a, **_k: "token")
+        if login_during_fetch:
+            # A login inside the token fetch clears the on-disk cache, as
+            # `run_databricks_login` does.
+            def token_with_login(*_a, **_k):
+                lc.clear_cache()
+                return "token"
+
+            monkeypatch.setattr(cli_mod, "get_databricks_token", token_with_login)
+        else:
+            monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a, **_k: "token")
         if hit:
             # A hit must serve the probe and the discovery from the primed in-process
             # caches; any workspace request means the cache failed to serve.
@@ -348,9 +361,31 @@ class TestConfigureIsolation:
         db_mod.clear_gateway_probe_cache()
         db_mod.clear_model_services_cache()
         state, reads, writes = self._run(monkeypatch, use_launch_cache=True, hit=True)
-        assert reads == [key]
+        # The pre-fetch read and the post-fetch re-read (which would drop the entry
+        # if the fetch had re-logged in) both land on the same key.
+        assert reads == [key, key]
         assert writes == []
         assert state["claude_models"] == {"sonnet": "system.ai.claude-sonnet-5"}
+
+    def test_a_login_during_the_token_fetch_drops_the_primed_entry(self, monkeypatch):
+        key = _key(workspace_id="")
+        _store(
+            key,
+            {"probe": lc.probe_payload(PROBE), "model_services": lc.services_payload(SERVICES)},
+            checked_at=time.time(),
+            identity=_identity(workspace_id=""),
+        )
+        db_mod.clear_gateway_probe_cache()
+        db_mod.clear_model_services_cache()
+        prime = MagicMock()
+        monkeypatch.setattr(cli_mod, "prime_from_entry", prime)
+        _state, reads, _writes = self._run(
+            monkeypatch, use_launch_cache=True, login_during_fetch=True
+        )
+        # The re-read after the fetch found the login-cleared cache, so the pre-login
+        # entry was never primed.
+        prime.assert_not_called()
+        assert len(reads) == 2  # the pre-fetch read and the post-login re-read
 
 
 class TestRefresher:
@@ -383,11 +418,9 @@ class TestRefresher:
 
     def test_failed_refresh_invalidates_instead_of_serving(self, monkeypatch):
         self._patch_lookups(monkeypatch)
-
-        def failing_probe(*_a, **_k):
-            raise RuntimeError("gateway unavailable")
-
-        monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", failing_probe)
+        # A probe that reports, rather than raises: the non-raising invalidation branch.
+        unavailable = db_mod.GatewayProbe(False, "HTTP 503", False)
+        monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", lambda *_a, **_k: unavailable)
         key = _key()
         _store(
             key,
@@ -409,8 +442,10 @@ class TestRefresher:
             **identity,
             "config_fingerprint": {"path": "other", "exists": True, "sha256": "z"},
         }
+        _store(lc.cache_key(changed), {}, identity=changed)
         assert lc.main(refresh_args(identity=changed)) == 1
-        assert lc.load_entry(lc.cache_key(changed)) is None
+        # The stale-identity refresher neither serves nor rewrites the old identity's entry.
+        assert lc.load_entry(lc.cache_key(changed), changed) is not None
 
     def test_refresh_never_reauths(self, monkeypatch):
         self._patch_lookups(monkeypatch)
@@ -536,11 +571,20 @@ class TestRefresher:
         lock_path = lc._cache_dir() / f"{key}.lock"
         with lock_path.open("a+b") as lock_file:
             acquire_exclusive_file_lock(lock_file)
+            attempted = threading.Event()
+            real_acquire = file_lock_mod.acquire_exclusive_file_lock
+
+            def acquire(lock_file_, *, timeout=None):
+                attempted.set()
+                real_acquire(lock_file_, timeout=timeout)
+
+            monkeypatch.setattr(file_lock_mod, "acquire_exclusive_file_lock", acquire)
             done: list = []
             thread = threading.Thread(target=lambda: done.append(lc.main(refresh_args())))
             thread.start()
-            time.sleep(0.3)
-            assert not done  # still waiting for the key's lock
+            # The refresher reached the key's blocked acquire, so this proves the wait.
+            assert attempted.wait(timeout=5)
+            assert not done
             release_file_lock(lock_file)
         thread.join(timeout=10)
         assert done == [0]

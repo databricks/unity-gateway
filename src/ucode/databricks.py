@@ -2815,6 +2815,7 @@ def list_model_service_entries(
     page_size: int = _MODEL_SERVICES_PAGE_SIZE,
     max_pages: int = 100,
     use_cache: bool = True,
+    complete_only: bool = False,
 ) -> tuple[list[ModelServiceEntry], str | None]:
     """List model services in ``parent_schema`` (``system.ai`` by default) via the UC API.
 
@@ -2827,8 +2828,15 @@ def list_model_service_entries(
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     requested schema's subset.
 
-    Successful default-schema results are memoized per workspace for the life of the process;
-    pass ``use_cache=False`` to force a fresh walk. Other schemas bypass that cache.
+    A walk stopped early by an HTTP or network blip still returns what it collected
+    with reason None, so callers keep today's best-effort behavior; only the memo and
+    ``complete_only`` callers tell it apart. ``complete_only`` reports such a walk as
+    a failure (the partial entries come back with a reason), so callers that would
+    persist the listing never cache a truncated one.
+
+    Successful default-schema results are memoized per workspace for the life of the process,
+    but only complete walks; pass ``use_cache=False`` to force a fresh walk. Other schemas
+    bypass that cache.
     """
     parent = (
         f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
@@ -2844,6 +2852,7 @@ def list_model_service_entries(
     page_token: str | None = None
     seen_tokens: set[str] = set()
     last_reason: str | None = None
+    complete = False
     for _ in range(max_pages):
         params: dict[str, str] = {
             "parent": parent,
@@ -2869,14 +2878,18 @@ def list_model_service_entries(
         page_token = data.get("next_page_token") or None
         if not page_token:
             last_reason = None
+            complete = True
             break
         if page_token in seen_tokens:
             break
         seen_tokens.add(page_token)
 
     listed = [entries[model_id] for model_id in sorted(entries)]
+    if complete_only and not complete:
+        # A caller that would persist the listing must not take a truncated walk.
+        return listed, last_reason or "model-services listing stopped early"
     if listed:
-        if use_cache:
+        if complete and use_cache:
             _MODEL_SERVICES_CACHE[workspace] = list(listed)
         return listed, None
     return [], last_reason or "model-services listing returned no models"
