@@ -1,6 +1,9 @@
 """Reject false positives in the native desktop skill/MCP evidence checks."""
 
 import copy
+import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,17 +15,16 @@ from tests.integration.utils.codex_desktop import (
     assert_skill_mcp_turn,
     write_search_skill,
 )
+from tests.integration.utils.harness import UserSession
 
 QUERY = "Databricks Unity Catalog documentation a13b42"
 MARKER = "b39c21"
 MODEL = "system.ai.gpt-5-6-sol"
 
 
-@pytest.mark.parametrize("failure", [None, "login", "identity"])
-def test_cli_login_removes_bypasses_and_cleans_up_after_successful_login(tmp_path, failure):
+@pytest.mark.parametrize("failure", [None, "configure", "identity"])
+def test_token_profile_removes_bypasses_and_stops_on_failure(tmp_path, failure):
     calls = []
-    finalizers = []
-    request = SimpleNamespace(addfinalizer=finalizers.append)
     session = SimpleNamespace(
         env={
             "HOME": str(tmp_path),
@@ -36,30 +38,46 @@ def test_cli_login_removes_bypasses_and_cleans_up_after_successful_login(tmp_pat
     def run(*args, **kwargs):
         assert session.env == {"HOME": str(tmp_path)}
         assert kwargs["binary"] == tmp_path / "databricks"
+        assert "ci-token" not in args
         calls.append(args)
-        if args[:2] == ("auth", "login"):
-            assert kwargs["timeout"] == 150
-            assert args[-2:] == ("--timeout", "2m")
-            if failure == "login":
-                raise AssertionError("OAuth login failed")
-        elif args[:2] == ("current-user", "me") and failure == "identity":
+        if args[0] == "configure":
+            assert kwargs["input_text"] == "ci-token\n"
+            if failure == "configure":
+                raise AssertionError("Profile setup failed")
+        elif failure == "identity":
             raise AssertionError("Identity verification failed")
 
     session.run = run
     if failure:
         with pytest.raises(AssertionError, match="failed"):
-            codex_desktop.login_databricks_cli(session, "https://workspace.example", request)
+            codex_desktop.configure_databricks_token_profile(session, "https://workspace.example")
     else:
-        profile = codex_desktop.login_databricks_cli(session, "https://workspace.example", request)
-        assert calls[0][2:6] == ("--host", "https://workspace.example", "--profile", profile)
-        assert calls[1] == ("current-user", "me", "--profile", profile)
-    if failure == "login":
-        assert len(calls) == 1
-        assert not finalizers
-    else:
-        assert len(finalizers) == 1
-        finalizers[0]()
-        assert calls[-1] == ("auth", "logout", "--profile", calls[0][5])
+        profile = codex_desktop.configure_databricks_token_profile(
+            session, "https://workspace.example"
+        )
+        assert calls == [
+            ("configure", "--host", "https://workspace.example", "--profile", profile),
+            ("current-user", "me", "--profile", profile),
+        ]
+    assert len(calls) == (1 if failure == "configure" else 2)
+
+
+def test_token_profile_credential_is_redacted_after_removing_session_bearer(tmp_path, monkeypatch):
+    token = "inert-ci-oauth-token"
+    monkeypatch.setenv("DATABRICKS_BEARER", token)
+    root, project = tmp_path / "session", tmp_path / "project"
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    assert "DATABRICKS_BEARER" not in session.env
+    result = session.run(
+        "-c",
+        "import sys; token = sys.stdin.read(); print(token); print(token, file=sys.stderr)",
+        input_text=token + "\n",
+    )
+    evidence = (session.artifacts / "command-1.json").read_text()
+    assert token not in evidence
+    assert json.loads(evidence)["stdin"] == "<redacted>\n"
+    assert result.stdout.strip() == result.stderr.strip() == "<redacted>"
 
 
 @pytest.mark.parametrize("state", ["ready", "recovers", "fails"])

@@ -7,8 +7,8 @@ from utils.codex_desktop import (
     MCP_SERVICE,
     SKILL_NAME,
     assert_desktop_skill_mcp_session,
+    configure_databricks_token_profile,
     finish_windows_readiness_check,
-    login_databricks_cli,
     wait_for_skill_answer,
     wait_for_submitted_prompt,
     wait_for_windows_sandbox,
@@ -98,11 +98,12 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)
 
 
-def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace, request):
-    """Scenario: log in to Databricks, add web_search, and invoke a skill in the desktop GUI.
+def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
+    """Scenario: use an authenticated profile, add web_search, and invoke a skill in the desktop GUI.
 
-    Expected: CLI OAuth login and current-user verification succeed before configuration or MCP
-    registration, with no bearer override. The skill's reference supplies the hidden query and token.
+    Expected: the existing CI credential is saved through the CLI and its identity verified before
+    configure/add. The app and MCP use that token profile with no inherited bearer override.
+    Browser OAuth and refresh are not covered. The skill reference supplies the hidden query and token.
     The app displays that token and its Databricks-backed completed turn records successful
     native MCP web_search receipts with the exact query on the managed model. User onboarding,
     Windows sandbox setup and Send use visible controls; the rollout must record the prompt
@@ -113,7 +114,7 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace, reque
     browser sign-in and built-in web search are outside this journey.
     """
     session = live_session
-    profile = login_databricks_cli(session, workspace, request)
+    profile = configure_databricks_token_profile(session, workspace)
     marker = fresh_id()
     query = f"Databricks Unity Catalog documentation {fresh_id()}"
     write_search_skill(session.home, query, marker)
@@ -126,6 +127,7 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace, reque
         workspace,
         "--profile",
         profile,
+        "--use-pat",
         "--skip-upgrade",
         timeout=240,
     )

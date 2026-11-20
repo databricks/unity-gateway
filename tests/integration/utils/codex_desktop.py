@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 
 from .agents.codex import completed_task_models
-from .evidence import agent_sessions, fresh_id
+from .evidence import agent_sessions
 
 MCP_SERVICE = "system.ai.web_search"
 MCP_SERVER = "system-ai-web_search"
@@ -13,28 +13,24 @@ SKILL_NAME = "ug-desktop-search"
 SEARCH_APPROVAL = f'Allow the {MCP_SERVER} MCP server to run tool "web_search"?'
 
 
-def login_databricks_cli(session, workspace: str, request) -> str:
-    """Establish the user's CLI login before configuring the app or adding MCPs."""
+def configure_databricks_token_profile(session, workspace: str) -> str:
+    """Reuse the suite's credential through the saved-token path used by desktop connectors."""
+    token = session.env.pop("DATABRICKS_BEARER").strip()
+    assert token, "The desktop profile requires the existing integration bearer"
     # Use the default profile location so MCP startup needs no forwarded auth environment.
-    for name in ("DATABRICKS_BEARER", "DATABRICKS_BEARER_COMMAND", "DATABRICKS_CONFIG_FILE"):
+    for name in ("DATABRICKS_BEARER_COMMAND", "DATABRICKS_CONFIG_FILE"):
         session.env.pop(name, None)
-    profile = f"codex-desktop-{fresh_id()}"
+    profile = "codex-desktop-ci"
     cli = session.which("databricks")
     session.run(
-        "auth",
-        "login",
+        "configure",
         "--host",
         workspace,
         "--profile",
         profile,
-        "--timeout",
-        "2m",
         binary=cli,
-        timeout=150,
-    )
-    # Logout also removes credentials kept in the OS keyring, outside the disposable home.
-    request.addfinalizer(
-        lambda: session.run("auth", "logout", "--profile", profile, binary=cli, timeout=30)
+        input_text=token + "\n",
+        timeout=30,
     )
     session.run("current-user", "me", "--profile", profile, binary=cli, timeout=30)
     return profile
