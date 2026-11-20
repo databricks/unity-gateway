@@ -47,6 +47,13 @@ def prioritize_gpt_models(models: list[str]) -> list[str]:
     return list(dict.fromkeys([*(model for model in models if _GPT_RE.search(model)), *models]))
 
 
+def codex_route_options(available_models: list[str]) -> list[tuple[str, str]]:
+    models = list(dict.fromkeys(available_models))
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "codex")
+
+
 def request_routing_decision(
     workspace: str,
     token: str,
@@ -59,10 +66,7 @@ def request_routing_decision(
     provider: str | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
-    models = list(dict.fromkeys(available_models))
-    if len(models) > routing.MAX_ROUTE_OPTIONS:
-        models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
-    route_options = routing.route_options_for(models, "codex")
+    route_options = codex_route_options(available_models)
     if not route_options:
         return None, "no cached model services are available"
     if attribution_headers is None:
