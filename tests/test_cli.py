@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
-from ucode import agents
+from ucode import agents, tls
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
@@ -349,6 +349,13 @@ class TestProjectScripts:
 
 
 class TestUpgrade:
+    # What `tls.uv_environment()` hands uv; its contents are covered in test_tls.py.
+    _UV_ENV = {"UV_SYSTEM_CERTS": "1"}
+
+    @pytest.fixture(autouse=True)
+    def _uv_environment(self, monkeypatch):
+        monkeypatch.setattr(tls, "uv_environment", lambda: self._UV_ENV)
+
     @staticmethod
     def _ok() -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 0, stdout="", stderr="")
@@ -373,6 +380,7 @@ class TestUpgrade:
         assert run.call_args_list == [
             call(
                 ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+                env=self._UV_ENV,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -409,12 +417,13 @@ class TestUpgrade:
         assert run.call_args_list == [
             call(
                 ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+                env=self._UV_ENV,
                 check=False,
                 capture_output=True,
                 text=True,
             ),
             call(["uv", "tool", "uninstall", "ucode"], check=True),
-            call(["uv", "tool", "install", "--force", git_url], check=True),
+            call(["uv", "tool", "install", "--force", git_url], env=self._UV_ENV, check=True),
             call(
                 ["/tools/ug", "--help"],
                 check=False,
@@ -447,6 +456,7 @@ class TestUpgrade:
                 "--reinstall",
                 self._requirement("unity-gateway"),
             ],
+            env=self._UV_ENV,
             check=False,
             capture_output=True,
             text=True,
@@ -466,6 +476,7 @@ class TestUpgrade:
         assert result.exit_code == 1
         run.assert_called_once_with(
             ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+            env=self._UV_ENV,
             check=False,
             capture_output=True,
             text=True,
@@ -897,6 +908,8 @@ class TestSubcommandRouting:
         [
             (["codex", "--", "fix the parser"], ["fix the parser"], True),
             (["codex", "--"], [], True),
+            (["codex", "--", "--help"], ["--help"], False),
+            (["codex", "--", "--model=gpt-6.2-astra"], ["--model=gpt-6.2-astra"], False),
             (["claude", "--", "doctor"], ["doctor"], True),
             (
                 ["codex", "--model", "gpt-5.6-sol", "--", "fix the parser"],
@@ -1119,7 +1132,7 @@ class TestSubcommandRouting:
         self, monkeypatch, tool, launch_args, launch_env, expected_version, routed_tools
     ):
         monkeypatch.setattr(
-            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
         )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
@@ -1183,9 +1196,24 @@ class TestSubcommandRouting:
             assert result.exit_code == 0, result.output
             assert observed == [enabled, False]
 
-    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
-    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
-    def test_codex_routing_version_requires_upgrade_or_explicit_disable(
+    @pytest.mark.parametrize(
+        "installed_version", ["0.156.0", "0.164.0", "0.170.0", "0.171.0-alpha.12"]
+    )
+    @pytest.mark.parametrize(
+        "recovery",
+        [
+            "decline",
+            "upgrade",
+            "disable",
+            "managed-default",
+            "managed-upgrade",
+            "managed-failed",
+            "managed-still-old",
+            "managed-eof",
+            "managed-auto-failed",
+        ],
+    )
+    def test_codex_routing_upgrade_preserves_managed_fallback(
         self, tmp_path, monkeypatch, installed_version, recovery
     ):
         codex = cli_mod.codex_agent
@@ -1196,8 +1224,12 @@ class TestSubcommandRouting:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
         monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kwargs: version)
         monkeypatch.setattr(codex, "_launch_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: plain.append(argv))
-        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "0")
+        monkeypatch.setattr(
+            codex, "exec_or_spawn", lambda argv: plain.append((argv, _routing_env()))
+        )
+        monkeypatch.setenv(
+            agents.AUTO_UPGRADE_AGENT_ENV, "1" if recovery == "managed-auto-failed" else "0"
+        )
         monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/tools/{binary}")
 
         def update(argv, **_kwargs):
@@ -1206,7 +1238,10 @@ class TestSubcommandRouting:
                 return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
             assert argv == ["codex", "update"]
             updates.append(argv)
-            version = "0.164.0"
+            if recovery in {"managed-failed", "managed-eof", "managed-auto-failed"}:
+                raise subprocess.CalledProcessError(1, argv)
+            if recovery != "managed-still-old":
+                version = "0.171.0"
             return subprocess.CompletedProcess(argv, 0)
 
         def launch_native(*_args, **_kwargs):
@@ -1220,16 +1255,24 @@ class TestSubcommandRouting:
         launch = cli_mod.launch_agent
         # An explicit version keeps Codex routed (managed config is then ignored). The
         # managed-default case leaves the selector unset: the shared preset applies.
-        if recovery == "managed-default":
+        if recovery.startswith("managed"):
             monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         env_before = _routing_env()
+        confirm_upgrade = agents.prompt_yes_no_default
+
+        def answer_upgrade(prompt, *, default):
+            if recovery == "managed-eof":
+                return confirm_upgrade(prompt, default=default)
+            return recovery not in {"decline", "managed-default"}
+
         with (
             _launch_policy_patches(managed) as calls,
             patch(
-                "ucode.agents.prompt_yes_no_default", return_value=recovery == "upgrade"
+                "ucode.agents.prompt_yes_no_default",
+                side_effect=answer_upgrade,
             ) as prompt,
         ):
             calls["launch"].side_effect = launch
@@ -1237,14 +1280,21 @@ class TestSubcommandRouting:
             result = runner.invoke(app, args)
 
         assert result.exit_code == (1 if recovery == "decline" else 0), result.output
-        assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery in {"disable", "managed-default"})
-        assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
-        if recovery in {"decline", "managed-default"}:
+        assert routed == (["0.171.0"] if recovery in {"upgrade", "managed-upgrade"} else [])
+        managed_fallback = recovery.startswith("managed") and recovery != "managed-upgrade"
+        assert bool(plain) == (managed_fallback or recovery == "disable")
+        assert updates == (
+            [] if recovery in {"decline", "disable", "managed-default"} else [["codex", "update"]]
+        )
+        assert prompt.call_count == (0 if recovery in {"disable", "managed-auto-failed"} else 1)
+        if managed_fallback or recovery == "decline":
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
             assert "--disable-smart-routing" in output
+            assert ("Running without smart routing." in output) is managed_fallback
+        if managed_fallback:
+            assert {key: plain[0][1][key] for key in ROUTING_OFF} == dict.fromkeys(ROUTING_OFF)
+            assert version == installed_version
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(
@@ -1301,7 +1351,7 @@ class TestSubcommandRouting:
         self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
     ):
         monkeypatch.setattr(
-            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
         )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
@@ -1333,35 +1383,90 @@ class TestSubcommandRouting:
         assert any("one-time hook review" in note for note in notes) is routed
 
     @pytest.mark.parametrize(
+        "tool,model",
+        [("claude", "claude-opus-5-5"), ("codex", "gpt-6.2-astra")],
+    )
+    @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),
         [
-            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0, [], True),
             (None, [], True),
-            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.SUBAGENT_ORCH_V0, ["--disable-smart-routing"], False),
+            (None, ["--enable-smart-routing"], True),
             (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
         ],
-        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
+        ids=["subagent-version", "managed", "disable-flag", "enable-flag", "first-prompt-version"],
     )
     def test_forwarded_model_keeps_subagent_routing(
-        self, monkeypatch, version, launch_args, routed
+        self, monkeypatch, tool, model, version, launch_args, routed
     ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
+        )
         managed = None
         if version is None:
-            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+            if not launch_args:
+                managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         observed = []
-
         with _launch_policy_patches(managed) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
                 options.launch_smart_routing
             )
-            result = runner.invoke(
-                app, ["claude", *launch_args, "--", "--model", "system.ai.claude-opus-5-5"]
-            )
+            result = runner.invoke(app, [tool, *launch_args, "--", "--model", model])
 
         assert result.exit_code == 0, result.output
         assert observed == [routed]
+
+    @pytest.mark.parametrize(
+        "native_args",
+        [
+            ["--help"],
+            ["-h"],
+            ["--version"],
+            ["-V"],
+            ["--remote", "ws://127.0.0.1:1"],
+            ["--remote=ws://127.0.0.1:1"],
+            ["--model", "gpt-6.2-astra", "--help"],
+        ],
+    )
+    def test_codex_utility_options_do_not_enable_routing(self, monkeypatch, native_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", "--", *native_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+
+    @pytest.mark.parametrize("subcommand", ["exec", "review", "app"])
+    def test_codex_model_before_subcommand_does_not_enable_routing(self, monkeypatch, subcommand):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.redirect_output_to_stderr"),
+        ):
+            result = runner.invoke(app, ["codex", "--", "--model", "gpt-6.2-astra", subcommand])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+
+    @pytest.mark.parametrize(
+        "launch_args",
+        [
+            ["-c", "developer_instructions=isaac guidance"],
+            ["--", "-c", "developer_instructions=isaac guidance"],
+            ["--", "--config=developer_instructions=isaac guidance", "--search"],
+        ],
+        ids=["isaac-config", "forwarded-config", "config-and-search"],
+    )
+    def test_codex_native_options_keep_subagent_routing(self, monkeypatch, launch_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
 
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
@@ -5806,7 +5911,12 @@ class TestConfigureAgentsSelection:
     def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
         state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
-        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        names, reason = services
+        monkeypatch.setattr(
+            cli_mod,
+            "tool_provider_service_choices",
+            lambda *a: ([(name, name) for name in names], reason),
+        )
         saved: list[dict] = []
         monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
         asked: list[list[str]] = []
@@ -5898,6 +6008,27 @@ class TestConfigureAgentsSelection:
         result = cli_mod._maybe_select_provider_service("claude", state)
         assert cli_mod.get_model_location(result, "claude") is None
         assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_shows_service_labels(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "copilot", services=([], None), answers=[]
+        )
+        label = "a.b.seats (GitHub Copilot subscription)"
+        monkeypatch.setattr(
+            cli_mod, "tool_provider_service_choices", lambda *a: ([("a.b.seats", label)], None)
+        )
+        shown: list[list[tuple[str, str]]] = []
+        replies = iter(["mps", "a.b.seats"])
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_selection",
+            lambda prompt, options: shown.append(list(options)) or next(replies),
+        )
+
+        result = cli_mod._maybe_select_provider_service("copilot", state)
+
+        assert shown[1] == [("a.b.seats", label)]
+        assert cli_mod.get_provider_service(result, "copilot") == "a.b.seats"
 
     def test_picker_gemini_has_no_custom_location(self, monkeypatch):
         state, _saved, asked = self._picker(
@@ -10091,6 +10222,92 @@ class TestHeadlessConfigureModelSource:
         assert cli_mod.get_provider_service(saved[-1], "claude") == "main.default.new"
         assert cli_mod.get_provider_service(saved[-1], "codex") == "main.default.old"
 
+    SEAT_MPS = "main.default.copilot_seats"
+
+    def _stub_copilot_service(self, monkeypatch, service, error=None):
+        agent = cli_mod.copilot_agent
+        monkeypatch.setattr(agent, "launch_token", lambda *a, **k: "dbx-token")
+        monkeypatch.setattr(
+            agent,
+            "resolve_provider_service",
+            lambda tool, name, workspace, token: (None, error) if error else (service, None),
+        )
+        monkeypatch.setattr(
+            agent,
+            "list_provider_service_models",
+            lambda *a: pytest.fail("a seat relay doesn't list the service's models"),
+        )
+
+    SEAT_SERVICE = {
+        "provider_type": "github_copilot",
+        "relayed": True,
+        "allow_all_targets": True,
+        "targets": [],
+    }
+
+    @pytest.mark.parametrize("flag", ["--agent", "--agents"])
+    def test_seat_relay_provider_configures_copilot_without_its_catalog(self, monkeypatch, flag):
+        self._stub_copilot_service(monkeypatch, self.SEAT_SERVICE)
+        if flag == "--agent":
+            state, saved, configure = self._base_patches(monkeypatch, "copilot")
+        else:
+            state = {**MINIMAL_STATE, "available_tools": []}
+            saved, calls = self._agents_patches(monkeypatch, state)
+
+        result = self._invoke(flag, "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code == 0, result.output
+        assert cli_mod.get_provider_service(saved[-1], "copilot") == self.SEAT_MPS
+        if flag == "--agent":
+            configure.assert_called_once_with(
+                "copilot", state, parent_schema=None, provider=self.SEAT_MPS, with_vscode=True
+            )
+        else:
+            assert calls[0]["providers"] == {"copilot": self.SEAT_MPS}
+
+    @pytest.mark.parametrize("flag", ["--agent", "--agents"])
+    def test_unusable_seat_relay_provider_fails_before_configuring(self, monkeypatch, flag):
+        reason = "this version of ug can't route GitHub Copilot through yet"
+        self._stub_copilot_service(monkeypatch, None, error=reason)
+        if flag == "--agent":
+            _state, saved, configure = self._base_patches(monkeypatch, "copilot")
+        else:
+            saved, calls = self._agents_patches(monkeypatch, {**MINIMAL_STATE})
+
+        result = self._invoke(flag, "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code != 0
+        assert reason in " ".join(_strip_ansi(result.output).split())
+        assert not any(cli_mod.get_provider_service(s, "copilot") for s in saved)
+        if flag == "--agent":
+            configure.assert_not_called()
+        else:
+            assert calls == []
+
+    def test_a_failed_seat_relay_lookup_is_reported_not_taken_for_another_service(
+        self, monkeypatch
+    ):
+        agent = cli_mod.copilot_agent
+        monkeypatch.setattr(agent, "launch_token", lambda *a, **k: "dbx-token")
+        answers = [
+            (None, "Model provider service 'x' was not found. (HTTP 503 Service Unavailable)"),
+            (self.SEAT_SERVICE, None),
+        ]
+        monkeypatch.setattr(agent, "resolve_provider_service", lambda *a: answers.pop(0))
+        monkeypatch.setattr(
+            agent,
+            "provider_service_catalog",
+            lambda *a, **k: pytest.fail("a failed lookup isn't a service with a model catalog"),
+        )
+        _state, saved, configure = self._base_patches(monkeypatch, "copilot")
+
+        result = self._invoke("--agent", "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code != 0
+        assert "HTTP 503" in " ".join(_strip_ansi(result.output).split())
+        configure.assert_not_called()
+        assert not any(cli_mod.get_provider_service(s, "copilot") for s in saved)
+
 
 class TestLaunchWithManagedFilePicker:
     PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
@@ -10337,3 +10554,117 @@ class TestAutoCleanupLifecycle:
         assert json.loads(native.read_text()) == expected
         assert not state_mod.load_state()
         assert state_mod.CLAUDE_AUTO_REVERT_TARGETS_KEY not in state_mod.load_full_state()
+
+
+class TestCopilotSeatRuntime:
+    def _run(self, monkeypatch, state, args):
+        seen: dict = {}
+        pinned: list = []
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(
+            cli_mod, "pin", lambda host, workspace_id: pinned.append((host, workspace_id))
+        )
+
+        def run(state_arg, provider, runtime, runtime_args):
+            print("not for VS Code")
+            seen.update(provider=provider, runtime=runtime, args=runtime_args)
+            return 7
+
+        monkeypatch.setattr(cli_mod.copilot_agent, "run_seat_runtime", run)
+        result = CliRunner().invoke(cli_mod.app, args)
+        return result, seen, pinned
+
+    def test_runs_the_runtime_with_vscodes_arguments(self, monkeypatch):
+        result, seen, pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://ws.example"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "main.ai.seats",
+                "--host",
+                "https://ws.example",
+                "--workspace-id",
+                "42",
+                "--runtime",
+                "/vscode/copilot-runtime",
+                "--",
+                "--stdio",
+                "--log-level",
+                "info",
+            ],
+        )
+
+        assert result.exit_code == 7
+        assert seen == {
+            "provider": "main.ai.seats",
+            "runtime": "/vscode/copilot-runtime",
+            "args": ["--stdio", "--log-level", "info"],
+        }
+        assert pinned == [("https://ws.example", "42")]
+        # The runtime owns stdout.
+        assert "not for VS Code" not in result.stdout
+
+    def test_needs_a_configured_workspace(self, monkeypatch):
+        result, seen, _pinned = self._run(
+            monkeypatch,
+            {},
+            ["copilot-seat-runtime", "--provider", "p", "--host", "h", "--runtime", "/r", "--"],
+        )
+
+        assert result.exit_code == 1
+        assert seen == {}
+
+    @pytest.mark.parametrize(
+        ("state", "args"),
+        [
+            ({"workspace": "https://b.example"}, []),
+            ({"workspace": "https://a.example", "profile": "b"}, ["--profile", "a"]),
+            ({"workspace": "https://a.example", "profile": "b"}, []),
+            ({"workspace": "https://a.example"}, ["--profile", "a"]),
+        ],
+        ids=["other-workspace", "other-profile", "profile-added", "profile-dropped"],
+    )
+    def test_refuses_to_run_once_ug_moved_to_another_workspace_or_profile(
+        self, monkeypatch, state, args
+    ):
+        result, seen, pinned = self._run(
+            monkeypatch,
+            state,
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://a.example",
+                *args,
+                "--runtime",
+                "/r",
+                "--",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert seen == {} and pinned == []
+        assert "ug configure --agents copilot" in result.stderr
+
+    def test_accepts_the_same_workspace_and_profile(self, monkeypatch):
+        result, seen, _pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://a.example/", "profile": "a"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://a.example",
+                "--profile",
+                "a",
+                "--runtime",
+                "/r",
+                "--",
+            ],
+        )
+
+        assert result.exit_code == 7
+        assert seen["provider"] == "p"

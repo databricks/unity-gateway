@@ -22,6 +22,10 @@ ug --version
 ug --help
 ```
 
+Behind a TLS-inspection proxy, add `--system-certs` (`--native-tls` on older uv) so uv trusts the
+operating system's certificates; see
+[TLS certificates behind an inspection proxy](#tls-certificates-behind-an-inspection-proxy).
+
 `--version` reports installed package metadata without loading the CLI. Use
 `ug --help` (or `ucode --help`) to verify that the CLI's startup imports work;
 version output alone is not an installation health check. Help does not validate
@@ -66,9 +70,9 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
-Codex smart routing now requires 0.164.0, including existing managed-enabled
+Codex smart routing now requires 0.171.0, including existing managed-enabled
 workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
-for upgrading or launching with `--disable-smart-routing`.
+for upgrade offers and automatic fallback when managed routing is unavailable.
 
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
@@ -285,6 +289,40 @@ omitting the flag keeps the saved choice). An explicit `ug configure` then also 
 `WebSearch` deny from the OS-managed settings unless your admin settings request it, and `ug revert`
 restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
 Relayed launches are unaffected.
+
+### TLS certificates behind an inspection proxy
+
+`ug`'s own HTTPS requests verify servers against the operating system's trust store (Keychain on
+macOS, the certificate store on Windows, the system CA bundle on Linux). That is where an
+enterprise TLS-inspection proxy's root certificate is installed, so `ug` trusts what curl and your
+browser trust. To use Python's own certificate chain instead:
+
+```bash
+ug configure --tls-trust-store python   # saved as tls_trust_store in ~/.ucode/state.json
+UG_TLS_TRUST_STORE=python ug claude     # one command; overrides the saved choice
+```
+
+| Value | Certificates trusted |
+|-------|----------------------|
+| `os` (default) | The operating system's trust store |
+| `python` | Python's own chain. `SSL_CERT_FILE` / `SSL_CERT_DIR` add a CA bundle for most requests; the Databricks SDK and metrics upload use `requests`, which reads `REQUESTS_CA_BUNDLE` instead, so set both |
+
+`UG_TLS_TRUST_STORE` wins over the saved `tls_trust_store`, which wins over the default; an unknown
+value warns and is ignored. `--tls-trust-store os` switches back, and `ug revert` clears the saved
+choice. The setting covers every request `ug` and its helpers (`ug mcp-proxy`, tracing, usage
+reporting) make. A certificate verification error names the trust store in use and how to
+change it. On macOS and Windows the OS store also applies the platform's own TLS rules, so it can
+refuse a certificate that Python's chain accepts (macOS, for example, requires a server
+certificate to list the server-authentication usage); `python` is the way out.
+
+With `os` in effect, `ug upgrade` also has uv read the OS trust store (`UV_SYSTEM_CERTS=1`, and
+`UV_NATIVE_TLS=1` for older uv). The first install runs before `ug` exists, so behind an inspection
+proxy pass it yourself: `uv tool install --system-certs git+https://github.com/databricks/unity-gateway`
+(`--native-tls` on older uv).
+
+Agents and the Databricks CLI are separate programs with their own trust settings. An agent built
+on Node.js that uses Node's bundled roots reads the OS store with `NODE_USE_SYSTEM_CA=1`, or one
+extra bundle with `NODE_EXTRA_CA_CERTS`.
 
 ### Extra headers for one session
 
@@ -687,23 +725,24 @@ Routing-enabled responses are buffered until each model step completes.
 
 ### Codex smart-routing compatibility
 
-Smart routing now requires Codex 0.164.0
-or newer, including workspaces that already enable managed smart routing. Users on
-Codex 0.156–0.163 who previously launched successfully must upgrade or explicitly
-run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
-known older version and checks the result before launching. Declining, failing, or
-remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
-intentional requirement ensures native v2 provides readable delegated assignments;
-UG does not silently disable routing. A routed `ug codex app-server` cannot prompt,
-because its stdin carries the client's protocol, so on a known older Codex it warns
-on stderr and runs without smart routing instead. Ordinary launches require Codex 0.156.0
-and newer. The general integration CI baseline is 0.156.0; routing cases use
-0.165.0.
+Smart-routed terminal launches require Codex **0.171.0 or newer**. For earlier
+versions, including 0.171.0 prereleases, UG offers its usual upgrade prompt and
+checks the result before enabling routing. When routing comes from the workspace's
+managed default, declining or failing the upgrade warns and launches Codex without
+smart routing. An update that leaves Codex below the routing minimum takes the same
+fallback. Explicit routing requests remain blocked until the upgrade succeeds or
+the user passes `--disable-smart-routing`.
+`UG_AUTO_UPGRADE_AGENT=1` runs that upgrade without asking. The stable floor provides
+native delegation and status-line provider support. Ordinary launches retain the
+0.156.0 minimum; routing CI pins 0.171.0.
+
+A routed `ug codex app-server` cannot prompt because its stdin carries the client's
+protocol. On a known older Codex it warns on stderr and runs without smart routing.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
-version is still unknown, UG stops without offering or running an update and asks
-you to check `codex --version`. `--disable-smart-routing` also bypasses this routing
-version check.
+version is still unknown, managed routing warns and launches without routing;
+explicit routing requests stop and ask you to check `codex --version`. Neither case
+offers or runs an update. `--disable-smart-routing` also bypasses this routing version check.
 
 For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.non_code_mode_only` (set to `false`),
@@ -766,10 +805,10 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
-Managed smart routing launches Codex without routing when its installed version is too old
-or unavailable, or when it uses a ChatGPT subscription relay. These automatic fallbacks warn
-without prompting for an upgrade. Explicit routing requests still require a supported version
-and direct provider.
+Managed smart routing offers an upgrade when Codex is too old. If the upgrade is declined,
+fails, or leaves Codex too old, the same launch warns and continues without smart routing.
+An unknown version or a ChatGPT subscription relay also falls back, without an upgrade
+prompt. Explicit routing requests still require a supported version and direct provider.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 

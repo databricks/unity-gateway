@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -350,6 +351,253 @@ class TestConfigure:
         assert not vscode.configure(STATE)
 
         assert "--install-extension` failed: boom" in _printed(capsys)
+
+
+class TestSeatRelay:
+    SEATS = "main.ai.copilot_seats"
+    COMMAND = ["/bin/ug", "copilot-seat-runtime", "--provider", SEATS, "--host", WS]
+
+    @pytest.fixture
+    def runtime(self, tmp_path):
+        path = tmp_path / "vscode-app" / "copilot-runtime"
+        path.parent.mkdir()
+        path.write_text("")
+        return path
+
+    @pytest.fixture
+    def seats(self, monkeypatch, runtime):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.LINUX)
+        monkeypatch.setattr(vscode, "uses_seat_relay", lambda state, provider, tool: True)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr(vscode, "bundled_runtime", lambda code: runtime)
+
+    @staticmethod
+    def _settings() -> Path:
+        return vscode.user_dir(insiders=False) / "settings.json"
+
+    @staticmethod
+    def _wrapper() -> Path:
+        return Path(json.loads(TestSeatRelay._settings().read_text())[vscode.RUNTIME_PATH_SETTING])
+
+    @staticmethod
+    def _wrappers() -> list[Path]:
+        return list(vscode._wrapper_dir(insiders=False).glob("ug-copilot-runtime-*"))
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_routes_copilot_through_the_seat_relay_without_a_restart(
+        self, code, seats, runtime, capsys
+    ):
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config == {
+            "workspace": WS,
+            "authCommand": vscode.build_auth_shell_command(WS, "dev"),
+            "models": [],
+            "provider": self.SEATS,
+        }
+        settings = json.loads(self._settings().read_text())
+        assert settings == {vscode.RUNTIME_PATH_SETTING: str(self._wrapper())}
+        script = self._wrapper().read_text()
+        assert script.startswith("#!/bin/sh\nexec /bin/ug copilot-seat-runtime --provider ")
+        assert f'--profile dev --runtime {runtime} -- "$@"' in script
+        assert self._wrapper().stat().st_mode & 0o777 == 0o700
+        printed = _printed(capsys)
+        assert f"routing Copilot through {self.SEATS}" in printed
+        assert "No restart is needed" in printed
+        assert "Quit VS Code" not in printed
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_keeps_the_developers_settings_and_comments(self, code, seats):
+        self._settings().parent.mkdir(parents=True)
+        self._settings().write_text('{\n    // mine\n    "editor.tabSize": 2,\n}\n')
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        (wrapper,) = self._wrappers()
+        assert self._settings().read_text() == (
+            '{\n    // mine\n    "editor.tabSize": 2,\n'
+            f'    "{vscode.RUNTIME_PATH_SETTING}": "{wrapper}",\n}}\n'
+        )
+
+    def test_without_a_bundled_runtime_leaves_vscode_unchanged(
+        self, code, seats, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(vscode, "bundled_runtime", lambda code: None)
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config is None
+        assert not self._settings().exists()
+        assert "no bundled Copilot runtime" in _printed(capsys)
+
+    def test_a_settings_file_ug_cant_edit_is_reported(self, code, seats, capsys):
+        self._settings().parent.mkdir(parents=True)
+        self._settings().write_text("[]")
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        printed = _printed(capsys)
+        assert f"GitHub Copilot in VS Code doesn't go through {self.SEATS}" in printed
+        assert vscode.RUNTIME_PATH_SETTING in printed
+        assert self._settings().read_text() == "[]"
+
+    def test_a_failed_seat_relay_check_leaves_vscode_unchanged(self, code, monkeypatch, capsys):
+        def uses_seat_relay(state, provider, tool):
+            raise RuntimeError("DATABRICKS_BEARER_COMMAND failed.")
+
+        monkeypatch.setattr(vscode, "uses_seat_relay", uses_seat_relay)
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config is None
+        assert "VS Code was left unchanged" in _printed(capsys)
+
+    def test_windows_installs_without_the_route_and_says_so(self, code, seats, monkeypatch, capsys):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert not self._settings().exists()
+        assert "can't route GitHub Copilot through the seat relay yet" in _printed(capsys)
+
+    def test_another_source_removes_the_route(self, code, seats, monkeypatch):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        monkeypatch.setattr(vscode, "uses_seat_relay", lambda state, provider, tool: False)
+
+        assert vscode.configure(STATE)
+
+        assert json.loads(self._settings().read_text()) == {}
+        assert not self._wrappers()
+
+    def test_revert_removes_the_route_but_not_a_developers_own_runtime(self, code, seats):
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert vscode.revert() == "removed"
+
+        assert json.loads(self._settings().read_text()) == {}
+        assert not self._wrappers()
+
+        self._settings().write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"}))
+        vscode.revert()
+        assert json.loads(self._settings().read_text()) == {
+            vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"
+        }
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_a_developers_own_runtime_path_is_left_alone(self, code, seats):
+        self._settings().parent.mkdir(parents=True)
+        self._settings().write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"}))
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert json.loads(self._settings().read_text()) == {
+            vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"
+        }
+        assert not self._wrappers()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_a_changed_route_gets_a_new_wrapper_so_vscode_restarts_the_runtime(self, code, seats):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        (first,) = self._wrappers()
+
+        assert vscode.configure({**STATE, "profile": "other"}, provider=self.SEATS)
+
+        (second,) = self._wrappers()
+        assert second != first
+        assert json.loads(self._settings().read_text()) == {
+            vscode.RUNTIME_PATH_SETTING: str(second)
+        }
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_a_symlinked_settings_file_stays_a_link_with_its_permissions(
+        self, code, seats, tmp_path
+    ):
+        target = tmp_path / "dotfiles" / "settings.json"
+        target.parent.mkdir()
+        target.write_text('{\n    "editor.tabSize": 2\n}\n')
+        target.chmod(0o600)
+        self._settings().parent.mkdir(parents=True)
+        self._settings().symlink_to(target)
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert self._settings().is_symlink()
+        assert target.stat().st_mode & 0o777 == 0o600
+        assert json.loads(target.read_text())[vscode.RUNTIME_PATH_SETTING] == str(
+            self._wrappers()[0]
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_revert_keeps_the_wrapper_when_the_settings_cant_be_edited(self, code, seats):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        self._settings().write_text("[]")
+
+        vscode.revert()
+
+        assert self._wrappers()
+
+
+class TestBundledRuntime:
+    @pytest.mark.parametrize(
+        ("system", "machine", "layout", "target"),
+        [
+            (
+                "MACOS",
+                "arm64",
+                "Visual Studio Code.app/Contents/Resources/app",
+                "darwin-arm64",
+            ),
+            ("MACOS", "x86_64", "Visual Studio Code.app/Contents/Resources/app", "darwin-x64"),
+            ("LINUX", "x86_64", "code/resources/app", "linux-x64"),
+            ("LINUX", "aarch64", "code/resources/app", "linux-arm64"),
+        ],
+    )
+    def test_finds_the_runtime_next_to_the_code_command(
+        self, tmp_path, monkeypatch, system, machine, layout, target
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: getattr(vscode.OS, system))
+        monkeypatch.setattr(vscode.platform, "machine", lambda: machine)
+        app = tmp_path / layout
+        runtime = (
+            app
+            / "node_modules.asar.unpacked/@github"
+            / f"copilot-sdk-{target}/prebuilds/{target}/copilot-runtime"
+        )
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text("")
+        # Linux packages put `code` in <install>/bin; macOS in the app folder's bin.
+        bin_dir = app / "bin" if system == "MACOS" else tmp_path / "code" / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "code").write_text("")
+        link = tmp_path / "on-path" / "code"
+        link.parent.mkdir()
+        link.symlink_to(bin_dir / "code")
+
+        assert vscode.bundled_runtime(link) == runtime
+
+    def test_no_runtime_is_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.LINUX)
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "code").write_text("")
+
+        assert vscode.bundled_runtime(tmp_path / "bin" / "code") is None
+
+    def test_windows_has_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+
+        assert vscode.bundled_runtime(tmp_path / "code.cmd") is None
 
 
 class TestCopilotModels:
@@ -820,6 +1068,7 @@ def test_configure_saves_copilots_model_location_for_its_launches(monkeypatch, t
 def test_configure_saves_copilots_provider_for_its_launches(monkeypatch):
     state = {**STATE, "model_locations": {"copilot": "old.models"}}
     seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "uses_seat_relay", lambda *a, **k: False)
     monkeypatch.setattr(copilot, "provider_service_catalog", lambda *a, **k: ["a model"])
     saved: list[dict] = []
     monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(s))
@@ -845,6 +1094,7 @@ def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, sou
 
     state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
     seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "uses_seat_relay", lambda *a, **k: False)
     monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
     monkeypatch.setattr(copilot, "location_catalog", unusable)
 
@@ -916,6 +1166,7 @@ def test_single_agent_copilot_bad_source_is_not_configured(monkeypatch):
     def unusable(*args, **kwargs):
         raise RuntimeError("not usable")
 
+    monkeypatch.setattr(copilot, "uses_seat_relay", lambda *a, **k: False)
     monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
     monkeypatch.setattr(
         cli_mod, "configure_single_tool", lambda *a, **k: pytest.fail("copilot was configured")

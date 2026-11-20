@@ -40,6 +40,8 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     selected = [model for model in models if model["slug"] in CODEX_NATIVE_CATALOG_MODELS]
     assert {model["slug"] for model in selected} == set(CODEX_NATIVE_CATALOG_MODELS)
     assert all(model.get("multi_agent_version") == "v2" for model in selected)
+    for model in selected:
+        model["multi_agent_tools_in_code_mode"] = True
 
     codex_home = session.home / ".codex"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -70,13 +72,18 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     return catalog, config.read_bytes(), catalog.read_bytes()
 
 
-def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
-    """Scenario: configure ug with a user-owned native v2 catalog and observer hook,
-    then delegate one multiline file task with subagent-only routing.
+@pytest.mark.parametrize(
+    "model_option", [None, "--model", "--model="], ids=["saved", "split", "equals"]
+)
+def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, model_option):
+    """Scenario: configure ug with a user-owned native v2 catalog that exposes tools
+    in code mode and an observer hook, then delegate one multiline file task through
+    code mode with subagent-only routing. Launch with
+    the saved model or explicitly enable routing and forward either native model syntax.
 
     Expected: the native child and actual hook input contain the exact assignment,
     matched by the router decision's digest. One native child completes on the selected model; the parent stays on
-    its original model. Requests use the configured Databricks provider directly and
+    its selected model, overriding the saved model when explicitly supplied. Requests use the configured Databricks provider directly and
     preserve the user's config, without user-supplied feature flags. The observer sees
     the original task name; the spawned child carries the enabled attribution suffix.
     """
@@ -85,6 +92,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     assignment = task.prompt + '\nKeep this literal: café λ; "quotes", \\slashes, {braces}.'
     task_name = "ug_native_file"
     prompt = (
+        "Use code mode to call the native spawn_agent tool with a plaintext message; "
+        "do not call collaboration.spawn_agent directly. "
         f'Delegate to one native child with task_name "{task_name}". '
         "Set message to exactly the assignment between BEGIN and END, preserving the newline.\n"
         f"BEGIN\n{assignment}\nEND\n"
@@ -106,8 +115,19 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
 
     config = session.home / ".codex/config.toml"
     assert config.read_bytes() == original_config
+    start_model = CODEX_NATIVE_START_MODEL
+    launch_args = []
+    if model_option:
+        start_model = CODEX_NATIVE_CATALOG_MODELS[1]
+        model_args = (
+            [f"{model_option}{start_model}"]
+            if model_option.endswith("=")
+            else [model_option, start_model]
+        )
+        launch_args = ["--enable-smart-routing", "--", *model_args]
+    session.record("launch-model.json", {"model": start_model, "args": launch_args})
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "codex-native-v2-routing"
+        session, "codex", [str(session.binary), "codex", *launch_args], "codex-native-v2-routing"
     ) as tui:
         tui.boot()
         tui.submit(prompt)
@@ -166,6 +186,6 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     ]
     assert parent_contexts and child_contexts
     assert all(r.get("multi_agent_version") == "v2" for r in parent_contexts + child_contexts)
-    assert codex.completed_task_models(parent, task.value) == {CODEX_NATIVE_START_MODEL}
+    assert codex.completed_task_models(parent, task.value) == {start_model}
     assert_subagent_routed(session, "codex", task)
     session.record("codex-native-v2-pre-tool-use.json", [hook])

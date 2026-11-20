@@ -34,6 +34,7 @@ from ucode.state_file import (
     current_workspace_state,
     read_state_file,
 )
+from ucode.tls import TRUST_STORE_STATE_KEY
 from ucode.workspace import (
     activate_state,
     selector_headers,
@@ -382,9 +383,10 @@ def build_agent_state(state: dict) -> dict[str, dict]:
 
 
 def clear_state() -> None:
-    """Remove the current workspace entry and the config scope from state."""
+    """Remove the current workspace entry, the config scope, and the TLS trust store from state."""
     full = load_full_state()
     full.pop(CONFIG_SCOPE_KEY, None)
+    full.pop(TRUST_STORE_STATE_KEY, None)
     full.pop(CLAUDE_AUTO_REVERT_TARGETS_KEY, None)
     key = current_workspace_key(full)
     if key:

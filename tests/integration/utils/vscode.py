@@ -394,7 +394,13 @@ class VSCode:
             )
 
         elif state == "picker closed":
-            self._click("model picker: open", model_button)
+            # The native model-name button handles Enter without crossing a hover overlay.
+            self._act(
+                "model picker: open",
+                lambda: model_button.locator(".model-picker-name:visible").press(
+                    "Enter", timeout=CLICK_TIMEOUT_MS
+                ),
+            )
         elif state == "picker: restricted":
             self._click(
                 "model picker: Trust Workspace",

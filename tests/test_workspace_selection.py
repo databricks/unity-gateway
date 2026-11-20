@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 from email.message import Message
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -243,6 +244,12 @@ class TestHelperArgv:
         argv = db_mod.build_otel_headers_argv(SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
+    def test_copilot_seat_runtime(self, selected):
+        from ucode.agents import vscode
+
+        argv = vscode.seat_relay_command({"workspace": SHARED, "profile": "p"}, "svc")
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+
     def test_claude_router_hook_preserves_selection_and_launch_provider(self, selected):
         from ucode.smart_routing.claude_hooks import ROUTE_SUBAGENT_MOD_EVENT, routing_hook_argv
 
@@ -402,7 +409,7 @@ class TestAgentConfigs:
 
     def test_vscode_selection_comes_after_admin_headers(self, selected, monkeypatch):
         written = {}
-        monkeypatch.setattr(vscode, "find_code", lambda: "code")
+        monkeypatch.setattr(vscode, "find_code", lambda: Path("code"))
         monkeypatch.setattr(
             vscode, "install_extension", lambda code, config: written.update(config)
         )

@@ -7,6 +7,10 @@ The extension reads that file from its own folder and writes the user settings i
 `ug revert` removes those settings from the user's settings.json, which an uninstalled extension
 can't do, then uninstalls the extension.
 
+On a GitHub Copilot seat relay, ug itself points VS Code's Copilot runtime at a wrapper that runs it
+through the relay: VS Code's settings API can't write that setting, and VS Code applies a change to
+it without a restart.
+
 The models are the Copilot CLI's, from one source: the catalog `ug configure` discovered for the
 workspace, a Model Provider Service (`--provider`), or the model services of a Unity Catalog schema
 (`--model-location`).
@@ -14,18 +18,23 @@ workspace, a Model Provider Service (`--provider`), or the model services of a U
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import platform
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
 import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 from xml.sax.saxutils import escape
 
+from ucode import config_io, jsonc
 from ucode.agents.copilot import (
     CopilotModel,
     catalog_model_limits,
@@ -37,15 +46,16 @@ from ucode.agents.copilot import (
     provider_service_catalog,
     resolve_copilot_model,
     unservable_static_models,
+    uses_seat_relay,
 )
 from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
-from ucode.databricks import build_auth_shell_command
+from ucode.databricks import build_auth_shell_command, ug_binary
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.ui import console, print_heading, print_kv, print_note, print_warning
-from ucode.workspace import workspace_headers
+from ucode.workspace import workspace_headers, workspace_id_args
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -265,6 +275,172 @@ _OTEL_SETTINGS = {
     "chat.agentHost.otel": {"enabled": True, "exporterType": "otlp-http"},
 }
 DEFAULT_MODEL_SETTING = "chat.defaultModel"
+# The executable VS Code's agent host runs as its Copilot runtime, and ug's wrapper for it.
+RUNTIME_PATH_SETTING = "chat.agentHost.copilot.runtimePath"
+RUNTIME_WRAPPER_NAME = "ug-copilot-runtime"
+_NODE_ARCHES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def bundled_runtime(code: Path) -> Path | None:
+    """The Copilot runtime bundled with the VS Code install that ``code`` belongs to."""
+    system = {OS.MACOS: "darwin", OS.LINUX: "linux"}.get(current_os())
+    arch = _NODE_ARCHES.get(platform.machine().lower())
+    if system is None or arch is None:
+        return None
+    target = f"{system}-{arch}"
+    bin_dir = code.resolve().parent
+    # macOS keeps `code` in the app folder's bin; Linux packages keep the app under resources/app.
+    for app in (bin_dir.parent, bin_dir.parent / "resources" / "app"):
+        runtime = (
+            app
+            / "node_modules.asar.unpacked"
+            / "@github"
+            / f"copilot-sdk-{target}"
+            / "prebuilds"
+            / target
+            / "copilot-runtime"
+        )
+        if runtime.is_file():
+            return runtime
+    return None
+
+
+def _wrapper_dir(*, insiders: bool) -> Path:
+    return config_io.APP_DIR / "vscode" / ("code-insiders" if insiders else "code")
+
+
+def runtime_wrapper_path(*, insiders: bool, script: str) -> Path:
+    """The wrapper for ``script``. Its name carries a hash of the script: VS Code restarts the
+    runtime only when this setting changes, so a new script needs a new path."""
+    digest = hashlib.sha256(script.encode()).hexdigest()[:12]
+    return _wrapper_dir(insiders=insiders) / f"{RUNTIME_WRAPPER_NAME}-{digest}"
+
+
+def _is_runtime_wrapper(value: object, *, insiders: bool) -> bool:
+    if not isinstance(value, str):
+        return False
+    path = Path(value)
+    return path.parent == _wrapper_dir(insiders=insiders) and path.name.startswith(
+        f"{RUNTIME_WRAPPER_NAME}-"
+    )
+
+
+def _runtime_wrappers(*, insiders: bool) -> list[Path]:
+    return sorted(_wrapper_dir(insiders=insiders).glob(f"{RUNTIME_WRAPPER_NAME}-*"))
+
+
+def wrapper_script(command: list[str], runtime: Path) -> str:
+    """A POSIX shell script that runs ``command`` on ``runtime`` with the arguments VS Code
+    passes."""
+    parts = " ".join(shlex.quote(part) for part in [*command, "--runtime", str(runtime), "--"])
+    return f'#!/bin/sh\nexec {parts} "$@"\n'
+
+
+def _read_runtime_path(settings: Path) -> object:
+    try:
+        return jsonc.get_member(settings.read_text(encoding="utf-8"), RUNTIME_PATH_SETTING)
+    except FileNotFoundError:
+        return None
+
+
+def _edit_user_settings(path: Path, edit: Callable[[str], str]) -> None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    edited = edit(text)
+    if edited == text:
+        return
+    # Edit the file a symlink points to, and keep its permissions, as the rewrite would lose both.
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f".{target.name}.ug-{secrets.token_hex(4)}")
+    try:
+        partial.write_text(edited, encoding="utf-8")
+        if target.exists():
+            shutil.copymode(target, partial)
+        partial.replace(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | None:
+    """Point the Copilot runtime of the VS Code install ``code`` belongs to at ug's wrapper, which
+    runs it through ``provider``'s seat relay. Returns why it couldn't, or None."""
+    runtime = bundled_runtime(code)
+    if runtime is None:
+        return "This VS Code has no bundled Copilot runtime ug can run through the seat relay."
+    insiders = code.name.startswith("code-insiders")
+    settings = user_dir(insiders) / "settings.json"
+    script = wrapper_script(seat_relay_command(state, provider), runtime)
+    wrapper = runtime_wrapper_path(insiders=insiders, script=script)
+    try:
+        current = _read_runtime_path(settings)
+        if (
+            current is not None
+            and current != str(wrapper)
+            and not _is_runtime_wrapper(current, insiders=insiders)
+        ):
+            return (
+                f"{RUNTIME_PATH_SETTING} in {settings} is already set to {current}, which ug "
+                f"doesn't replace. Remove that setting to route Copilot through {provider}."
+            )
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text(script)
+        wrapper.chmod(0o700)
+        _edit_user_settings(
+            settings, lambda text: jsonc.set_member(text, RUNTIME_PATH_SETTING, str(wrapper))
+        )
+    except (OSError, ValueError) as exc:
+        return f"Couldn't set {RUNTIME_PATH_SETTING} in {settings}: {exc}."
+    for stale in _runtime_wrappers(insiders=insiders):
+        if stale != wrapper:
+            stale.unlink(missing_ok=True)
+    return None
+
+
+def remove_seat_relay_route(*, insiders: bool) -> bool:
+    """Remove ug's Copilot runtime wrappers, and the setting while it still points at one. Returns
+    whether anything was removed. The wrappers stay when the setting couldn't be edited, since
+    VS Code may still run one."""
+    settings = user_dir(insiders) / "settings.json"
+    removed = False
+    try:
+        if _is_runtime_wrapper(_read_runtime_path(settings), insiders=insiders):
+            _edit_user_settings(
+                settings, lambda text: jsonc.remove_member(text, RUNTIME_PATH_SETTING)
+            )
+            removed = True
+    except (OSError, ValueError) as exc:
+        print_warning(
+            f"Couldn't edit {settings}: {exc}. Remove {RUNTIME_PATH_SETTING} if it still points "
+            f"to ug's runtime wrapper in {_wrapper_dir(insiders=insiders)}."
+        )
+        return removed
+    for wrapper in _runtime_wrappers(insiders=insiders):
+        try:
+            wrapper.unlink()
+        except OSError as exc:
+            print_warning(f"Couldn't remove {wrapper}: {exc}.")
+            continue
+        removed = True
+    return removed
+
+
+def seat_relay_command(state: dict, provider: str) -> list[str]:
+    """The ug command ug's wrapper runs in place of VS Code's Copilot runtime."""
+    profile = state.get("profile")
+    return [
+        ug_binary(),
+        "copilot-seat-runtime",
+        "--provider",
+        provider,
+        "--host",
+        state["workspace"],
+        *(["--profile", profile] if profile else []),
+        *workspace_id_args(state["workspace"]),
+    ]
 
 
 def written_settings(config: dict) -> list[dict[str, object]]:
@@ -355,8 +531,14 @@ def auth_command(state: dict) -> str:
     )
 
 
-def next_steps() -> list[str]:
+def next_steps(*, seat_relay: bool = False) -> list[str]:
     """What to do in VS Code once the extension is installed, for this OS."""
+    if seat_relay:
+        # VS Code restarts its Copilot runtime when the setting changes.
+        return [
+            "1. Open Chat and sign in to GitHub Copilot. No restart is needed.",
+            "2. Start a new chat in a Copilot session (not Local), and choose a model.",
+        ]
     restart = (
         # Closing every window leaves VS Code running on macOS.
         "Quit VS Code with Cmd+Q, even if no window is open, and open it again."
@@ -386,7 +568,9 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
         )
         return False
     try:
-        catalog = _catalog(state, provider, location)
+        seat_relay = bool(provider) and uses_seat_relay(state, cast(str, provider), tool="vscode")
+        # A seat relay serves Copilot's own models, so the extension lists none of Databricks'.
+        catalog = [] if seat_relay else _catalog(state, provider, location)
     except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(f"{exc} VS Code was left unchanged.")
@@ -399,6 +583,14 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
+    windows = current_os() is OS.WINDOWS
+    if seat_relay and not windows and bundled_runtime(code) is None:
+        print_warning(
+            "This VS Code has no bundled Copilot runtime ug can run through the seat relay, so "
+            "VS Code was left unchanged. Update VS Code, then rerun `ug configure --agents "
+            "copilot`."
+        )
+        return False
     # The extension makes it VS Code's default for new chats, unless the developer set their own.
     if default_model := managed_default_model(state, catalog):
         config["defaultModel"] = default_model
@@ -410,16 +602,30 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     if state.get("copilot_otel_tracing"):
         config["otel"] = otel_receiver(state)
     source = f" from {provider or location}" if provider or location else ""
+    # Routed before the reinstall, which drops the extension's models: a failed route must not leave
+    # the old setup gone with nothing on the relay.
+    if seat_relay and not windows:
+        if error := route_through_seat_relay(state, cast(str, provider), code):
+            print_warning(f"GitHub Copilot in VS Code doesn't go through {provider}: {error}")
+            return False
     try:
-        print_kv(
-            "VS Code extension",
-            f"{install_extension(code, config)} with {len(models)} models{source}",
-        )
+        installed = install_extension(code, config)
     except RuntimeError as exc:
         print_warning(f"{exc} Rerun `ug configure --agents copilot` to try again.")
         return False
+    if not seat_relay:
+        remove_seat_relay_route(insiders=code.name.startswith("code-insiders"))
+        print_kv("VS Code extension", f"{installed} with {len(models)} models{source}")
+    elif windows:
+        print_kv("VS Code extension", installed)
+        print_warning(
+            "VS Code on Windows can't route GitHub Copilot through the seat relay yet, so its "
+            "Copilot calls go straight to GitHub. Use `ug copilot` there instead."
+        )
+    else:
+        print_kv("VS Code extension", f"{installed}, routing Copilot through {provider}")
     print_heading("Next, in VS Code:")
-    for line in next_steps():
+    for line in next_steps(seat_relay=seat_relay):
         console.print(f"  {line}", highlight=False)
     return True
 
@@ -429,6 +635,7 @@ def revert() -> str:
     "removed" or "unchanged"."""
     removed = False
     for command, folder in CODE_COMMANDS:
+        removed = remove_seat_relay_route(insiders=command == "code-insiders") or removed
         # Look on disk first, so revert runs `code` only for people who set VS Code up.
         if not any(extensions_dir(folder).glob(f"{EXTENSION_ID}-*")):
             continue

@@ -1125,6 +1125,8 @@ def launch_codex(
     launch_config: dict | None = None,
     available_models: list[str] | None = None,
 ) -> NoReturn:
+    from ucode.agents.args import has_explicit_model_arg
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -1242,8 +1244,9 @@ def launch_codex(
                     if key in overlay
                 }
             )
+        model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, *model_args, *tool_args]
         )
         try:
             returncode = tui.wait()
