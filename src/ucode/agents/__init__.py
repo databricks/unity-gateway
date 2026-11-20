@@ -790,6 +790,16 @@ def request_copilot_app_with_copilot(requested: bool = True) -> None:
     _copilot_app_with_copilot = requested
 
 
+_copilot_app_windows_tracing: bool | None = None
+
+
+def request_copilot_app_windows_tracing(requested: bool | None) -> None:
+    """Whether the GitHub Copilot app's tracing may set user-wide environment variables on
+    Windows (``ug configure --copilot-app-windows-tracing``); None keeps the saved choice."""
+    global _copilot_app_windows_tracing
+    _copilot_app_windows_tracing = requested
+
+
 def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
     """Install ug's plugin in the GitHub Copilot desktop app when it is installed, or remove it
     when the workspace's managed config turns the app off."""
@@ -814,8 +824,13 @@ def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: s
                 f"ug's plugin was removed from it ({result})."
             )
         return
-    if not _copilot_app_with_copilot or not desktop_setup.copilot_app_installed():
+    if not _copilot_app_with_copilot:
         return
+    if not desktop_setup.copilot_app_installed():
+        desktop_setup.disable_copilot_app_tracing()
+        return
+    if _copilot_app_windows_tracing is not None and not is_dry_run():
+        state[desktop_setup.COPILOT_APP_WINDOWS_TRACING_KEY] = _copilot_app_windows_tracing
     desktop_setup.configure_copilot_app(state, provider=provider, location=parent_schema)
 
 

@@ -43,6 +43,8 @@ Status = Literal["installed", "removal_pending", "disabled", "not_installed", "i
 
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
+_TELEMETRY_KEY = "telemetry"
+_HEADERS_PROVIDER_KEY = "headersProvider"
 _SOURCE_FILES = (
     "extension.mjs",
     "ug-plugin.mjs",
@@ -465,6 +467,50 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     }
     _object(settings, _ENABLED_KEY, path)[PLUGIN_KEY] = True
     _write_settings(path, settings)
+
+
+def is_ug_headers_provider(value: object) -> bool:
+    args = value.get("args") if isinstance(value, dict) else None
+    return isinstance(args, list) and "otel-headers" in args
+
+
+def headers_provider(settings_path: Path | None = None) -> object:
+    """Copilot's ``telemetry.headersProvider``, or None."""
+    telemetry = read_settings(settings_path).get(_TELEMETRY_KEY)
+    return telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
+
+
+def set_headers_provider(provider: Mapping[str, Any], settings_path: Path | None = None) -> bool:
+    """Set ``telemetry.headersProvider``, keeping every other setting. It's the only user
+    ``telemetry`` key ug writes: the runtime ignores the whole file over most others. Returns
+    whether the file changed."""
+    path = settings_path or copilot_settings_path()
+    settings = read_settings(path)
+    telemetry = _object(settings, _TELEMETRY_KEY, path)
+    if telemetry.get(_HEADERS_PROVIDER_KEY) == provider:
+        return False
+    telemetry[_HEADERS_PROVIDER_KEY] = dict(provider)
+    _write_settings(path, settings)
+    return True
+
+
+def remove_headers_provider(settings_path: Path | None = None) -> bool:
+    """Remove ug's ``telemetry.headersProvider``; another one stays. Returns whether it was
+    removed."""
+    path = settings_path or copilot_settings_path()
+    if not path.exists():
+        return False
+    settings = read_settings(path)
+    telemetry = settings.get(_TELEMETRY_KEY)
+    if not isinstance(telemetry, dict) or not is_ug_headers_provider(
+        telemetry.get(_HEADERS_PROVIDER_KEY)
+    ):
+        return False
+    del telemetry[_HEADERS_PROVIDER_KEY]
+    if not telemetry:
+        del settings[_TELEMETRY_KEY]
+    _write_settings(path, settings)
+    return True
 
 
 def _created_settings_marker(root: Path) -> Path:

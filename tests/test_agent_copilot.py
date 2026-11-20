@@ -1270,6 +1270,11 @@ class TestMcpServerConfig:
             "command": self.PROXY_ARGV[0],
             "args": self.PROXY_ARGV[1:],
             "tools": ["*"],
+            "env": {
+                "COPILOT_OTEL_ENABLED": "",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "",
+            },
         }
 
     def test_writes_mcp_server_without_clobbering_existing_config(self, tmp_path, monkeypatch):
@@ -1296,12 +1301,7 @@ class TestMcpServerConfig:
         assert removed is False
         assert written["other"] is True
         assert written["mcpServers"]["old-server"] == {"type": "stdio", "command": "old"}
-        assert written["mcpServers"]["github"] == {
-            "type": "local",
-            "command": self.PROXY_ARGV[0],
-            "args": self.PROXY_ARGV[1:],
-            "tools": ["*"],
-        }
+        assert written["mcpServers"]["github"] == copilot.build_mcp_server_entry(self.PROXY_ARGV)
 
     def test_reports_replaced_mcp_server(self, tmp_path, monkeypatch):
         import ucode.agents.copilot as cp_mod
