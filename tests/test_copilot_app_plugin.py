@@ -803,3 +803,65 @@ class TestStagedWrite:
 
         assert not old.exists()
         assert fresh.exists()
+
+
+class TestSyncLock:
+    def _lock(self, root: Path) -> Path:
+        return root / "plugins" / plugin.PLUGIN / "extensions" / plugin.EXTENSION / "app-sync.lock"
+
+    def test_holds_the_extensions_lock_and_releases_only_its_own(self, home):
+        root = plugin.install(_config())
+
+        with plugin.sync_lock() as held:
+            assert held
+            owner = self._lock(root).read_text()
+            assert owner.startswith("ug-")
+
+        assert not self._lock(root).exists()
+
+    def test_waits_for_an_extension_then_gives_up(self, home):
+        root = plugin.install(_config())
+        self._lock(root).write_text("1234-extension")
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with plugin.sync_lock(timeout=1.0, sleep=sleep, clock=lambda: clock[0]) as held:
+            assert not held
+
+        assert self._lock(root).read_text() == "1234-extension"
+        assert clock[0] >= 1.0
+
+    def test_takes_over_a_stale_lock(self, home):
+        root = plugin.install(_config())
+        self._lock(root).write_text("1234-dead")
+        stale = time.time() - 120
+        os.utime(self._lock(root), (stale, stale))
+
+        with plugin.sync_lock(timeout=0) as held:
+            assert held
+
+    @pytest.mark.skipif(NODE is None, reason="node is not installed")
+    def test_the_extension_sees_ugs_lock(self, home):
+        root = plugin.install(_config())
+        rows = (
+            root / "plugins" / plugin.PLUGIN / "extensions" / plugin.EXTENSION / "app-rows.mjs"
+        ).as_uri()
+        script = (
+            f"import {{ tryLock }} from {json.dumps(rows)};"
+            "console.log(tryLock(process.argv[1], Date.now) === null);"
+        )
+        with plugin.sync_lock() as held:
+            assert held
+            result = subprocess.run(
+                [NODE, "--input-type=module", "-e", script, str(self._lock(root))],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        assert result.stdout.strip() == "true"
+
+    def test_without_a_plugin_it_holds_nothing(self, home):
+        with plugin.sync_lock() as held:
+            assert not held

@@ -18,7 +18,8 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -532,6 +533,67 @@ def remove(
         shutil.rmtree(root)
         changed = True
     return changed
+
+
+_SYNC_LOCK_FILE = "app-sync.lock"
+# As app-rows.mjs's LOCK_STALE_MS: an older lock is from an extension that died holding it.
+_SYNC_LOCK_STALE_S = 60.0
+
+
+def _take_sync_lock(path: Path, owner: str) -> bool:
+    try:
+        with path.open("x", encoding="utf-8") as file:
+            file.write(owner)
+        return True
+    except FileExistsError:
+        pass
+    try:
+        stale = path.read_text(encoding="utf-8")
+        if time.time() - path.stat().st_mtime < _SYNC_LOCK_STALE_S:
+            return False
+        # Only one process can move a stale lock away; a lock replaced meanwhile goes back.
+        moved = path.with_name(f"{path.name}.{owner}")
+        os.replace(path, moved)
+        if moved.read_text(encoding="utf-8") != stale:
+            os.replace(moved, path)
+            return False
+        moved.unlink()
+        with path.open("x", encoding="utf-8") as file:
+            file.write(owner)
+        return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def sync_lock(
+    root: Path | None = None,
+    *,
+    timeout: float = 20.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> Iterator[bool]:
+    """Hold the lock the plugin's extensions sync and remove under, so none writes the app's rows
+    meanwhile. Yields whether it got the lock within ``timeout``; an extension still syncing then
+    stops on its own once the plugin is marked for removal."""
+    directory = _extension_dir(root or plugin_root())
+    if not directory.is_dir():
+        yield False
+        return
+    path = directory / _SYNC_LOCK_FILE
+    owner = f"ug-{os.getpid()}-{uuid.uuid4().hex}"
+    deadline = clock() + timeout
+    while not (held := _take_sync_lock(path, owner)) and clock() < deadline:
+        sleep(0.2)
+    try:
+        yield held
+    finally:
+        if held:
+            try:
+                if path.read_text(encoding="utf-8") == owner:
+                    path.unlink()
+            except OSError:
+                pass
 
 
 def defer_remove(root: Path | None = None, settings_path: Path | None = None) -> bool:

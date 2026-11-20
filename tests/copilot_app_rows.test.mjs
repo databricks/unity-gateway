@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
 
-import { LOCK_FILE, LOCK_STALE_MS, copilotHome, readEndpoint, syncInBackground, syncOnce, tryLock } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
+import { LOCK_FILE, LOCK_STALE_MS, copilotHome, readEndpoint, removalRequested, syncInBackground, syncOnce, tryLock } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
 import { FakeApp } from "./copilot_app_fake.mjs";
 
 // The Copilot runtime's Node has a global WebSocket; Node before 22 doesn't.
@@ -250,4 +250,37 @@ test("no app rows in the config means nothing to sync", async (t) => {
   assert.equal(await syncOnce({}, options), "skipped");
   assert.equal(await syncOnce({ app: { providers: [], ownedProviderIds: [] } }, options), "skipped");
   assert.equal(app.connections, 0);
+});
+
+
+test("a sync racing a revert stops before it writes ug's rows back", async (t) => {
+  const { app, options } = await setup(t);
+  writeFileSync(join(options.stateDir, "config.json"), JSON.stringify({ remove: false }));
+  app.onRequest = (message) => {
+    if (message.type !== "upsert_model_provider" || app.onRequest === null) return;
+    app.onRequest = null;
+    // ug marks the plugin for removal, then deletes ug's rows from the running app.
+    writeFileSync(join(options.stateDir, "config.json"), JSON.stringify({ remove: true }));
+    setImmediate(() => {
+      app.providers.clear();
+      app.models.clear();
+    });
+  };
+
+  assert.equal(await syncOnce({ app: ROWS }, options), "removing");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(app.providers.size, 0);
+  assert.equal(app.models.size, 0);
+  assert.equal(app.sent("upsert_model_provider").length, 1);
+  assert.equal(app.sent("upsert_provider_model").length, 0);
+});
+
+test("a plugin marked for removal doesn't sync at all", async (t) => {
+  const { app, options } = await setup(t);
+  writeFileSync(join(options.stateDir, "config.json"), JSON.stringify({ remove: true }));
+
+  assert.equal(removalRequested(options.stateDir), true);
+  assert.equal(await syncOnce({ app: ROWS }, options), "removing");
+  assert.equal(app.sent("upsert_model_provider").length, 0);
 });

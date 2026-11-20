@@ -64,6 +64,8 @@ export class FakeApp {
     this.fail = null;
     this.drop = null;
     this.beforeReply = {};
+    // Called with each request before it's answered, as another client acting meanwhile.
+    this.onRequest = null;
     this.server = http.createServer();
     this.server.on("upgrade", (request, socket) => this._upgrade(request, socket));
   }
@@ -115,6 +117,7 @@ export class FakeApp {
           socket.destroy();
           return;
         }
+        this.onRequest?.(message);
         for (const frame of this.beforeReply[message.type] ?? []) send(frame);
         delete this.beforeReply[message.type];
         const reply = this._reply(message);

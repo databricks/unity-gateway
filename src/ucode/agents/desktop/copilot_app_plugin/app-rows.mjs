@@ -189,7 +189,23 @@ function matches(wanted, actual) {
 // Writes ``rows`` (config.app) to the app, and deletes the providers and models of ug's that
 // aren't in it. Upserts with fixed ids, so running it again changes nothing. Returns whether the
 // app's rows differed from ``rows``.
-export async function syncRows(app, rows) {
+class RemovalRequested extends Error {}
+
+// ug marks the plugin's config for removal before it deletes ug's rows from a running app, so a
+// sync already under way stops before it writes them back.
+export function removalRequested(stateDir) {
+  try {
+    return JSON.parse(readFileSync(join(stateDir, "config.json"), "utf8")).remove === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function syncRows(app, rows, stop = () => false) {
+  const write = (message, reply, match) => {
+    if (stop()) throw new RemovalRequested();
+    return app.request(message, reply, match);
+  };
   const existing = await listProviders(app);
   const wanted = new Set(rows.providers.map((entry) => entry.provider.id));
   let changed = false;
@@ -203,7 +219,7 @@ export async function syncRows(app, rows) {
     const message = { type: "upsert_model_provider", provider };
     if (secret && !existing.get(provider.id)?.hasSecret) message.secret = secret;
     if (message.secret || !matches(provider, existing.get(provider.id))) changed = true;
-    await app.request(message, "model_provider_upserted");
+    await write(message, "model_provider_upserted");
     const wantedModels = new Set(models.map((model) => model.id));
     const listed = new Map();
     for (const model of await listModels(app, provider.id)) {
@@ -217,7 +233,7 @@ export async function syncRows(app, rows) {
     }
     for (const model of models) {
       if (!matches(model, listed.get(model.id))) changed = true;
-      await app.request({ type: "upsert_provider_model", model }, "provider_model_upserted");
+      await write({ type: "upsert_provider_model", model }, "provider_model_upserted");
     }
   }
   return changed;
@@ -290,10 +306,15 @@ export async function syncOnce(config, { home = copilotHome(), stateDir, now = D
   const release = tryLock(join(stateDir, LOCK_FILE), now);
   if (!release) return "busy";
   try {
+    const stop = () => removalRequested(stateDir);
+    if (stop()) return "removing";
     const app = await connectApp(endpoint, connect);
     let changed;
     try {
-      changed = await syncRows(app, rows);
+      changed = await syncRows(app, rows, stop);
+    } catch (error) {
+      if (error instanceof RemovalRequested) return "removing";
+      throw error;
     } finally {
       app.close();
     }
