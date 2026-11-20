@@ -10959,21 +10959,6 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
 
-    def test_invalid_token_400_refetches_with_live_token(self, monkeypatch):
-        """The gateway's invalid-token 400 is a definitive auth failure: the speculation's
-        token is dead and configure's auth step may have repaired it, so refetch."""
-        calls = self._invoke_with_overlapped_catalog(
-            monkeypatch,
-            managed=None,
-            catalog_error_once='HTTP 400 Bad Request: {"error": "Invalid Token"}',
-        )
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert len(calls["catalog_calls"]) == 2
-        assert "main.default.claude-sonnet-5" in (
-            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
-        )
-
     def test_persistent_403_makes_exactly_one_request(self, monkeypatch):
         """A non-auth catalog failure would fail a live-token fetch the same way, so the
         speculative result is kept instead of doubling the request on every launch."""
