@@ -10595,6 +10595,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         expect_catalog_start=True,
         relayed=False,
         catalog_error_msg: str | None = None,
+        catalog_error_once: str | None = None,
+        token_error: Exception | None = None,
         configure_returns: dict | None = None,
     ):
         state = dict(MINIMAL_STATE)
@@ -10605,14 +10607,17 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
         )
 
+        catalog_fetches = {"n": 0}
+
         def fake_catalog(*_args, **kwargs):
             catalog_calls.append((threading.current_thread(), kwargs))
             catalog_started.set()
-            if catalog_error_msg:
+            n = catalog_fetches["n"]
+            catalog_fetches["n"] += 1
+            error = catalog_error_msg or (catalog_error_once if n == 0 else None)
+            if error:
                 return db_mod.AnthropicModelCatalog(
-                    model_ids=[],
-                    model_id_to_display_name={},
-                    error_msg=catalog_error_msg,
+                    model_ids=[], model_id_to_display_name={}, error_msg=error
                 )
             return picker_catalog
 
@@ -10637,6 +10642,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         def fake_token(*args, **kwargs):
             token_calls.append((args, kwargs))
+            if token_error is not None and len(token_calls) == 1:
+                raise token_error
             return "token"
 
         monkeypatch.setattr(cli_mod, "get_databricks_token", fake_token)
@@ -10714,37 +10721,14 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
     def test_speculative_catalog_error_refetches_with_live_token(
         self, monkeypatch, metrics_recorder
     ):
-        error_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 401 Unauthorized"
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, catalog_error_once="HTTP 401 Unauthorized"
         )
-        good_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=["main.default.claude-sonnet-5"],
-            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
-        )
-        state = dict(MINIMAL_STATE)
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod,
-            "list_anthropic_model_catalog",
-            MagicMock(side_effect=[error_catalog, good_catalog]),
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        assert cli_mod.list_anthropic_model_catalog.call_count == 2
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 2
         assert "main.default.claude-sonnet-5" in (
-            configure.call_args.kwargs["picker_catalog"].model_ids
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
         # The definitive auth failure was reported as handled before the refetch.
         [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
@@ -10755,106 +10739,45 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
     def test_speculative_token_failure_falls_back_to_the_serial_fetch(self, monkeypatch):
         """A background token failure must not fail the launch: the join falls back to the
         serial fetch on the live token."""
-        state = dict(MINIMAL_STATE)
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(
-            cli_mod,
-            "get_databricks_token",
-            MagicMock(
-                side_effect=[RuntimeError("Databricks CLI returned no access token"), "token"]
-            ),
+        # The token failure kills the speculation before any catalog request, so configure
+        # cannot see one start.
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            token_error=RuntimeError("Databricks CLI returned no access token"),
+            expect_catalog_start=False,
         )
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod,
-            "list_anthropic_model_catalog",
-            MagicMock(
-                return_value=db_mod.AnthropicModelCatalog(
-                    model_ids=["main.default.claude-sonnet-5"],
-                    model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
-                )
-            ),
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        assert cli_mod.list_anthropic_model_catalog.call_count == 1
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
         assert "main.default.claude-sonnet-5" in (
-            configure.call_args.kwargs["picker_catalog"].model_ids
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
 
     def test_invalid_token_400_refetches_with_live_token(self, monkeypatch):
         """The gateway's invalid-token 400 is a definitive auth failure: the speculation's
         token is dead and configure's auth step may have repaired it, so refetch."""
-        error_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=[],
-            model_id_to_display_name={},
-            error_msg='HTTP 400 Bad Request: {"error": "Invalid Token"}',
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            catalog_error_once='HTTP 400 Bad Request: {"error": "Invalid Token"}',
         )
-        good_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=["main.default.claude-sonnet-5"],
-            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
-        )
-        state = dict(MINIMAL_STATE)
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod,
-            "list_anthropic_model_catalog",
-            MagicMock(side_effect=[error_catalog, good_catalog]),
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        assert cli_mod.list_anthropic_model_catalog.call_count == 2
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 2
         assert "main.default.claude-sonnet-5" in (
-            configure.call_args.kwargs["picker_catalog"].model_ids
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
 
     def test_persistent_403_makes_exactly_one_request(self, monkeypatch):
         """A non-auth catalog failure would fail a live-token fetch the same way, so the
         speculative result is kept instead of doubling the request on every launch."""
-        error_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 403 Forbidden"
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, catalog_error_msg="HTTP 403 Forbidden"
         )
-        state = dict(MINIMAL_STATE)
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod, "list_anthropic_model_catalog", MagicMock(return_value=error_catalog)
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        assert cli_mod.list_anthropic_model_catalog.call_count == 1
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
 
     def test_auto_picker_starts_no_unmanaged_catalog(self, monkeypatch):
         monkeypatch.setattr(cli_mod.smart_routing_config, "auto_mode_enabled", lambda: True)
