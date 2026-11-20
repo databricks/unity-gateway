@@ -10740,6 +10740,45 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             configure.call_args.kwargs["picker_catalog"].model_ids
         )
 
+    def test_workspace_change_refetches_serially(self, monkeypatch):
+        """configure_shared_state can resolve a different workspace than the one the
+        speculation tokenized for; the speculative result must not be reused then."""
+        state = dict(MINIMAL_STATE)
+        catalog_started = threading.Event()
+        picker_catalog = db_mod.AnthropicModelCatalog(
+            model_ids=["main.default.claude-sonnet-5"],
+            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
+        )
+
+        def fake_catalog(*_args, **kwargs):
+            catalog_started.set()
+            return picker_catalog
+
+        def fake_configure_shared_state(*_args, **_kwargs):
+            # Configure resolved the selector to another workspace.
+            assert catalog_started.wait(self.WAIT_SECONDS)
+            return {**state, "workspace": "https://other.example.com"}
+
+        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
+        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
+        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
+        monkeypatch.setattr(
+            cli_mod, "list_anthropic_model_catalog", MagicMock(side_effect=fake_catalog)
+        )
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
+
+        result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert cli_mod.list_anthropic_model_catalog.call_count == 2
+
     def test_persistent_403_makes_exactly_one_request(self, monkeypatch):
         """A non-auth catalog failure would fail a live-token fetch the same way, so the
         speculative result is kept instead of doubling the request on every launch."""
