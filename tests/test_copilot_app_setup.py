@@ -483,3 +483,45 @@ def test_a_dry_run_changes_nothing(monkeypatch, app, capsys):
     assert _extension_config() == config
     assert len(app.received) == received
     assert "Dry run: the GitHub Copilot app isn't changed." in _out(capsys)
+
+
+class TestManagedModelSources:
+    WILDCARD = "main.allowed.*"
+
+    def _managed_state(self, monkeypatch, expansions):
+        from ucode.constants import MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY
+
+        monkeypatch.setattr(
+            desktop_setup,
+            "copilot_app_state",
+            lambda state: {
+                **state,
+                "copilot_static_models": [self.WILDCARD, "system.ai.gpt-5-2"],
+                MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY: expansions,
+            },
+        )
+        seen = []
+        monkeypatch.setattr(
+            "ucode.agents.vscode.copilot_models",
+            lambda state, *args, **kwargs: seen.append(state["copilot_static_models"]) or CATALOG,
+        )
+        return seen
+
+    def test_the_app_gets_the_admins_expanded_list(self, monkeypatch):
+        seen = self._managed_state(
+            monkeypatch, {"copilot": {self.WILDCARD: ["main.allowed.claude-x"]}}
+        )
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert seen == [["main.allowed.claude-x", "system.ai.gpt-5-2"]]
+        assert plugin.status() == "installed"
+
+    def test_a_source_never_expanded_skips_the_app(self, monkeypatch, capsys):
+        seen = self._managed_state(monkeypatch, {})
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert seen == []
+        assert "main.allowed.* isn't expanded yet" in _out(capsys)
+        assert plugin.status() == "not_installed"

@@ -352,6 +352,34 @@ def copilot_app_state(state: dict) -> dict:
     return state
 
 
+def _with_expanded_sources(state: dict) -> dict:
+    """``state`` with the managed list's wildcard sources (``<catalog>.<schema>.*``) replaced by
+    what configure last expanded them to. Re-layering the managed config brings the raw sources
+    back, and a list of only wildcards would read as no list, so the app would get every
+    discovered model instead of the admin's. A source never expanded fails closed."""
+    from ucode.agents.model_sources import is_model_source_wildcard
+    from ucode.state import get_managed_model_source_expansions
+
+    sources = state.get("copilot_static_models")
+    if not isinstance(sources, list) or not any(
+        isinstance(source, str) and is_model_source_wildcard(source) for source in sources
+    ):
+        return state
+    expansions = get_managed_model_source_expansions(state, "copilot")
+    models: list[str] = []
+    for source in sources:
+        if not isinstance(source, str) or not is_model_source_wildcard(source):
+            models.append(source)
+        elif source in expansions:
+            models.extend(expansions[source])
+        else:
+            raise RuntimeError(
+                f"the workspace's managed model source {source} isn't expanded yet. Run "
+                "`ug configure --agents copilot` again"
+            )
+    return {**state, "copilot_static_models": list(dict.fromkeys(models))}
+
+
 def copilot_app_plugin_config(
     state: dict, desired: copilot_app.DesiredProviders
 ) -> copilot_app_plugin.PluginConfig:
@@ -420,8 +448,8 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return
     _cleanup_copilot_app_leftover()
-    state = copilot_app_state(state)
     try:
+        state = _with_expanded_sources(copilot_app_state(state))
         desired = copilot_app.state_providers(state, provider=provider, location=location)
     except RuntimeError as exc:
         print_warning(f"Skipped the GitHub Copilot app: {exc}")
@@ -562,7 +590,9 @@ def copilot_app_status(
     if plugin_status == "removal_pending":
         return CopilotAppStatus(COPILOT_APP_REMOVAL_PENDING)
     try:
-        desired = copilot_app.state_providers(state, provider=provider, location=location)
+        desired = copilot_app.state_providers(
+            _with_expanded_sources(state), provider=provider, location=location
+        )
         registration = copilot_app.status(desired.app)
     except copilot_app.CopilotAppError as exc:
         registration = f"unknown ({exc})"
