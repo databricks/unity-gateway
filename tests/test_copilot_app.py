@@ -413,6 +413,11 @@ class TestStatus:
         newer = _app_providers([*CATALOG, CopilotModel("system.ai.gpt-6", WIRE_RESPONSES)])
         assert copilot_app.status(newer) == "outdated"
 
+        keyed = next(p.id for p in providers if p.secret is not None)
+        app.providers[keyed]["hasSecret"] = False
+        assert copilot_app.status(providers) == "outdated"
+        app.providers[keyed]["hasSecret"] = True
+
         copilot_app.unregister()
         assert copilot_app.status(providers) == "not_registered"
 
@@ -588,6 +593,30 @@ def test_a_port_file_of_an_exited_app_is_not_running(app, monkeypatch):
     with pytest.raises(copilot_app.CopilotAppNotRunning):
         copilot_app.unregister()
     assert app.handshakes == []
+
+
+def _app_1_4_2_run_files(pid_file):
+    run = copilot_app.copilot_home() / "run"
+    (run / "ws.port").write_text((run / "ws.port").read_text().split()[0])
+    (run / "app-owner.pid").write_text(pid_file)
+
+
+def test_an_exited_app_named_by_app_owner_pid_is_not_running(app, monkeypatch):
+    _app_1_4_2_run_files("4242")
+    checked = []
+    monkeypatch.setattr(copilot_app, "process_running", lambda pid: checked.append(pid) or False)
+
+    with pytest.raises(copilot_app.CopilotAppNotRunning):
+        copilot_app.unregister()
+    assert checked == [4242]
+    assert app.handshakes == []
+
+
+def test_an_unreadable_app_owner_pid_still_connects(app, monkeypatch):
+    _app_1_4_2_run_files("not a pid")
+    monkeypatch.setattr(copilot_app, "process_running", lambda pid: False)
+
+    assert copilot_app.unregister() is False
 
 
 def test_the_token_is_url_encoded(app):

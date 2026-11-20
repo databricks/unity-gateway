@@ -270,6 +270,18 @@ def state_providers(
     )
 
 
+def _app_pid(run: Path) -> int | None:
+    # The app writes its pid to app-owner.pid; ws.port carries none in app 1.4.2.
+    for name, index in (("app-owner.pid", 0), ("ws.port", 1)):
+        try:
+            pid = int((run / name).read_text().split()[index])
+        except (OSError, ValueError, IndexError):
+            continue
+        if pid > 1:
+            return pid
+    return None
+
+
 class _AppConnection:
     """One connection to the app's WebSocket API, matching each reply to its request."""
 
@@ -281,14 +293,13 @@ class _AppConnection:
 
         run = home / "run"
         try:
-            # Each file holds the value, then the app's pid. The app leaves them behind when it
-            # exits, and another program may since have taken the port.
-            port_file = (run / "ws.port").read_text().split()
-            port = int(port_file[0])
+            port = int((run / "ws.port").read_text().split()[0])
             token = (run / "ws.token").read_text().split()[0]
-            pid = int(port_file[1]) if len(port_file) > 1 else None
         except (OSError, ValueError, IndexError):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
+        # The app leaves its run files behind when it exits, and another program may since have
+        # taken the port.
+        pid = _app_pid(run)
         if pid is not None and not process_running(pid):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.")
         # With session channels, the app also sends every session's events, its window's chats
@@ -488,7 +499,8 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
     """Whether the running app has ``providers`` and their models as ug's only providers, with the
     same names, settings and row fields (those the app lists back).
 
-    ``outdated`` means it has some of ug's providers, but not these. Raises
+    ``outdated`` means it has some of ug's providers, but not these, or one is missing its key.
+    Raises
     :class:`CopilotAppError` when the app refuses."""
     providers = list(providers)
     try:
@@ -505,6 +517,9 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
         for provider in providers:
             wanted = provider.rows()
             if _differs(existing[provider.id], dict(wanted.provider)):
+                return "outdated"
+            # Without its key, the app hides the provider's models from the picker.
+            if wanted.secret is not None and not existing[provider.id].get("hasSecret"):
                 return "outdated"
             listed = {model["id"]: model for model in _models(app, provider.id)}
             if set(listed) != {model["id"] for model in wanted.models}:
