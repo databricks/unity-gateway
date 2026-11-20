@@ -536,6 +536,23 @@ describe("switchToAgentHostCopy", () => {
     assert.deepEqual(host.modelListeners, []);
   });
 
+  it("runs one attempt at a time and retries once for changes during it", async () => {
+    host.commands = [CHANGE];
+    switchToAgentHostCopy(context(), "system.ai.gpt-6-luna", () => {});
+    for (const listener of [...host.modelListeners]) {
+      listener();
+      listener();
+    }
+    await tick();
+    await tick();
+    assert.deepEqual(models(), []);
+    assert.equal(host.openAttempts, 2);
+    host.agentHostModels = [copy];
+    host.modelListeners[0]?.();
+    await tick();
+    assert.deepEqual(models(), [copy]);
+  });
+
   it("gives up and says so when the copy never shows", async () => {
     host.commands = [CHANGE];
     const lines: string[] = [];

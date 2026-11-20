@@ -318,20 +318,34 @@ export function switchToAgentHostCopy(
 ): void {
   const selector = { modelSelector: { id: `${VENDOR}/${id}` } };
   let done = false;
+  let trying = false;
+  let again = false;
   const finish = () => {
     done = true;
     listener.dispose();
     clearTimeout(timer);
   };
-  const attempt = async () => {
+  // One attempt at a time; a change during one gets one more try if it fails.
+  const attempt = async (): Promise<void> => {
     if (done) {
       return;
     }
+    if (trying) {
+      again = true;
+      return;
+    }
+    trying = true;
     try {
       await vscode.commands.executeCommand(OPEN_CHAT_COMMAND, selector);
       finish();
     } catch {
       // Not listed yet; the next model change tries again.
+    } finally {
+      trying = false;
+    }
+    if (again && !done) {
+      again = false;
+      await attempt();
     }
   };
   // Tries only when the models change: each attempt also reveals the chat view.
