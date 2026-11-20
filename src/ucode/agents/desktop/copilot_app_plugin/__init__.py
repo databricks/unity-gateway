@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -229,9 +230,16 @@ def extension_config(config: PluginConfig) -> dict:
     }
 
 
-def write_plugin(config: PluginConfig, root: Path | None = None) -> Path:
-    """Write the marketplace, the plugin and its extension under ``root``; return ``root``."""
-    root = root or plugin_root()
+# What the extension keeps between runs, in its own directory; a reinstall carries them over, so
+# an unchanged configure neither resyncs nor restarts the app.
+_EXTENSION_STATE_FILES = ("app-sync.json", "app-restart.json", "app-restart.log")
+_STAGING_PREFIX = ".staging-"
+_REPLACED_PREFIX = ".replaced-"
+# Older leftovers are from a run that crashed, never from one still writing.
+_LEFTOVER_AGE_S = 600.0
+
+
+def _write_tree(config: PluginConfig, root: Path) -> None:
     description = "Databricks models in the GitHub Copilot app, through Unity Gateway"
     atomic_write_json(
         root / ".github" / "plugin" / "marketplace.json",
@@ -263,6 +271,73 @@ def write_plugin(config: PluginConfig, root: Path | None = None) -> Path:
     for name in _SOURCE_FILES:
         shutil.copyfile(source / name, extension_dir / name)
     atomic_write_json(extension_dir / "config.json", extension_config(config))
+
+
+def _carry_over(old: Path, new: Path) -> None:
+    for name in _EXTENSION_STATE_FILES:
+        if (_extension_dir(old) / name).is_file():
+            shutil.copy2(_extension_dir(old) / name, _extension_dir(new) / name)
+    if (marker := _created_settings_marker(old)).is_file():
+        shutil.copy2(marker, _created_settings_marker(new))
+    # Settings may still name an earlier build's copy until ``enable`` moves them on.
+    if (legacy := _plugin_dir(old, _LEGACY_PLUGIN)).is_dir():
+        shutil.copytree(legacy, _plugin_dir(new, _LEGACY_PLUGIN))
+
+
+def _fsync_tree(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_file():
+            # Best effort: Windows syncs only a handle opened for writing.
+            try:
+                with path.open("rb+") as file:
+                    os.fsync(file.fileno())
+            except OSError:
+                pass
+
+
+def _remove_leftovers(root: Path) -> None:
+    now = time.time()
+    for prefix in (_STAGING_PREFIX, _REPLACED_PREFIX):
+        for leftover in root.parent.glob(f".{root.name}{prefix}*"):
+            try:
+                if now - leftover.stat().st_mtime > _LEFTOVER_AGE_S:
+                    shutil.rmtree(leftover)
+            except OSError:
+                pass
+
+
+def _publish(staged: Path, root: Path) -> None:
+    """Move ``staged`` to ``root`` with renames only, so the app never reads a half-written plugin.
+    Windows can't rename onto an existing directory, so the old one is moved aside first."""
+    replaced = root.with_name(f".{root.name}{_REPLACED_PREFIX}{uuid.uuid4().hex}")
+    had_old = root.exists()
+    if had_old:
+        os.replace(root, replaced)
+    try:
+        os.replace(staged, root)
+    except OSError:
+        if had_old:
+            os.replace(replaced, root)
+        raise
+    if had_old:
+        shutil.rmtree(replaced, ignore_errors=True)
+
+
+def write_plugin(config: PluginConfig, root: Path | None = None) -> Path:
+    """Write the marketplace, the plugin and its extension to ``root``; return ``root``. The whole
+    tree is written next to it first and then swapped in."""
+    root = root or plugin_root()
+    root.parent.mkdir(parents=True, exist_ok=True)
+    _remove_leftovers(root)
+    staged = root.with_name(f".{root.name}{_STAGING_PREFIX}{uuid.uuid4().hex}")
+    try:
+        _write_tree(config, staged)
+        if root.is_dir():
+            _carry_over(root, staged)
+        _fsync_tree(staged)
+        _publish(staged, root)
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
     return root
 
 

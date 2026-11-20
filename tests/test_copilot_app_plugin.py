@@ -1,7 +1,9 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -711,3 +713,93 @@ def test_install_leaves_another_marketplace_of_its_name_alone(home):
 
     assert not plugin.plugin_root().exists()
     assert json.loads(path.read_text())["extraKnownMarketplaces"] == {plugin.MARKETPLACE: foreign}
+
+
+class TestStagedWrite:
+    def _extension(self, root: Path) -> Path:
+        return root / "plugins" / plugin.PLUGIN / "extensions" / plugin.EXTENSION
+
+    def _siblings(self, root: Path) -> list[str]:
+        return sorted(p.name for p in root.parent.iterdir() if p.name.startswith(f".{root.name}"))
+
+    def test_a_reinstall_swaps_in_a_new_tree_and_keeps_the_extensions_state(self, home):
+        root = plugin.install(_config())
+        (self._extension(root) / "app-restart.json").write_text('{"digest": "d"}')
+        (self._extension(root) / "app-sync.lock").write_text("owner")
+
+        plugin.install(_config(profile="other"))
+
+        config = json.loads((self._extension(root) / "config.json").read_text())
+        assert config["tokenCommand"][-1] == "other"
+        assert (self._extension(root) / "app-restart.json").read_text() == '{"digest": "d"}'
+        assert not (self._extension(root) / "app-sync.lock").exists()
+        assert (root / "created-settings").is_file()
+        assert self._siblings(root) == []
+
+    def test_a_failed_write_leaves_the_installed_plugin_and_settings_alone(self, home, monkeypatch):
+        root = plugin.install(_config())
+        before = (self._extension(root) / "config.json").read_text()
+        settings = plugin.copilot_settings_path().read_text()
+        copies = []
+
+        real = shutil.copyfile
+
+        def failing_copy(src, dst):
+            copies.append(dst)
+            if len(copies) == 2:
+                raise OSError("disk full")
+            return real(src, dst)
+
+        monkeypatch.setattr(plugin.shutil, "copyfile", failing_copy)
+
+        with pytest.raises(OSError, match="disk full"):
+            plugin.install(_config(profile="other"))
+
+        assert (self._extension(root) / "config.json").read_text() == before
+        assert plugin.copilot_settings_path().read_text() == settings
+        assert self._siblings(root) == []
+
+    def test_a_first_install_that_fails_writes_no_settings(self, home, monkeypatch):
+        def fail(staged, root):
+            raise OSError("busy")
+
+        monkeypatch.setattr(plugin, "_publish", fail)
+
+        with pytest.raises(OSError, match="busy"):
+            plugin.install(_config())
+
+        assert not plugin.copilot_settings_path().exists()
+        assert not plugin.plugin_root().exists()
+
+    def test_a_failed_swap_puts_the_old_plugin_back(self, home, monkeypatch):
+        root = plugin.install(_config())
+        before = (self._extension(root) / "config.json").read_text()
+        real = os.replace
+
+        def replace(src, dst):
+            if ".staging-" in Path(src).name:
+                raise PermissionError("in use")
+            return real(src, dst)
+
+        monkeypatch.setattr(plugin.os, "replace", replace)
+
+        with pytest.raises(PermissionError):
+            plugin.write_plugin(_config(profile="other"))
+
+        assert (self._extension(root) / "config.json").read_text() == before
+        assert self._siblings(root) == []
+
+    def test_a_crashed_runs_leftovers_are_removed_once_old(self, home):
+        root = plugin.plugin_root()
+        root.parent.mkdir(parents=True, exist_ok=True)
+        old = root.with_name(f".{root.name}.staging-old")
+        fresh = root.with_name(f".{root.name}.replaced-fresh")
+        for leftover in (old, fresh):
+            (leftover / "x").mkdir(parents=True)
+        stale = time.time() - 3600
+        os.utime(old, (stale, stale))
+
+        plugin.write_plugin(_config())
+
+        assert not old.exists()
+        assert fresh.exists()
