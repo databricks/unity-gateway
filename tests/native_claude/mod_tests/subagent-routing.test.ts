@@ -924,3 +924,46 @@ for (const [label, response, exitCode] of [
     });
   }
 }
+
+for (const [label, selected] of [
+  ['seven-digit', 'anthropic-aigw-c442a48-system.ai.glm-5-3-flash[1m]'],
+  ['eight-digit', 'anthropic-aigw-77df06ea-system.ai.glm-5-3-flash[1m]'],
+] as const) {
+  test(`${label} gateway aliases match unwrapped 429 notices`, async ($, on) => {
+    const model = 'system.ai.glm-5-3-flash';
+    const alternative = 'system.ai.claude-haiku-5-5';
+    const requests: any[] = [];
+    on('clock.every', () => ({ value: { cancel: () => {} } }));
+    on('clock.now', () => ({ value: 10_000 }));
+    on('session.id', () => ({ value: 'session-1' }));
+    on('fs.write', () => ({ value: undefined }));
+    on('process.run', (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: requests.length === 1 ? selected : alternative, rationale: '',
+      }) } };
+    });
+    on('agent.spawn', (_, e) => ({
+      model: e.model === selected ? model : e.model!, agentId: `child-${e.tool_use_id}`,
+    }));
+    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    }) }));
+    on('prompt.submit', (_, e) => ({ text: e.text }));
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, agentId: 'parent-alias', ...originalInput });
+    expect((await launch('first')).result.model).toBe(model);
+    expect(requests[0].agent_id).toBe('parent-alias');
+    expect(requests[0].excluded_models).toBeUndefined();
+    await $.prompt.submit({
+      text: '<task-notification>\n<task-id>child-first</task-id>\n<status>failed</status>\n'
+        + '<summary>Agent "Inspect parser" failed: Agent terminated early due to an API error '
+        + `(error type rate_limit, HTTP 429, model sent to the API: ${model})</summary>\n</task-notification>`,
+      wait: false, origin: { kind: 'task-notification' },
+    });
+    expect((await launch('replacement')).result.model).toBe(alternative);
+    expect(requests.at(-1).agent_id).toBe('parent-alias');
+    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  });
+}

@@ -70,16 +70,11 @@ only when the turn is aborted. Nothing is drawn above the prompt and nothing is 
 Decisions are kept for the session; a plugin reload clears them from the screen, and the
 routing decision audit log is unchanged.
 A confirmed native background-task 429 excludes that model and equivalent aliases from
-new router requests for 60 seconds. Context-window hints such as `[1m]` identify the same
-model, including for custom deployments, whose namespaces remain distinct. The router chooses from the remaining candidates;
-no candidates or a routing failure denies the new spawn only while a cooldown remains
-active. Expiry is checked again after routing returns, so an expired cooldown allows the
-original call when routing fails. Resumes retain their native behavior. A notice received
-during routing also prevents an unsafe fallback or launch, and a rejected selection is
-removed from its routing card. This launch-local
-cooldown does not retry the failed child.
-Explicitly disabled routing keeps the original call. Outside cooldown, command failures
-and invalid responses also keep it and log a diagnostic.
+new router requests for 60 seconds. The router chooses from the remaining candidates;
+failed selection or no available candidate denies the new spawn while cooldown is active.
+The failed child is not retried. Resumes and explicitly disabled routing keep their native
+behavior. Outside cooldown, command failures and invalid responses preserve the original
+call and log a diagnostic.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the

@@ -1648,17 +1648,9 @@ no-mocking boundary and the Scenario/Expected docstring format.
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
-Native hook tests also cover confirmed subagent 429s: candidate exclusions, notifications
-with and without request IDs, refusal when routing fails or no candidate remains,
-notices received during routing failures, removal of rejected routing cards, cooldown
-expiry before and during routing (including the exact boundary and unavailable clocks),
-preserved non-cooldown denials, unchanged resumes/disabled routing, and the model reported
-to the parent.
-Python component tests verify that the outgoing router request excludes equivalent model
-aliases (including custom-deployment context hints) while preserving distinct namespaces,
-skips the request for malformed exclusions or when no candidates remain, and denies a
-missing routing decision during cooldown. Native process coverage checks the disabled
-router's explicit JSON response.
+Native hook and Python component tests cover rate-limit exclusions, model aliases
+(including seven- and eight-digit gateway prefixes), cooldown expiry, failed selections,
+and resume/disabled behavior. These checks use controlled inputs.
 
 The real session-control process call is covered by the live skill-toggle journeys;
 native component tests stub the subagent routing process protocol. No component

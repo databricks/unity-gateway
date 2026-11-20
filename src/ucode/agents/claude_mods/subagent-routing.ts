@@ -20,8 +20,7 @@ const unwrapGatewayModel = (model: string): string =>
   model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
 
 const canonicalModel = (model: string): string => {
-  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
-    .replace(/^databricks-claude-/, 'system.ai.claude-')
+  const original = unwrapGatewayModel(model).replace(/^databricks-claude-/, 'system.ai.claude-')
   const canonical = original.startsWith('system.ai.') ? original.slice('system.ai.'.length) : original
   return canonical.replace(/\[1m\]$/, '')
 }
