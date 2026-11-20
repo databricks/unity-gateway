@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -333,6 +334,81 @@ class TestOtelProxyEndToEnd:
         assert req.header("Authorization") == "Bearer per-user-otel-token"
         assert req.header("X-Databricks-AI-Gateway-Token") is None
         assert req.body == b"\x0a\x02\x08\x01"
+
+    @staticmethod
+    def _raw_request(proxy_url: str, request_line: str, *headers: str) -> int:
+        """Send an unnormalized request and return its status code."""
+        port = int(proxy_url.rsplit(":", 1)[1])
+        lines = [request_line, *headers, "Content-Length: 2", "Connection: close", "", "{}"]
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            sock.sendall("\r\n".join(lines).encode())
+            response = b""
+            while chunk := sock.recv(4096):
+                response += chunk
+        assert response.startswith(b"HTTP/"), response
+        return int(response.split(b" ", 2)[1])
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/../../api/2.0/clusters/list",
+            "/v1/../../api/2.0/clusters/list",
+            "/%2e%2e/%2e%2e/api/2.0/clusters/list",
+            "/v1/%252e%252e/%252e%252e/api/2.0/clusters/list",
+            "/api/2.0/clusters/list",
+        ],
+    )
+    def test_refuses_paths_outside_the_otlp_routes(self, make_gateway, path):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            status = self._raw_request(
+                proxy_url, f"POST {path} HTTP/1.1", f"Host: 127.0.0.1:{port}"
+            )
+        assert status == 404
+        assert gw.requests == []
+
+    @pytest.mark.parametrize("method", ["GET", "DELETE", "PUT"])
+    def test_refuses_methods_other_than_post(self, make_gateway, method):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            status = self._raw_request(
+                proxy_url, f"{method} /v1/traces HTTP/1.1", f"Host: 127.0.0.1:{port}"
+            )
+        assert status == 405
+        assert gw.requests == []
+
+    @pytest.mark.parametrize(
+        "extra_header",
+        [
+            "Origin: https://example.com",
+            "Cookie: session=1",
+            "Sec-Fetch-Site: cross-site",
+            "Host: example.com",
+            "Host: 127.0.0.1:1",
+        ],
+    )
+    def test_refuses_browsers_and_other_hosts(self, make_gateway, extra_header):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            headers = [] if extra_header.startswith("Host") else [f"Host: 127.0.0.1:{port}"]
+            status = self._raw_request(
+                proxy_url, "POST /v1/traces HTTP/1.1", *headers, extra_header
+            )
+        assert status == 403
+        assert gw.requests == []
+
+    def test_accepts_localhost_host_name(self, make_gateway):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            status = self._raw_request(
+                proxy_url, "POST /v1/traces HTTP/1.1", f"Host: localhost:{port}"
+            )
+        assert status == 200
+        assert [req.path for req in gw.requests] == ["/ai-gateway/otel/v1/traces"]
 
 
 @contextlib.contextmanager

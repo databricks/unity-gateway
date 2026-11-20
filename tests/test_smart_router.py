@@ -20,6 +20,30 @@ runner = CliRunner()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_hook_activates_in_fresh_process(tmp_path, agent):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{}")
+    result = subprocess.run(
+        [sys.executable, "-m", "ucode.smart_routing.orchestrator", "--agent", agent],
+        input=json.dumps({"hook_event_name": "UserPromptSubmit"}),
+        env={
+            **os.environ,
+            "SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0",
+            session_env.SESSION_ENV_VAR: str(controls),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert output["hookEventName"] == "UserPromptSubmit"
+    assert "Smart Router Orchestrator is on for this session." in output["additionalContext"]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_subagent_audit_mismatch_is_silent(monkeypatch, caplog, agent):
     caplog.set_level("DEBUG", logger="ucode.cli")
     audit = Mock(

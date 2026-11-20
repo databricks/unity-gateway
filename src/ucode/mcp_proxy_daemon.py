@@ -18,6 +18,7 @@ from typing import cast
 import anyio
 from anyio import to_thread
 
+from ucode import tls
 from ucode.databricks import get_databricks_token, resolve_pat_token
 from ucode.mcp_proxy import ProxyAuthError, _run, _unwrap_proxy_error
 from ucode.mcp_proxy_runtime import (
@@ -206,6 +207,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
 
 
 def main() -> None:
+    tls.apply()
     directory = Path(sys.argv[1])
     private_directory(directory)
     with (directory / "backend.lock").open("a+b") as lock:

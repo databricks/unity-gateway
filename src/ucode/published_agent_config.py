@@ -198,9 +198,6 @@ def claude_ug_values(
             env.pop(entry.path[1], None)
     # Set per launch (smart routing), never in the managed file.
     env.pop("ANTHROPIC_MODEL", None)
-    # Blank provider switches keep developers from routing around the gateway.
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["CLAUDE_CODE_USE_VERTEX"] = ""
     if mcp_entries:
         overlay[claude_agent.MANAGED_MCP_SETTINGS_KEY] = dict(mcp_entries)
     return overlay

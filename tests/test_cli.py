@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
-from ucode import agents
+from ucode import agents, tls
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
@@ -349,6 +349,13 @@ class TestProjectScripts:
 
 
 class TestUpgrade:
+    # What `tls.uv_environment()` hands uv; its contents are covered in test_tls.py.
+    _UV_ENV = {"UV_SYSTEM_CERTS": "1"}
+
+    @pytest.fixture(autouse=True)
+    def _uv_environment(self, monkeypatch):
+        monkeypatch.setattr(tls, "uv_environment", lambda: self._UV_ENV)
+
     @staticmethod
     def _ok() -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 0, stdout="", stderr="")
@@ -373,6 +380,7 @@ class TestUpgrade:
         assert run.call_args_list == [
             call(
                 ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+                env=self._UV_ENV,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -409,12 +417,13 @@ class TestUpgrade:
         assert run.call_args_list == [
             call(
                 ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+                env=self._UV_ENV,
                 check=False,
                 capture_output=True,
                 text=True,
             ),
             call(["uv", "tool", "uninstall", "ucode"], check=True),
-            call(["uv", "tool", "install", "--force", git_url], check=True),
+            call(["uv", "tool", "install", "--force", git_url], env=self._UV_ENV, check=True),
             call(
                 ["/tools/ug", "--help"],
                 check=False,
@@ -447,6 +456,7 @@ class TestUpgrade:
                 "--reinstall",
                 self._requirement("unity-gateway"),
             ],
+            env=self._UV_ENV,
             check=False,
             capture_output=True,
             text=True,
@@ -466,6 +476,7 @@ class TestUpgrade:
         assert result.exit_code == 1
         run.assert_called_once_with(
             ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+            env=self._UV_ENV,
             check=False,
             capture_output=True,
             text=True,
@@ -897,6 +908,8 @@ class TestSubcommandRouting:
         [
             (["codex", "--", "fix the parser"], ["fix the parser"], True),
             (["codex", "--"], [], True),
+            (["codex", "--", "--help"], ["--help"], False),
+            (["codex", "--", "--model=gpt-6.2-astra"], ["--model=gpt-6.2-astra"], False),
             (["claude", "--", "doctor"], ["doctor"], True),
             (
                 ["codex", "--model", "gpt-5.6-sol", "--", "fix the parser"],
@@ -1370,35 +1383,90 @@ class TestSubcommandRouting:
         assert any("one-time hook review" in note for note in notes) is routed
 
     @pytest.mark.parametrize(
+        "tool,model",
+        [("claude", "claude-opus-5-5"), ("codex", "gpt-6.2-astra")],
+    )
+    @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),
         [
-            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0, [], True),
             (None, [], True),
-            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.SUBAGENT_ORCH_V0, ["--disable-smart-routing"], False),
+            (None, ["--enable-smart-routing"], True),
             (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
         ],
-        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
+        ids=["subagent-version", "managed", "disable-flag", "enable-flag", "first-prompt-version"],
     )
     def test_forwarded_model_keeps_subagent_routing(
-        self, monkeypatch, version, launch_args, routed
+        self, monkeypatch, tool, model, version, launch_args, routed
     ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
+        )
         managed = None
         if version is None:
-            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+            if not launch_args:
+                managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         observed = []
-
         with _launch_policy_patches(managed) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
                 options.launch_smart_routing
             )
-            result = runner.invoke(
-                app, ["claude", *launch_args, "--", "--model", "system.ai.claude-opus-5-5"]
-            )
+            result = runner.invoke(app, [tool, *launch_args, "--", "--model", model])
 
         assert result.exit_code == 0, result.output
         assert observed == [routed]
+
+    @pytest.mark.parametrize(
+        "native_args",
+        [
+            ["--help"],
+            ["-h"],
+            ["--version"],
+            ["-V"],
+            ["--remote", "ws://127.0.0.1:1"],
+            ["--remote=ws://127.0.0.1:1"],
+            ["--model", "gpt-6.2-astra", "--help"],
+        ],
+    )
+    def test_codex_utility_options_do_not_enable_routing(self, monkeypatch, native_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", "--", *native_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+
+    @pytest.mark.parametrize("subcommand", ["exec", "review", "app"])
+    def test_codex_model_before_subcommand_does_not_enable_routing(self, monkeypatch, subcommand):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.redirect_output_to_stderr"),
+        ):
+            result = runner.invoke(app, ["codex", "--", "--model", "gpt-6.2-astra", subcommand])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+
+    @pytest.mark.parametrize(
+        "launch_args",
+        [
+            ["-c", "developer_instructions=isaac guidance"],
+            ["--", "-c", "developer_instructions=isaac guidance"],
+            ["--", "--config=developer_instructions=isaac guidance", "--search"],
+        ],
+        ids=["isaac-config", "forwarded-config", "config-and-search"],
+    )
+    def test_codex_native_options_keep_subagent_routing(self, monkeypatch, launch_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
 
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)

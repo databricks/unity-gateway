@@ -1237,6 +1237,7 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "questionary" },
     { name = "tomlkit" },
+    { name = "truststore" },
     { name = "typer" },
     { name = "websockets" },
 ]
@@ -1262,6 +1263,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.44.0,<2" },
     { name = "questionary", specifier = ">=2.0.0" },
     { name = "tomlkit", specifier = ">=0.13.0" },
+    { name = "truststore", specifier = ">=0.10.0" },
     { name = "typer", specifier = ">=0.26.0" },
     { name = "websockets", specifier = ">=13" },
 ]

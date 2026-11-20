@@ -27,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth, managed_files, metrics
+from ucode import custom_oauth, managed_files, metrics, tls
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -67,7 +67,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-from ucode.codex_config import is_codex_app_server_launch
+from ucode.codex_config import is_codex_app_server_launch, is_codex_interactive_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -4041,7 +4041,7 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     if not tool_args or explicit_prompt:
         return True
     if tool == AGENT_CODEX:
-        return is_codex_app_server_launch(tool_args)
+        return is_codex_interactive_launch(tool_args) or is_codex_app_server_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 
@@ -4807,7 +4807,11 @@ def _has_explicit_prompt(ctx: typer.Context) -> bool:
     if not isinstance(suffix, tuple):
         return False
     suffix_args = list(suffix)
-    return ctx.args == suffix_args and len(suffix_args) <= 1
+    return (
+        ctx.args == suffix_args
+        and len(suffix_args) <= 1
+        and (not suffix_args or not suffix_args[0].startswith("-"))
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -5470,6 +5474,16 @@ def configure(
             "choice (off by default).",
         ),
     ] = None,
+    tls_trust_store: Annotated[
+        str | None,
+        typer.Option(
+            "--tls-trust-store",
+            help="Certificates ug's own HTTPS requests trust: 'os' (the operating system's "
+            "trust store, the default, which includes a TLS-inspection proxy's root) or "
+            "'python' (Python's certificate chain). Saved for later `ug` commands; "
+            "UG_TLS_TRUST_STORE overrides it. Omit to keep the saved choice.",
+        ),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option(
@@ -5570,6 +5584,8 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    if tls_trust_store is not None:
+        _configure_tls_trust_store(tls_trust_store)
     if from_file is not None and not (global_scope and dry_run):
         print_err("--from-file previews a draft, so it requires --global --dry-run.")
         raise typer.Exit(2)
@@ -6229,6 +6245,7 @@ def upgrade_cmd() -> None:
     try:
         result = subprocess_cross_os.run(
             ["uv", "tool", "install", "--reinstall", upgrade_requirement],
+            env=tls.uv_environment(),
             check=False,
             capture_output=True,
             text=True,
@@ -6245,6 +6262,7 @@ def upgrade_cmd() -> None:
                 legacy_removed = True
                 subprocess_cross_os.run(
                     ["uv", "tool", "install", "--force", git_url],
+                    env=tls.uv_environment(),
                     check=True,
                 )
                 migrated = True
@@ -6343,7 +6361,26 @@ def _verify_upgraded_commands() -> None:
             )
 
 
+def _configure_tls_trust_store(requested: str) -> None:
+    """Save ``--tls-trust-store`` and switch this run to it before its first request."""
+    trust_store = requested.strip().lower()
+    if trust_store not in tls.TRUST_STORES:
+        print_err(f"--tls-trust-store must be one of: {', '.join(tls.TRUST_STORES)}.")
+        raise typer.Exit(2)
+    tls.save_trust_store(trust_store)
+    override = os.environ.get(tls.TRUST_STORE_ENV_VAR, "").strip().lower()
+    if override in tls.TRUST_STORES and override != trust_store:
+        print_warning(
+            f"{tls.TRUST_STORE_ENV_VAR}={override} overrides the saved TLS trust store "
+            f"'{trust_store}' while it is set."
+        )
+        return
+    tls.apply(trust_store)
+
+
 def main() -> None:
+    # `python -m ucode.cli` wrappers (Desktop MDM, the smart-router skill) skip the entry point.
+    tls.apply()
     app()
 
 
