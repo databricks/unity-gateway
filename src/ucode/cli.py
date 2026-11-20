@@ -4380,14 +4380,16 @@ def _launch_tool(
             and family_defaults is None
             and not launch_only_auto_picker
         )
-        # Provider launches resolve their service first: a relayed one skips this catalog
-        # (`relayed` below), and that's only known after a lookup, so only a source that
-        # never relays — a Unity Catalog location — starts the catalog here.
-        scoped_picker_catalog = (
-            tool == "claude"
-            and not provider
-            and bool(managed_parent_schema or (managed is None and bool(parent_schema)))
+        # A claude launch whose source is a Unity Catalog location — managed or
+        # developer-selected — always reads the picker catalog: this gate speculates it and
+        # `should_fetch_claude_picker_catalog` below joins it, so derive both from this one
+        # rule. Provider launches resolve their service first: a relayed one skips this
+        # catalog (`relayed` below), and that's only known after a lookup, so only a source
+        # that never relays — a Unity Catalog location — starts the catalog here.
+        claude_uc_picker_catalog = tool == "claude" and bool(
+            managed_parent_schema or (managed is None and bool(parent_schema))
         )
+        scoped_picker_catalog = claude_uc_picker_catalog and not provider
         if unmanaged_picker_catalog or scoped_picker_catalog:
             picker_catalog_started_profile = _get_catalog_profile(state)
             speculation_kwargs = (
@@ -4575,8 +4577,9 @@ def _launch_tool(
             tool == "claude"
             and not relayed
             and (
-                bool(managed_parent_schema or managed_provider)
-                or (managed is None and bool(explicit_provider or parent_schema))
+                claude_uc_picker_catalog
+                or bool(managed_provider)
+                or (managed is None and bool(explicit_provider))
                 or (
                     bool(provider)
                     and _routes_launch(
