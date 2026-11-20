@@ -47,6 +47,7 @@ class FakeApp:
         self.fail: str | None = None
         self.drop: str | None = None
         self.before_reply: dict[str, list[dict]] = {}
+        self.before_hello: list[dict] = []
         self._server = serve(self._handle, "127.0.0.1", 0, process_request=self._check)
         port = self._server.socket.getsockname()[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -101,6 +102,8 @@ class FakeApp:
         return {"type": "error", "message": f"unknown variant `{kind}`"}
 
     def _handle(self, websocket):
+        for frame in self.before_hello:
+            websocket.send(json.dumps(frame))
         websocket.send(json.dumps({"type": "server_hello", "connection_id": 1}))
         websocket.send(json.dumps({"type": "keep_awake_changed"}))
         for text in websocket:
@@ -519,6 +522,14 @@ def test_an_error_without_a_request_id_answers_the_pending_request(app):
 
     with pytest.raises(copilot_app.CopilotAppError, match="Invalid message format"):
         copilot_app.unregister()
+
+
+def test_an_error_from_before_a_request_does_not_answer_it(app, capsys):
+    app.before_hello = [{"type": "error", "message": "Invalid message format"}]
+    seed(app, _app_providers())
+
+    assert copilot_app.unregister() is True
+    assert "hasn't been verified" not in capsys.readouterr().out
 
 
 def test_an_app_without_the_healthcheck_is_an_unknown_version(app, capsys):

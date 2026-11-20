@@ -367,6 +367,9 @@ class _AppConnection:
 
         for attempt in range(6):
             request_id = f"ug-{uuid.uuid4().hex[:12]}"
+            # Requests run one at a time, so nothing received before this send answers it; an
+            # id-less error left over from earlier would otherwise read as a refusal.
+            self._backlog.clear()
             try:
                 self._ws.send(json.dumps({**message, "request_id": request_id}))
             except ConnectionClosed:
