@@ -579,23 +579,6 @@ class TestExtensionSource:
     def test_syntax(self, name):
         subprocess.run([NODE, "--check", str(PLUGIN_SOURCE / name)], check=True)
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "copilot_app_plugin.test.mjs",
-            "copilot_app_rows.test.mjs",
-            "copilot_app_remove.test.mjs",
-            "copilot_app_restart.test.mjs",
-        ],
-    )
-    def test_node_unit_tests(self, name):
-        result = subprocess.run(
-            [NODE, "--test", str(Path(__file__).with_name(name))],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-
     def test_the_extension_finishes_a_deferred_remove_for_ug(self, home, tmp_path):
         root = plugin.install(_config())
         plugin.defer_remove()

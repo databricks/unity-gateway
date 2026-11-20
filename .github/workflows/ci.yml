@@ -126,6 +126,10 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm test
+      # The GitHub Copilot app plugin's extension runs on the app's Node runtime, which has a
+      # global WebSocket (Node 22 and later).
+      - name: GitHub Copilot app plugin tests
+        run: node --test ../tests/*.test.mjs
       # ug packs the extension from these committed files, so they must match the sources.
       - name: Check the committed bundle is up to date
         run: |
