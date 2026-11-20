@@ -187,6 +187,17 @@ test("planRestart takes the app's pid from its run file", async () => {
   assert.match(calls[0].at(-1), /Get-Process -Id 4242/);
 });
 
+test("planRestart reads the app's pid from app-owner.pid, as the app writes it", async () => {
+  const home = emptyHome();
+  mkdirSync(join(home, "run"));
+  writeFileSync(join(home, "run", "ws.port"), "43339");
+  writeFileSync(join(home, "run", "app-owner.pid"), "4242");
+  const options = { home, platform: "linux", env: { DISPLAY: ":0" }, alive: (pid) => pid === 4242, exists: () => true };
+  assert.deepEqual(await planRestart(options), TARGET);
+  writeFileSync(join(home, "run", "app-owner.pid"), "not a pid");
+  assert.equal(await planRestart(options), null);
+});
+
 test("planRestart gives up without a display, the app's pid or a known launcher", async () => {
   const alive = () => true;
   const exists = () => true;

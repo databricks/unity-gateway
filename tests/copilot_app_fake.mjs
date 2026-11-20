@@ -79,8 +79,9 @@ export class FakeApp {
 
   writeRunFiles(home) {
     mkdirSync(join(home, "run"), { recursive: true });
-    writeFileSync(join(home, "run", "ws.port"), `${this.port}\n4242\n`);
-    writeFileSync(join(home, "run", "ws.token"), `${this.token}\n4242\n`);
+    writeFileSync(join(home, "run", "ws.port"), `${this.port}`);
+    writeFileSync(join(home, "run", "ws.token"), `${this.token}`);
+    writeFileSync(join(home, "run", "app-owner.pid"), "4242");
   }
 
   _upgrade(request, socket) {

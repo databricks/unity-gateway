@@ -13,7 +13,7 @@ export function copilotHome(env = process.env) {
   return env.COPILOT_HOME || join(homedir(), ".copilot");
 }
 
-// Each run file holds the value, then the app's pid.
+// A run file holds its value, and in some app versions the app's pid after it.
 function runFields(home, name) {
   return readFileSync(join(home, "run", name), "utf8").trim().split(/\s+/);
 }
@@ -22,13 +22,18 @@ function runValue(home, name) {
   return runFields(home, name)[0] || null;
 }
 
-export function readAppPid(home) {
+function pidField(home, name, index) {
   try {
-    const pid = Number.parseInt(runFields(home, "ws.port")[1], 10);
+    const pid = Number.parseInt(runFields(home, name)[index], 10);
     return Number.isInteger(pid) && pid > 1 ? pid : null;
   } catch {
     return null;
   }
+}
+
+// The app writes its own pid to run/app-owner.pid; ws.port carries none in app 1.4.2.
+export function readAppPid(home) {
+  return pidField(home, "app-owner.pid", 0) ?? pidField(home, "ws.port", 1);
 }
 
 export function readEndpoint(home) {
