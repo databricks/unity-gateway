@@ -7536,11 +7536,9 @@ def _stub_tls_apply(monkeypatch):
 
 @pytest.fixture
 def fresh_pooled_client(monkeypatch):
-    """A loopback test must not reuse the cached pooled client: the client captures its proxy
-    map when first built, so one an earlier test left cached — or one built under CI's
-    HTTP(S)_PROXY — would route these requests through that proxy. Clear the proxy env and
-    rebuild direct, and close the client the test built so its connections don't outlive it
-    (monkeypatch restores the previously cached one)."""
+    """A loopback test gets its own pooled client: clear the proxy env so the dispatch picks
+    the pooled path, pin it, build a fresh client, and close it afterwards so its connections
+    don't outlive the test (monkeypatch restores the previously cached one)."""
     _clear_proxy_env(monkeypatch)
     _force_pooled(monkeypatch)
     _stub_tls_apply(monkeypatch)

@@ -456,7 +456,6 @@ def _get_http_client() -> httpx.Client:
                 trust_env=False,
                 event_hooks={"response": [_remember_redirect]},
                 follow_redirects=True,
-                limits=limits,
                 cookies=CookieJar(policy=_RejectCookiesPolicy()),
             )
             _HTTP_CLIENT = client
@@ -484,6 +483,21 @@ class _PooledResponse:
 
     def read(self) -> bytes:
         return self._body
+
+
+def _os_error_reason(exc: BaseException) -> BaseException:
+    """The first OSError behind an httpx error (what urllib would have put in URLError.reason),
+    following __cause__/__context__; the deepest error when there's none."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    reason = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        reason = current
+        if isinstance(current, OSError):
+            return current
+        current = current.__cause__ or current.__context__
+    return reason
 
 
 def _http_open(request: urllib_request.Request, *, timeout: float):
@@ -543,25 +557,7 @@ def _http_open(request: urllib_request.Request, *, timeout: float):
             request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
         ) from exc
     except httpx.RequestError as exc:
-        pending: list[BaseException] = [exc]
-        seen: set[int] = set()
-        reason: BaseException = exc
-        while pending:
-            current = pending.pop()
-            if id(current) in seen:
-                continue
-            seen.add(id(current))
-            if isinstance(current, OSError):
-                reason = current
-                break
-            reason = current
-            if isinstance(current, BaseExceptionGroup):
-                pending.extend(current.exceptions)
-            if current.__cause__ is not None:
-                pending.append(current.__cause__)
-            elif current.__context__ is not None:
-                pending.append(current.__context__)
-        raise urllib_error.URLError(reason) from exc
+        raise urllib_error.URLError(_os_error_reason(exc)) from exc
     except httpx.HTTPError as exc:
         # Other transport-level httpx errors (the pool closed, a stream broke): urllib has no
         # counterpart, so surface them as network errors like the RequestError mapping above.
