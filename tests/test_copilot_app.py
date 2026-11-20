@@ -12,9 +12,9 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from websockets.sync.server import serve
 
-from ucode import copilot_app
-from ucode import copilot_app_plugin as plugin
 from ucode.agents.copilot import WIRE_ANTHROPIC, WIRE_COMPLETIONS, WIRE_RESPONSES, CopilotModel
+from ucode.agents.desktop import copilot_app
+from ucode.agents.desktop import copilot_app_plugin as plugin
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 
 WORKSPACE = "https://example.cloud.databricks.com"

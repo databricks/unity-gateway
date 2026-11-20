@@ -1,8 +1,8 @@
 """Registers ug's model providers in the GitHub Copilot desktop app.
 
 The app lists models in its picker only for providers written through the local WebSocket API its
-own window uses. ug's Copilot plugin (``ucode.copilot_app_plugin``) writes them there whenever the
-app runs, then re-supplies the same provider and model ids in every session and serves them from
+own window uses. ug's Copilot plugin (``copilot_app_plugin``) writes them there whenever the app
+runs, then re-supplies the same provider and model ids in every session and serves them from
 the AI Gateway, so both come from :func:`desired_providers`. This module also talks to the running
 app directly, to check the rows and to delete them at revert. The app publishes the port and a
 per-launch token in ``~/.copilot/run/``. The providers have fixed ids, so revert deletes them by
@@ -29,14 +29,14 @@ from ucode.agents.copilot import (
     copilot_catalog_model_id,
     model_labels,
 )
-from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
-from ucode.copilot_app_plugin import (
+from ucode.agents.desktop.copilot_app_plugin import (
     AppProviderRows,
     PluginModel,
     PluginProvider,
     Wire,
     copilot_settings_path,
 )
+from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.os_compatibility.system_cross_os import process_running
 from ucode.ui import print_warning
 
