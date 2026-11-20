@@ -1,7 +1,8 @@
 # Codex Smart Router recordings
 
-These recordings support the draft Smart Router footer PR. This media branch is separate from the feature branch so the videos do not enter the source change.
+These recordings support the Smart Router footer PR. This media branch is separate from the feature branch so the videos do not enter the source change.
 
+- `stable-0171.mp4` (19 seconds): real stable Codex 0.171.0 terminal showing ON/OFF/ON and UNKNOWN recovery, including badge foreground/background and weight checks. This local UI-only recording sends no model requests.
 - `native-badges.mp4` (19 seconds): real Codex 0.171.0-alpha.12 terminal showing the final green ON and gray OFF badges, live ON/OFF/ON updates, and UNKNOWN/read-recovery behavior. This local UI-only check sends no model requests. Routing controls are changed through the public UG CLI; malformed input and repair exercise read recovery.
 - `arclet-routing.mp4` (53 seconds): earlier real Arclet session against the requested Databricks workspace. A file read completes, then the installed Smart Router skill toggles OFF and ON in the same conversation. This recording predates the badge styling change and shows the earlier text-only indicator. Native one-time approval for the session-control write is visible.
 
