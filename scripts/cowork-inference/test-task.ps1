@@ -55,7 +55,8 @@ function Wait-Control {
         scans = $scans
         elapsedMilliseconds = $timer.ElapsedMilliseconds
     }
-    Save-UI 'wait-failed' -Root $Root
+    try { Save-UI 'wait-failed' -Root $Root }
+    catch { $report.waitFailure.snapshotError = $_.Exception.GetType().Name }
     $report.waitFailure.snapshotCompletedMilliseconds = $timer.ElapsedMilliseconds
     throw "Control not ready: $($Names -join ', ')"
 }
