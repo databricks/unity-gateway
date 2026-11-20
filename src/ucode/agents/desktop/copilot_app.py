@@ -47,6 +47,8 @@ VERIFIED_APP_VERSIONS = frozenset({"1.4.2"})
 PLACEHOLDER_KEY = "ug-placeholder-not-a-secret"
 _ID_NAMESPACE = uuid.UUID("6f1c2a4e-5d1b-4c39-9a57-0d2b8e7f4a11")
 _REQUEST_TIMEOUT_S = 15
+# `ug status` reads the app on every run, so a hung app may hold it up only briefly.
+_STATUS_TIMEOUT_S = 3
 
 AppStatus = Literal["registered", "outdated", "not_registered", "not_running"]
 
@@ -271,7 +273,9 @@ def state_providers(
 class _AppConnection:
     """One connection to the app's WebSocket API, matching each reply to its request."""
 
-    def __init__(self, home: Path, *, session_channels: bool = False) -> None:
+    def __init__(
+        self, home: Path, *, session_channels: bool = False, timeout: float = _REQUEST_TIMEOUT_S
+    ) -> None:
         from websockets.exceptions import InvalidHandshake, InvalidStatus
         from websockets.sync.client import connect
 
@@ -299,12 +303,15 @@ class _AppConnection:
         url = f"ws://127.0.0.1:{port}/?{query}"
         try:
             # No Origin: the app refuses any origin but its own window.
-            self._connection = connect(url, origin=None, compression=None, open_timeout=5)
+            self._connection = connect(
+                url, origin=None, compression=None, open_timeout=min(5, timeout)
+            )
             self._ws = self._connection.__enter__()
         except InvalidStatus as exc:
             raise CopilotAppError(f"The GitHub Copilot app refused ug ({exc}).") from None
         except (OSError, TimeoutError, InvalidHandshake):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
+        self._timeout = timeout
         self._backlog: list[dict[str, Any]] = []
         try:
             hello = self._wait(lambda message: message.get("type") == "server_hello")
@@ -342,8 +349,8 @@ class _AppConnection:
         ``CopilotAppNotRunning`` once the app closes the connection."""
         return self._next(time.monotonic() + timeout)
 
-    def _wait(self, matches, timeout: float = _REQUEST_TIMEOUT_S) -> dict[str, Any] | None:
-        deadline = time.monotonic() + timeout
+    def _wait(self, matches, timeout: float | None = None) -> dict[str, Any] | None:
+        deadline = time.monotonic() + (self._timeout if timeout is None else timeout)
         skipped: list[dict[str, Any]] = []
         try:
             while (message := self._next(deadline)) is not None:
@@ -426,8 +433,8 @@ def _models(app: _AppConnection, provider_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _connect(*, warn_version: bool = True) -> _AppConnection:
-    app = _AppConnection(copilot_home())
+def _connect(*, warn_version: bool = True, timeout: float = _REQUEST_TIMEOUT_S) -> _AppConnection:
+    app = _AppConnection(copilot_home(), timeout=timeout)
     try:
         version = _version(app)
     except CopilotAppNotRunning:
@@ -482,7 +489,7 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
     :class:`CopilotAppError` when the app refuses."""
     providers = list(providers)
     try:
-        app = _connect(warn_version=False)
+        app = _connect(warn_version=False, timeout=_STATUS_TIMEOUT_S)
     except CopilotAppNotRunning:
         return "not_running"
     try:

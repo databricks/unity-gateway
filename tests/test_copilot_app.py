@@ -591,3 +591,17 @@ def test_a_rejected_token_is_an_app_error(app):
 
     with pytest.raises(copilot_app.CopilotAppError, match="refused ug"):
         copilot_app.unregister()
+
+
+def test_status_waits_only_briefly_for_a_hung_app(app, monkeypatch):
+    waits = []
+    real_next = copilot_app._AppConnection._next
+
+    def next_message(self, deadline):
+        waits.append(deadline - copilot_app.time.monotonic())
+        return real_next(self, deadline)
+
+    monkeypatch.setattr(copilot_app._AppConnection, "_next", next_message)
+    copilot_app.status(copilot_app.desired_providers(WORKSPACE, CATALOG).app)
+
+    assert waits and max(waits) <= copilot_app._STATUS_TIMEOUT_S
