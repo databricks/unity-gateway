@@ -1749,9 +1749,9 @@ authorization for credentialed integration.
 
 The check runs only with `UG_STARTUP_ROUTE_VALIDATION=1`; launch and mod tests cover the default
 without it (no request, band from the first paint). `test_startup_validation.py` covers the background check with a controlled transport: an
-unsupported menu turns routing off for the session; HTTP errors, malformed responses,
+unsupported model list turns routing off for the session; HTTP errors, malformed responses,
 exceptions and a result past the 4 s deadline leave routing on; result-write failures are
 isolated. The smart-routing launch
-tests cover the resolved model/harness menu and show delayed HTTP does not hold Codex startup.
+tests cover the resolved model/harness list and show delayed HTTP does not hold Codex startup.
 Claude's native mod tests cover the band hold, the result handling and the 5 s fallback.
 These component tests do not establish live Gateway or classifier compatibility.

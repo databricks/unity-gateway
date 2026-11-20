@@ -1,5 +1,13 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { band, endStatusBandTurn, registerStatusBand, showStatusBand, validation } from './smart-routing-status.ts';
+import {
+  endStatusBandTurn,
+  hideStatusBand,
+  registerStatusBand,
+  settleStartupValidation,
+  showStatusBand,
+  skipStartupValidation,
+  startStartupValidation,
+} from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -172,12 +180,11 @@ const VALIDATION_POLL_MS = 100;
 const VALIDATION_WAIT_MS = 5000;
 
 async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
-  if (validation.isStarted) return;
-  validation.isStarted = true;
+  if (!startStartupValidation()) return;
   try {
     const controls = await $.env.get('UCODE_SESSION_ENV_FILE');
     if (typeof controls !== 'string' || !controls.endsWith('.json')) {
-      validation.isPending = false;
+      settleStartupValidation();
       $.ui.invalidate('ui.render');
       return;
     }
@@ -186,7 +193,7 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
     let poll: { cancel: () => void } | undefined;
     const finish = (): void => {
       complete = true;
-      validation.isPending = false;
+      settleStartupValidation();
       poll?.cancel();
       $.ui.invalidate('ui.render');
     };
@@ -203,7 +210,7 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
       }
       complete = true;
       if (result.routing_disabled === true) {
-        band.isVisible = false;
+        hideStatusBand();
         try {
           await setRouting($, options, false, false);
         } catch {}
@@ -218,14 +225,14 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
       });
     }
   } catch {
-    validation.isPending = false;
+    settleStartupValidation();
   }
 }
 
 export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
-  if (options.startupValidation !== '1') Object.assign(validation, { isStarted: true, isPending: false });
+  if (options.startupValidation !== '1') skipStartupValidation();
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
