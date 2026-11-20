@@ -132,6 +132,7 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
+  const showModel = options.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI !== '0'
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -264,7 +265,9 @@ export const registerSubagentRouting = (
       ...e,
       props: { ...e.props, tool: name },
     } : e)
-    if (!record && !pending.has(e.requestId)) return original
+    // The in-progress line names no model, so blind configs still show it; only the
+    // decided selection names the model and stays hidden when showModel is false.
+    if (record ? !showModel : !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
@@ -285,7 +288,8 @@ export const registerSubagentRouting = (
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
-  // also says routing is under way, timed from the oldest call still waiting.
+  // also says routing is under way, timed from the oldest call still waiting. Its text
+  // names no model, so blind configs show it too; only the decided selection is hidden.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
@@ -305,7 +309,7 @@ export const registerSubagentRouting = (
       if (ready.length) anchors.set(e.requestId, ready)
     }
     const ids = anchors.get(e.requestId)
-    if (!ids) return original
+    if (!showModel || !ids) return original
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
   })

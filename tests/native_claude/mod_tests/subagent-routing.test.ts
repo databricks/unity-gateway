@@ -17,6 +17,116 @@ const reply = (id: string) => ({
   props: { text: 'reply', isFirstOfReply: true },
 });
 
+for (const staticModel of [undefined, 'ug-auto-test']) {
+  test(`Auto hides routing details for lone and parallel calls (${staticModel ? 'static' : 'custom'} picker)`, {
+    options: {
+      ENABLE_SMART_ROUTER_AUTO_MODE: '1',
+      ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: '0',
+      ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+      autoPicker: JSON.stringify({
+        model: 'ug-auto-test', mainModel: 'system.ai.claude-sonnet-5', staticModel,
+        models: [{ model: 'system.ai.claude-sonnet-5', label: 'Sonnet', autoModel: 'ug-auto-test' }],
+      }),
+    },
+  }, async ($, on) => {
+    let release = () => {};
+    let routing = Promise.resolve();
+    const spawns: string[] = [];
+    on('session.id', () => ({ value: 'session-auto' }));
+    on('session.model', () => ({ value: 'ug-auto-test' }));
+    on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : e.name === 'ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI' ? '0' : undefined }));
+    on('clock.now', () => ({ value: 10_000 }));
+    on('clock.every', () => ({ value: { cancel: () => {} } }));
+    on('process.run', async () => {
+      await routing;
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: 'system.ai.glm-5-3-flash', rationale: 'Private routing reason',
+      }) } };
+    });
+    on('agent.spawn', ($, e) => {
+      spawns.push(e.model);
+      return { agentId: `child-${e.tool_use_id}`, model: 'system.ai.glm-5-3-flash' };
+    });
+    on('fs.write', () => ({ value: undefined }));
+    on('tool.call', () => ({ result: 'ok' }));
+    on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.component === 'Spinner' ? e.props.message ?? e.props.word : 'Native content'] }));
+    const hidden = /Selected Model|Launched Model|Reason:|glm-5-3-flash|Private routing reason|routed in/;
+    const spinner = { ...panel, component: 'Spinner' as const, requestId: 'auto-spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' as const } };
+    const check = async (event: Parameters<typeof $.ui.mount>[0]) => {
+      const ui = await $.ui.mount(event);
+      expect(await ui.find({ type: 'Text', text: hidden })).toBeUndefined();
+      if (event.component === 'Spinner') {
+        // The in-progress indicator names no model, so blind configs still show it.
+        expect(await ui.find({ type: 'Text', text: /Selecting a model|Selecting models for/ })).toBeDefined();
+      } else {
+        expect(await ui.find({ type: 'Text', text: 'Native content' })).toBeDefined();
+      }
+      await ui.unmount();
+    };
+    for (const ids of [['lone'], ['parallel-a', 'parallel-b']]) {
+      routing = new Promise<void>(resolve => { release = resolve; });
+      const calls = ids.map(id => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput }));
+      for (const id of ids) await check(row(id));
+      await check(spinner);
+      release();
+      await Promise.all(calls);
+      for (const id of ids) {
+        await $.agent.spawn({
+          tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
+          subagentType: 'Explore', parentModel: 'ug-auto-test',
+          provider: { plugin: 'engine', tier: 'core' }, background: false, fork: false,
+          name: id, permissionMode: 'default', parentAgentId: 'main', cwd: '/workspace',
+        });
+        await check(row(id));
+      }
+      await check(reply(`after-${ids[0]}`));
+    }
+    expect(spawns).toEqual(['system.ai.glm-5-3-flash', 'system.ai.glm-5-3-flash', 'system.ai.glm-5-3-flash']);
+  });
+}
+
+for (const [show, auto] of [['0', false], ['1', true], ['1', false]] as const) {
+  test(`the display flag controls routing details independently of Auto (${show}, ${auto})`, {
+    options: {
+      ENABLE_SMART_ROUTER_AUTO_MODE: auto ? '1' : '0',
+      ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: show,
+      autoPicker: auto ? JSON.stringify({
+        model: 'ug-auto-test', mainModel: 'system.ai.claude-sonnet-5',
+        models: [{ model: 'system.ai.claude-sonnet-5', label: 'Sonnet', autoModel: 'ug-auto-test' }],
+      }) : '',
+    },
+  }, async ($, on) => {
+    on('session.id', () => ({ value: 'session-display' }));
+    on('session.model', () => ({ value: 'ug-auto-test' }));
+    on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI' ? show : e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined }));
+    let release = () => {};
+    const routing = new Promise<void>(resolve => { release = resolve; });
+    on('process.run', async () => {
+      await routing;
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: 'system.ai.glm-5-3-flash', rationale: 'Display flag reason',
+      }) } };
+    });
+    on('tool.call', () => ({ result: 'ok' }));
+    on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.component === 'Spinner' ? e.props.message ?? e.props.word : 'Native content'] }));
+    const call = $.tool.call({ tool: 'Agent', tool_use_id: 'display-call', ...originalInput });
+    // While routing is under way the spinner says so, whatever the display flag says;
+    // only the decided model details follow the flag.
+    const spinner = { ...panel, component: 'Spinner' as const, requestId: 'display-spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' as const } };
+    const spinnerUi = await $.ui.mount(spinner);
+    expect(await spinnerUi.find({ type: 'Text', text: 'Selecting a model' })).toBeDefined();
+    await spinnerUi.unmount();
+    release();
+    await call;
+    const ui = await $.ui.mount(row('display-call'));
+    expect(await ui.find({ type: 'Text', text: 'Native content' })).toBeDefined();
+    for (const text of ['  ↳ Selected Model: ', 'glm-5-3-flash', 'Display flag reason']) {
+      expect(Boolean(await ui.find({ type: 'Text', text }))).toBe(show === '1');
+    }
+    await ui.unmount();
+  });
+}
+
 test('selected model displays the model name without a gateway alias', async ($, on) => {
   const models = [
     ['anthropic-aigw-77df06ea-system.ai.glm-5-3-flash', 'glm-5-3-flash'],

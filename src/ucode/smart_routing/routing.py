@@ -152,6 +152,7 @@ class SubagentNoticeConfig:
     display_model_mapper: Callable[[str], str] | None = None
     leading_newline: bool = False
     name_suffix: str = ""
+    show_message: bool = True
 
     def name(self, tool_input: dict[str, Any]) -> str | None:
         return _nonempty_string(tool_input.get(self.name_field))
@@ -383,7 +384,7 @@ def route_spawn_tool(
     notice_config: SubagentNoticeConfig,
     record_decision: Callable[[dict[str, Any], str, RoutingDecision, str], None] | None = None,
 ) -> dict[str, Any] | None:
-    """Route one subagent-spawn tool call, rewriting its ``model`` input."""
+    """Route one subagent-spawn call, omitting the notice when the config hides it."""
     route = resolve_spawn_route(
         payload,
         is_spawn_agent=is_spawn_agent,
@@ -395,19 +396,22 @@ def route_spawn_tool(
         return None
     if record_decision is not None:
         record_decision(payload, route.task, route.decision, route.routed_model)
-    # Include the same routing notice in both hook response fields.
-    routing_message = notice_config.message(
-        route.decision,
-        route.routed_model,
-        route.tool_input,
-    )
     output: dict[str, Any] = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",
         "updatedInput": {**route.tool_input, "model": route.routed_model},
-        "permissionDecisionReason": routing_message,
     }
-    return {"systemMessage": routing_message, "hookSpecificOutput": output}
+    result: dict[str, Any] = {"hookSpecificOutput": output}
+    if notice_config.show_message:
+        # Include the same routing notice in both hook response fields.
+        routing_message = notice_config.message(
+            route.decision,
+            route.routed_model,
+            route.tool_input,
+        )
+        output["permissionDecisionReason"] = routing_message
+        result["systemMessage"] = routing_message
+    return result
 
 
 def record_session_start(canary_path: Path, payload: dict[str, Any]) -> None:

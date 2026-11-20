@@ -101,6 +101,7 @@ def route_pre_tool_use(
     timeout: float = REQUEST_TIMEOUT_S,
     audit_decision: bool = False,
     provider: str | None = None,
+    show_notice: bool = True,
 ) -> dict[str, Any] | None:
     """Route one Codex ``spawn_agent`` call and rewrite its model."""
     record = None
@@ -146,7 +147,9 @@ def route_pre_tool_use(
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
-        notice_config=replace(SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix),
+        notice_config=replace(
+            SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix, show_message=show_notice
+        ),
         record_decision=record,
     )
 
