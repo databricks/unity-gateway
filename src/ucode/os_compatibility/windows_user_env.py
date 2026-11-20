@@ -4,7 +4,7 @@ Explorer get once it is told they changed."""
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 _KEY = "Environment"
 _HWND_BROADCAST = 0xFFFF
@@ -28,6 +28,27 @@ def _broadcast() -> None:
         5000,
         ctypes.byref(result),
     )
+
+
+def get_values(names: Iterable[str]) -> dict[str, str]:
+    """The current values of those of ``names`` that are set."""
+    if sys.platform != "win32":
+        return {}
+    import winreg
+
+    found: dict[str, str] = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _KEY, 0, winreg.KEY_QUERY_VALUE) as key:
+            for name in names:
+                try:
+                    value, _ = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    continue
+                if isinstance(value, str):
+                    found[name] = value
+    except FileNotFoundError:
+        pass
+    return found
 
 
 def set_values(values: Mapping[str, str]) -> tuple[bool, list[str]]:

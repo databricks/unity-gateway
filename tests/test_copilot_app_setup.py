@@ -952,3 +952,17 @@ def test_configure_copilot_app_windows_tracing_flag(monkeypatch):
         result = runner.invoke(app, ["configure", "--agents", "copilot", "--workspace", WS, flag])
         assert result.exit_code == 0, result.output
         assert agents_mod._copilot_app_windows_tracing is expected
+
+
+def test_a_tracing_write_failure_only_warns_on_revert(monkeypatch, capsys):
+    from ucode.agents.desktop import copilot_app_tracing
+
+    def fail():
+        raise RuntimeError("Failed to write config file: /home/u/.zshenv")
+
+    monkeypatch.setattr(copilot_app_tracing, "disable", fail)
+
+    assert desktop_setup.disable_copilot_app_tracing() is False
+    assert "Could not remove the GitHub Copilot app's tracing setup" in " ".join(
+        capsys.readouterr().out.split()
+    )

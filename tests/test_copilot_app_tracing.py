@@ -435,6 +435,25 @@ class TestTracingOnWindows:
         tracing.disable()
         assert values == {"PATH": "C:\\bin"}
 
+    def test_a_value_the_user_already_set_to_ugs_is_never_deleted(self, registry):
+        values, _ = registry
+        values["COPILOT_OTEL_ENABLED"] = "true"
+
+        tracing.enable(WS, PROVIDER, windows_opt_in=True)
+        tracing.enable(WS, PROVIDER, windows_opt_in=True)
+        tracing.disable()
+
+        assert values == {"PATH": "C:\\bin", "COPILOT_OTEL_ENABLED": "true"}
+
+    def test_status_tells_an_opted_in_setup_that_isnt_on_from_no_opt_in(self, registry):
+        values, _ = registry
+        values.update(ENV)
+
+        tracing.enable(WS, PROVIDER, windows_opt_in=True)
+
+        assert tracing.status(windows_opt_in=True) == "not_set_up"
+        assert tracing.status() == "windows_opt_in"
+
     def test_keeps_the_users_own_value_and_says_so(self, registry, capsys):
         values, _ = registry
         values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://collector.example.com"
