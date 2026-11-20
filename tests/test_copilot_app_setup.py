@@ -32,6 +32,7 @@ def _app_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
     monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: True)
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
+    monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lambda *args, **kwargs: False)
     monkeypatch.setattr("ucode.agents.copilot.agent_version", lambda binary: "1.0.91")
     monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug/bin/ug")
     monkeypatch.setattr(
@@ -184,6 +185,81 @@ class TestConfigure:
 
         assert not plugin.plugin_root().exists()
         assert "Skipped the GitHub Copilot app: No models" in _out(capsys)
+
+
+class TestManagedDefaultModel:
+    def _name(self, model_id):
+        rows = [row for p in copilot_app.state_providers(STATE).app for row in p.models]
+        return next(row["displayName"] for row in rows if row["wireModel"] == model_id)
+
+    def test_a_managed_default_in_the_app_gets_a_hint_only(self, capsys):
+        app_state = {**STATE, "copilot_default_model": "gpt-5-2"}
+
+        desktop_setup.configure_copilot_app(app_state, provider=None, location=None)
+
+        name = self._name("system.ai.gpt-5-2")
+        assert (
+            f"To start new chats on {name}, pick it in the GitHub Copilot app; Settings -> "
+            "Sessions -> Default model makes it stick."
+        ) in _out(capsys)
+        assert "defaultModel" not in json.dumps(_extension_config())
+        assert "defaultModel" not in _settings_path().read_text()
+
+    def test_no_hint_without_a_managed_default_the_app_has(self, capsys):
+        app_state = {**STATE, "copilot_default_model": "kimi-k3"}
+
+        desktop_setup.configure_copilot_app(app_state, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert "To start new chats on" not in _out(capsys)
+
+
+class TestSeatRelayProvider:
+    NOTE = (
+        "copilot-seats uses a seat subscription, which the GitHub Copilot app doesn't support "
+        "yet; use `ug copilot` or VS Code for it."
+    )
+
+    @pytest.fixture(autouse=True)
+    def _relay(self, monkeypatch):
+        self.checked = []
+
+        def uses_seat_relay(state, provider, *, tool):
+            self.checked.append((provider, tool))
+            return provider == "copilot-seats"
+
+        monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", uses_seat_relay)
+
+    def test_configure_skips_the_app_with_a_note(self, capsys):
+        desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
+
+        assert not plugin.plugin_root().exists()
+        assert self.NOTE in _out(capsys)
+        assert self.checked == [("copilot-seats", "vscode")]
+
+    def test_another_provider_service_is_set_up(self, capsys):
+        desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
+
+        assert plugin.status() == "installed"
+        assert "seat subscription" not in _out(capsys)
+
+    def test_status_notes_the_seat_subscription(self):
+        result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
+
+        assert result is not None
+        assert result.row == "plugin not installed, models skipped (seat subscription)"
+        assert result.warnings == (self.NOTE,)
+
+    def test_a_failed_lookup_reads_as_unknown(self, monkeypatch):
+        def lookup_fails(*args, **kwargs):
+            raise RuntimeError("Model provider service 'copilot-seats' was not found.")
+
+        monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lookup_fails)
+
+        result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
+
+        assert result is not None
+        assert result.row == "plugin not installed, models unknown (no models to compare)"
 
 
 class TestConfigureCopilotApp:

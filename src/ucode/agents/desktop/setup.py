@@ -16,7 +16,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from ucode.agents.copilot import claude_model_name
+from ucode.agents.copilot import CopilotModel, claude_model_name
 from ucode.agents.desktop import copilot_app, copilot_app_plugin
 from ucode.agents.desktop.claude import (
     can_initialize_claude_desktop_directory,
@@ -441,6 +441,37 @@ def copilot_settings_ignored_reason(path: Path | None = None) -> str | None:
     return None
 
 
+def copilot_app_seat_relay_note(provider: str) -> str:
+    return (
+        f"{provider} uses a seat subscription, which the GitHub Copilot app doesn't support yet; "
+        "use `ug copilot` or VS Code for it."
+    )
+
+
+def _uses_seat_relay(state: dict, provider: str) -> bool:
+    """Whether ``provider`` relays a GitHub Copilot seat. The relay's swap header needs a fresh
+    value per request, and the app's provider headers are fixed."""
+    from ucode.agents.copilot import uses_seat_relay
+
+    return uses_seat_relay(state, provider, tool="vscode")
+
+
+def _managed_default_display_name(
+    state: dict, catalog: list[CopilotModel], desired: copilot_app.DesiredProviders
+) -> str | None:
+    """The app's name for the workspace's managed default model, when the app has a row for it.
+    ug doesn't set the app's default: the app keeps that per user."""
+    from ucode.agents.vscode import managed_default_model
+
+    if not (default := managed_default_model(state, catalog)):
+        return None
+    for app_provider in desired.app:
+        for row in app_provider.models:
+            if row["wireModel"] == default:
+                return row["displayName"]
+    return None
+
+
 def configure_copilot_app(state: dict, *, provider: str | None, location: str | None) -> None:
     """Install ug's plugin in the app with the models the Copilot CLI was configured with.
 
@@ -449,12 +480,18 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return
     _cleanup_copilot_app_leftover()
+    from ucode.agents.vscode import copilot_models
+
     try:
         state = _with_expanded_sources(copilot_app_state(state))
-        desired = copilot_app.state_providers(state, provider=provider, location=location)
+        if provider and _uses_seat_relay(state, provider):
+            print_warning(copilot_app_seat_relay_note(provider))
+            return
+        catalog = copilot_models(state, provider, location, agent="the GitHub Copilot app")
     except RuntimeError as exc:
         print_warning(f"Skipped the GitHub Copilot app: {exc}")
         return
+    desired = copilot_app.desired_providers(state["workspace"], catalog, provider_service=provider)
     try:
         copilot_app_plugin.install(copilot_app_plugin_config(state, desired))
     except copilot_app_plugin.SettingsError as exc:
@@ -482,6 +519,11 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
         )
     print_success("GitHub Copilot app: installed ug's plugin with the Databricks models.")
     print_note("Open (or restart) the GitHub Copilot app to load the Databricks models.")
+    if name := _managed_default_display_name(state, catalog, desired):
+        print_note(
+            f"To start new chats on {name}, pick it in the GitHub Copilot app; Settings -> "
+            "Sessions -> Default model makes it stick."
+        )
 
 
 COPILOT_APP_REMOVAL_PENDING = (
@@ -593,17 +635,21 @@ def copilot_app_status(
         return None
     if plugin_status == "removal_pending":
         return CopilotAppStatus(COPILOT_APP_REMOVAL_PENDING)
+    warnings: list[str] = []
     try:
-        desired = copilot_app.state_providers(
-            _with_expanded_sources(state), provider=provider, location=location
-        )
-        registration = copilot_app.status(desired.app)
+        if provider and _uses_seat_relay(state, provider):
+            registration = "skipped (seat subscription)"
+            warnings.append(copilot_app_seat_relay_note(provider))
+        else:
+            desired = copilot_app.state_providers(
+                _with_expanded_sources(state), provider=provider, location=location
+            )
+            registration = copilot_app.status(desired.app)
     except copilot_app.CopilotAppError as exc:
         registration = f"unknown ({exc})"
     except RuntimeError:
         registration = "unknown (no models to compare)"
     plugin_label = _COPILOT_PLUGIN_LABELS[plugin_status]
-    warnings: list[str] = []
     ignored = copilot_settings_ignored_reason() if plugin_status != "invalid_settings" else None
     if ignored:
         plugin_label += ", ignored"
