@@ -11,6 +11,7 @@ const ROUTED = {
 };
 const VALIDATED = { ...ROUTED, startupValidation: '1' };
 const OFF = '{"ENABLE_SMART_ROUTING_V2":"0","ENABLE_SMART_ROUTING_SUBAGENT_ONLY":"0","ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}';
+const WARNING = "This session's model list isn't supported by smart router";
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 const abovePrompt = {
   plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
@@ -85,7 +86,8 @@ for (const { name, result, routed } of cases) {
     await clock.advance(100);
     const shown = JSON.stringify(await ui.drawn());
     expect(shown).toContain('host content');
-    expect(shown.includes('unity gateway smart router')).toBe(routed);
+    expect(shown).toContain('unity gateway smart router');
+    expect(shown.includes(WARNING)).toBe(!routed);
     expect(await hint($)).toBe(routed ? 'smart router ON' : 'smart router OFF');
     expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
     expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
@@ -143,11 +145,12 @@ test('a session without controls shows the band once session start runs', { opti
 });
 
 const turnCases = [
-  { name: 'a turn that ends while the check is pending does not hide the band', endsBeforeResult: true },
-  { name: 'a band that appears mid-turn hides when that turn ends', endsBeforeResult: false },
+  { name: 'a turn that ends while the check is pending does not hide the band', endsBeforeResult: true, routed: true },
+  { name: 'a band that appears mid-turn hides when that turn ends', endsBeforeResult: false, routed: true },
+  { name: 'the unsupported warning hides when the next turn ends', endsBeforeResult: true, routed: false },
 ];
 
-for (const { name, endsBeforeResult } of turnCases) {
+for (const { name, endsBeforeResult, routed } of turnCases) {
   test(name, { options: VALIDATED }, async ($, on) => {
     const { clock, files } = engine(on);
     on('prompt.submit', ($, e) => ({ text: e.text }));
@@ -156,9 +159,15 @@ for (const { name, endsBeforeResult } of turnCases) {
     await $.session.start(start);
     await $.prompt.submit({ text: 'early prompt' });
     if (endsBeforeResult) await $.turn.complete({ answer: 'done' });
-    files['/session/env.validation.json'] = '{"routing_disabled":false}';
+    if (!routed) files['/session/env.json'] = OFF;
+    files['/session/env.validation.json'] = JSON.stringify({ routing_disabled: !routed });
     await clock.advance(100);
-    expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : WARNING);
+    if (!routed) {
+      await $.prompt.submit({ text: 'next prompt' });
+      await $.turn.complete({ answer: 'done' });
+      expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+    }
     if (!endsBeforeResult) {
       await $.turn.complete({ answer: 'done' });
       expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');

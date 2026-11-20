@@ -4,10 +4,11 @@ import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
+const UNSUPPORTED_WARNING = "⚠ This session's model list isn't supported by smart router"
 
 // The band shows once the startup check finishes and after each toggle, and hides once the
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
-const band = { isVisible: true, isHideArmed: false }
+const band = { isVisible: true, isHideArmed: false, isUnsupported: false }
 let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the startup check settles;
 // an unsupported model list turns routing off and must never flash ON.
@@ -21,6 +22,7 @@ export function skipStartupValidation(): void {
 export function showStatusBand(): void {
   band.isVisible = true
   band.isHideArmed = false
+  band.isUnsupported = false
 }
 
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
@@ -74,8 +76,8 @@ export function settleStartupValidation(): void {
   validation.isPending = false
 }
 
-export function hideStatusBand(): void {
-  band.isVisible = false
+export function warnUnsupportedModelList(): void {
+  band.isUnsupported = true
 }
 
 export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
@@ -117,8 +119,10 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
 
     const pill = enabled
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
-      : Text({ bold: true, color: 'black', backgroundColor: 'gray', children: [' OFF '] })
-    const trailer = enabled
+      : Text({ bold: true, color: 'black', backgroundColor: band.isUnsupported ? 'yellow' : 'gray', children: [' OFF '] })
+    const trailer = band.isUnsupported
+      ? Text({ color: 'yellow', children: [UNSUPPORTED_WARNING] })
+      : enabled
       ? Text({
           dimColor: true,
           italic: true,

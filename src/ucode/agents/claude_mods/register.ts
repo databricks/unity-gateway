@@ -1,12 +1,12 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import {
   endStatusBandTurn,
-  hideStatusBand,
   registerStatusBand,
   settleStartupValidation,
   showStatusBand,
   skipStartupValidation,
   startStartupValidation,
+  warnUnsupportedModelList,
 } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
@@ -312,7 +312,7 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
       }
       complete = true;
       if (result.routing_disabled === true) {
-        hideStatusBand();
+        warnUnsupportedModelList();
         try {
           await setRouting($, options, false, false);
         } catch {}
