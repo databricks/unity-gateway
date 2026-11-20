@@ -15,6 +15,8 @@ without changing the model's protocol or user catalog. The native v2 assignment 
 starts with code-mode tools disabled in the user's catalog, then verifies the exact
 assignment reaches the router and child. Encrypted or missing assignments must never
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
+Component checks also cover catalog precedence, authenticated model-service metadata,
+and a warning with continued launch if the optional session catalog cannot be built or written.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.

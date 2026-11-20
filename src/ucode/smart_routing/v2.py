@@ -1084,17 +1084,27 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
 
 
 def _codex_routing_catalog(
-    binary: str, catalog_path: str | None, models: list[str], output: Path
+    binary: str,
+    catalog_path: str | Path | None,
+    models: list[str],
+    output: Path,
+    *,
+    workspace: str,
+    get_token: Callable[[], str],
 ) -> str:
     from ucode.agents.codex_catalog import prepare_codex_catalog
 
     catalog = (
         read_json_safe(Path(catalog_path))
         if catalog_path
-        else prepare_codex_catalog(binary, models)
+        else prepare_codex_catalog(binary, models, workspace=workspace, get_token=get_token)
     )
     entries = catalog.get("models") if isinstance(catalog, dict) else None
-    if not isinstance(entries, list) or not entries:
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or not all(isinstance(m, dict) for m in entries)
+    ):
         raise RuntimeError("Cannot load the Codex model catalog for plaintext task routing.")
     # Native model metadata otherwise overrides the launch's code-mode setting.
     for model in entries:
@@ -1125,7 +1135,8 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
+    token = launch_token(state, workspace)
+    os.environ[OAUTH_TOKEN_ENV_VAR] = token
     if available_models is None:
         available_models = custom_catalog_models() or _cached_routing_models(state)
     if not available_models:
@@ -1144,9 +1155,6 @@ def launch_codex(
             custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
             managed_http_headers=state.get("codex_http_headers"),
         )
-        catalog_path = custom_catalog_path()
-        if catalog_path is not None:
-            overlay["model_catalog_json"] = str(catalog_path)
     else:
         overlay = dict(launch_config)
         if not app_server_launch:
@@ -1164,12 +1172,20 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
-    overlay["model_catalog_json"] = _codex_routing_catalog(
-        binary,
-        overlay.get("model_catalog_json"),
-        list(dict.fromkeys([*available_models, start_model])),
-        session_env_path.with_suffix(".models.json"),
-    )
+    try:
+        overlay["model_catalog_json"] = _codex_routing_catalog(
+            binary,
+            overlay.get("model_catalog_json") or custom_catalog_path(),
+            list(dict.fromkeys([*available_models, start_model])),
+            session_env_path.with_suffix(".models.json"),
+            workspace=workspace,
+            get_token=lambda: token,
+        )
+    except (OSError, RuntimeError) as exc:
+        print_warning(
+            f"Could not enable plaintext Codex task routing: {exc} "
+            "Encrypted subagent assignments will keep their requested model."
+        )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)

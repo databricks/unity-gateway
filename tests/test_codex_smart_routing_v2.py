@@ -21,7 +21,7 @@ def native_catalog(monkeypatch):
     monkeypatch.setattr(
         codex_catalog,
         "prepare_codex_catalog",
-        lambda binary, names: {
+        lambda binary, names, *, workspace, get_token: {
             "models": [{"slug": name, "multi_agent_version": "v2"} for name in names]
         },
     )
@@ -44,7 +44,9 @@ def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
     source.write_text(json.dumps(original))
     before = source.read_bytes()
     output = tmp_path / "session.json"
-    assert v2._codex_routing_catalog("codex", str(source), [], output) == str(output)
+    assert v2._codex_routing_catalog(
+        "codex", str(source), [], output, workspace=WS, get_token=lambda: "token"
+    ) == str(output)
     expected = json.loads(before)
     for model in expected["models"]:
         model["multi_agent_tools_in_code_mode"] = True
@@ -54,15 +56,23 @@ def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
 
 def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path, monkeypatch):
     calls = []
+    token_calls = []
 
-    def prepare(binary, names):
-        calls.append((binary, names))
+    def get_token():
+        token_calls.append(True)
+        return "launch-token"
+
+    def prepare(binary, names, *, workspace, get_token):
+        calls.append((binary, names, workspace, get_token, get_token()))
         return {"models": [{"slug": names[0], "multi_agent_version": "v2"}]}
 
     monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", prepare)
     output = tmp_path / "session.json"
-    v2._codex_routing_catalog("/native/codex", None, ["model-a"], output)
-    assert calls == [("/native/codex", ["model-a"])]
+    v2._codex_routing_catalog(
+        "/native/codex", None, ["model-a"], output, workspace=WS, get_token=get_token
+    )
+    assert calls == [("/native/codex", ["model-a"], WS, get_token, "launch-token")]
+    assert token_calls == [True]
     assert json.loads(output.read_text())["models"][0] == {
         "slug": "model-a",
         "multi_agent_version": "v2",
@@ -72,7 +82,25 @@ def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path
 
 def test_plaintext_catalog_rejects_unreadable_source(tmp_path):
     with pytest.raises(RuntimeError, match="Cannot load the Codex model catalog"):
-        v2._codex_routing_catalog("codex", str(tmp_path / "missing"), [], tmp_path / "out")
+        v2._codex_routing_catalog(
+            "codex",
+            str(tmp_path / "missing"),
+            [],
+            tmp_path / "out",
+            workspace=WS,
+            get_token=lambda: "token",
+        )
+
+
+@pytest.mark.parametrize("row", [None, "not-a-model"])
+def test_plaintext_catalog_rejects_non_object_rows(tmp_path, row):
+    source = tmp_path / "invalid.json"
+    source.write_text(json.dumps({"models": [row]}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Cannot load the Codex model catalog"):
+        v2._codex_routing_catalog(
+            "codex", source, [], tmp_path / "out", workspace=WS, get_token=lambda: "token"
+        )
 
 
 def test_smart_routing_switch_message_is_boxed():
@@ -584,10 +612,69 @@ class TestLaunchCodex:
         }
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
-    @pytest.mark.parametrize("source_model", [None, "mps-primary"])
-    def test_app_server_launch_keeps_the_source_launch_model(self, monkeypatch, source_model):
+    @pytest.mark.parametrize(
+        ("source_model", "catalog_source", "launch_source", "failure"),
+        [
+            (None, None, None, None),
+            ("mps-primary", None, None, None),
+            (None, "managed", None, None),
+            (None, "user", None, None),
+            (None, "managed", "explicit", None),
+            (None, None, None, "builder"),
+            (None, "managed", "explicit", "write"),
+        ],
+        ids=[
+            "default-model",
+            "explicit-model",
+            "managed-catalog",
+            "user-catalog",
+            "launch-catalog-wins",
+            "builder-failure-keeps-launch",
+            "write-failure-keeps-catalog",
+        ],
+    )
+    def test_app_server_launch_keeps_the_source_launch_model(
+        self, tmp_path, monkeypatch, source_model, catalog_source, launch_source, failure
+    ):
         launches = []
-        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+        token_calls = []
+
+        def get_token(*_args, **_kwargs):
+            token_calls.append(True)
+            return "token"
+
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
+
+        catalogs = {}
+        for name in (catalog_source, launch_source):
+            if name and name not in catalogs:
+                path = tmp_path / f"{name}.json"
+                path.write_text(
+                    json.dumps({"models": [{"slug": f"{name}-model", "source": name}]}),
+                    encoding="utf-8",
+                )
+                catalogs[name] = path
+        monkeypatch.setattr(v2, "custom_catalog_path", lambda: catalogs.get(catalog_source))
+        session_env_path = tmp_path / "session.env"
+        monkeypatch.setattr(v2, "_prepare_smart_router_session", lambda _agent: session_env_path)
+        monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, "python")
+
+        warnings = []
+        monkeypatch.setattr(v2, "print_warning", warnings.append)
+        builder_calls = []
+        if failure == "builder":
+
+            def fail_builder(binary, names, *, workspace, get_token):
+                builder_calls.append((workspace, get_token()))
+                raise RuntimeError("catalog builder failed")
+
+            monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", fail_builder)
+        elif failure == "write":
+
+            def fail_write(*_args, **_kwargs):
+                raise OSError("catalog write failed")
+
+            monkeypatch.setattr(v2, "write_json_file", fail_write)
 
         def hand_off(argv):
             launches.append(argv)
@@ -597,8 +684,10 @@ class TestLaunchCodex:
         launch_config = {"model_provider": "Databricks"}
         if source_model:
             launch_config["model"] = source_model
+        if launch_source:
+            launch_config["model_catalog_json"] = str(catalogs[launch_source])
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
                 {"workspace": WS},
                 ["app-server"],
@@ -609,10 +698,46 @@ class TestLaunchCodex:
                 available_models=["mps-primary"],
             )
 
+        assert exc.value.code == 0
         [argv] = launches
         assert argv[-1] == "app-server"
         config = tomllib.loads("\n".join(argv[1:-1][1::2]))
         assert config.get("model") == source_model
+
+        output = session_env_path.with_suffix(".models.json")
+        if failure == "builder":
+            assert "model_catalog_json" not in config
+            assert not output.exists()
+            assert token_calls == [True]
+            assert builder_calls == [(WS, "token")]
+        elif failure == "write":
+            assert config["model_catalog_json"] == str(catalogs["explicit"])
+            assert not output.exists()
+            assert json.loads(catalogs["explicit"].read_text(encoding="utf-8")) == {
+                "models": [{"slug": "explicit-model", "source": "explicit"}]
+            }
+        elif catalog_source or launch_source:
+            expected_source = launch_source or catalog_source
+            assert Path(config["model_catalog_json"]) == output
+            assert json.loads(output.read_text(encoding="utf-8")) == {
+                "models": [
+                    {
+                        "slug": f"{expected_source}-model",
+                        "source": expected_source,
+                        "multi_agent_tools_in_code_mode": True,
+                    }
+                ]
+            }
+            assert json.loads(catalogs[expected_source].read_text(encoding="utf-8")) == {
+                "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
+            }
+
+        if failure:
+            assert len(warnings) == 1
+            assert "Could not enable plaintext Codex task routing" in warnings[0]
+            assert f"catalog {failure} failed" in warnings[0]
+        else:
+            assert warnings == []
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
