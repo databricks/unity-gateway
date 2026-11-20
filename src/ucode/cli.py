@@ -4412,7 +4412,12 @@ def _launch_tool(
             None sends the caller to the serial fetch with the live token."""
             if picker_catalog_future is None or picker_catalog_started_profile != catalog_profile:
                 return None
-            speculative = picker_catalog_future.result()
+            try:
+                speculative = picker_catalog_future.result()
+            except Exception:
+                # The speculation is best effort: a failed background token or catalog fetch
+                # falls back to the serial fetch on the live token, never fails the launch.
+                return None
             if speculative.error_msg:
                 # The speculative request rode a token fetched before configure's auth step, so
                 # its failure may be stale credentials that step repaired; refetch with the live
