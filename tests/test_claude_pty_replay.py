@@ -355,6 +355,7 @@ try:
         defer_model_setting=defer,
         abandon_model_setting=abandon,
         confirm_manual_model_setting=guard.confirm_manual_choice,
+        cancel_manual_model_setting=guard.cancel_manual_choice,
         log_path=root / "routing.log",
     )
 finally:
@@ -554,6 +555,108 @@ capture_path.write_text(json.dumps({
             == {"model": "haiku", "unrelated": "preserved"}
         )
         assert ("Resend your prompt" in capfd.readouterr().out) == (not replay)
+
+    @pytest.mark.parametrize("command", [b"/help\r", b"/compact\r", b"/clear\r"])
+    def test_unrelated_command_preserves_another_sessions_recovery(
+        self, replay_model_switch, tmp_path, command
+    ):
+        body = (
+            f"COMMAND = {command!r}\n"
+            + """\
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+os.write(1, b"Set model to sonnet\\n")
+paste = read_until(b"\\x1b[201~")
+assert b"\\x1b[200~hello\\x1b[201~" in paste
+assert os.read(0, 1) == b"\\r"
+assert send_hook(socket_path, "hello")["action"] == "allow"
+deadline = time.monotonic() + 3
+while not (test_dir / "restored").exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert (test_dir / "restored").exists()
+assert json.loads(settings.read_text())["model"] == "haiku"
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("opus")
+    (test_dir / "ready").touch()
+    command = read_until(b"\\r")
+    assert command == COMMAND
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    assert other.is_routed()
+    assert other.restore()
+    capture_path.write_text(json.dumps({
+        "command": command.hex(), "settings_while_running": json.loads(settings.read_text()),
+    }))
+finally:
+    other.finish()
+"""
+        )
+        with _stdin_after(tmp_path / "ready", [command]):
+            capture, settings, _ = replay_model_switch(body)
+
+        assert capture["command"] == command.hex()
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
+    @pytest.mark.parametrize("completion", [b"Kept model as sonnet\n", b"Model switch cancelled\n"])
+    def test_cancelled_manual_switch_releases_another_sessions_recovery(
+        self, replay_model_switch, tmp_path, completion
+    ):
+        body = (
+            f"COMPLETION = {completion!r}\n"
+            + """\
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+os.write(1, b"Set model to sonnet\\n")
+read_until(b"\\x1b[201~")
+assert os.read(0, 1) == b"\\r"
+assert send_hook(socket_path, "hello")["action"] == "allow"
+deadline = time.monotonic() + 3
+while not (test_dir / "restored").exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert (test_dir / "restored").exists()
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("sonnet")
+    (test_dir / "ready").touch()
+    assert read_until(b"\\r") == b"/model opus\\r"
+    settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+    assert other.restore() is False
+    os.write(1, COMPLETION)
+    deadline = time.monotonic() + 3
+    while not other.restore() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert json.loads(settings.read_text())["model"] == "haiku"
+    assert other.begin("fable")
+    assert other.restore()
+    capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+finally:
+    other.finish()
+"""
+        )
+        with _stdin_after(tmp_path / "ready", [b"/model opus\r"]):
+            capture, settings, _ = replay_model_switch(body)
+
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
 
     @pytest.mark.parametrize(
         ("chunks", "fail_handoff", "after_submission"),
@@ -835,21 +938,24 @@ class TestManualModelConfirmation:
             (
                 "haiku",
                 b"SetmodeltoClaudeHaiku5.5andsavedasyourdefaultfornewsessions\r\r\n",
-                True,
+                "confirmed",
             ),
-            ("haiku", b"Set model to haiku\n", True),
-            ("haiku", b"SetmodeltoSonnet5.5andsavedasyourdefaultfornewsessions\r\n", False),
-            ("haiku", b"SetmodeltoClaudeHaiku5.5", False),
-            ("haiku", b"Set model to haiku-other\n", False),
-            ("not-a-model", b"Could not set model to not-a-model\n", False),
-            ("system.ai.custom", b"Model set to system.ai.custom\n", True),
-            ("system.ai.custom", b"Model set to Custom Display\n", False),
+            ("haiku", b"Set model to haiku\n", "confirmed"),
+            ("haiku", b"SetmodeltoSonnet5.5andsavedasyourdefaultfornewsessions\r\n", None),
+            ("haiku", b"SetmodeltoClaudeHaiku5.5", None),
+            ("haiku", b"Set model to haiku-other\n", None),
+            ("not-a-model", b"Could not set model to not-a-model\n", None),
+            ("system.ai.custom", b"Model set to system.ai.custom\n", "confirmed"),
+            ("system.ai.custom", b"Model set to Custom Display\n", None),
+            ("opus", b"Kept model as sonnet\n", "cancelled"),
+            ("sonnet", b"Kept model as sonnet\n", "cancelled"),
+            ("opus", b"Model switch cancelled\n", "cancelled"),
         ],
     )
     def test_requires_a_complete_matching_native_result(self, model, output, expected):
         confirmation = claude_pty.ManualModelConfirmation(model)
         observations = [confirmation.observe(bytes([byte])) for byte in output]
-        assert any(observations) is expected
+        assert next((result for result in observations if result is not None), None) == expected
 
 
 class TestModelSwitchInput:
@@ -869,22 +975,37 @@ class TestModelSwitchInput:
     def test_fragmented_navigation_and_terminal_replies_are_not_edits(self, sequence):
         state = claude_pty.ModelSwitchInput()
         for byte in sequence:
-            assert state.observe(bytes([byte]), 1.0) == (False, False)
-        assert state.observe(b"", 2.0) == (False, False)
+            assert state.observe(bytes([byte]), 1.0) == claude_pty.ModelSwitchInputResult(
+                edited=False, model_command=False
+            )
+        assert state.observe(b"", 2.0) == claude_pty.ModelSwitchInputResult(
+            edited=False, model_command=False
+        )
 
     def test_escape_alone_cancels_replay_without_relinquishing_the_default(self):
         state = claude_pty.ModelSwitchInput()
-        assert state.observe(b"\x1b", 1.0) == (False, False)
-        assert state.observe(b"", 2.0) == (True, False)
+        assert state.observe(b"\x1b", 1.0) == claude_pty.ModelSwitchInputResult(
+            edited=False, model_command=False
+        )
+        assert state.observe(b"", 2.0) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
 
     def test_submitted_slash_command_transfers_default_ownership(self):
         state = claude_pty.ModelSwitchInput()
-        assert state.observe(b"/model ", 1.0) == (True, False)
-        assert state.observe(b"sonnet\r", 1.1) == (True, True)
-        assert state.manual_model == "sonnet"
-        assert state.observe(b"/mod\r", 1.2) == (True, True)
-        assert state.manual_model is None
-        assert state.observe(b"plain text\r", 1.3) == (True, False)
+        assert state.observe(b"/model ", 1.0) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
+        assert state.observe(b"sonnet\r", 1.1) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=True, manual_model="sonnet"
+        )
+        for command in (b"/mod\r", b"/settings\r"):
+            assert state.observe(command, 1.2) == claude_pty.ModelSwitchInputResult(
+                edited=True, model_command=True
+            )
+        assert state.observe(b"plain text\r", 1.3) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
 
     @pytest.mark.parametrize(
         "editing",
@@ -894,9 +1015,12 @@ class TestModelSwitchInput:
     def test_submitting_an_unknown_line_transfers_default_ownership(self, editing):
         state = claude_pty.ModelSwitchInput()
         state.observe(editing, 1.0)
-        assert state.observe(b"\r", 1.1) == (True, True)
-        assert state.manual_model is None
-        assert state.observe(b"plain text\r", 1.2) == (True, False)
+        assert state.observe(b"\r", 1.1) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=True
+        )
+        assert state.observe(b"plain text\r", 1.2) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
 
     @pytest.mark.parametrize(
         "command, expected",
@@ -914,25 +1038,41 @@ class TestModelSwitchInput:
     def test_manual_target_requires_a_complete_known_command(self, command, expected):
         state = claude_pty.ModelSwitchInput()
         for index, byte in enumerate(command):
-            state.observe(bytes([byte]), index / 1000)
-        assert state.manual_model == expected
+            result = state.observe(bytes([byte]), index / 1000)
+        assert result.manual_model == expected
 
     def test_terminal_replies_do_not_make_a_known_line_unknown(self):
         state = claude_pty.ModelSwitchInput()
-        assert state.observe(b"plain text", 1.0) == (True, False)
+        assert state.observe(b"plain text", 1.0) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
         for reply in [b"\x1b[?1;2c", b"\x1b[12;45R", b"\x1b[I", b"\x1b]10;rgb:ff/ff/ff\x07"]:
-            assert state.observe(reply, 1.1) == (False, False)
-        assert state.observe(b"\r", 1.2) == (True, False)
+            assert state.observe(reply, 1.1) == claude_pty.ModelSwitchInputResult(
+                edited=False, model_command=False
+            )
+        assert state.observe(b"\r", 1.2) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
 
     def test_multiline_paste_is_not_a_submitted_model_command(self):
         state = claude_pty.ModelSwitchInput()
-        assert state.observe(b"\x1b[200~/model sonnet\nexplain it\x1b[201~", 1.0) == (True, False)
-        assert state.observe(b"\r", 1.1) == (True, False)
-        assert state.observe(b"\x1b[200~", 1.2) == (True, False)
+        assert state.observe(
+            b"\x1b[200~/model sonnet\nexplain it\x1b[201~", 1.0
+        ) == claude_pty.ModelSwitchInputResult(edited=True, model_command=False)
+        assert state.observe(b"\r", 1.1) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
+        assert state.observe(b"\x1b[200~", 1.2) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
         assert state.pending
-        assert state.observe(b"/model sonnet\nexplain it\x1b[201~", 1.3) == (True, False)
+        assert state.observe(
+            b"/model sonnet\nexplain it\x1b[201~", 1.3
+        ) == claude_pty.ModelSwitchInputResult(edited=True, model_command=False)
         assert not state.pending
-        assert state.observe(b"\r", 1.4) == (True, False)
+        assert state.observe(b"\r", 1.4) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1019,6 +1159,9 @@ pending = b""
 deadline = time.monotonic() + 3.0
 while len(submitted) < EXPECTED_SUBMITS and time.monotonic() < deadline:
     if not sel.select([0], [], [], 0.05)[0]:
+        if CANCEL_SWITCH and pending == b"\\x1b":
+            box, pending = blocked_prompt, b""
+            os.write(1, b"Kept model as haiku\\n")
         continue
     pending += os.read(0, 1)
     if pending in (b"\\x1b", b"\\x1b[", b"\\x1b[2", b"\\x1b[20", b"\\x1b[200", b"\\x1b[201"):
@@ -1050,14 +1193,16 @@ capture_path.write_text(json.dumps({"submitted": submitted}))
 """
 
 
-def _run_input_box_tui(tmp_path: Path, *, confirm_switch: bool, expected_submits: int) -> list:
+def _run_input_box_tui(
+    tmp_path: Path, *, confirm_switch: bool, expected_submits: int, cancel_switch: bool = False
+) -> list:
     socket_path = tmp_path / "first.sock"
     capture = tmp_path / "capture.json"
     fake_claude = tmp_path / "fc.py"
     _write_fake_claude(
         fake_claude,
         f"CONFIRM_SWITCH = {confirm_switch}\nEXPECTED_SUBMITS = {expected_submits}\n"
-        + _INPUT_BOX_TUI,
+        f"CANCEL_SWITCH = {cancel_switch}\n" + _INPUT_BOX_TUI,
     )
     result = claude_pty.run_claude_pty(
         [sys.executable, str(fake_claude), str(socket_path), str(capture)],
@@ -1081,6 +1226,17 @@ class TestClearInputKeys:
 
 
 class TestBlockedPromptLeftInInputBox:
+    def test_confirmed_cancellation_clears_the_populated_input_box(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.05)
+
+        submitted = _run_input_box_tui(
+            tmp_path, confirm_switch=False, expected_submits=2, cancel_switch=True
+        )
+
+        assert submitted == ["/model sonnet", "fix the parser\nthen run the tests"]
+
     def test_model_switch_runs_as_a_command_and_replay_is_exact(self, tmp_path, monkeypatch):
         monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
         monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
