@@ -5806,7 +5806,12 @@ class TestConfigureAgentsSelection:
     def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
         state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
-        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        names, reason = services
+        monkeypatch.setattr(
+            cli_mod,
+            "tool_provider_service_choices",
+            lambda *a: ([(name, name) for name in names], reason),
+        )
         saved: list[dict] = []
         monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
         asked: list[list[str]] = []
@@ -5898,6 +5903,27 @@ class TestConfigureAgentsSelection:
         result = cli_mod._maybe_select_provider_service("claude", state)
         assert cli_mod.get_model_location(result, "claude") is None
         assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_shows_service_labels(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "copilot", services=([], None), answers=[]
+        )
+        label = "a.b.seats (GitHub Copilot subscription)"
+        monkeypatch.setattr(
+            cli_mod, "tool_provider_service_choices", lambda *a: ([("a.b.seats", label)], None)
+        )
+        shown: list[list[tuple[str, str]]] = []
+        replies = iter(["mps", "a.b.seats"])
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_selection",
+            lambda prompt, options: shown.append(list(options)) or next(replies),
+        )
+
+        result = cli_mod._maybe_select_provider_service("copilot", state)
+
+        assert shown[1] == [("a.b.seats", label)]
+        assert cli_mod.get_provider_service(result, "copilot") == "a.b.seats"
 
     def test_picker_gemini_has_no_custom_location(self, monkeypatch):
         state, _saved, asked = self._picker(
@@ -10091,6 +10117,92 @@ class TestHeadlessConfigureModelSource:
         assert cli_mod.get_provider_service(saved[-1], "claude") == "main.default.new"
         assert cli_mod.get_provider_service(saved[-1], "codex") == "main.default.old"
 
+    SEAT_MPS = "main.default.copilot_seats"
+
+    def _stub_copilot_service(self, monkeypatch, service, error=None):
+        agent = cli_mod.copilot_agent
+        monkeypatch.setattr(agent, "launch_token", lambda *a, **k: "dbx-token")
+        monkeypatch.setattr(
+            agent,
+            "resolve_provider_service",
+            lambda tool, name, workspace, token: (None, error) if error else (service, None),
+        )
+        monkeypatch.setattr(
+            agent,
+            "list_provider_service_models",
+            lambda *a: pytest.fail("a seat relay doesn't list the service's models"),
+        )
+
+    SEAT_SERVICE = {
+        "provider_type": "github_copilot",
+        "relayed": True,
+        "allow_all_targets": True,
+        "targets": [],
+    }
+
+    @pytest.mark.parametrize("flag", ["--agent", "--agents"])
+    def test_seat_relay_provider_configures_copilot_without_its_catalog(self, monkeypatch, flag):
+        self._stub_copilot_service(monkeypatch, self.SEAT_SERVICE)
+        if flag == "--agent":
+            state, saved, configure = self._base_patches(monkeypatch, "copilot")
+        else:
+            state = {**MINIMAL_STATE, "available_tools": []}
+            saved, calls = self._agents_patches(monkeypatch, state)
+
+        result = self._invoke(flag, "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code == 0, result.output
+        assert cli_mod.get_provider_service(saved[-1], "copilot") == self.SEAT_MPS
+        if flag == "--agent":
+            configure.assert_called_once_with(
+                "copilot", state, parent_schema=None, provider=self.SEAT_MPS, with_vscode=True
+            )
+        else:
+            assert calls[0]["providers"] == {"copilot": self.SEAT_MPS}
+
+    @pytest.mark.parametrize("flag", ["--agent", "--agents"])
+    def test_unusable_seat_relay_provider_fails_before_configuring(self, monkeypatch, flag):
+        reason = "this version of ug can't route GitHub Copilot through yet"
+        self._stub_copilot_service(monkeypatch, None, error=reason)
+        if flag == "--agent":
+            _state, saved, configure = self._base_patches(monkeypatch, "copilot")
+        else:
+            saved, calls = self._agents_patches(monkeypatch, {**MINIMAL_STATE})
+
+        result = self._invoke(flag, "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code != 0
+        assert reason in " ".join(_strip_ansi(result.output).split())
+        assert not any(cli_mod.get_provider_service(s, "copilot") for s in saved)
+        if flag == "--agent":
+            configure.assert_not_called()
+        else:
+            assert calls == []
+
+    def test_a_failed_seat_relay_lookup_is_reported_not_taken_for_another_service(
+        self, monkeypatch
+    ):
+        agent = cli_mod.copilot_agent
+        monkeypatch.setattr(agent, "launch_token", lambda *a, **k: "dbx-token")
+        answers = [
+            (None, "Model provider service 'x' was not found. (HTTP 503 Service Unavailable)"),
+            (self.SEAT_SERVICE, None),
+        ]
+        monkeypatch.setattr(agent, "resolve_provider_service", lambda *a: answers.pop(0))
+        monkeypatch.setattr(
+            agent,
+            "provider_service_catalog",
+            lambda *a, **k: pytest.fail("a failed lookup isn't a service with a model catalog"),
+        )
+        _state, saved, configure = self._base_patches(monkeypatch, "copilot")
+
+        result = self._invoke("--agent", "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code != 0
+        assert "HTTP 503" in " ".join(_strip_ansi(result.output).split())
+        configure.assert_not_called()
+        assert not any(cli_mod.get_provider_service(s, "copilot") for s in saved)
+
 
 class TestLaunchWithManagedFilePicker:
     PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
@@ -10337,3 +10449,117 @@ class TestAutoCleanupLifecycle:
         assert json.loads(native.read_text()) == expected
         assert not state_mod.load_state()
         assert state_mod.CLAUDE_AUTO_REVERT_TARGETS_KEY not in state_mod.load_full_state()
+
+
+class TestCopilotSeatRuntime:
+    def _run(self, monkeypatch, state, args):
+        seen: dict = {}
+        pinned: list = []
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(
+            cli_mod, "pin", lambda host, workspace_id: pinned.append((host, workspace_id))
+        )
+
+        def run(state_arg, provider, runtime, runtime_args):
+            print("not for VS Code")
+            seen.update(provider=provider, runtime=runtime, args=runtime_args)
+            return 7
+
+        monkeypatch.setattr(cli_mod.copilot_agent, "run_seat_runtime", run)
+        result = CliRunner().invoke(cli_mod.app, args)
+        return result, seen, pinned
+
+    def test_runs_the_runtime_with_vscodes_arguments(self, monkeypatch):
+        result, seen, pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://ws.example"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "main.ai.seats",
+                "--host",
+                "https://ws.example",
+                "--workspace-id",
+                "42",
+                "--runtime",
+                "/vscode/copilot-runtime",
+                "--",
+                "--stdio",
+                "--log-level",
+                "info",
+            ],
+        )
+
+        assert result.exit_code == 7
+        assert seen == {
+            "provider": "main.ai.seats",
+            "runtime": "/vscode/copilot-runtime",
+            "args": ["--stdio", "--log-level", "info"],
+        }
+        assert pinned == [("https://ws.example", "42")]
+        # The runtime owns stdout.
+        assert "not for VS Code" not in result.stdout
+
+    def test_needs_a_configured_workspace(self, monkeypatch):
+        result, seen, _pinned = self._run(
+            monkeypatch,
+            {},
+            ["copilot-seat-runtime", "--provider", "p", "--host", "h", "--runtime", "/r", "--"],
+        )
+
+        assert result.exit_code == 1
+        assert seen == {}
+
+    @pytest.mark.parametrize(
+        ("state", "args"),
+        [
+            ({"workspace": "https://b.example"}, []),
+            ({"workspace": "https://a.example", "profile": "b"}, ["--profile", "a"]),
+            ({"workspace": "https://a.example", "profile": "b"}, []),
+            ({"workspace": "https://a.example"}, ["--profile", "a"]),
+        ],
+        ids=["other-workspace", "other-profile", "profile-added", "profile-dropped"],
+    )
+    def test_refuses_to_run_once_ug_moved_to_another_workspace_or_profile(
+        self, monkeypatch, state, args
+    ):
+        result, seen, pinned = self._run(
+            monkeypatch,
+            state,
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://a.example",
+                *args,
+                "--runtime",
+                "/r",
+                "--",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert seen == {} and pinned == []
+        assert "ug configure --agents copilot" in result.stderr
+
+    def test_accepts_the_same_workspace_and_profile(self, monkeypatch):
+        result, seen, _pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://a.example/", "profile": "a"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://a.example",
+                "--profile",
+                "a",
+                "--runtime",
+                "/r",
+                "--",
+            ],
+        )
+
+        assert result.exit_code == 7
+        assert seen["provider"] == "p"

@@ -6,6 +6,7 @@ import contextlib
 import http.client
 import json
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -170,6 +171,33 @@ class TestGatewayRoutes:
         assert "x-databricks-org-id" not in sent["headers"]
         assert sent["names"].count("x-databricks-ai-gateway-token") == 1
 
+    def test_a_request_header_adder_labels_gateway_calls(self, gateway, github):
+        with _relay(
+            gateway,
+            github,
+            request_headers_adder=lambda headers, body: {"thread-id": "sub-1"},
+        ) as (http, _port, _direct):
+            http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["thread-id"] == "sub-1"
+
+    def test_adds_the_launch_headers_without_replacing_its_own(self, gateway, github):
+        added = {
+            "User-Agent": "ucode/1 copilot/2",
+            "Databricks-Model-Provider-Service": "other.mps",
+            "X-Databricks-AI-Gateway-Token": "Bearer spoofed",
+        }
+        with _relay(gateway, github, added_headers=added) as (http, _port, _direct):
+            http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+            http.get(f"/{SECRET}/agents/swe/custom-agents/o/r", headers=_auth())
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["user-agent"] == "ucode/1 copilot/2"
+        assert sent["headers"]["databricks-model-provider-service"] == MPS
+        assert sent["headers"]["x-databricks-ai-gateway-token"] == f"Bearer {DATABRICKS_TOKEN}"
+        assert github.requests[0]["headers"].get("user-agent") != "ucode/1 copilot/2"
+
     def test_a_dead_databricks_login_answers_with_the_sign_in_hint(self, gateway, github):
         gateway._status = 401
 
@@ -216,6 +244,21 @@ class TestOtelExport:
             "x-databricks-org-id",
         ):
             assert name not in sent["headers"]
+
+    def test_trace_export_gets_the_launch_headers_but_not_the_seat_routing(self, gateway, github):
+        added = {
+            "User-Agent": "ucode/1 copilot/2",
+            "Authorization": "Bearer spoofed",
+            "Databricks-Model-Provider-Service": "other.mps",
+        }
+        with _relay(gateway, github, added_headers=added) as (http, _port, _direct):
+            http.post(f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/traces", content=b"spans")
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["user-agent"] == "ucode/1 copilot/2"
+        assert sent["headers"]["authorization"] == f"Bearer {DATABRICKS_TOKEN}"
+        assert "databricks-model-provider-service" not in sent["headers"]
+        assert "x-databricks-github-copilot-api-host" not in sent["headers"]
 
     def test_metrics_get_an_empty_success_and_go_nowhere(self, gateway, github):
         with _relay(gateway, github) as (http, _port, direct):
@@ -277,6 +320,81 @@ class TestOtelExport:
 
         assert resp.status_code == 400
         assert [str(exc) for exc in reported] == ["refresh token expired"]
+
+
+DENIAL = "Model 'some-model' is not in the allowed models list for 'main.default.copilot'."
+
+
+class TestGatewayDenials:
+    def test_a_gateway_403_becomes_a_400_with_the_gateway_message(self, gateway, github):
+        gateway._status = 403
+        gateway._body = json.dumps({"error_code": "PERMISSION_DENIED", "message": DENIAL}).encode()
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert resp.json() == {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": DENIAL},
+        }
+        # The rewrite answers the retry with a refreshed token, not the first 403.
+        assert len(gateway.requests) == 2
+        assert github.requests == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b"<html>denied</html>", id="html"),
+            pytest.param(b"", id="empty"),
+            pytest.param(b'{"message": "no error code"}', id="no-error-code"),
+            pytest.param(b'{"error_code": 7, "message": "bad code"}', id="code-not-a-string"),
+            pytest.param(b'{"error_code": "PERMISSION_DENIED", "message": ""}', id="empty-message"),
+            pytest.param(
+                json.dumps(
+                    {"error_code": "PERMISSION_DENIED", "message": "x" * (64 * 1024)}
+                ).encode(),
+                id="oversized",
+            ),
+        ],
+    )
+    def test_other_403_bodies_get_the_generic_message(self, gateway, github, body):
+        gateway._status = 403
+        gateway._body = body
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == copilot_relay._GENERIC_GATEWAY_DENIAL
+
+    @pytest.mark.parametrize("status", [404, 429])
+    def test_other_gateway_errors_are_relayed_unchanged(self, gateway, github, status):
+        gateway._status = status
+        gateway._body = b'{"error_code":"NOT_FOUND","message":"gone"}'
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == status
+        assert resp.content == gateway._body
+
+    def test_a_direct_403_is_relayed_unchanged(self, gateway, github):
+        github._status = 403
+        github._body = b'{"message":"Resource not accessible"}'
+        with _relay(gateway, github) as (http, _port, direct):
+            resp = http.get(f"/{SECRET}/agents/swe/custom-agents/o/r", headers=_auth())
+
+        assert resp.status_code == 403
+        assert resp.content == github._body
+        assert gateway.requests == []
+        assert direct == [("GET", "/agents/swe/custom-agents/o/r")]
+
+    def test_a_gateway_2xx_stream_is_relayed_unchanged(self, gateway, github):
+        gateway._headers = {"Content-Type": "text/event-stream"}
+        gateway._body = b'data: {"error":{"message":"not a failure"}}\n\n'
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 200
+        assert resp.content == gateway._body
 
 
 class TestDirectCalls:
@@ -592,7 +710,9 @@ class TestCopilotHostResolver:
         assert resolver(f"Bearer {GITHUB_TOKEN}") == "copilot-api.acme.ghe.com"
         assert len(calls) == 1
 
-    def test_a_cache_file_fallback_is_not_remembered_for_the_credential(self, tmp_path):
+    def test_a_cache_file_fallback_is_not_remembered_for_the_credential(
+        self, tmp_path, monkeypatch
+    ):
         cache = tmp_path / "copilot-user-cache.json"
         cache.write_text(
             json.dumps(
@@ -617,7 +737,15 @@ class TestCopilotHostResolver:
             client=httpx.Client(transport=httpx.MockTransport(handle)), cache_file=cache
         )
 
+        clock = [1000.0]
+        monkeypatch.setattr(
+            copilot_relay, "time", types.SimpleNamespace(monotonic=lambda: clock[0])
+        )
+
         assert resolver(f"Bearer {GITHUB_TOKEN}") == "api.business.githubcopilot.com"
+        assert resolver(f"Bearer {GITHUB_TOKEN}") == "api.business.githubcopilot.com"
+        assert len(calls) == 1
+        clock[0] += copilot_relay._GITHUB_MISS_TTL_S
         assert resolver(f"Bearer {GITHUB_TOKEN}") == COPILOT_HOST
         assert resolver(f"Bearer {GITHUB_TOKEN}") == COPILOT_HOST
         assert len(calls) == 2

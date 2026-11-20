@@ -3150,6 +3150,15 @@ GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
 # Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
 
+
+def is_copilot_seat_relay(service: dict) -> bool:
+    """True for a GitHub Copilot service that relays each developer's own Copilot seat."""
+    return (
+        bool(service.get("relayed"))
+        and service.get("provider_type") == GITHUB_COPILOT_PROVIDER_TYPE
+    )
+
+
 # Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
 # agent named in the refusal. The fallback for an unknown relayed type keeps the Claude entry.
 _SUBSCRIPTION_RELAYS: dict[str, tuple[tuple[str, ...], str, str]] = {
@@ -3576,11 +3585,30 @@ def list_tool_provider_services(
 
     Returns ``(names, reason)``; ``reason`` is non-None when the listing failed.
     """
+    choices, reason = tool_provider_service_choices(tool, workspace, token)
+    return [name for name, _label in choices], reason
+
+
+def tool_provider_service_choices(
+    tool: str, workspace: str, token: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Like :func:`list_tool_provider_services`, as ``(name, picker label)`` pairs."""
     services, reason = list_model_provider_services(workspace, token)
     if reason is not None:
         return [], reason
-    names = [s["name"] for s in services if service_usable_for_tool(tool, s)]
-    return names, None
+    choices = [
+        (s["name"], provider_service_label(s)) for s in services if service_usable_for_tool(tool, s)
+    ]
+    return choices, None
+
+
+def provider_service_label(service: dict) -> str:
+    """A service's name, marked when it relays a GitHub Copilot subscription: Copilot lists those
+    beside API-key services, and each developer signs in to them with their own seat."""
+    name = service.get("name", "")
+    if is_copilot_seat_relay(service):
+        return f"{name} (GitHub Copilot subscription)"
+    return name
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
@@ -3607,12 +3635,6 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
                 f"Model provider service '{service_name}' relays a {subscription} subscription, "
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
-            )
-        if provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
-            return (
-                f"Model provider service '{service_name}' relays a GitHub Copilot subscription, "
-                "which this version of ug can't route GitHub Copilot through yet. Pick a Model "
-                "Provider Service with an API key, or use Databricks models."
             )
     elif provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
         return (
