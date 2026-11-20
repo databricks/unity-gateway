@@ -69,10 +69,12 @@ launch, with installed-skill toggles, unchanged conversation identity, independe
 controls, and unchanged saved footer settings and UG profile. GPT-6-Luna was selected
 through ordinary user settings. Seven installation checks passed.
 
-Successful router selection remains unverified: first-prompt routing returned HTTP
-400/downstream 422 and fell back; delegated child file tasks completed but produced
-no routing decision. These are separate from the passing footer checks. Native
-Windows rendering remains untested.
+The initial first-prompt routing check returned HTTP 400/downstream 422 and fell
+back; its delegated file tasks completed without a recorded routing decision.
+Later live Arclet ON/OFF/ON and managed-routing journeys passed with correlated
+child-model selection. A separate native plaintext journey verified the exact
+assignment and digest at the hook and child. Native Linux and Windows routing CI
+subsequently passed. Manual badge-rendering validation remains Linux-only.
 
 ## Required upgrade
 
