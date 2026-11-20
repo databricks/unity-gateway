@@ -48,10 +48,18 @@ def test_concurrent_observations_keep_individual_labels(metrics_recorder):
 
 def test_awaited_duration_override_replaces_the_measured_duration(metrics_recorder):
     with metrics.measure("databricks_token_fetch_duration_ms", token_source="cli"):
-        metrics.annotate(awaited_duration_ms=4321)
+        metrics.record_awaited_duration(4321)
     [(value, attrs)] = observations(metrics_recorder, "databricks_token_fetch_duration_ms")
     assert value == 4321
     assert attrs["token_source"] == "cli"
+    assert "awaited_duration_ms" not in attrs
+
+
+def test_awaited_duration_key_is_never_an_exported_label(metrics_recorder):
+    metrics.record("databricks_token_fetch_duration_ms", 1, awaited_duration_ms=4321)
+    [(value, attrs)] = observations(metrics_recorder, "databricks_token_fetch_duration_ms")
+    assert value == 1
+    assert attrs == metrics_recorder.common
     assert "awaited_duration_ms" not in attrs
 
 
