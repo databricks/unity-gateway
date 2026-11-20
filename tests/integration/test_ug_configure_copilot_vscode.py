@@ -63,8 +63,8 @@ def _config_evidence(config):
 
 
 def _assert_saved_turns(session, turns):
-    """VS Code's saved chat has each ``(task, model)`` turn as a completed request on the Databricks
-    model, with a tool call, no error, and the value in the assistant's own text."""
+    """The Copilot session's saved events have each ``(task, model)`` turn as a finished turn on the
+    Databricks model, with a tool call, no error, and the value in the assistant's own text."""
     saved = chat_turns(session, [task.prompt for task, _ in turns])
     for turn, (task, model) in zip(saved, turns, strict=True):
         assert turn["model"] == f"databricks-unity-gateway/{model}", turn
@@ -166,18 +166,19 @@ def test_ug_configure_copilot_vscode_installs_and_reverts_the_extension(live_ses
 def test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window(live_session, workspace):
     """Scenario: after `ug configure --agents copilot`, a developer opens VS Code for the first time,
     continues without signing in to GitHub, trusts the folder, turns on Copilot Chat (from its model
-    picker or ug's notice), picks the Databricks Claude test model and asks Agent mode to read a
-    local file. In the same window they pick the GPT test model and ask it to read another file.
+    picker or ug's notice), stays in the Copilot session the chat opens on, picks the Databricks
+    Claude test model and asks Agent mode to read a local file. In the same window they pick the GPT
+    test model and ask it to read another file.
 
     Expected: everything happens through visible clicks and keys on a fresh profile; no settings or
     VS Code state is seeded. Each answer contains its own file's value, which is never in a prompt.
     Every request of the Claude turn reaches the gateway's Anthropic Messages route, and every
     request of the GPT turn the Responses route, through a recording forwarder, for the picked
     model, with ug's User-Agent naming the Copilot Chat bundled in the pinned VS Code, and gets a
-    non-empty HTTP 200, so no turn falls back to another model. VS Code's saved chat records both
-    turns on their Databricks models, with tool calls, the values, and no error. After the window
-    closes, no file under the home holds the bearer. Limits: one pinned VS Code, signed out of
-    GitHub, Copilot Chat's local agent.
+    non-empty HTTP 200, so no turn falls back to another model. The Copilot session's events record
+    both turns on their Databricks models, with tool calls, the values, and no error. After the
+    window closes, no file under the home holds the bearer. Limits: one pinned VS Code, signed out
+    of GitHub, Copilot Chat's Copilot session (not its Local agent).
     """
     session = live_session
     with TuiRequestRecorder(workspace) as recorder:
@@ -216,9 +217,9 @@ def test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model(
     Expected: the extension lists the service's own model id. The answer contains the file's value,
     which is never in the prompt. Every request of the turn reaches the gateway's OpenAI Responses
     route with the provider service header, for the service's model, with ug's User-Agent, and gets
-    a non-empty HTTP 200. VS Code's saved chat records the turn on the service's model with a tool
-    call, the value in the assistant's text, and no error. This shows the request named the service;
-    which backend served it is the gateway's side and is not asserted here.
+    a non-empty HTTP 200. The Copilot session's events record the turn on the service's model with
+    a tool call, the value in the assistant's text, and no error. This shows the request named the
+    service; which backend served it is the gateway's side and is not asserted here.
     """
     session = live_session
     with TuiRequestRecorder(workspace) as recorder:

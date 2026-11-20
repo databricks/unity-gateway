@@ -1,104 +1,61 @@
-"""VS Code chat evidence, read from the chat sessions Copilot Chat saves for the workspace."""
+"""VS Code chat evidence, read from the session events Copilot Chat's Copilot session saves."""
 
-import json
 import time
-from pathlib import Path
 
-from ..vscode import vscode_user_dir
+from ..evidence import agent_sessions
 
 __all__ = ["chat_turns"]
 
-# VS Code saves chat sessions on a storage timer of about a minute, not when a turn ends.
-SAVE_TIMEOUT_S = 120
+SAVE_TIMEOUT_S = 60
 
 
-def _replay(path: Path) -> dict | None:
-    """Rebuild a session from its log: a snapshot (kind 0), then sets (1), splices (2), deletes (3)."""
-    state = None
-    lines = path.read_text(encoding="utf-8").splitlines()
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
+def _turns(records: list[dict]) -> dict[str, dict]:
+    """Each prompt of one session: the model it ran on, its tools, error and answer text."""
+    turns, turn, model = {}, None, None
+    for record in records:
+        kind, data = record.get("type"), record.get("data") or {}
+        if kind == "session.start":
+            model = data.get("selectedModel")
+        elif kind == "session.model_change":
+            model = data.get("newModel")
+        elif kind == "user.message":
+            prompt = (data.get("content") or "").strip()
+            turn = turns[prompt] = {
+                "model": model,
+                "prompt": prompt,
+                "tools": [],
+                "error": None,
+                "text": "",
+                "done": False,
+            }
+        elif turn is None:
             continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            if number == len(lines):
-                break  # VS Code is still writing it; the next poll reads it whole.
-            raise
-        if record.get("kind") == 0:
-            state = record["v"]
-            continue
-        if state is None:
-            continue
-        keys = record.get("k") or []
-        if not keys:
-            if record.get("kind") == 1:
-                state = record["v"]
-            continue
-        parent = state
-        for index, key in enumerate(keys[:-1]):
-            if isinstance(parent, dict) and key not in parent:
-                parent[key] = [] if isinstance(keys[index + 1], int) else {}
-            parent = parent[key]
-        last = keys[-1]
-        if record["kind"] == 1:
-            parent[last] = record["v"]
-        elif record["kind"] == 2:
-            target = parent[last]
-            if isinstance(target, list) and isinstance(record.get("i"), int):
-                target[record["i"] :] = record.get("v") or []
-            elif isinstance(target, list):
-                target.extend(record.get("v") or [])
-            else:
-                parent[last] = record.get("v")
-        elif record["kind"] == 3:
-            parent.pop(last, None)
-    return state
-
-
-def _summary(request: dict) -> dict:
-    parts = request.get("response") or []
-    return {
-        "model": request.get("modelId"),
-        "prompt": (request.get("message") or {}).get("text"),
-        "tools": [
-            part.get("toolId") for part in parts if part.get("kind") == "toolInvocationSerialized"
-        ],
-        "error": (request.get("result") or {}).get("errorDetails"),
-        "text": "".join(
-            part["value"]
-            for part in parts
-            if isinstance(part.get("value"), str) and not part.get("kind")
-        )
-        or "".join(
-            (part.get("content") or {}).get("value", "")
-            for part in parts
-            if part.get("kind") == "markdownContent"
-        ),
-    }
+        elif kind == "tool.execution_start":
+            turn["tools"].append(data.get("toolName"))
+        elif kind == "session.error":
+            turn["error"], turn["done"] = data, True
+        elif kind == "assistant.message":
+            turn["text"] += data.get("content") or ""
+            # The answer is the message that asks for no more tools.
+            turn["done"] = not data.get("toolRequests")
+    return turns
 
 
 def chat_turns(session, prompts: list[str]) -> list[dict]:
-    """Wait until VS Code has saved a completed request for each prompt; return them in order.
+    """Wait until the Copilot session has finished each prompt; return the turns in order.
 
-    Requests are matched by prompt, not by session file: a reopened window starts a new chat in the
-    same workspace storage."""
-    root = vscode_user_dir(session) / "User/workspaceStorage"
+    Turns are matched by prompt, not by session: a reopened window starts a new session."""
+    wanted = [prompt.strip() for prompt in prompts]
     deadline = time.monotonic() + SAVE_TIMEOUT_S
     while time.monotonic() < deadline:
-        wanted = [prompt.strip() for prompt in prompts]
         found = {}
-        for path in root.glob("*/chatSessions/*.jsonl"):
-            for request in (_replay(path) or {}).get("requests") or []:
-                summary = _summary(request)
-                prompt = (summary["prompt"] or "").strip()
-                if request.get("result") and prompt in wanted:
-                    found[prompt] = summary
-        if len(found) == len(prompts):
+        for records in agent_sessions(session, "copilot").values():
+            for prompt, turn in _turns(records).items():
+                if turn.pop("done") and prompt in wanted:
+                    found[prompt] = turn
+        if len(found) == len(wanted):
             turns = [found[prompt] for prompt in wanted]
             session.record("vscode-chat-session.json", turns)
             return turns
         time.sleep(1)
-    raise AssertionError(
-        f"VS Code saved no completed request for some prompts in {SAVE_TIMEOUT_S}s"
-    )
+    raise AssertionError(f"The Copilot session did not finish every prompt in {SAVE_TIMEOUT_S}s")
