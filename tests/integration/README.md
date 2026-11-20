@@ -670,11 +670,11 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
-Overlapping the model-service listing with the gateway probe is covered only by
-component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
-errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
-probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
-launch-time savings.
+Setup no longer runs a separate gateway probe. Component tests in `../test_cli.py` cover
+scoped discovery, fallback after a failed or empty catalog, provider-mode web-search lookup,
+and process-local catalog reuse. The removed probe-only E2E case leaves authentication and
+model-discovery E2E coverage in `../test_e2e.py`. The component tests make no live gateway
+requests and provide no startup latency or inference evidence.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned
