@@ -44,6 +44,7 @@ from ucode.databricks import (
     databricks_cli_version,
     ensure_databricks_cli_version,
     ensure_pat_bearer,
+    fetch_databricks_token_untimed,
     get_databricks_profiles,
     get_databricks_token,
     install_ai_tools,
@@ -3569,6 +3570,44 @@ class TestGetDatabricksToken:
             False,
         ]
         assert {attrs["token_source"] for attrs in labels} == {"cli"}
+
+    def test_untimed_fetch_duration_is_reported_once_by_timed_reuse(
+        self, monkeypatch, metrics_recorder
+    ):
+        """An untimed caller's real fetch is reported by the first timed reuse as the cache
+        miss with that fetch's duration; later reuses are plain near-zero cache hits."""
+        db_mod.clear_databricks_token_cache()
+
+        def fake_cli_run(cmd, **_kwargs):
+            time.sleep(0.1)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"access_token": "token", "expires_in": 3600}), ""
+            )
+
+        monkeypatch.setattr(db_mod, "run", fake_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        try:
+            assert fetch_databricks_token_untimed(WS, "spec") == "token"
+            memoized = db_mod._memoized_token(db_mod._token_memo_key(WS, "spec"))
+            assert memoized is not None and memoized.unreported_fetch_ms >= 100
+
+            assert get_databricks_token(WS, "spec") == "token"
+            assert get_databricks_token(WS, "spec") == "token"
+        finally:
+            db_mod.clear_databricks_token_cache()
+
+        observations = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert len(observations) == 2
+        [(miss_ms, miss_labels), (hit_ms, hit_labels)] = observations
+        assert miss_labels["in_process_cache_hit"] is False
+        assert miss_labels["token_source"] == "cli"
+        assert miss_ms >= 100
+        assert hit_labels["in_process_cache_hit"] is True
+        assert hit_ms < 50
+        assert "awaited_duration_ms" not in miss_labels
+        assert "awaited_duration_ms" not in hit_labels
 
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
