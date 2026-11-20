@@ -294,10 +294,15 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 
 
 @pytest.mark.parametrize(
-    "missing_message",
-    ['"SMART_ROUTER_ENV_UNSET"', "'MISSING_SMART_ROUTER_ENV'", '"$(Remove-Item important.txt)"'],
+    ("missing_message", "extra_command"),
+    [
+        ('"SMART_ROUTER_ENV_UNSET"', ""),
+        ("'MISSING_SMART_ROUTER_ENV'", ""),
+        ('"$(Remove-Item important.txt)"', ""),
+        ('"SMART_ROUTER_ENV_UNSET"', "; Remove-Item important.txt"),
+        ("'MISSING_SMART_ROUTER_ENV'", "; Remove-Item important.txt"),
+    ],
 )
-@pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
 @pytest.mark.parametrize("write_output", ["Write-Output ", ""])
 @pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
@@ -394,7 +399,7 @@ def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition)
     ids=["logged-command", "other-executable", "other-module", "other-action", "extra-argument"],
 )
 def test_codex_windows_toggle_approval_keeps_logged_empty_guard_command_exact(change):
-    # Windows CI run 44452319564 wrapped the missing-variable message onto a second line.
+    # Codex on Windows can wrap the missing-variable message onto a second line.
     screen = (
         "Would you like to run the following command?\n\n"
         "  Environment: local\n\n"

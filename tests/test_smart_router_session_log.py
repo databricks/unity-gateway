@@ -65,13 +65,47 @@ def test_record_shape(log_dir, decision):
     }
 
 
-def test_preview_first_nonblank_line_truncated(log_dir, decision):
-    task = "\n  \n  " + "x" * 161 + "  \nsecond line"
+@pytest.mark.parametrize(
+    ("first_line", "expected"),
+    [
+        ("word " * 47 + "word", "word " * 47 + "word"),
+        ("word " * 47 + "words", "word " * 47 + "words"),
+        ("word " * 47 + "wordss", "word " * 47 + "wo..."),
+        ("x" * 241, "x" * 237 + "..."),
+        ("λ" * 300, "λ" * 237 + "..."),
+    ],
+    ids=["words-239", "words-240", "words-241", "long-word", "unicode"],
+)
+def test_preview_first_nonblank_line_truncated(log_dir, decision, first_line, expected):
+    task = "\n  \n  " + first_line + "  \nsecond line"
     write({"session_id": "s1"}, decision, task)
     record = json.loads((log_dir / "claude-s1.jsonl").read_text())
-    assert record["prompt"]["preview"] == "x" * 160 + "…"
+    assert record["prompt"]["preview"] == expected
+    assert len(record["prompt"]["preview"]) <= 240
     assert record["prompt"]["length"] == len(task)
     assert record["tool_use_id"] is None
+    message = routing.format_subagent_message("m", None, prompt=task)
+    assert "second line" not in message
+    preview = message.split("Prompt preview : ", 1)[1].split("Selected Model : ", 1)[0]
+    assert "".join(preview.replace("│", "").split()) == "".join(expected.split())
+
+
+@pytest.mark.parametrize("task", ["", " \t\n  ", "\r\n\t"])
+def test_blank_preview_is_omitted(log_dir, decision, task):
+    write({"session_id": "s1"}, decision, task)
+    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
+    assert record["prompt"]["preview"] is None
+    assert "Prompt preview" not in routing.format_subagent_message("m", None, prompt=task)
+
+
+def test_preview_whitespace_matches_notice_and_log(log_dir, decision):
+    task = "  inspect\t  the parser  \nprivate second line"
+    write({"session_id": "s1"}, decision, task)
+    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
+    assert record["prompt"]["preview"] == "inspect the parser"
+    message = routing.format_subagent_message("m", None, prompt=task)
+    assert "Prompt preview : inspect the parser" in message
+    assert "private second line" not in message
 
 
 @pytest.mark.parametrize("session_id", ["../escape", "a" * 129, "a/b", "é"])
