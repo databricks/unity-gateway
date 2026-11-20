@@ -1,0 +1,242 @@
+name: UG latency
+
+# `/ug-latency [iterations]` times `ug configure`, `ug configure --user`, `ug configure --global`,
+# `ug claude`, and `ug codex` on the PR's merge base and head, then posts (or updates) one
+# before/after comment. Org members can run any PR; prior contributors can run their own PR.
+# The measurement script and this workflow always come from the default branch; only the two
+# `ug` builds under test come from the PR. Like `/integration-test`, this runs PR code with the
+# existing e2e workspace credential, which trusts prior contributors on their own PR.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: Authorize latency run
+    if: >-
+      ${{
+        github.event.issue.pull_request &&
+        (github.event.comment.body == '/ug-latency' ||
+          startsWith(github.event.comment.body, '/ug-latency ')) &&
+        (contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) ||
+          (github.event.comment.author_association == 'CONTRIBUTOR' &&
+            github.event.comment.user.id == github.event.issue.user.id))
+      }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    outputs:
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+      iterations: ${{ steps.pr.outputs.iterations }}
+    steps:
+      - name: Pin the base and head commits
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          refuse() {
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Latency run not started: $1"
+            echo "::error::$1"
+            exit 1
+          }
+          [[ "$COMMENT_BODY" =~ ^/ug-latency([[:space:]]+([0-9]{1,2}))?[[:space:]]*$ ]] \
+            || refuse "use \`/ug-latency\` or \`/ug-latency <iterations>\` (1 to 15)."
+          iterations="${BASH_REMATCH[2]:-5}"
+          [ "$iterations" -ge 1 ] && [ "$iterations" -le 15 ] \
+            || refuse "iterations must be between 1 and 15."
+          # gh's built-in --jq; the protected runner image does not guarantee a jq binary.
+          read -r head_sha base_ref head_repo < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            --jq '[.head.sha, .base.ref, (.head.repo.full_name // "")] | @tsv') || true
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || refuse "could not read the PR head commit."
+          [ -n "$head_repo" ] || refuse "the fork repository no longer exists."
+          # The merge base keeps unrelated changes on the base branch out of the comparison.
+          base_sha=$(gh api "repos/$GITHUB_REPOSITORY/compare/${base_ref}...${head_sha}" \
+            --jq '.merge_base_commit.sha') || true
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || refuse "could not find the merge base commit."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
+            -f content=eyes >/dev/null
+          {
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+            echo "iterations=$iterations"
+          } >> "$GITHUB_OUTPUT"
+
+  reject:
+    name: Reject unauthorized request
+    if: >-
+      ${{
+        github.event.issue.pull_request &&
+        (github.event.comment.body == '/ug-latency' ||
+          startsWith(github.event.comment.body, '/ug-latency ')) &&
+        !(contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) ||
+          (github.event.comment.author_association == 'CONTRIBUTOR' &&
+            github.event.comment.user.id == github.event.issue.user.id))
+      }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Explain who can request latency runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
+            "Sorry @$COMMENTER, only Databricks org members can run latency measurements on any PR. Prior contributors can run them on their own PR."
+
+  measure:
+    name: Measure ug latency
+    needs: authorize
+    # Job-level so ordinary PR comments, which skip this job, never cancel a run.
+    concurrency:
+      group: ug-latency-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 60
+    # No write token: this job runs PR code. The report job posts the comment.
+    permissions:
+      contents: read
+    env:
+      BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+      ITERATIONS: ${{ needs.authorize.outputs.iterations }}
+    steps:
+      - name: Check out the trusted measurement script from the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          sparse-checkout: scripts/ug_latency.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Check out the base build
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.authorize.outputs.base_sha }}
+          path: base
+          persist-credentials: false
+      - name: Check out the head build
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.authorize.outputs.head_sha }}
+          path: head
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+          enable-cache: false
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      # This step receives no workspace credential. PR build code does share this job's writable
+      # filesystem, so the measurement step below runs with the PR's code trusted, as /integration-test does.
+      - name: Install each build into its own environment
+        run: |
+          set -euo pipefail
+          for side in base head; do
+            uv venv --python 3.12 "$RUNNER_TEMP/venv-$side"
+            uv pip install --python "$RUNNER_TEMP/venv-$side/bin/python" "$GITHUB_WORKSPACE/$side"
+            test -x "$RUNNER_TEMP/venv-$side/bin/ug"
+          done
+      - name: Time the commands on both builds
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python trusted/scripts/ug_latency.py measure \
+            --before "$RUNNER_TEMP/venv-base/bin/ug" \
+            --after "$RUNNER_TEMP/venv-head/bin/ug" \
+            --workspace "$UCODE_TEST_WORKSPACE" \
+            --iterations "$ITERATIONS" --reset-global \
+            --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
+            --output "$RUNNER_TEMP/ug-latency.json"
+      - name: Upload the raw timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ug-latency
+          path: ${{ runner.temp }}/ug-latency.json
+          if-no-files-found: ignore
+
+  report:
+    name: Post latency comment
+    needs: [authorize, measure]
+    # A cancelled (superseded) measurement reports nothing.
+    if: ${{ always() && needs.authorize.result == 'success' && needs.measure.result != 'cancelled' }}
+    # One report at a time, so overlapping runs cannot create duplicate comments.
+    concurrency:
+      group: ug-latency-report-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out the trusted renderer from the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ug_latency.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Download the raw timings
+        if: ${{ needs.measure.result != 'skipped' }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: ug-latency
+          path: ${{ runner.temp }}/results
+      - name: Render and post (or update) the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ needs.measure.result }}
+          HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # A push since the request makes these numbers stale; the newer request reports instead.
+          current=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "::notice::PR head moved to ${current:0:7}; not posting results for ${HEAD_SHA:0:7}."
+            exit 0
+          fi
+          body="$RUNNER_TEMP/comment.md"
+          results="$RUNNER_TEMP/results/ug-latency.json"
+          # The results file was written by a job that ran PR code: the renderer treats it as data.
+          if [ "$RESULT" = success ] || [ -f "$results" ]; then
+            python3 scripts/ug_latency.py render "$results" --run-url "$RUN_URL" --output "$body" \
+              || python3 scripts/ug_latency.py render "$results" --failure --run-url "$RUN_URL" --output "$body"
+          else
+            python3 scripts/ug_latency.py render "$results" --failure --run-url "$RUN_URL" --output "$body"
+          fi
+          marker='<!-- ug-latency-comment -->'
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | tail -n 1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@"$body" >/dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@"$body" >/dev/null
+          fi

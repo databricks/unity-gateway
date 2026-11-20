@@ -15,6 +15,10 @@ JOBS = [
     ("fork-integration.yml", "reject", "/integration-test abc1234"),
     ("ug-review.yml", "review", "/ug-review"),
     ("polly-review.yml", "review", "/ug-review"),
+    ("ug-latency.yml", "authorize", "/ug-latency"),
+    ("ug-latency.yml", "reject", "/ug-latency"),
+    ("ug-latency.yml", "authorize", "/ug-latency 10"),
+    ("ug-latency.yml", "reject", "/ug-latency 10"),
 ]
 # Integration runs PR code with CI secrets, so a prior contributor can't start it on
 # their own PR; the review commands run no PR code and still allow that.
