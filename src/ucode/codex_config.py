@@ -213,6 +213,8 @@ def is_codex_interactive_launch(tool_args: list[str]) -> bool:
         arg = tool_args[index]
         if arg == "--":
             return index == len(tool_args) - 1
+        if arg.partition("=")[0] in {"-h", "--help", "-V", "--version", "--remote"}:
+            return False
         if not arg.startswith("-") or arg == "-":
             return False
         takes_model_value = has_explicit_model_arg([arg]) and "=" not in arg

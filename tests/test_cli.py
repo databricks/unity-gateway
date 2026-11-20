@@ -897,6 +897,8 @@ class TestSubcommandRouting:
         [
             (["codex", "--", "fix the parser"], ["fix the parser"], True),
             (["codex", "--"], [], True),
+            (["codex", "--", "--help"], ["--help"], False),
+            (["codex", "--", "--model=gpt-6.2-astra"], ["--model=gpt-6.2-astra"], False),
             (["claude", "--", "doctor"], ["doctor"], True),
             (
                 ["codex", "--model", "gpt-5.6-sol", "--", "fix the parser"],
@@ -1336,7 +1338,6 @@ class TestSubcommandRouting:
         "tool,model",
         [("claude", "claude-opus-5-5"), ("codex", "gpt-6.2-astra")],
     )
-    @pytest.mark.parametrize("model_flag", ["--model", "--model=", "-m"])
     @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),
         [
@@ -1349,7 +1350,7 @@ class TestSubcommandRouting:
         ids=["subagent-version", "managed", "disable-flag", "enable-flag", "first-prompt-version"],
     )
     def test_forwarded_model_keeps_subagent_routing(
-        self, monkeypatch, tool, model, model_flag, version, launch_args, routed
+        self, monkeypatch, tool, model, version, launch_args, routed
     ):
         monkeypatch.setattr(
             cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
@@ -1361,16 +1362,34 @@ class TestSubcommandRouting:
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         observed = []
-        model_args = [f"{model_flag}{model}"] if model_flag.endswith("=") else [model_flag, model]
-
         with _launch_policy_patches(managed) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
                 options.launch_smart_routing
             )
-            result = runner.invoke(app, [tool, *launch_args, "--", *model_args])
+            result = runner.invoke(app, [tool, *launch_args, "--", "--model", model])
 
         assert result.exit_code == 0, result.output
         assert observed == [routed]
+
+    @pytest.mark.parametrize(
+        "native_args",
+        [
+            ["--help"],
+            ["-h"],
+            ["--version"],
+            ["-V"],
+            ["--remote", "ws://127.0.0.1:1"],
+            ["--remote=ws://127.0.0.1:1"],
+            ["--model", "gpt-6.2-astra", "--help"],
+        ],
+    )
+    def test_codex_utility_options_do_not_enable_routing(self, monkeypatch, native_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", "--", *native_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
 
     @pytest.mark.parametrize("subcommand", ["exec", "review", "app"])
     def test_codex_model_before_subcommand_does_not_enable_routing(self, monkeypatch, subcommand):

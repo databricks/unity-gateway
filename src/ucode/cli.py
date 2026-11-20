@@ -4800,7 +4800,11 @@ def _has_explicit_prompt(ctx: typer.Context) -> bool:
     if not isinstance(suffix, tuple):
         return False
     suffix_args = list(suffix)
-    return ctx.args == suffix_args and len(suffix_args) <= 1
+    return (
+        ctx.args == suffix_args
+        and len(suffix_args) <= 1
+        and (not suffix_args or not suffix_args[0].startswith("-"))
+    )
 
 
 @app.callback(invoke_without_command=True)

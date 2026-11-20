@@ -1338,6 +1338,9 @@ of the test runner's installed binaries.
 processes for both agents; this covers hook startup without live inference.
 The classifier reuses UG's model/config syntax; other native options with separate
 values retain their prior unrouted behavior rather than guessing their arity.
+Component tests also keep forwarded help/version and split/equals remote attachments
+unrouted. Model spelling coverage stays in parser/classifier/launcher tests rather
+than multiplying the policy matrix or forwarding Claude an unsupported `-m`.
 
 The Claude route-subagent-mod journey checks that the response contains only the
 selected model and rationale and matches the decision log. The native mod applies
