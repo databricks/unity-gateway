@@ -2771,7 +2771,7 @@ class TestUgBinary:
         monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
         monkeypatch.setattr("sys.argv", [str(launcher), "configure"])
 
-        assert db_mod.ug_binary() == str(launcher.resolve())
+        assert db_mod.ug_binary() == str(launcher.absolute())
 
     def test_finds_a_windows_launcher_named_without_exe(self, monkeypatch, tmp_path):
         launcher = tmp_path / "Scripts" / "ug.exe"
@@ -2780,7 +2780,7 @@ class TestUgBinary:
         monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
         monkeypatch.setattr("sys.argv", [str(tmp_path / "Scripts" / "ug")])
 
-        assert db_mod.ug_binary() == str(launcher.resolve())
+        assert db_mod.ug_binary() == str(launcher.absolute())
 
     def test_another_program_falls_back_to_the_bare_name(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)

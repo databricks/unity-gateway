@@ -1466,8 +1466,16 @@ def _stop_with_wrapper(proc: _ChildProcess) -> None:
     except ValueError:
         return
     import ctypes
+    from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    # Its own instance, so these prototypes don't change other callers'.
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     synchronize, infinite = 0x00100000, 0xFFFFFFFF
     wrapper = kernel32.OpenProcess(synchronize, False, wrapper_pid)
     if not wrapper:

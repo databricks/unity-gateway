@@ -2291,13 +2291,14 @@ class TestSeatRelay:
         sys.platform != "win32", reason="only Windows leaves a terminated process's children up"
     )
     def test_windows_runtime_stops_when_the_wrapper_is_terminated(self, tmp_path):
-        stopped = tmp_path / "stopped"
+        watching, stopped = tmp_path / "watching", tmp_path / "stopped"
         ug = textwrap.dedent(
             f"""
             import subprocess, sys
             from ucode.agents import copilot
             runtime = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
             copilot._stop_with_wrapper(runtime)
+            open({str(watching)!r}, "w").close()
             runtime.wait()
             open({str(stopped)!r}, "w").close()
             """
@@ -2315,7 +2316,10 @@ class TestSeatRelay:
             """
         )
         process = subprocess.Popen([sys.executable, "-c", wrapper])
-        time.sleep(5)
+        deadline = time.monotonic() + 60
+        while not watching.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert watching.exists()
 
         # How VS Code stops the runtime: it terminates the process it started.
         process.kill()
@@ -2326,8 +2330,14 @@ class TestSeatRelay:
             time.sleep(0.2)
         assert stopped.exists()
 
-    def test_a_wrapper_pid_that_isnt_a_number_is_ignored(self, monkeypatch):
+    def test_a_wrapper_pid_that_isnt_a_number_starts_no_watch(self, monkeypatch):
+        monkeypatch.setattr(copilot.sys, "platform", "win32")
         monkeypatch.setenv(copilot.RUNTIME_WRAPPER_PID_ENV, "not-a-pid")
+
+        def no_thread(*args, **kwargs):
+            raise AssertionError("started a watch")
+
+        monkeypatch.setattr(copilot.threading, "Thread", no_thread)
 
         copilot._stop_with_wrapper(object())
 

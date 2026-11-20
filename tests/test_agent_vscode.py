@@ -353,6 +353,9 @@ class TestConfigure:
         assert "--install-extension` failed: boom" in _printed(capsys)
 
 
+UG_EXE = r"C:\uv\bin\ug.exe"
+
+
 class TestSeatRelay:
     SEATS = "main.ai.copilot_seats"
     COMMAND = ["/bin/ug", "copilot-seat-runtime", "--provider", SEATS, "--host", WS]
@@ -460,6 +463,7 @@ class TestSeatRelay:
         self, code, seats, runtime, monkeypatch, capsys
     ):
         monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: UG_EXE)
 
         assert vscode.configure(STATE, provider=self.SEATS)
 
@@ -468,12 +472,40 @@ class TestSeatRelay:
         assert wrapper.name.startswith("ug-copilot-runtime-")
         assert wrapper.suffix == ".js"
         script = wrapper.read_text()
-        assert 'spawn("/bin/ug", [...["copilot-seat-runtime", "--provider", ' in script
+        assert (
+            'spawn("C:\\\\uv\\\\bin\\\\ug.exe", [...["copilot-seat-runtime", "--provider", '
+            in script
+        )
         assert f'"--profile", "dev", "--runtime", {json.dumps(str(runtime))}, "--"]' in script
         assert "...process.argv.slice(2)" in script
         printed = _printed(capsys)
         assert f"routing Copilot through {self.SEATS}" in printed
         assert "can't route" not in printed
+
+    @pytest.mark.parametrize("found", [r"C:\tools\ug.cmd", "ug"])
+    def test_windows_uses_the_running_ug_exe_over_a_shim_node_cant_start(
+        self, code, seats, monkeypatch, found
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: found)
+        monkeypatch.setattr(vscode, "running_launcher", lambda: UG_EXE)
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert f"spawn({json.dumps(UG_EXE)}, " in self._wrapper().read_text()
+
+    def test_windows_without_a_ug_exe_leaves_vscode_unchanged(
+        self, code, seats, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: "ug")
+        monkeypatch.setattr(vscode, "running_launcher", lambda: None)
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config is None
+        assert not self._settings().exists()
+        assert "`ug.exe` wasn't found" in _printed(capsys)
 
     def test_another_source_removes_the_route(self, code, seats, monkeypatch):
         assert vscode.configure(STATE, provider=self.SEATS)
