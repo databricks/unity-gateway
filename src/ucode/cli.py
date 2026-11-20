@@ -87,6 +87,7 @@ from ucode.custom_oauth import (
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     AnthropicModelCatalog,
+    _get_databricks_token,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -4437,7 +4438,10 @@ def _launch_tool(
                 browser, nothing that can prompt — so the main thread never waits on it and a
                 failure never doubles configure's own fetch. Its exception rides the future;
                 the join site falls back to the serial fetch on the live token."""
-                token = get_databricks_token(
+                # The undecorated fetch: a failure here is reported by the join's fallback
+                # handler, not double-counted as a hard token-fetch failure, and a success
+                # adds no second databricks_token_fetch duration observation.
+                token = _get_databricks_token(
                     state["workspace"], picker_catalog_started_profile, allow_reauth=False
                 )
                 return list_anthropic_model_catalog(state["workspace"], token, **speculation_kwargs)
