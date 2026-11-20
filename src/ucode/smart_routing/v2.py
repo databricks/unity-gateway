@@ -53,6 +53,7 @@ from ucode.databricks import (
     maybe_add_gpt_1m_suffix,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.managed_files import published_agent_config_used
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -1119,10 +1120,15 @@ def _codex_routing_catalog(
         raise RuntimeError("Cannot load the Codex model catalog for plaintext task routing.")
     if managed_catalog:
         if any(model.get("multi_agent_tools_in_code_mode") is False for model in entries):
-            raise RuntimeError(
-                f"The managed catalog at {catalog_path} disables code-mode collaboration. "
-                "Run `ug configure --agents codex` to refresh a UG-managed catalog; "
+            refresh = (
+                "Ask your administrator to run `sudo ug configure --global` "
+                "to refresh the published agent configuration."
+                if published_agent_config_used()
+                else "Run `ug configure --agents codex` to refresh a UG-managed catalog; "
                 "an administrator must update a separately managed catalog."
+            )
+            raise RuntimeError(
+                f"The managed catalog at {catalog_path} disables code-mode collaboration. {refresh}"
             )
         return str(catalog_path)
     # Native model metadata otherwise overrides the launch's code-mode setting.

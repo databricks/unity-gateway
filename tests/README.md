@@ -19,8 +19,11 @@ Component checks also cover catalog precedence, authenticated model-service meta
 and a warning with continued launch if the optional session catalog cannot be built or written.
 UG-generated catalogs leave the native collaboration override unset, so the launch setting
 controls code mode. Existing UG-managed catalogs refresh through `ug configure --agents codex`.
+For a published agent configuration, an administrator must instead run
+`sudo ug configure --global`; ordinary configure leaves its machine-wide files unchanged.
 Launches never rewrite managed catalogs; an old catalog that disables code mode produces
-a refresh warning. Claude checks cover blank-prompt fallback and label-only input.
+a refresh warning. Component checks cover both refresh instructions and preserve the source
+catalog when a TUI session-copy write fails. Claude checks cover blank-prompt fallback and label-only input.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
@@ -1133,8 +1136,8 @@ The launch-policy matrix uses one native model spelling per tool; shared parser,
 classifier and routed-launch tests retain the split, equals and short-form checks.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer.
-Its pre-existing user-owned catalog opts native tools into code mode, overriding the
-bundled model's direct-only preference. This transport exposes plaintext assignments:
+Its pre-existing user-owned catalog disables code mode; the production launcher enables it
+in a session copy while preserving the original catalog. This exposes plaintext assignments:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
 The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ucode import agents, codex_config, custom_oauth
+from ucode import agents, codex_config, custom_oauth, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
@@ -104,8 +104,15 @@ def test_plaintext_catalog_rejects_non_object_rows(tmp_path, row):
         )
 
 
-@pytest.mark.parametrize("mode", [None, True, False])
-def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize(
+    "mode,published", [(None, False), (True, False), (False, False), (False, True)]
+)
+def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mode, published):
+    monkeypatch.setattr(
+        managed_files,
+        "published_agent_config_marker",
+        lambda: {"workspace": WS} if published else None,
+    )
     source = tmp_path / "admin.json"
     source.write_text(
         json.dumps({"models": [{"slug": "admin-model", "multi_agent_tools_in_code_mode": mode}]})
@@ -115,7 +122,8 @@ def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mo
     managed.write_text('model_catalog_json = "admin.json"\n')
     output = tmp_path / "session.json"
     if mode is False:
-        with pytest.raises(RuntimeError, match="ug configure --agents codex"):
+        command = "sudo ug configure --global" if published else "ug configure --agents codex"
+        with pytest.raises(RuntimeError, match=command) as error:
             v2._codex_routing_catalog(
                 "codex",
                 tmp_path / "ignored-user.json",
@@ -124,6 +132,9 @@ def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mo
                 workspace=WS,
                 get_token=lambda: "token",
             )
+        if published:
+            assert "administrator" in str(error.value)
+            assert "ug configure --agents codex" not in str(error.value)
     else:
         assert v2._codex_routing_catalog(
             "codex",
@@ -1035,7 +1046,10 @@ class TestCustomCatalogModels:
             "system.ai.gpt-5-6-luna",
         ]
 
-    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("write_fails", [False, True])
+    def test_launch_prefers_catalog_over_cached_models(
+        self, tmp_path, monkeypatch, capsys, write_fails
+    ):
         self._settings(
             tmp_path,
             monkeypatch,
@@ -1048,6 +1062,14 @@ class TestCustomCatalogModels:
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.156.0")
         monkeypatch.setattr(codex, "ug_version", lambda: "test")
         launched = []
+        warnings = []
+        monkeypatch.setattr(v2, "print_warning", warnings.append)
+        if write_fails:
+
+            def fail_write(*_args, **_kwargs):
+                raise OSError("catalog write failed")
+
+            monkeypatch.setattr(v2, "write_json_file", fail_write)
 
         class FakeProcess:
             def __init__(self, argv, **kwargs):
@@ -1084,11 +1106,17 @@ class TestCustomCatalogModels:
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
         session_catalog = Path(json.loads(catalog_override.split("=", 1)[1]))
         source_catalog = tmp_path / "cli.json"
-        assert session_catalog != source_catalog
-        expected = json.loads(source_catalog.read_text())
-        for model in expected["models"]:
-            model["multi_agent_tools_in_code_mode"] = True
-        assert json.loads(session_catalog.read_text()) == expected
+        if write_fails:
+            assert session_catalog == source_catalog
+            assert len(warnings) == 1
+            assert "catalog write failed" in warnings[0]
+        else:
+            assert session_catalog != source_catalog
+            expected = json.loads(source_catalog.read_text())
+            for model in expected["models"]:
+                model["multi_agent_tools_in_code_mode"] = True
+            assert json.loads(session_catalog.read_text()) == expected
+            assert warnings == []
         assert all(
             "multi_agent_tools_in_code_mode" not in row
             for row in json.loads(source_catalog.read_text())["models"]
