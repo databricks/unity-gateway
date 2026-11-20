@@ -46,11 +46,13 @@ _SCREEN = """() => {
   )].filter(e => visible(e)
     && !e.matches('.chat-confirmation-widget-collapsible')
     && !e.querySelector('.chat-confirmation-widget-collapsible')).pop();
-  // The chat list renders only rows in view, so earlier turns can leave the DOM and can't be
-  // counted. The current turn is the last request and the response after it.
+  // The chat list renders only rows in view and reuses row elements, so earlier turns can leave
+  // the DOM and DOM order isn't chat order. The current turn is the last request by row index and
+  // the response after it.
+  const row = e => Number(e.closest('.monaco-list-row')?.dataset.index ?? -1);
   const items = [...document.querySelectorAll(
     '.interactive-item-container.interactive-request, .interactive-item-container.interactive-response'
-  )];
+  )].sort((a, b) => row(a) - row(b));
   const last = items.findLastIndex(e => e.classList.contains('interactive-request'));
   const request = last < 0 ? null : items[last];
   const response = items.slice(last + 1).find(e => e.classList.contains('interactive-response'));
