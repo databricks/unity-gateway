@@ -10646,7 +10646,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
                 raise token_error
             return "token"
 
-        monkeypatch.setattr(cli_mod, "get_databricks_token", fake_token)
+        monkeypatch.setattr(cli_mod, "_get_databricks_token", fake_token)
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
         monkeypatch.setattr(
             cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, relayed)
@@ -10671,7 +10671,9 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             "token_calls": token_calls,
         }
 
-    def test_unmanaged_picker_catalog_starts_during_configure_and_feeds_it(self, monkeypatch):
+    def test_unmanaged_picker_catalog_starts_during_configure_and_feeds_it(
+        self, monkeypatch, metrics_recorder
+    ):
         calls = self._invoke_with_overlapped_catalog(
             monkeypatch, managed=None, persisted_provider=None
         )
@@ -10685,6 +10687,12 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         ]
         assert "main.default.claude-sonnet-5" in (
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        )
+        # The undecorated speculative fetch stays out of the token-fetch histogram: main's
+        # own timed get_databricks_token call remains the launch's single duration record.
+        assert (
+            metric_observations(metrics_recorder, metrics_mod.DATABRICKS_TOKEN_FETCH_DURATION_MS)
+            == []
         )
 
     def test_scoped_picker_catalog_starts_during_configure(self, monkeypatch):

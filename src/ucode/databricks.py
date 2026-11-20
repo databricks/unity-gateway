@@ -2253,10 +2253,7 @@ def _fetch_databricks_token_for_profile(
     return token
 
 
-@metrics.timed(
-    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
-)
-def get_databricks_token(
+def _get_databricks_token(
     workspace: str,
     profile: str | None = None,
     *,
@@ -2264,6 +2261,10 @@ def get_databricks_token(
     browser_login: bool = False,
     allow_reauth: bool = True,
 ) -> str:
+    """The undecorated token fetch: the same implementation
+    :func:`get_databricks_token` times and reports, for callers that must
+    stay out of the token-fetch metrics (a failed best-effort fetch is
+    reported by its own handler, not as a hard failure here)."""
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
     # bearer directly. Used by the e2e job, where the protected runner has
@@ -2302,6 +2303,32 @@ def get_databricks_token(
 
     metrics.bind(workspace, token)
     return token
+
+
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
+def get_databricks_token(
+    workspace: str,
+    profile: str | None = None,
+    *,
+    force_refresh: bool = False,
+    browser_login: bool = False,
+    allow_reauth: bool = True,
+) -> str:
+    """Fetch the workspace's Databricks token, timing and reporting the fetch.
+
+    Best-effort callers that handle their own failures call
+    :func:`_get_databricks_token` instead, so a recovered speculation is not
+    counted as a hard token-fetch failure and adds no second duration
+    observation."""
+    return _get_databricks_token(
+        workspace,
+        profile,
+        force_refresh=force_refresh,
+        browser_login=browser_login,
+        allow_reauth=allow_reauth,
+    )
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
