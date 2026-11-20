@@ -29,9 +29,11 @@ COMMAND_OPERATION = "command"
 UG_CLI_ERROR = "ug_cli_error"
 DATABRICKS_TOKEN_FETCH_OPERATION = "databricks_token_fetch"
 DATABRICKS_TOKEN_FETCH_DURATION_MS = f"{DATABRICKS_TOKEN_FETCH_OPERATION}_duration_ms"
-# Annotate-only label: measure records it as the operation's duration instead of the
-# wall time around the call, so a caller that awaited another thread's fetch reports
-# that fetch's duration (see the Databricks token fetch's in-process single flight).
+# Scope slot, not a label: `record_awaited_duration` stashes it on the measure scope and
+# `measure` records it as the operation's duration instead of the wall time around the
+# call, so a caller that awaited another thread's fetch reports that fetch's duration
+# (see the Databricks token fetch's in-process single flight) without the per-sample ms
+# value ever shipping as an exported attribute.
 AWAITED_DURATION_MS = "awaited_duration_ms"
 DATABRICKS_LOGIN_OPERATION = "databricks_login"
 # The api_operation label for the gateway's model listing (`/models`).
@@ -110,7 +112,7 @@ BOOL_LABELS = frozenset(
         "continued_with_fallback",
     }
 )
-INT_LABELS = frozenset({"http_status_code", "attempt", "process_exit_code", AWAITED_DURATION_MS})
+INT_LABELS = frozenset({"http_status_code", "attempt", "process_exit_code"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.+\-]{1,128}\Z")
 _scope: ContextVar[dict[str, Any] | None] = ContextVar("ug_metric_scope", default=None)
 _runtime: Recorder | None = None
@@ -412,6 +414,16 @@ def annotate(**labels: Any) -> None:
         current["labels"].update(_labels(labels))
 
 
+@_best_effort
+def record_awaited_duration(duration_ms: float) -> None:
+    """Attribute the current measurement to the awaited operation's own duration instead
+    of the wall time around the call — an untimed fetch's duration, reported once by the
+    first timed caller that reuses it. The value rides the measure scope outside the
+    label set, so it is never exported as a sample attribute."""
+    if current := _scope.get():
+        current[AWAITED_DURATION_MS] = duration_ms
+
+
 def error_code(error: BaseException | str) -> str:
     # Categorize locally; exception messages, URLs, response bodies and prompts are never exported.
     text = str(error).lower()
@@ -488,7 +500,8 @@ def measure(
     **labels: Any,
 ) -> Iterator[dict[str, Any]]:
     values: dict[str, Any] = {}
-    scope = None
+    scope: dict[str, Any] | None = None
+    scope_token = None
     started = None
     with suppress(Exception):
         values = _labels(labels)
@@ -496,15 +509,14 @@ def measure(
             if workspace:
                 workspace = destination(workspace)
             started = time.perf_counter()
-            scope = _scope.set(
-                {
-                    "workspace": workspace,
-                    "labels": values,
-                    "fallback": continued_with_fallback,
-                    "name": name,
-                    "parent": _scope.get(),
-                }
-            )
+            scope = {
+                "workspace": workspace,
+                "labels": values,
+                "fallback": continued_with_fallback,
+                "name": name,
+                "parent": _scope.get(),
+            }
+            scope_token = _scope.set(scope)
     try:
         yield values
     except Exception as exc:
@@ -514,7 +526,7 @@ def measure(
     finally:
         with suppress(Exception):
             if scope is not None and started is not None:
-                awaited = values.pop(AWAITED_DURATION_MS, None)
+                awaited = scope.pop(AWAITED_DURATION_MS, None)
                 record(
                     name,
                     awaited
@@ -524,8 +536,8 @@ def measure(
                     **values,
                 )
         with suppress(Exception):
-            if scope is not None:
-                _scope.reset(scope)
+            if scope_token is not None:
+                _scope.reset(scope_token)
 
 
 def timed(
