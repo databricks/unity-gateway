@@ -1958,7 +1958,7 @@ source is `main.ucode.dont_delete_ci_company_anthropic_mps` with no static defau
 scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
-Claude's native cache and replacement picker must match those IDs, preserve catalog display names,
+Claude's picker waits for its native cache before exit. Both must match those IDs, preserve catalog display names,
 and show a model in a numbered picker row alongside its admin header.
 Codex's scoped and stable catalogs, ug-launched app server, and fresh bare app server must match
 its independently fetched IDs. The configured Codex journey subsequently runs real `ug revert`,
