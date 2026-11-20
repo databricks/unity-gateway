@@ -4402,9 +4402,7 @@ def _launch_tool(
                 token = get_databricks_token(
                     state["workspace"], picker_catalog_started_profile, allow_reauth=False
                 )
-                return list_anthropic_model_catalog(
-                    state["workspace"], token, **speculation_kwargs
-                )
+                return list_anthropic_model_catalog(state["workspace"], token, **speculation_kwargs)
 
             picker_catalog_future = _start_in_background(_speculative_catalog)
             picker_catalog_started_identity = (
@@ -4416,10 +4414,10 @@ def _launch_tool(
         def _speculative_picker_catalog() -> AnthropicModelCatalog | None:
             """The speculative catalog result when its profile still matches and it succeeded;
             None sends the caller to the serial fetch with the live token."""
-            if (
-                picker_catalog_future is None
-                or picker_catalog_started_identity
-                != (state["workspace"], state.get("workspace_id"), catalog_profile)
+            if picker_catalog_future is None or picker_catalog_started_identity != (
+                state["workspace"],
+                state.get("workspace_id"),
+                catalog_profile,
             ):
                 return None
             try:
