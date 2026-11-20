@@ -217,12 +217,12 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     API and completes a Messages request on a configured system.ai Claude model. The installed
     Cowork plugin discovers web_search and finds Databricks' official website.
     Repeat configure preserves both configurations; an unrelated personal plugin survives
-    configure and revert unchanged. This checks native Linux/Windows commands
+    configure and revert unchanged. Linux also starts with only the standard Claude app data
+    directory and requires UG to initialize its third-party profile without changing that data.
+    This checks native Linux/Windows commands
     and protocols, not Desktop GUI, skill execution, or browser login; CI supplies a bearer.
     """
     session = live_session
-    config_library, root, unrelated_plugin = _prepare_desktop(session, workspace)
-
     configure_args = (
         "configure",
         "--agents",
@@ -232,6 +232,28 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    if sys.platform == "linux":
+        app_data = session.home / ".config" / "Claude"
+        app_data.mkdir(parents=True)
+        app_settings = app_data / "config.json"
+        original_settings = b'{"userSetting": "keep"}\n'
+        app_settings.write_bytes(original_settings)
+        config_library = desktop_config_library(session)
+        assert not config_library.parent.exists()
+        Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
+            f"[{CLI_PROFILE}]\nhost = {workspace}\nauth_type = databricks-cli\n"
+        )
+
+        session.run(*configure_args, timeout=240)
+        _desktop_profile(session, config_library, workspace)
+        with TerminalProcess(
+            session, "ug", [str(session.binary), "revert"], "fresh-desktop-revert"
+        ) as terminal:
+            terminal.finish()
+        assert not (config_library / f"{UG_PROFILE_ID}.json").exists()
+        assert app_settings.read_bytes() == original_settings
+
+    config_library, root, unrelated_plugin = _prepare_desktop(session, workspace)
     session.run(*configure_args, timeout=240)
     assert not session.workspace_state().get("provider_services", {}).get("claude")
 

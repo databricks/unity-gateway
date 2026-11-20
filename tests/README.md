@@ -683,7 +683,8 @@ exact-byte rollback, including malformed pre-existing UG profiles. Concurrency c
 reject changed snapshots. Desktop-only lock-timeout tests preserve files and close
 unacquired handles. Paths use temporary homes across simulated macOS, Windows, and Linux,
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
-failures, and parent-metadata preservation.
+failures, and parent-metadata preservation. First-launch coverage accepts either `Claude`
+or `Claude-3p` app data on Linux while retaining macOS/Windows detection.
 
 Rendering tests cover the exact profile fields (manual import enabled, no `_comment`),
 complete model IDs, order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
@@ -699,7 +700,9 @@ Existing CLI URL normalization is unchanged. Native Desktop activation,
 GUI/helper/browser behavior, project and chat import, and inference remain untested
 by these component checks; they do not establish native Windows or Linux support.
 The installed-CLI integration suite covers two complete Desktop journeys on Linux and Windows:
-system.ai models and subscription-relay Anthropic MPS. Both verify profile configuration,
+system.ai models and subscription-relay Anthropic MPS. The Linux lifecycle journey also
+starts with only standard `Claude` app data, configures and reverts the new third-party
+profile, and preserves the original app settings. Both verify profile configuration,
 credential-helper execution, live Messages inference, native profile MCP calls, preservation,
 and revert. Inference requires HTTP 200 and nonempty assistant text; MCP calls use web_search
 to find Databricks' official website without SQL compute. See

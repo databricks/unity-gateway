@@ -362,7 +362,7 @@ and its tests.
 
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
-and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux requires Desktop to have opened once.
+and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux accepts either an existing `Claude-3p` root or the standard `~/.config/Claude` directory created by Desktop's first launch, then initializes the third-party profile store.
 UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned profile.
 Configure replaces the profile, updates its metadata entry, and selects it, retaining
 same-workspace connectors until MCP reconciliation succeeds. Changing workspaces

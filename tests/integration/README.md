@@ -287,7 +287,9 @@ preservation check requires the exact UG Code plugin and marketplace entries
 alongside every seeded user setting; unexpected additions or changes still fail.
 
 Claude Desktop has installed-CLI lifecycle and subscription-relay coverage on Linux and
-Windows. The lifecycle journey configures twice and reverts against an isolated native profile
+Windows. On Linux, the lifecycle journey first starts with only `~/.config/Claude`, requires
+configure to create the third-party profile, and reverts without changing the original app settings.
+It then configures twice and reverts against an isolated native profile
 path, preserves an unrelated profile and metadata, then runs the exact generated credential
 helper and validates its token against the paginated live models API. It requires system.ai
 Claude models without an MPS override and uses the profile's credentials and headers for a small
@@ -1022,7 +1024,8 @@ exact-byte rollback, including malformed pre-existing UG profiles. Concurrency c
 reject changed snapshots. Desktop-only lock-timeout tests preserve files and close
 unacquired handles. Paths use temporary homes across simulated macOS, Windows, and Linux,
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
-failures, and parent-metadata preservation.
+failures, and parent-metadata preservation. First-launch coverage accepts either `Claude`
+or `Claude-3p` app data on Linux while retaining macOS/Windows detection.
 
 Rendering tests cover the exact profile fields (manual import enabled, no `_comment`),
 complete model IDs, order/duplicates, literal helper arguments, and copied headers. Omitted optional fields

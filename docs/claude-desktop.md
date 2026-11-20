@@ -16,7 +16,8 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
 - Claude Desktop installed on macOS, Windows, or Linux. On Windows, UG can initialize application data before the first launch when it
   detects Claude's registered MSIX package and executable. On Linux, open it once
-  to initialize application data.
+  to initialize `~/.config/Claude`; UG then creates `~/.config/Claude-3p/configLibrary`
+  for its gateway profile.
 - A named Databricks CLI profile with gateway/model access: an OAuth profile, or a PAT
   profile configured with `--use-pat`. A bearer token in the environment alone is not
   enough: Desktop starts MCP connectors with a near-empty environment, so

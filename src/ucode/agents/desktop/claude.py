@@ -349,6 +349,8 @@ def can_initialize_claude_desktop_directory(directory: Path) -> bool:
         return _claude_desktop_installed()
     if directory.parent.is_dir():
         return True
+    if sys.platform == "linux":
+        return directory.parent.with_name("Claude").is_dir()
     return sys.platform == "win32" and _claude_desktop_installed()
 
 

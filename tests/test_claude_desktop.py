@@ -882,10 +882,14 @@ def test_native_revert_without_ownership_does_not_create_files(
     assert not state_path.exists()
 
 
+@pytest.mark.parametrize("application_data_name", ["Claude-3p", "Claude"])
 def test_native_resolution_initializes_library_after_app_has_opened(
-    native_directory: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    native_directory: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    application_data_name: str,
 ) -> None:
-    native_directory.parent.mkdir(parents=True)
+    native_directory.parent.with_name(application_data_name).mkdir(parents=True)
     monkeypatch.setattr(desktop, "_claude_desktop_installed", lambda: True)
 
     configured = _configure(tmp_path / "state.json")
