@@ -4,10 +4,12 @@ import { test } from "node:test";
 
 import {
   DEFAULT_TOKEN_TTL_MS,
+  FORCE_REFRESH_FLAG,
   REFRESH_MARGIN_MS,
   buildProviders,
   childEnv,
   createTokenSource,
+  isAuthRejection,
   jwtExpiryMs,
   withLoginHint,
 } from "../src/ucode/copilot_app_plugin/ug-plugin.mjs";
@@ -119,4 +121,32 @@ test("buildProviders attaches the token provider to every provider", () => {
   assert.equal(provider.bearerTokenProvider, provide);
   assert.equal(provider.baseUrl, "https://ws/ai-gateway/anthropic");
   assert.equal(config.providers[0].bearerTokenProvider, undefined);
+});
+
+test("invalidate drops the cached token and force-refreshes the next mint once", async () => {
+  const calls = [];
+  const token = createTokenSource(config, {
+    run: async (argv) => (calls.push(argv), jwt(3600)),
+    now: () => 0,
+  });
+  await token();
+  await token();
+  token.invalidate();
+  await token();
+  await token();
+  token.invalidate();
+  await token();
+  assert.deepEqual(calls, [
+    config.tokenCommand,
+    [...config.tokenCommand, FORCE_REFRESH_FLAG],
+    [...config.tokenCommand, FORCE_REFRESH_FLAG],
+  ]);
+});
+
+test("isAuthRejection matches only 401 errors and call failures", () => {
+  assert.equal(isAuthRejection({ type: "session.error", data: { statusCode: 401 } }), true);
+  assert.equal(isAuthRejection({ type: "model.call_failure", data: { statusCode: 401 } }), true);
+  assert.equal(isAuthRejection({ type: "model.call_failure", data: { statusCode: 429 } }), false);
+  assert.equal(isAuthRejection({ type: "session.error", data: {} }), false);
+  assert.equal(isAuthRejection({ type: "assistant.usage", data: { statusCode: 401 } }), false);
 });

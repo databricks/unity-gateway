@@ -41,15 +41,21 @@ export function runCommand(argv, env) {
   });
 }
 
+export const FORCE_REFRESH_FLAG = "--force-refresh";
+
 // One mint at a time: concurrent requests share it, and the token is reused until shortly
-// before it expires.
+// before it expires. After invalidate(), the next mint asks for a new token rather than the
+// Databricks CLI's cached one.
 export function createTokenSource(config, { run = runCommand, now = Date.now } = {}) {
   let cached = null;
   let pending = null;
-  return function token() {
+  let forceRefresh = false;
+  function token() {
     if (cached && now() < cached.refreshAt) return Promise.resolve(cached.value);
     if (!pending) {
-      pending = run(config.tokenCommand, childEnv(config))
+      const argv = forceRefresh ? [...config.tokenCommand, FORCE_REFRESH_FLAG] : config.tokenCommand;
+      forceRefresh = false;
+      pending = run(argv, childEnv(config))
         .then((value) => {
           const expiry = jwtExpiryMs(value);
           const refreshAt = expiry ? expiry - REFRESH_MARGIN_MS : now() + DEFAULT_TOKEN_TTL_MS;
@@ -61,7 +67,19 @@ export function createTokenSource(config, { run = runCommand, now = Date.now } =
         });
     }
     return pending;
+  }
+  token.invalidate = () => {
+    cached = null;
+    forceRefresh = true;
   };
+  return token;
+}
+
+export function isAuthRejection(event) {
+  return (
+    (event?.type === "session.error" || event?.type === "model.call_failure") &&
+    event.data?.statusCode === 401
+  );
 }
 
 // The app retries a failing token provider several times, so the sign-in hint is shown once per

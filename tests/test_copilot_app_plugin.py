@@ -53,6 +53,7 @@ def _config(**overrides) -> plugin.PluginConfig:
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(plugin.time, "sleep", lambda seconds: None)
     return tmp_path
 
 
@@ -240,6 +241,25 @@ class TestSettings:
         }
         assert not root.exists()
         assert plugin.remove() is False
+
+    def test_remove_drops_the_keys_before_the_directory(self, home):
+        root = plugin.install(_config())
+        seen = []
+
+        def wait(seconds):
+            settings = json.loads(_settings(home).read_text())
+            seen.append((seconds, settings, root.exists()))
+
+        assert plugin.remove(wait=wait) is True
+        assert seen == [(plugin.UNLOAD_WAIT_S, {}, True)]
+        assert not root.exists()
+
+    def test_remove_without_keys_deletes_the_directory_at_once(self, home):
+        root = plugin.write_plugin(_config())
+        waits = []
+        assert plugin.remove(wait=waits.append) is True
+        assert waits == []
+        assert not root.exists()
 
     def test_remove_drops_empty_keys(self, home):
         plugin.install(_config())

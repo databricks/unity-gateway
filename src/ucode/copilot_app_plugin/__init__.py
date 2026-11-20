@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -30,6 +31,9 @@ Status = Literal["installed", "disabled", "not_installed", "invalid_settings"]
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
 _SOURCE_FILES = ("extension.mjs", "ug-plugin.mjs")
+# The app unloads the extension within about 3 s of its settings keys going away. Deleting the
+# directory first leaves the running extensions serving open chats until a new chat starts.
+UNLOAD_WAIT_S = 5.0
 
 
 class SettingsError(RuntimeError):
@@ -238,8 +242,13 @@ def install(
     return root
 
 
-def remove(root: Path | None = None, settings_path: Path | None = None) -> bool:
-    """Remove ug's settings keys and plugin directory. Returns whether anything was removed."""
+def remove(
+    root: Path | None = None,
+    settings_path: Path | None = None,
+    wait: Callable[[float], None] | None = None,
+) -> bool:
+    """Remove ug's settings keys, give the app time to unload the extension, then remove the
+    plugin directory. Returns whether anything was removed."""
     root = root or plugin_root()
     path = settings_path or copilot_settings_path()
     settings = read_settings(path)
@@ -254,6 +263,8 @@ def remove(root: Path | None = None, settings_path: Path | None = None) -> bool:
     if changed:
         atomic_write_json(path, settings)
     if root.exists():
+        if changed:
+            (wait or time.sleep)(UNLOAD_WAIT_S)
         shutil.rmtree(root)
         changed = True
     return changed
