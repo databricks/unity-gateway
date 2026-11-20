@@ -5801,45 +5801,33 @@ class TestRunDatabricksCliInstaller:
 
 
 class TestHttpGetJsonTimeout:
-    """A socket read timeout raises a bare TimeoutError (an OSError), not a
-    URLError. It must be returned as a reason, not propagated — otherwise it
-    escapes the best-effort MCP discovery flow and crashes the command."""
+    """httpx read timeouts surface through the pooled path as a `network error:` reason —
+    retried within the caller's budget and never raised, or they would escape the best-effort
+    MCP discovery flow and crash the command."""
 
     def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
-            raise TimeoutError("The read operation timed out")
+        import httpx
 
-        monkeypatch.setattr(db_mod, "_http_open", raise_timeout)
+        attempts = []
 
-        payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok")
+        def timeout(request):
+            attempts.append(request)
+            raise httpx.ReadTimeout("The read operation timed out", request=request)
 
-        assert payload is None
-        assert reason is not None
-        assert "timed out" in reason
+        client = httpx.Client(transport=httpx.MockTransport(timeout))
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda _seconds: None)
 
-    def test_post_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
-            raise TimeoutError("The read operation timed out")
-
-        monkeypatch.setattr(db_mod, "_http_open", raise_timeout)
+        payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok", max_retries=1)
+        assert (payload, reason) == (None, "network error: The read operation timed out")
+        assert len(attempts) == 2
 
         payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
-
-        assert payload is None
-        assert reason is not None
-        assert "timed out" in reason
-
-    def test_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
-            raise TimeoutError("The read operation timed out")
-
-        monkeypatch.setattr(db_mod, "_http_open", raise_timeout)
+        assert (payload, reason) == (None, "network error: The read operation timed out")
 
         body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
-
-        assert body is None
-        assert reason is not None
-        assert "timed out" in reason
+        assert (body, reason) == (None, "network error: The read operation timed out")
 
 
 class TestInstallAiTools:
