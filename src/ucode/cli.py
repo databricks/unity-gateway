@@ -14,7 +14,7 @@ import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from importlib import metadata
 from pathlib import Path
@@ -4194,6 +4194,75 @@ def _get_catalog_profile(state: dict) -> str | None:
     return state.get("profile")
 
 
+@dataclass
+class _SpeculativePickerCatalog:
+    """The picker catalog fetch started before `configure_shared_state`, with the launch
+    identity it was fetched for: `result` drops it when configure resolved a different
+    workspace, workspace id, or catalog profile."""
+
+    future: Future[AnthropicModelCatalog]
+    workspace: str
+    workspace_id: str | None
+    profile: str | None
+    catalog_kwargs: dict[str, str | None]
+
+    @classmethod
+    def start(
+        cls, state: dict, profile: str | None, **catalog_kwargs: str | None
+    ) -> _SpeculativePickerCatalog:
+        workspace = state["workspace"]
+
+        def fetch() -> AnthropicModelCatalog:
+            # The undecorated fetch: a failure here is reported by the join's fallback
+            # handler, not double-counted as a hard token-fetch failure, and a success adds
+            # no second databricks_token_fetch duration observation. Only the plain
+            # ``databricks auth token`` call runs — no ``auth login``, no browser, nothing
+            # that can prompt — so the main thread never waits on it and a failure never
+            # doubles configure's own fetch. Its exception rides the future; the join site
+            # falls back to the serial fetch on the live token.
+            token = fetch_databricks_token_untimed(workspace, profile, allow_reauth=False)
+            return list_anthropic_model_catalog(workspace, token, **catalog_kwargs)
+
+        return cls(
+            _start_in_background(fetch),
+            workspace,
+            state.get("workspace_id"),
+            profile,
+            catalog_kwargs,
+        )
+
+    def result(self, state: dict, catalog_profile: str | None) -> AnthropicModelCatalog | None:
+        """The speculative catalog result when its identity still matches and it succeeded;
+        None sends the caller to the serial fetch with the live token."""
+        if (self.workspace, self.workspace_id, self.profile) != (
+            state["workspace"],
+            state.get("workspace_id"),
+            catalog_profile,
+        ):
+            return None
+        try:
+            speculative = self.future.result()
+        except Exception as exc:
+            # The speculation is best effort: a failed background token or catalog fetch
+            # falls back to the serial fetch on the live token, never fails the launch.
+            # The raised exception can only come from the non-interactive token fetch (the
+            # catalog call reports failures via error_msg instead).
+            metrics.failure(
+                metrics.DATABRICKS_TOKEN_FETCH_OPERATION, exc, continued_with_fallback=True
+            )
+            return None
+        error = speculative.error_msg
+        if error and looks_like_definitive_auth_failure(error):
+            # The token the speculation rode is definitively rejected (a 401, an
+            # invalid-token 400, an invalid-access-token 403) and configure's auth step may
+            # have repaired it; refetch with the live token.
+            metrics.failure(metrics.MODELS_LIST_OPERATION, error, continued_with_fallback=True)
+            return None
+        # Any other error (a plain 403, a transient error) would fail a live-token fetch the
+        # same way, so use the speculative result instead of doubling the request.
+        return speculative
+
+
 @smart_routing_config.version_scope()
 def _launch_tool(
     tool_name: str,
@@ -4400,9 +4469,7 @@ def _launch_tool(
         # speculatively here and overlap it with the probe and discovery that
         # `configure_shared_state` runs. A launch shape whose routing wouldn't read the catalog
         # abandons the request on its daemon thread.
-        picker_catalog_future: Future[AnthropicModelCatalog] | None = None
-        picker_catalog_started_profile: str | None = None
-        picker_catalog_started_identity: tuple[str, str | None, str | None] | None = None
+        picker_catalog_speculation: _SpeculativePickerCatalog | None = None
         launch_only_auto_picker = (
             tool == AGENT_CLAUDE
             and smart_routing_config.auto_mode_enabled()
@@ -4446,69 +4513,11 @@ def _launch_tool(
                 cached_picker_catalog = entry_catalog(launch_cache_entry)
         scoped_picker_catalog = claude_uc_picker_catalog and not provider
         if (unmanaged_picker_catalog or scoped_picker_catalog) and cached_picker_catalog is None:
-            picker_catalog_started_profile = _get_catalog_profile(state)
-            speculation_kwargs = (
-                {} if unmanaged_picker_catalog else {"parent_schema": parent_schema}
+            picker_catalog_speculation = _SpeculativePickerCatalog.start(
+                state,
+                _get_catalog_profile(state),
+                **({} if unmanaged_picker_catalog else {"parent_schema": parent_schema}),
             )
-            # Snapshot the launch identity: `state` is rebound by `configure_shared_state` below,
-            # and the thread must fetch the token for and query the same workspace.
-            speculation_workspace = state["workspace"]
-            speculation_workspace_id = state.get("workspace_id")
-
-            def _speculative_catalog() -> AnthropicModelCatalog:
-                """Fetch the picker catalog in the background, non-interactively.
-
-                Only the plain ``databricks auth token`` call runs — no ``auth login``, no
-                browser, nothing that can prompt — so the main thread never waits on it and a
-                failure never doubles configure's own fetch. Its exception rides the future;
-                the join site falls back to the serial fetch on the live token."""
-                # The undecorated fetch: a failure here is reported by the join's fallback
-                # handler, not double-counted as a hard token-fetch failure, and a success
-                # adds no second databricks_token_fetch duration observation.
-                token = fetch_databricks_token_untimed(
-                    speculation_workspace, picker_catalog_started_profile, allow_reauth=False
-                )
-                return list_anthropic_model_catalog(
-                    speculation_workspace, token, **speculation_kwargs
-                )
-
-            picker_catalog_future = _start_in_background(_speculative_catalog)
-            picker_catalog_started_identity = (
-                speculation_workspace,
-                speculation_workspace_id,
-                picker_catalog_started_profile,
-            )
-
-        def _speculative_picker_catalog() -> AnthropicModelCatalog | None:
-            """The speculative catalog result when its profile still matches and it succeeded;
-            None sends the caller to the serial fetch with the live token."""
-            if picker_catalog_future is None or picker_catalog_started_identity != (
-                state["workspace"],
-                state.get("workspace_id"),
-                catalog_profile,
-            ):
-                return None
-            try:
-                speculative = picker_catalog_future.result()
-            except Exception as exc:
-                # The speculation is best effort: a failed background token or catalog fetch
-                # falls back to the serial fetch on the live token, never fails the launch.
-                # The raised exception can only come from the non-interactive token fetch (the
-                # catalog call reports failures via error_msg instead).
-                metrics.failure(
-                    metrics.DATABRICKS_TOKEN_FETCH_OPERATION, exc, continued_with_fallback=True
-                )
-                return None
-            error = speculative.error_msg
-            if error and looks_like_definitive_auth_failure(error):
-                # The token the speculation rode is definitively rejected (a 401, an
-                # invalid-token 400, an invalid-access-token 403) and configure's auth step may
-                # have repaired it; refetch with the live token.
-                metrics.failure(metrics.MODELS_LIST_OPERATION, error, continued_with_fallback=True)
-                return None
-            # Any other error (a plain 403, a transient error) would fail a live-token fetch the
-            # same way, so use the speculative result instead of doubling the request.
-            return speculative
 
         state = configure_shared_state(
             state["workspace"],
@@ -4659,7 +4668,11 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            picker_catalog = _speculative_picker_catalog()
+            picker_catalog = (
+                picker_catalog_speculation.result(state, catalog_profile)
+                if picker_catalog_speculation
+                else None
+            )
             if picker_catalog is None:
                 token = get_databricks_token(state["workspace"], catalog_profile)
                 picker_catalog = list_anthropic_model_catalog(
@@ -4773,8 +4786,13 @@ def _launch_tool(
         # Claude Code's own discovery lists them without it, so they would run at 200K.
         # launch_only_auto_picker was settled above, where the speculative catalog started.
         if unmanaged_picker_catalog:
-            # AnthropicModelCatalog is a plain dataclass, so only None is falsy here.
-            discovered = cached_picker_catalog or _speculative_picker_catalog()
+            # AnthropicModelCatalog is a plain dataclass, so only None is falsy here. On a
+            # cache hit the speculation never started, so only the cached catalog serves.
+            discovered = cached_picker_catalog or (
+                picker_catalog_speculation.result(state, catalog_profile)
+                if picker_catalog_speculation
+                else None
+            )
             if discovered is None:
                 discovered = list_anthropic_model_catalog(
                     state["workspace"],
