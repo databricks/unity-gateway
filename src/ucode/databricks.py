@@ -4,7 +4,9 @@ discovery, Unity Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextvars
 import functools
+import io
 import json
 import logging
 import logging.handlers
@@ -27,11 +29,15 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from http.client import HTTPException
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
+
+if TYPE_CHECKING:
+    import httpx
 
 from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
@@ -47,6 +53,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.string_utils import unqualified_model_name
@@ -376,6 +383,198 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+class _RejectCookiesPolicy(DefaultCookiePolicy):
+    def set_ok(self, cookie, request) -> bool:
+        return False
+
+
+# The most recent 3xx response seen by this request, via a client response hook. A context
+# variable keeps concurrent callers on the shared client from seeing each other's redirects.
+_LAST_REDIRECT: contextvars.ContextVar[httpx.Response | None] = contextvars.ContextVar(
+    "pooled_last_redirect", default=None
+)
+
+
+def _remember_redirect(response: httpx.Response) -> None:
+    if 300 <= response.status_code < 400:
+        _LAST_REDIRECT.set(response)
+
+
+POOLED_HTTP_DISABLE_ENV_VAR = "UG_NO_POOLED_HTTP"
+
+
+def _use_pooled_client() -> bool:
+    """Whether `_http_open` may use the pooled client: only the default setup, the OS trust
+    store with no http/https proxy configured (env or the macOS/Windows system settings).
+    Everything else keeps urllib's own path, byte for byte with main. ``all_proxy`` doesn't
+    count — urllib ignores it. ``UG_NO_POOLED_HTTP`` falls back to urllib everywhere."""
+    if env_bool(POOLED_HTTP_DISABLE_ENV_VAR):
+        return False
+    if tls.effective_trust_store() != tls.TRUST_STORE_OS:
+        return False
+    proxies = urllib_request.getproxies()
+    return not (proxies.get("http") or proxies.get("https"))
+
+
+_HTTP_CLIENT: httpx.Client | None = None
+_HTTP_CLIENT_PID: int | None = None
+_HTTP_CLIENT_LOCK = threading.Lock()
+
+
+def _reset_http_client_after_fork() -> None:
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID, _HTTP_CLIENT_LOCK
+    _HTTP_CLIENT = None
+    _HTTP_CLIENT_PID = os.getpid()
+    _HTTP_CLIENT_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_http_client_after_fork)
+
+
+def _get_http_client() -> httpx.Client:
+    import httpx
+
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID
+    pid = os.getpid()
+    if _HTTP_CLIENT is not None and _HTTP_CLIENT_PID == pid:
+        return _HTTP_CLIENT
+    with _HTTP_CLIENT_LOCK:
+        if _HTTP_CLIENT is None or _HTTP_CLIENT_PID != pid:
+            # Before any SSL context is built — the client's and the transport's — so httpx's
+            # default context verifies against the OS trust store tls.apply() selected for the
+            # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
+            tls.apply()
+            limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+            client = httpx.Client(
+                # urllib's HTTPRedirectHandler stops after 10 redirects; httpx defaults to 20.
+                max_redirects=urllib_request.HTTPRedirectHandler.max_redirections,
+                transport=httpx.HTTPTransport(trust_env=True, limits=limits),
+                # Only reached with no http/https proxy configured; trust_env stays off so
+                # httpx never mounts ALL_PROXY (and socks proxies needing socksio) behind
+                # our back.
+                trust_env=False,
+                event_hooks={"response": [_remember_redirect]},
+                follow_redirects=True,
+                cookies=CookieJar(policy=_RejectCookiesPolicy()),
+            )
+            _HTTP_CLIENT = client
+            _HTTP_CLIENT_PID = pid
+    return _HTTP_CLIENT
+
+
+class _PooledResponse:
+    def __init__(self, response: httpx.Response):
+        self.status = response.status_code
+        self.headers = Message()
+        for name, value in response.headers.multi_items():
+            self.headers.add_header(name, value)
+        self._body = response.content
+        self._url = str(response.url)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def geturl(self) -> str:
+        return self._url
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _os_error_reason(exc: BaseException) -> BaseException:
+    """The first OSError behind an httpx error (what urllib would have put in URLError.reason),
+    following __cause__/__context__; the deepest error when there's none."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    reason = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        reason = current
+        if isinstance(current, OSError):
+            return current
+        current = current.__cause__ or current.__context__
+    return reason
+
+
+def _http_open(request: urllib_request.Request, *, timeout: float):
+    if not _use_pooled_client():
+        # Not the default setup (python trust store, or an http/https proxy configured): keep
+        # urllib's own path — its proxy handling and trust store — exactly as main ran it.
+        return urllib_request.urlopen(request, timeout=timeout)
+    import httpx
+
+    request_headers = dict(request.header_items())
+    header_names = {name.casefold() for name in request_headers}
+    if "accept-encoding" not in header_names:
+        request_headers["Accept-Encoding"] = "identity"
+    if "connection" not in header_names:
+        request_headers["Connection"] = "keep-alive"
+    if "user-agent" not in header_names:
+        # urllib's own default: '%d.%d' % sys.version_info[:2].
+        request_headers["User-Agent"] = f"Python-urllib/{sys.version_info[0]}.{sys.version_info[1]}"
+    httpx_request = httpx.Request(
+        request.get_method(),
+        request.full_url,
+        # http.client encodes header values as latin-1; httpx would reject non-ascii ones.
+        headers=[
+            (name.encode("latin-1"), value.encode("latin-1"))
+            for name, value in request_headers.items()
+        ],
+        # The only Request built with data is `_http_send_json`'s, which sends bytes or None.
+        content=cast("bytes | None", request.data),
+        extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+    )
+    try:
+        # urllib's redirect_request re-issues GET/HEAD on any redirect, re-issues a POST
+        # answered 301/302/303 as a bodiless GET, and raises HTTPError for every other
+        # method or 307/308. Mirror that instead of letting httpx replay request bodies.
+        method = httpx_request.method
+        client = _get_http_client()
+        response = client.send(httpx_request, follow_redirects=method in ("GET", "HEAD"))
+        if method == "POST" and response.status_code in (301, 302, 303) and response.next_request:
+            # httpx's next_request for a POST 301/302/303 is already that bodiless GET, with
+            # cross-origin Authorization stripped.
+            response = client.send(response.next_request, follow_redirects=True)
+    except httpx.TooManyRedirects as exc:
+        # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
+        # callers see a status-shaped failure, not a network one — carrying the LAST 3xx's
+        # real code, reason, headers, and body, not a made-up status.
+        last = _LAST_REDIRECT.get()
+        if last is not None:
+            pooled = _PooledResponse(last)
+            raise urllib_error.HTTPError(
+                request.full_url,
+                pooled.status,
+                last.reason_phrase,
+                pooled.headers,
+                io.BytesIO(pooled.read()),
+            ) from exc
+        raise urllib_error.HTTPError(
+            request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
+        ) from exc
+    except httpx.RequestError as exc:
+        raise urllib_error.URLError(_os_error_reason(exc)) from exc
+    except httpx.HTTPError as exc:
+        # Other transport-level httpx errors (the pool closed, a stream broke): urllib has no
+        # counterpart, so surface them as network errors like the RequestError mapping above.
+        raise urllib_error.URLError(exc) from exc
+
+    pooled_response = _PooledResponse(response)
+    if not 200 <= response.status_code < 300:
+        raise urllib_error.HTTPError(
+            pooled_response.geturl(),
+            response.status_code,
+            response.reason_phrase,
+            pooled_response.headers,
+            io.BytesIO(pooled_response.read()),
+        )
+    return pooled_response
+
+
 @metrics.http_result
 def _http_get_bytes(
     url: str,
@@ -406,7 +605,7 @@ def _http_get_bytes(
         if attempt:
             metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
-            with urllib_request.urlopen(request, timeout=timeout) as response:
+            with _http_open(request, timeout=timeout) as response:
                 status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
@@ -537,7 +736,7 @@ def _http_send_json(
     request_started = time.perf_counter()
     status = None
     try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
+        with _http_open(request, timeout=timeout) as response:
             status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
