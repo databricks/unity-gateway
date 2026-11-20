@@ -7523,6 +7523,13 @@ def _force_pooled(monkeypatch):
     monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
 
 
+def _stub_tls_apply(monkeypatch):
+    """Keep the real tls.apply out of tests that build a client: it would inject truststore
+    into `ssl` for the whole process (conftest extracts it afterwards, but these tests only
+    talk to plain-HTTP loopback servers and never need the OS store)."""
+    monkeypatch.setattr(db_mod.tls, "apply", lambda *args, **kwargs: "os")
+
+
 @pytest.fixture
 def fresh_pooled_client(monkeypatch):
     """A loopback test must not reuse the cached pooled client: the client captures its proxy
@@ -7532,6 +7539,7 @@ def fresh_pooled_client(monkeypatch):
     (monkeypatch restores the previously cached one)."""
     _clear_proxy_env(monkeypatch)
     _force_pooled(monkeypatch)
+    _stub_tls_apply(monkeypatch)
     _reset_pooled_client(monkeypatch)
     yield
     client = db_mod._HTTP_CLIENT
@@ -7540,17 +7548,16 @@ def fresh_pooled_client(monkeypatch):
 
 
 def test_pooled_client_built_on_tls_trust_store(monkeypatch):
-    """tls.apply() runs before the client and its transports are built, so httpx's default SSL
-    contexts verify against the trust store selected for the whole process; no per-client
+    """tls.apply() runs before the client and its transport are built, so httpx's default SSL
+    context verifies against the trust store selected for the whole process; no per-client
     ssl context or verify= is passed (AGENTS.md)."""
     import httpx
 
     order = []
-    real_apply = db_mod.tls.apply
 
     def spy_apply(*args, **kwargs):
         order.append("apply")
-        return real_apply(*args, **kwargs)
+        return "os"
 
     built = {}
     real_transport = httpx.HTTPTransport
@@ -7586,6 +7593,7 @@ def test_pooled_client_built_on_tls_trust_store(monkeypatch):
 def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
+    _stub_tls_apply(monkeypatch)
     parent_client = db_mod._get_http_client()
     parent_pid = os.getpid()
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT", parent_client)
@@ -7700,6 +7708,7 @@ class TestPooledClientDispatch:
             return real_client(*args, **kwargs)
 
         monkeypatch.setattr(httpx, "Client", spy_client)
+        _stub_tls_apply(monkeypatch)
         _reset_pooled_client(monkeypatch)
         client = db_mod._get_http_client()
         try:
