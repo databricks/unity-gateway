@@ -4,6 +4,7 @@ The terminal footer uses the experimental MCP status-line provider API first
 shipped in stable Codex `0.171.0`. UG registers a local stdio provider for each
 routed launch and selects it in the terminal client. Both configurations are
 launch-only. The provider needs no gateway credentials or network access.
+Its MCP tool is visible only to the app, so it is excluded from model-facing tool declarations.
 
 The indicator reflects the latest session controls, rather than a turn's original
 routing attribution. Existing children and an ongoing main turn keep their original

@@ -53,6 +53,14 @@ def test_terminal_config_contains_only_feature_and_selection(tmp_path):
     assert statusline.tui_config({}) == {}
 
 
+def test_statusline_tool_is_visible_to_the_app_only():
+    (tool,) = statusline.respond("tools/list", {})["tools"]
+    assert tool["_meta"]["ui"]["visibility"] == ["app"]
+    assert tool["_meta"]["openai/ui"]["entrypoints"] == [
+        {"type": "statusline", "resourceUri": statusline.RESOURCE_URI}
+    ]
+
+
 @pytest.mark.parametrize(
     "state",
     [

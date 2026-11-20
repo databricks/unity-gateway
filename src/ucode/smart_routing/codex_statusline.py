@@ -20,7 +20,10 @@ TOOL = {
     "description": "Show this session's Smart Router state in the Codex footer.",
     "inputSchema": {"type": "object", "properties": {}},
     "annotations": {"readOnlyHint": True},
-    "_meta": {"openai/ui": {"entrypoints": [{"type": "statusline", "resourceUri": RESOURCE_URI}]}},
+    "_meta": {
+        "ui": {"visibility": ["app"]},
+        "openai/ui": {"entrypoints": [{"type": "statusline", "resourceUri": RESOURCE_URI}]},
+    },
 }
 
 
