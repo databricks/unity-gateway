@@ -1,5 +1,7 @@
 """Codex-specific integration evidence and model discovery helpers."""
 
+import json
+
 from ..model_discovery import codex_model_in_picker as model_in_picker
 from . import _evidence_id
 
@@ -9,6 +11,7 @@ __all__ = [
     "assistant_answers",
     "completed_task_models",
     "completed_command_outputs",
+    "completed_smart_router_results",
     "model_in_picker",
 ]
 
@@ -51,6 +54,26 @@ def completed_command_outputs(
         and isinstance(item.get("aggregated_output"), str)
         and (command_contains is None or command_contains in _command_text(item.get("command")))
     ]
+
+
+def completed_smart_router_results(records: list[dict], action: str) -> list[dict]:
+    results = []
+    for row in records:
+        if row.get("type") != "event_msg" or row.get("payload", {}).get("type") != "item_completed":
+            continue
+        item = row["payload"].get("item", {})
+        if item.get("type") != "DynamicToolCall" or item.get("tool") != "ug_smart_router":
+            continue
+        if item.get("arguments", {}).get("action") != action:
+            continue
+        assert item.get("status") == "completed" and item.get("success") is True, item
+        contents = item.get("content_items")
+        assert isinstance(contents, list) and len(contents) == 1, item
+        assert contents[0].get("type") == "inputText", item
+        result = json.loads(contents[0]["text"])
+        assert isinstance(result, dict), item
+        results.append(result)
+    return results
 
 
 def is_child_session(path: str, records: list[dict]) -> bool:

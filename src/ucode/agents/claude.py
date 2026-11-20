@@ -60,11 +60,11 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
+    custom_model_services,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
     model_service_relay_lookup,
     model_services_need_subscription_relay,
-    relay_candidate_model_services,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -370,6 +370,12 @@ def _parse_managed_settings(text: str) -> dict:
     return settings
 
 
+def read_native_settings(path: Path) -> dict:
+    """Read a Claude settings object. A missing file contributes no settings."""
+    text = read_managed_file(path)
+    return _parse_managed_settings(text) if text is not None else {}
+
+
 def get_family_defaults(
     state: dict, *, managed_config: bool, provider: str | None, parent_schema: str | None
 ) -> dict[str, str] | None:
@@ -387,8 +393,7 @@ def get_family_defaults(
     if path is None or managed_settings_skipped():
         return None
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except RuntimeError:
         return None
     env = settings.get("env")
@@ -1695,7 +1700,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
     models = state.get("claude_static_models")
-    candidates = relay_candidate_model_services(models if isinstance(models, list) else [])
+    candidates = custom_model_services(models if isinstance(models, list) else [])
     if not candidates:
         state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
         return False
@@ -2844,8 +2849,7 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     Reads BOM-tolerantly like Claude Code, so a BOM-prefixed policy file is not mistaken for empty.
     """
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except (RuntimeError, OSError, ValueError):
         return True
     permissions = settings.get("permissions")
@@ -2853,18 +2857,12 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     return isinstance(deny, list) and "WebSearch" in deny
 
 
-def _use_server_side_web_search(state: dict) -> bool:
-    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
-
-    A deny in a scope the launch can't override (managed, user, or project settings) would leave
-    no search tool at all, so the launch then keeps ug's MCP instead.
-    """
-    if not server_side_web_search_enabled(state):
-        return False
+def native_settings_paths() -> tuple[Path, ...]:
+    """Native managed, user and project settings that can affect a Claude launch."""
     managed_path = _managed_settings_path()
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     directories = [Path.cwd(), *Path.cwd().parents]
-    for blocker in (
+    return (
         *(
             [
                 managed_path,
@@ -2884,7 +2882,18 @@ def _use_server_side_web_search(state: dict) -> bool:
             for d in directories
             for name in ("settings.json", "settings.local.json")
         ),
-    ):
+    )
+
+
+def _use_server_side_web_search(state: dict) -> bool:
+    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
+
+    A deny in a scope the launch can't override (managed, user, or project settings) would leave
+    no search tool at all, so the launch then keeps ug's MCP instead.
+    """
+    if not server_side_web_search_enabled(state):
+        return False
+    for blocker in native_settings_paths():
         if _denies_web_search_or_unreadable(blocker):
             print_warning(
                 f"Server-side web search is enabled, but {blocker} denies WebSearch (or can't be "

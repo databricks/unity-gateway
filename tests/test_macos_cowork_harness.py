@@ -341,6 +341,31 @@ def test_relay_probe_requires_service_and_subscription_token(harness, monkeypatc
         harness.probe.configure()
 
 
+@pytest.mark.parametrize(("returncode", "stdout"), [(1, "unexpected-output"), (0, "")])
+def test_pat_setup_failure_retains_redacted_traceback(harness, monkeypatch, returncode, stdout):
+    monkeypatch.setattr(harness.probe, "MCP_SERVICE", "system.ai.web_search")
+    monkeypatch.setattr(harness.probe, "RELAY", False)
+    stderr = (
+        "desktop-pat.py call /api/2.0/token/create test-bearer\n"
+        + "traceback context\n" * 50
+        + "URLError: nodename nor servname provided, or not known"
+    )
+    # PAT creation needs the live workspace; exercise only the failed subprocess result.
+    monkeypatch.setattr(
+        harness.probe.process,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=returncode, stdout=stdout, stderr=stderr
+        ),
+    )
+    with pytest.raises(RuntimeError, match="Could not mint the Desktop PAT"):
+        harness.probe.configure()
+    saved = (harness.probe.EVIDENCE / "desktop-pat-stderr.txt").read_text()
+    assert saved == stderr.replace("test-bearer", "[REDACTED]")
+    assert "desktop-pat.py call /api/2.0/token/create" in saved[:-500]
+    assert "unexpected-output" not in saved
+
+
 def test_probe_reads_its_model_source_from_the_environment(harness, monkeypatch):
     monkeypatch.setenv("UG_COWORK_PROVIDER", "main.relay")
     monkeypatch.setenv("UG_COWORK_MODEL", "claude-haiku-4-5-20251001")

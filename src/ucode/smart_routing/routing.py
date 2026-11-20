@@ -34,6 +34,7 @@ from ucode.workspace import workspace_headers
 ROUTER_NAME = "stable"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
+MAX_ROUTE_OPTIONS = 128
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
@@ -78,16 +79,22 @@ def format_subagent_message(
 
 
 def _format_box(lines: list[str]) -> str:
-    wrapped_lines = [
-        wrapped
-        for line in lines
-        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
-    ]
+    return draw_box(
+        [
+            wrapped
+            for line in lines
+            for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+        ]
+    )
+
+
+def draw_box(fitted_lines: list[str]) -> str:
+    """Draw lines already no wider than ROUTING_BOX_WIDTH in the routing-card box."""
     border = "─" * (ROUTING_BOX_WIDTH + 2)
     return "\n".join(
         [
             f"┌{border}┐",
-            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in fitted_lines),
             f"└{border}┘",
         ]
     )

@@ -59,6 +59,7 @@ fallback-version = "0.0.0"
 
 [dependency-groups]
 dev = [
+    "cryptography>=49.0.0",
     "pytest>=9.0.3",
     "pytest-rerunfailures>=16.7",
     "pexpect>=4.9.0",

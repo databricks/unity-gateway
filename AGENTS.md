@@ -35,6 +35,11 @@ Tests live in `tests/`.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Every child process inherits `UG_HEADERS`, including an agent started from another agent's session. The gateway records `Databricks-Custom-Coding-Agent` ahead of `User-Agent`, so the root callback drops an inherited one when it launches an agent (bare `ug` or `_AGENT_LAUNCH_COMMANDS` in `cli.py`); helper subcommands such as `mcp-proxy` keep it, since they run under the agent their parent launched. Add a new agent command outside `TOOL_ALIASES` to `_AGENT_LAUNCH_COMMANDS`, or it reports the parent's agent.
 - Add or update focused tests for behavior changes.
+- In live agent tests, assert completed outcomes and correlated request/response semantics.
+  Do not require an exact number or order of model, tool, subagent, or routing calls merely
+  because a prompt requests it. Native recovery and agent planning can produce extra calls.
+  Require relevant evidence and validate every matching call; use exact counts only when
+  cardinality is the contract being tested, such as routing disabled or one selection per response.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Only members/owners may request a run that executes PR code with CI secrets (as in `fork-integration.yml`), after reviewing the changes. Review commands that run no PR code (`ug-review.yml`) may also let GitHub-classified `CONTRIBUTOR`s request their own PR; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
@@ -127,6 +132,24 @@ subagent route selection so its trigger is scoped to that decision. Each routing
 attempt also uses `HTTP_REQUEST_DURATION_MS` with `api_operation="routes_select"`,
 `http_method="POST"`, `attempt=1`, and `http_status_code` when a response is available.
 
+Proxy instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `PROXY_REQUEST_DURATION_MS` | `record()` once when the proxy handler finishes forwarding or stops on an error/disconnect, measured from handler entry and including body reads, token lookup, the auth retry, and response streaming; label `client_disconnected`. |
+| `PROXY_UPSTREAM_HEADERS_DURATION_MS` | `record()` when each upstream response's headers arrive, measured from the start of forwarding, with `attempt=1` or `2`; the second sample includes the first attempt and token refresh. |
+| `PROXY_FIRST_BYTE_DURATION_MS` | `record()` on the first nonempty chunk of the response selected for forwarding, measured from the start of forwarding before writing that chunk; includes an auth retry and is absent for empty responses. |
+| `PROXY_RESPONSE_BYTES` | `record()` once per handled request with the response body bytes written and flushed to the client, including partial responses; excludes headers and the rejected auth response consumed before retry. |
+| `PROXY_AUTH_RETRY_COUNT` | `record(..., 1)` immediately before retrying after an upstream 401/403; do not count the initial attempt. |
+| `PROXY_REQUEST_OPERATION` | `failure()` once for a terminal proxy failure with `phase="agent_session"`; a recovered auth rejection or ordinary client disconnect does not emit an error. |
+
+Proxy observations use `workspace=metrics_workspace` and labels `proxy_mode`
+(`gateway_auth`, `relay`, or `otel`), `api_operation`, and `http_method`, plus
+`http_status_code` once upstream headers arrive. Reuse the proxy's existing token
+with `metrics.bind()`; never fetch credentials solely for metrics. Duration names
+are registered in `DURATION_METRICS`, the retry counter in `COUNTER_METRICS`, and
+`PROXY_RESPONSE_BYTES` in `METRICS` with byte units and `BYTE_BOUNDS` in the exporter.
+
 ## Smart-routing configuration
 
 `SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in
@@ -199,15 +222,10 @@ main model and reopens the chooser. This check includes cold contexts and does n
 that a warm cache exists. Other hooks' blocks and explicit confirmation requests still apply.
 The main-model chooser opens only after the person confirms the Auto row in `/model` and
 the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
-on Esc. The chooser uses a compact native modal above the prompt, including in narrow
-terminals. The current model appears first; larger catalogs use a More models choice
-to cycle through pages. It has no effort controls and runs no `/effort` commands.
-Native confirms the row as its picker closes, before the chooser opens, so that confirmation
-reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
-a visible `$.ui.log` notice after saving the chosen model, such as
-`Auto mode: main model claude-opus-5-5, subagents smart routed.` Native prefixes this notice
-with the plugin name. `$.session.append` system and user-meta rows are hidden in normal mode.
-The prompt hint row's `Auto (<main model>)` also names the main model. Native `/effort`
+on Esc. The chooser presents every allowed main model in one scrollable list with the
+current model first. The chooser names the current model and explains that subagents will be smart routed.
+Native displays `Auto mode: Subagents smart routed.` before the chooser opens. Saving updates the prompt hint row's
+`Auto (<main model>)` without writing a confirmation to the transcript. Native `/effort`
 continues to work independently. A fresh launch
 without a launch-only model starts on the stored main model; a per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.
@@ -311,6 +329,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list. A static list naming a model service whose primary destination is a subscription-relay MPS makes Claude Code CLI launch relayed for a user already signed in to a Claude subscription (credential swap, no `apiKeyHelper`; others keep gateway auth with a sign-in note) with the list still owning the picker; Claude Desktop keeps gateway auth for it (CLI-only for now) |
+| `modelSettings.<Auto alias>.autoCompactWindow` | Launch-only | Launch-only | For an Auto alias without a native profile, uses the catalog input limit up to 1M tokens, or 200k when the limit is unknown. A known limit below Claude’s 100k minimum is left to Claude. Explicit window settings take precedence. |
 | UG Auto metadata and saved selection | Merge | Merge | Explicit configure outside eligible Auto and revert remove UG-reserved aliases from `modelOverrides`, `availableModels`, and picker rows, plus an Auto custom-model environment triplet. Saved Auto `model` and Anthropic model environment values resolve to permitted real targets or are removed. Cleanup also covers native `settings.json` within the command's scope; unrelated models, aliases and policy remain unchanged. Launches and toggles do not clean these fields |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone. `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1` makes one launch strip the bare rule and hide `web_search` in its inline `--settings`; a managed, drop-in or user `WebSearch` deny makes it keep ug's MCP. The managed file never gets the deny; `ug configure --enable-server-side-web-search` (saved as `claude_server_side_web_search`) makes an explicit configure remove an existing bare one unless the admin's settings request it |
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |

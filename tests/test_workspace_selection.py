@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 from email.message import Message
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +18,7 @@ import ucode.databricks as db_mod
 import ucode.workspace as workspace_mod
 from ucode import gateway_proxy, mcp, mcp_connection_login, skills_usage
 from ucode.agents import claude, codex, copilot, gemini, kilo, opencode, pi, vscode
+from ucode.smart_routing.codex_hooks import _routing_hook_argv
 from ucode.state import build_agent_state
 from ucode.workspace import (
     activate,
@@ -222,12 +224,30 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    def test_model_service_metadata_lookup(self, selected):
+        url = f"{SHARED}/api/2.1/unity-catalog/model-services/main.team.opaque"
+        with patch.object(
+            db_mod.urllib_request, "urlopen", return_value=_Response(b"{}", url, WSID)
+        ) as urlopen:
+            assert db_mod.get_model_service("main.team.opaque", SHARED, "tok") == ({}, None)
+
+        request = urlopen.call_args.args[0]
+        assert request.full_url == url
+        assert request.get_header("X-databricks-org-id") == WSID
+        assert request.get_header("X-databricks-workspace-id") == WSID
+
     def test_mcp_proxy(self, selected):
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
     def test_otel_headers(self, selected):
         argv = db_mod.build_otel_headers_argv(SHARED, "p")
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+
+    def test_copilot_seat_runtime(self, selected):
+        from ucode.agents import vscode
+
+        argv = vscode.seat_relay_command({"workspace": SHARED, "profile": "p"}, "svc")
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
     def test_claude_router_hook_preserves_selection_and_launch_provider(self, selected):
@@ -244,6 +264,15 @@ class TestHelperArgv:
         assert "--provider" not in routing_hook_argv(state, "session-start")
         del state["_claude_launch_provider"]
         assert "--provider" not in routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
+
+    def test_codex_router_hook_preserves_selection_and_launch_provider(self, selected):
+        state = {"workspace": SHARED, "_codex_launch_provider": "new.schema.provider"}
+        argv = _routing_hook_argv(state, "route-subagent")
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+        assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+        assert "--provider" not in _routing_hook_argv(state, "session-start")
+        del state["_codex_launch_provider"]
+        assert "--provider" not in _routing_hook_argv(state, "route-subagent")
 
     def test_cowork_hook(self, selected):
         from ucode.agents.desktop import cowork
@@ -380,7 +409,7 @@ class TestAgentConfigs:
 
     def test_vscode_selection_comes_after_admin_headers(self, selected, monkeypatch):
         written = {}
-        monkeypatch.setattr(vscode, "find_code", lambda: "code")
+        monkeypatch.setattr(vscode, "find_code", lambda: Path("code"))
         monkeypatch.setattr(
             vscode, "install_extension", lambda code, config: written.update(config)
         )

@@ -10,7 +10,7 @@ Smart Router skill and spawn real children before and after its session-local to
 
 import hashlib
 import json
-import os
+import re
 from pathlib import Path
 
 import pytest
@@ -23,7 +23,7 @@ from utils.agents.claude import (
     claude_delivered_child_answers,
     parent_tool_calls,
 )
-from utils.agents.codex import completed_command_outputs
+from utils.agents.codex import completed_smart_router_results
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -41,7 +41,7 @@ from utils.managed import (
     use_smart_routing_fixture,
 )
 from utils.request_recorder import record_claude_response_protocol, served_inference_request
-from utils.terminal import AgentTerminal, codex_command_approval_pending
+from utils.terminal import AgentTerminal
 
 pytestmark = pytest.mark.harness_latest
 
@@ -245,17 +245,15 @@ def _toggle_with_skill(
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    action = "on" if enabled else "off"
 
     def confirmation_count():
         confirmations = 0
         for path, records in agent_sessions(session, agent).items():
             if is_child_session(agent, path, records):
                 continue
-            outputs = completed_command_outputs(
-                records, command_contains=f"-m ucode.cli codex {flag}"
-            )
-            confirmations += sum(confirmation in output for output in outputs)
+            outputs = completed_smart_router_results(records, action)
+            confirmations += sum(confirmation in output.get("message", "") for output in outputs)
         return confirmations
 
     before_confirmations = confirmation_count()
@@ -269,33 +267,9 @@ def _toggle_with_skill(
 
     before_answers = root_answer_count()
     tui.submit(invocation)
-    approval_sent = False
-    python = (
-        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
-    )
-    command = f"{python} -m ucode.cli codex {flag}"
-    commands = (command,)
-    if os.name == "nt":
-        commands += (
-            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-            '{ Write-Output "SMART_ROUTER_ENV_UNSET"; exit 2 }; ' + command,
-            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-            '{ Write-Output "SMART_ROUTER_ENV_UNSET" } else { ' + command + " }",
-        )
-    else:
-        commands += (
-            'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && '
-            + command,
-        )
 
     def toggled(screen):
-        nonlocal approval_sent
-        # Fresh remote Codex sessions can be read-only. Approve only this
-        # requested toggle through the native dialog, keeping the sandbox intact.
-        if not approval_sent and codex_command_approval_pending(screen, commands):
-            tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
-            approval_sent = True
-            return False
+        assert "Would you like to run the following command" not in screen, screen
         try:
             controls_now = json.loads(controls[0].read_text())
         except PermissionError:
@@ -500,9 +474,6 @@ CLAUDE_AT_LAUNCH_VERSIONS = pytest.mark.parametrize(
     ids=[*SMART_ROUTER_CASE_IDS, "subagent_only_v0-glm"],
 )
 
-# Codex is opted out under the managed default (subagent_orch_v0_claude_only), so these Codex
-# journeys use only the legacy and explicit selector cases. The managed default for Codex is
-# covered by test_smart_router_managed_default_leaves_codex_unrouted_at_launch.
 CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
     "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
     [
@@ -1026,21 +997,24 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
-def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
+def test_smart_router_managed_default_matches_codex_version_at_launch(
     live_session, workspace, tmp_path
 ):
-    """Scenario: launch Codex with only the managed config's smart_routing.enabled, which selects
-    the Claude-only default preset, then spawn one tagged child in the real TUI without touching
-    the Smart Router skill.
+    """Scenario: launch the installed Codex with managed smart routing and no explicit opt-in.
 
-    Expected: ug warns that the workspace enables smart routing for Codex but it is currently
-    only supported for Claude Code, and launches a plain, unrouted Codex session: neither
-    `smart-router` nor Smart Router Orchestrator is installed in the fresh home. The tagged calculation completes in a native child session with no
-    subagent-routing banner, produces no live gateway decision, and no first-prompt interposer
-    starts.
+    Expected: a native child and parent complete the tagged calculation. Before Codex 0.164.0,
+    ug warns without an upgrade prompt, routing skills, or a routing decision. Supported versions
+    install both skills and complete the child with a correlated decision and orchestration
+    notice. Neither version routes the first prompt.
     """
     session = live_session
-    _select_smart_router_version(session, "codex", workspace, tmp_path, False, MANAGED_DEFAULT)
+    version_output = session.run("--version", binary=session.which("codex")).stdout
+    version_match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", version_output)
+    assert version_match is not None, version_output
+    routing_supported = tuple(int(part) for part in version_match.groups()) >= (0, 164, 0)
+    _select_smart_router_version(
+        session, "codex", workspace, tmp_path, routing_supported, MANAGED_DEFAULT
+    )
     session.run(
         "configure",
         "--workspace",
@@ -1049,20 +1023,69 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    if routing_supported:
+        # TODO: remove once the latest recipe supports codex
+        session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
     with AgentTerminal(
         session, "codex", [str(session.binary), "codex"], "smart-router-managed-default"
     ) as tui:
         tui.boot()
         installed_skills = _installed_skills(session, "codex")
-        assert "smart-router" not in installed_skills, installed_skills
-        assert "smart-router-orchestrator" not in installed_skills, installed_skills
-        _run_calculation(tui, session, "codex", "1+1", "2", False, routed=False)
+        assert ("smart-router" in installed_skills) is routing_supported, installed_skills
+        assert ("smart-router-orchestrator" in installed_skills) is routing_supported, (
+            installed_skills
+        )
+        _run_calculation(
+            tui, session, "codex", "1+1", "2", routing_supported, routed=routing_supported
+        )
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     launch_text = " ".join(ANSI.sub("", transcript).split())
-    assert (
-        "Smart routing is enabled for Codex in this workspace, but it is currently only "
-        "supported for Claude Code." in launch_text
-    ), transcript
-    session.assert_not_routed()
+    assert "Upgrade Codex if available?" not in launch_text, transcript
+    if routing_supported:
+        assert "Running without smart routing." not in launch_text, transcript
+        assert "[ROUTE]" not in session.routing_log("codex")
+    else:
+        assert "Codex smart routing requires Codex 0.164.0 or newer" in launch_text, transcript
+        assert "Running without smart routing." in launch_text, transcript
+        session.assert_not_routed()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_managed_default_routes_supported_codex_at_launch(
+    live_session, workspace, tmp_path
+):
+    """Scenario: launch supported Codex with managed smart routing and no explicit selector.
+
+    Expected: both routing skills are installed, and a tagged native child and parent complete
+    the calculation with a correlated live routing decision and orchestration notice. The
+    shared default routes subagents only, so no first-prompt routing request is made.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, True, MANAGED_DEFAULT)
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    # TODO: remove once the latest recipe supports codex
+    session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "smart-router-managed-default-supported"
+    ) as tui:
+        tui.boot()
+        installed_skills = _installed_skills(session, "codex")
+        assert "smart-router" in installed_skills, installed_skills
+        assert "smart-router-orchestrator" in installed_skills, installed_skills
+        _run_calculation(tui, session, "codex", "1+1", "2", True, routed=True)
+        tui.exit_normally()
+        transcript = "".join(tui.output)
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    assert "[ROUTE]" not in session.routing_log("codex")

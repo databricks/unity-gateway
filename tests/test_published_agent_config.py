@@ -346,7 +346,7 @@ class TestCodexFiles:
     def catalog(self, monkeypatch):
         built: list[list[str]] = []
 
-        def prepare(binary, names):
+        def prepare(binary, names, **kwargs):
             built.append(list(names))
             return {"models": [{"slug": name} for name in names]}
 
@@ -414,7 +414,7 @@ class TestCodexFiles:
         assert any(w.startswith("Replaced") for w in plan.warnings)
 
     def test_a_catalog_that_wont_build_stops_the_run(self, monkeypatch):
-        def fail(binary, names):
+        def fail(binary, names, **kwargs):
             raise RuntimeError("Could not build the managed Codex model catalog locally.")
 
         monkeypatch.setattr(machine, "prepare_codex_catalog", fail)
@@ -773,6 +773,23 @@ class TestGlobalCli:
         assert result.exit_code == machine.EXIT_WRITE, result.output
         assert "Cannot remove Claude Auto settings" in result.output
 
+    def test_static_catalog_reuses_configure_credentials(self, monkeypatch, writes, global_cli):
+        raw = _raw_config(codex_config={"models": {"model_services": ["main.team.opaque"]}})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(machine, "get_databricks_token", lambda *a, **kw: "selected-token")
+        catalogs = []
+
+        def prepare(binary, names, *, workspace, get_token):
+            catalogs.append((workspace, list(names), get_token()))
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+
+        result = _configure("--agents", "codex")
+
+        assert result.exit_code == 0, result.output
+        assert catalogs == [(WS, ["main.team.opaque"], "selected-token")]
+
     def test_published_config_rebuilds_and_provisions_desktop(
         self, monkeypatch, writes, global_cli
     ):
@@ -1062,6 +1079,36 @@ class TestGlobalCli:
         assert result.exit_code == 0, result.output
         assert "apiKeyHelper" in result.output
         assert written == {} and global_cli == []
+
+    def test_preview_custom_codex_service_needs_no_credentials(
+        self, monkeypatch, writes, global_cli, tmp_path
+    ):
+        draft = tmp_path / "codex.json"
+        raw = _raw_config(
+            codex_config={
+                "models": {"model_services": ["main.team.opaque"]},
+                "default_models": {"default_model": "main.team.opaque"},
+            }
+        )
+        raw["default_agent"] = "CODING_AGENT_CODEX"
+        draft.write_text(json.dumps(raw))
+        monkeypatch.setattr(
+            machine, "get_databricks_token", lambda *a, **kw: pytest.fail("draft requested login")
+        )
+        catalogs = []
+
+        def prepare(binary, names, *, workspace, get_token):
+            assert get_token is None
+            catalogs.append(names)
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+
+        result = _configure("--dry-run", "--agents", "codex", "--from-file", str(draft))
+
+        assert result.exit_code == 0, result.output
+        assert catalogs == [["main.team.opaque"]]
+        assert writes[0] == {} and global_cli == []
 
     def test_from_file_requires_global_dry_run(self, tmp_path):
         result = CliRunner().invoke(
