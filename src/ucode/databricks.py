@@ -447,6 +447,8 @@ def _get_http_client() -> httpx.Client:
             tls.apply()
             limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
             client = httpx.Client(
+                # urllib's HTTPRedirectHandler stops after 10 redirects; httpx defaults to 20.
+                max_redirects=urllib_request.HTTPRedirectHandler.max_redirections,
                 transport=httpx.HTTPTransport(trust_env=True, limits=limits),
                 # Only reached with no http/https proxy configured; trust_env stays off so
                 # httpx never mounts ALL_PROXY (and socks proxies needing socksio) behind
@@ -503,7 +505,11 @@ def _http_open(request: urllib_request.Request, *, timeout: float):
     httpx_request = httpx.Request(
         request.get_method(),
         request.full_url,
-        headers=request_headers,
+        # http.client encodes header values as latin-1; httpx would reject non-ascii ones.
+        headers=[
+            (name.encode("latin-1"), value.encode("latin-1"))
+            for name, value in request_headers.items()
+        ],
         # The only Request built with data is `_http_send_json`'s, which sends bytes or None.
         content=cast("bytes | None", request.data),
         extensions={"timeout": httpx.Timeout(timeout).as_dict()},

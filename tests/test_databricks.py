@@ -7770,6 +7770,7 @@ class TestPooledRedirectErrors:
         client = httpx.Client(
             transport=httpx.MockTransport(always_redirect),
             event_hooks={"response": [db_mod._remember_redirect]},
+            max_redirects=db_mod.urllib_request.HTTPRedirectHandler.max_redirections,
         )
         monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
         _force_pooled(monkeypatch)
@@ -7780,8 +7781,29 @@ class TestPooledRedirectErrors:
         assert raised.value.code == 302
         assert raised.value.reason == "Found"
         assert raised.value.read() == b"moved"
-        # httpx's default budget is 20 redirects; the loop stopped there, not later.
-        assert len(sent) == 21
+        # urllib's budget of 10 redirects: the first request plus 10 follow-ups.
+        assert len(sent) == 11
+
+
+def test_latin1_header_values_are_sent_like_urllib(monkeypatch):
+    """http.client sends header values as latin-1; the pooled path does the same instead of
+    failing on a non-ascii value (e.g. one from UG_HEADERS)."""
+    import httpx
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.raw)
+        return httpx.Response(200, content=b"{}")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+    _force_pooled(monkeypatch)
+
+    request = db_mod.urllib_request.Request("https://x/y", headers={"X-Team": "Équipe"})
+    with db_mod._http_open(request, timeout=5) as response:
+        assert response.read() == b"{}"
+    assert (b"x-team", "Équipe".encode("latin-1")) in [(n.lower(), v) for n, v in seen[0]]
 
 
 class TestPooledRedirectPolicies:
