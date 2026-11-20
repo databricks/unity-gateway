@@ -85,6 +85,7 @@ from ucode.custom_oauth import (
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     AnthropicModelCatalog,
+    DatabricksLoginRequiredError,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -4251,6 +4252,11 @@ class _SpeculativePickerCatalog:
             return None
         try:
             speculative = self.future.result()
+        except DatabricksLoginRequiredError:
+            # An expected no-reauth miss: the CLI has no usable cached credentials, and
+            # configure's auth step performs the login, so the serial fetch rides the
+            # repaired token without reporting this as a launch failure.
+            return None
         except Exception as exc:
             # The speculation is best effort: a failed background token or catalog fetch
             # falls back to the serial fetch on the live token, never fails the launch.
@@ -4521,9 +4527,15 @@ def _launch_tool(
             if launch_cache_entry is not None:
                 cached_picker_catalog = entry_catalog(launch_cache_entry)
         scoped_picker_catalog = claude_uc_picker_catalog and not provider
-        picker_catalog_scope: dict[str, str | None] = (
-            {} if unmanaged_picker_catalog else {"parent_schema": parent_schema}
-        )
+        # The catalog scope of the launch's source — empty for an unmanaged launch — is one
+        # dict for the speculation's start and join checks and the serial fallbacks, so the
+        # check is meaningful and the fetches cannot drift.
+        if provider:
+            picker_catalog_scope: dict[str, str | None] = {"provider": provider}
+        elif parent_schema:
+            picker_catalog_scope = {"parent_schema": parent_schema}
+        else:
+            picker_catalog_scope = {}
         if (unmanaged_picker_catalog or scoped_picker_catalog) and cached_picker_catalog is None:
             picker_catalog_speculation = _SpeculativePickerCatalog.start(
                 state, _get_catalog_profile(state), **picker_catalog_scope
@@ -4688,7 +4700,7 @@ def _launch_tool(
                 picker_catalog = list_anthropic_model_catalog(
                     state["workspace"],
                     token,
-                    **({"provider": provider} if provider else {"parent_schema": parent_schema}),
+                    **picker_catalog_scope,
                 )
             error = picker_catalog.error_msg
             if error:
@@ -4807,6 +4819,7 @@ def _launch_tool(
                 discovered = list_anthropic_model_catalog(
                     state["workspace"],
                     get_databricks_token(state["workspace"], catalog_profile),
+                    **picker_catalog_scope,
                 )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(

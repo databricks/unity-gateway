@@ -2288,7 +2288,12 @@ def _fetch_databricks_token_for_profile(
             # A skipped re-auth (the speculative non-interactive fetch) must not memoize the
             # failure: configure's own fetch then never attempts `auth login --no-browser`.
             _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
-        raise RuntimeError(error)
+        if transient_failure:
+            raise RuntimeError(error)
+        # The CLI identified a credential failure (`invalid_grant`, no cached credentials,
+        # ...): `databricks auth login` fixes it, so best-effort callers treat it as an
+        # expected miss instead of a hard failure.
+        raise DatabricksLoginRequiredError(error)
     _remember_token(
         memo_key,
         token,
@@ -2305,20 +2310,22 @@ def fetch_databricks_token_untimed(
     workspace: str,
     profile: str | None = None,
     *,
-    force_refresh: bool = False,
-    browser_login: bool = False,
-    allow_reauth: bool = True,
+    allow_reauth: bool = False,
 ) -> str:
     """The undecorated token fetch: the same implementation
-    :func:`get_databricks_token` times and reports, for callers that must
-    stay out of the token-fetch metrics (a failed best-effort fetch is
-    reported by its own handler, not as a hard failure here)."""
+    :func:`get_databricks_token` times and reports, for callers that must stay out of the
+    token-fetch metrics (a failed best-effort fetch is reported by its own handler, not as
+    a hard failure here). It never re-auths or opens a browser, and a credential failure
+    raises :class:`DatabricksLoginRequiredError`. ``allow_reauth`` is accepted for call
+    compatibility and must stay False."""
+    if allow_reauth:
+        raise ValueError("fetch_databricks_token_untimed never re-authenticates")
     return _fetch_databricks_token(
         workspace,
         profile,
-        force_refresh=force_refresh,
-        browser_login=browser_login,
-        allow_reauth=allow_reauth,
+        force_refresh=False,
+        browser_login=False,
+        allow_reauth=False,
         untimed=True,
     )
 
@@ -2424,6 +2431,13 @@ class PermissionDeniedError(RuntimeError):
     ucode already exercises at model setup, so a consumer is gated there) — NOT on the Apps / UC /
     Vector Search listing calls the MCP flow uses, which return an empty list or a generic ACL
     denial for a consumer."""
+
+
+class DatabricksLoginRequiredError(RuntimeError):
+    """The Databricks CLI has no usable cached credentials for the workspace, so
+    `databricks auth login` fixes it. The token fetch raises this instead of a plain
+    RuntimeError when the CLI itself identified the credential failure, so best-effort
+    callers can treat it as an expected miss rather than a hard failure."""
 
 
 class AuthTokenError(RuntimeError):
