@@ -706,9 +706,11 @@ The same component suite checks ownership retention across an empty search-model
 catalog and subsequent external handoff or standalone refresh. That recovery path
 does not yet have a live integration journey.
 
-Fresh Claude-only search discovery and registration are covered by component
+Fresh Claude-only and provider-mode search discovery and registration are covered by component
 tests in `../test_claude_search_discovery.py`, including legacy catalog fallback,
-an explicit model override, and no available GPT model. Live search remains
+an explicit model override, and no available GPT model. `../test_cli.py` checks provider mode
+replaces saved legacy search names with UC model-service IDs and preserves agent models,
+including fallback when UC discovery is empty or unavailable. Live search remains
 outside this integration suite.
 
 CLI token memoization and capability-gated `--no-browser` re-auth are covered by
