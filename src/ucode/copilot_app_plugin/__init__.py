@@ -38,9 +38,15 @@ class SettingsError(RuntimeError):
 
 @dataclass(frozen=True)
 class PluginModel:
+    """A model the extension serves. The session uses these fields instead of the picker row's,
+    so they must repeat its name, limits and vision support."""
+
     model_id: str
     wire_model: str
     name: str
+    # (max prompt tokens, max output tokens); None keeps the runtime's defaults.
+    limits: tuple[int, int] | None = None
+    vision: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,18 +116,30 @@ def _provider_entry(provider: PluginProvider, config: PluginConfig) -> dict:
     return entry
 
 
+def _model_entry(model: PluginModel, provider: PluginProvider) -> dict:
+    entry: dict = {
+        "id": model.model_id,
+        "modelId": model.model_id,
+        "provider": provider.id,
+        "wireModel": model.wire_model,
+        "name": model.name,
+    }
+    if model.limits:
+        prompt, output = model.limits
+        entry["maxPromptTokens"] = prompt
+        entry["maxOutputTokens"] = output
+        entry["maxContextWindowTokens"] = prompt + output
+    if model.vision:
+        entry["capabilities"] = {"supports": {"vision": True}}
+    return entry
+
+
 def extension_config(config: PluginConfig) -> dict:
     """The JSON the extension reads at start."""
     return {
         "providers": [_provider_entry(provider, config) for provider in config.providers],
         "models": [
-            {
-                "id": model.model_id,
-                "modelId": model.model_id,
-                "provider": provider.id,
-                "wireModel": model.wire_model,
-                "name": model.name,
-            }
+            _model_entry(model, provider)
             for provider in config.providers
             for model in provider.models
         ],

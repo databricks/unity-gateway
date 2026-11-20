@@ -91,6 +91,21 @@ class TestExtensionConfig:
         }
         assert [m["provider"][0] for m in models] == ["1", "2", "3"]
 
+    def test_models_repeat_the_rows_limits_and_vision(self):
+        model = plugin.PluginModel(
+            "claude-sonnet-5",
+            "system.ai.claude-sonnet-5",
+            "Claude Sonnet 5",
+            (936_000, 64_000),
+            True,
+        )
+        provider = plugin.PluginProvider("p", "anthropic", "/ai-gateway/anthropic", (model,))
+        (entry,) = plugin.extension_config(_config(providers=(provider,)))["models"]
+        assert entry["maxPromptTokens"] == 936_000
+        assert entry["maxOutputTokens"] == 64_000
+        assert entry["maxContextWindowTokens"] == 1_000_000
+        assert entry["capabilities"] == {"supports": {"vision": True}}
+
     def test_token_command_and_hint_name_the_workspace_and_profile(self):
         config = plugin.extension_config(_config())
         assert config["tokenCommand"] == [
