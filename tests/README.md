@@ -17,6 +17,10 @@ assignment reaches the router and child. Encrypted or missing assignments must n
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
 Component checks also cover catalog precedence, authenticated model-service metadata,
 and a warning with continued launch if the optional session catalog cannot be built or written.
+UG-generated catalogs leave the native collaboration override unset, so the launch setting
+controls code mode. Existing UG-managed catalogs refresh through `ug configure --agents codex`.
+Launches never rewrite managed catalogs; an old catalog that disables code mode produces
+a refresh warning. Claude checks cover blank-prompt fallback and label-only input.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.

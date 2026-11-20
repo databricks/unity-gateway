@@ -20,6 +20,7 @@ from utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from utils.managed import use_managed_config_fixture
 from utils.terminal import AgentTerminal
 
 pytestmark = [
@@ -73,12 +74,21 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
 
 
 @pytest.mark.parametrize(
-    "model_option", [None, "--model", "--model="], ids=["saved", "split", "equals"]
+    ("model_option", "managed_catalog"),
+    [
+        pytest.param(None, False, id="saved"),
+        pytest.param("--model", False, id="split"),
+        pytest.param("--model=", False, id="equals"),
+        pytest.param(None, True, id="managed", marks=pytest.mark.managed_fixture),
+    ],
 )
-def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, model_option):
+def test_ug_codex_native_v2_plain_assignment_routing(
+    live_session, workspace, model_option, managed_catalog
+):
     """Scenario: configure ug with a user-owned native v2 catalog that disables tools
     in code mode and an observer hook, then delegate one multiline file task with
-    subagent-only routing. UG must expose the plaintext tool path at launch. Launch with
+    subagent-only routing. The managed variant configures UG's static catalog through
+    the normal managed-fixture input. UG must expose the plaintext tool path. Launch with
     the saved model or explicitly enable routing and forward either native model syntax.
 
     Expected: the native child and actual hook input contain the exact assignment,
@@ -98,6 +108,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, mo
         "Do not read the file yourself. Wait for the child and return only its file value."
     )
     catalog, original_config, original_catalog = _seed_user_owned_native_codex_settings(session)
+    if managed_catalog:
+        use_managed_config_fixture(session, "codex_lifecycle_a")
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     session.run(
@@ -114,6 +126,23 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, mo
     config = session.home / ".codex/config.toml"
     assert config.read_bytes() == original_config
     start_model = CODEX_NATIVE_START_MODEL
+    provider_config = (
+        session.home / ".codex/ucode.config.toml"
+        if os.name == "nt"
+        else Path("/etc/codex/managed_config.toml")
+    )
+    configured_catalog = None
+    if managed_catalog:
+        settings = tomllib.loads(provider_config.read_text())
+        configured_catalog = Path(settings["model_catalog_json"])
+        managed_before = configured_catalog.read_bytes()
+        models = json.loads(managed_before)["models"]
+        assert [m["slug"] for m in models if m["visibility"] == "list"] == [
+            "system.ai.gpt-5-6-sol",
+            "system.ai.gpt-6-luna",
+        ]
+        assert all("multi_agent_tools_in_code_mode" not in m for m in models)
+        start_model = "system.ai.gpt-5-6-sol"
     launch_args = []
     if model_option:
         start_model = CODEX_NATIVE_CATALOG_MODELS[1]
@@ -138,6 +167,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, mo
     assert {key: after.get("hooks", {}).get(key) for key in hooks} == hooks
     assert {key: after.get(key) for key in before} == before
     assert catalog.read_bytes() == original_catalog
+    if configured_catalog is not None:
+        assert configured_catalog.read_bytes() == managed_before
 
     sessions = agent_sessions(session, "codex")
     (parent,) = [r for p, r in sessions.items() if not is_child_session("codex", p, r)]
@@ -145,11 +176,6 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, mo
     parent_meta = next(r["payload"] for r in parent if r.get("type") == "session_meta")
     child_meta = next(r["payload"] for r in child if r.get("type") == "session_meta")
     assert child_meta["source"]["subagent"]["thread_spawn"]["parent_thread_id"] == parent_meta["id"]
-    provider_config = (
-        session.home / ".codex/ucode.config.toml"
-        if os.name == "nt"
-        else Path("/etc/codex/managed_config.toml")
-    )
     assert tomllib.loads(provider_config.read_text())["model_provider"] == "Databricks"
     assert parent_meta["model_provider"] == "Databricks"
     assert child_meta["model_provider"] == parent_meta["model_provider"]

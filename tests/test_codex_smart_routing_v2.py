@@ -17,7 +17,8 @@ WS = "https://example.databricks.com"
 
 
 @pytest.fixture(autouse=True)
-def native_catalog(monkeypatch):
+def native_catalog(monkeypatch, tmp_path):
+    monkeypatch.setattr(v2, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
     monkeypatch.setattr(
         codex_catalog,
         "prepare_codex_catalog",
@@ -101,6 +102,39 @@ def test_plaintext_catalog_rejects_non_object_rows(tmp_path, row):
         v2._codex_routing_catalog(
             "codex", source, [], tmp_path / "out", workspace=WS, get_token=lambda: "token"
         )
+
+
+@pytest.mark.parametrize("mode", [None, True, False])
+def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mode):
+    source = tmp_path / "admin.json"
+    source.write_text(
+        json.dumps({"models": [{"slug": "admin-model", "multi_agent_tools_in_code_mode": mode}]})
+    )
+    before = source.read_bytes()
+    managed = tmp_path / "managed.toml"
+    managed.write_text('model_catalog_json = "admin.json"\n')
+    output = tmp_path / "session.json"
+    if mode is False:
+        with pytest.raises(RuntimeError, match="ug configure --agents codex"):
+            v2._codex_routing_catalog(
+                "codex",
+                tmp_path / "ignored-user.json",
+                [],
+                output,
+                workspace=WS,
+                get_token=lambda: "token",
+            )
+    else:
+        assert v2._codex_routing_catalog(
+            "codex",
+            tmp_path / "ignored-user.json",
+            [],
+            output,
+            workspace=WS,
+            get_token=lambda: "token",
+        ) == str(source)
+    assert source.read_bytes() == before
+    assert not output.exists()
 
 
 def test_smart_routing_switch_message_is_boxed():

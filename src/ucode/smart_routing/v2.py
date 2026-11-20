@@ -20,6 +20,7 @@ from typing import NoReturn, TextIO
 from ucode import claude_answer_delivery, config_io, metrics
 from ucode.codex_config import (
     codex_config_args,
+    codex_managed_config_path,
     custom_catalog_models,
     custom_catalog_path,
     is_codex_app_server_launch,
@@ -27,6 +28,7 @@ from ucode.codex_config import (
 from ucode.config_io import (
     APP_DIR,
     read_json_safe,
+    read_toml_safe,
     write_json_file,
     write_text_file,
 )
@@ -1094,6 +1096,15 @@ def _codex_routing_catalog(
 ) -> str:
     from ucode.agents.codex_catalog import prepare_codex_catalog
 
+    managed_path = codex_managed_config_path()
+    managed_catalog = None
+    if managed_path is not None:
+        reference = read_toml_safe(managed_path).get("model_catalog_json")
+        if isinstance(reference, str) and reference.strip():
+            managed_catalog = Path(reference).expanduser()
+            if not managed_catalog.is_absolute():
+                managed_catalog = managed_path.parent / managed_catalog
+            catalog_path = managed_catalog
     catalog = (
         read_json_safe(Path(catalog_path))
         if catalog_path
@@ -1106,6 +1117,14 @@ def _codex_routing_catalog(
         or not all(isinstance(m, dict) for m in entries)
     ):
         raise RuntimeError("Cannot load the Codex model catalog for plaintext task routing.")
+    if managed_catalog:
+        if any(model.get("multi_agent_tools_in_code_mode") is False for model in entries):
+            raise RuntimeError(
+                f"The managed catalog at {catalog_path} disables code-mode collaboration. "
+                "Run `ug configure --agents codex` to refresh a UG-managed catalog; "
+                "an administrator must update a separately managed catalog."
+            )
+        return str(catalog_path)
     # Native model metadata otherwise overrides the launch's code-mode setting.
     for model in entries:
         model["multi_agent_tools_in_code_mode"] = True

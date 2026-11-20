@@ -32,15 +32,30 @@ def bundled():
     ]
 
 
-def test_gpt_metadata_preserved_with_admin_identity_and_order(bundled):
+@pytest.mark.parametrize("multi_agent_tools_in_code_mode", [False, True, None])
+def test_gpt_metadata_preserved_with_admin_identity_and_order(
+    bundled, multi_agent_tools_in_code_mode
+):
+    for model in bundled:
+        model["multi_agent_tools_in_code_mode"] = multi_agent_tools_in_code_mode
+        model["multi_agent_version"] = "v2"
     original = copy.deepcopy(bundled)
     names = ["system.ai.gpt-6-astra", "gpt-5-6-sol", "system.ai.gpt-5-2"]
     result = catalog.build_codex_catalog(bundled, names + names)["models"]
     models = [model for model in result if model["visibility"] == "list"]
+    assert any(model["visibility"] == "hide" for model in result)
+    assert all("multi_agent_tools_in_code_mode" not in model for model in result)
+    assert all(model["multi_agent_version"] == "v2" for model in result)
     assert [m["slug"] for m in models] == names
     for priority, (model, native) in enumerate(zip(models, reversed(bundled), strict=True)):
         for key, value in native.items():
-            if key not in {"slug", "display_name", "visibility", "priority"}:
+            if key not in {
+                "slug",
+                "display_name",
+                "visibility",
+                "priority",
+                "multi_agent_tools_in_code_mode",
+            }:
                 assert model[key] == value
         assert model["priority"] == priority
         assert model["visibility"] == "list"

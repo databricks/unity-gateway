@@ -110,8 +110,10 @@ Smart-routed Codex launches expose native collaboration tools through code mode 
 session-owned catalog, retaining native protocols and the original user catalog.
 The native v2 assignment journey starts with code-mode tools disabled in that catalog
 and requires the full assignment at the hook and child, its audited digest, and actual
-completion on the selected model. Missing or encrypted assignments cannot produce a
-label-based routing decision. Toggle
+completion on the selected model. Its managed-fixture variant uses the static catalog
+created by `ug configure`, asserts that it defers code-mode exposure to the launch,
+and verifies that native routing completes without rewriting the managed catalog.
+Missing or encrypted assignments cannot produce a label-based routing decision. Toggle
 evidence accepts the exact guard rejection of a duplicate off call only after a
 successful off result; it still rejects an initial denial or any other failed call.
 
