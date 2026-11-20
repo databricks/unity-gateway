@@ -487,8 +487,8 @@ def configure_client_mcp_server(
         claude.add_claude_mcp_server(name, argv, MCP_USER_SCOPE, always_load=always_load)
         return removed_scopes
     if client == "codex":
-        removed = remove_codex_mcp_server(name)
-        add_codex_mcp_server(name, argv)
+        # Codex filters subprocess env; forward auth names without persisting their values.
+        removed = codex.write_user_mcp_servers({name: codex.managed_mcp_entry(argv)}, {name})
         return [MCP_USER_SCOPE] if removed else []
     if client == "gemini":
         removed = remove_gemini_mcp_server(name)

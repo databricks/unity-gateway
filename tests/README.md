@@ -365,7 +365,9 @@ unit checks mock the sudo write. `integration/test_ug_configure_scope.py` covers
 `test_mcp.py` and `test_cli.py` cover Claude/Codex MCP setup without their CLIs:
 finding an existing config, creating one with `--agents`, and reporting status
 from the file. They also check malformed config errors and stale client choices.
-They use temporary files; real desktop apps remain untested.
+Codex stdio registration with the CLI installed also forwards authentication variable names,
+never their values, while preserving personal settings and replacing obsolete transport fields.
+These component checks use temporary files; native desktop coverage is listed below.
 
 `test_integration_contract.py` checks that isolated test sessions set Antigravity's
 `AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
