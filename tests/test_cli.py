@@ -11082,3 +11082,32 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             calls["result"].output
         )
         assert len(calls["catalog_calls"]) == 1
+
+
+class TestSpeculativePickerCatalogJoin:
+    """The speculation's join drops the result unless the launch identity and the catalog
+    scope it started with still match; None sends that caller to the serial fetch."""
+
+    def test_result_requires_the_started_scope(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "fetch_databricks_token_untimed", lambda *_a, **_k: "token")
+        catalog_calls: list[tuple[str, dict]] = []
+
+        def fake_catalog(workspace, _token, **kwargs):
+            catalog_calls.append((workspace, kwargs))
+            return db_mod.AnthropicModelCatalog(
+                model_ids=["main.default.claude-sonnet-5"], model_id_to_display_name={}
+            )
+
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
+        state = dict(MINIMAL_STATE)
+        speculation = cli_mod._SpeculativePickerCatalog.start(
+            state, None, parent_schema="main.default"
+        )
+        speculation.future.result()
+
+        assert speculation.result(state, None, parent_schema="main.default") is not None
+        # A join for a different Unity Catalog location must not reuse the speculation.
+        assert speculation.result(state, None, parent_schema="other.default") is None
+        assert catalog_calls == [
+            ("https://example.databricks.com", {"parent_schema": "main.default"})
+        ]
