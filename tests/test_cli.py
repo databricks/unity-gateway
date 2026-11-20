@@ -10820,7 +10820,13 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(
             cli_mod, "get_provider_service", lambda _state, _tool: persisted_provider
         )
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
+        token_calls: list[tuple[tuple, dict]] = []
+
+        def fake_token(*args, **kwargs):
+            token_calls.append((args, kwargs))
+            return "token"
+
+        monkeypatch.setattr(cli_mod, "get_databricks_token", fake_token)
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
@@ -10839,6 +10845,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             "configure": configure,
             "catalog_calls": catalog_calls,
             "catalog_thread": catalog_calls[0][0] if catalog_calls else None,
+            "token_calls": token_calls,
         }
 
     def test_unmanaged_picker_catalog_starts_during_configure_and_feeds_it(self, monkeypatch):
@@ -10849,6 +10856,10 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert calls["result"].exit_code == 0, calls["result"].output
         assert calls["catalog_thread"] is not None and calls["catalog_thread"].daemon
         assert len(calls["catalog_calls"]) == 1
+        # The speculative token fetch must be non-interactive: no re-auth fallback.
+        assert calls["token_calls"] == [
+            ((MINIMAL_STATE["workspace"], None), {"allow_reauth": False})
+        ]
         assert "main.default.claude-sonnet-5" in (
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
@@ -10932,6 +10943,46 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         assert result.exit_code == 0, result.output
         assert cli_mod.list_anthropic_model_catalog.call_count == 2
+        assert "main.default.claude-sonnet-5" in (
+            configure.call_args.kwargs["picker_catalog"].model_ids
+        )
+
+    def test_speculative_token_failure_falls_back_to_the_serial_fetch(self, monkeypatch):
+        """A background token failure must not fail the launch: the join falls back to the
+        serial fetch on the live token."""
+        state = dict(MINIMAL_STATE)
+        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
+        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
+        monkeypatch.setattr(
+            cli_mod,
+            "get_databricks_token",
+            MagicMock(
+                side_effect=[RuntimeError("Databricks CLI returned no access token"), "token"]
+            ),
+        )
+        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
+        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "list_anthropic_model_catalog",
+            MagicMock(
+                return_value=db_mod.AnthropicModelCatalog(
+                    model_ids=["main.default.claude-sonnet-5"],
+                    model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
+                )
+            ),
+        )
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
+
+        result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert cli_mod.list_anthropic_model_catalog.call_count == 1
         assert "main.default.claude-sonnet-5" in (
             configure.call_args.kwargs["picker_catalog"].model_ids
         )
