@@ -123,8 +123,6 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
         "configure",
         "--agents",
         "codex",
-        "--workspace",
-        workspace,
         "--profile",
         profile,
         "--use-pat",
