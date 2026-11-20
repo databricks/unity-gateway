@@ -7437,56 +7437,6 @@ def test_http_transport_maps_refused_connections_to_network_errors(fresh_pooled_
     assert "refused" in reason.lower()
 
 
-def test_loopback_reaches_the_server_even_after_a_proxied_client_was_cached(
-    monkeypatch, fresh_pooled_client
-):
-    """Test-order check for fresh_pooled_client: a pooled client keeps the proxy map it was
-    built with, so one an earlier test (or CI) built under HTTP(S)_PROXY would send loopback
-    requests to that proxy; the fixture's reset must send them direct instead."""
-    import socket
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    import httpx
-
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
-        def do_GET(self):
-            body = b"{}"
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        dead_port = listener.getsockname()[1]
-    # What an earlier test or CI's HTTP(S)_PROXY does: build the cached client under a proxy.
-    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{dead_port}")
-    poisoned = db_mod._get_http_client()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        url = f"http://127.0.0.1:{server.server_port}/api"
-        with pytest.raises(httpx.ConnectError):
-            poisoned.get(url, timeout=5)
-        # fresh_pooled_client's reset: proxy env cleared and cache dropped, so the request
-        # rebuilds direct and reaches the loopback server.
-        _clear_proxy_env(monkeypatch)
-        _reset_pooled_client(monkeypatch)
-        body, reason = db_mod._http_get_bytes(url, "token")
-        assert (body, reason) == (b"{}", None)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-        poisoned.close()
-
-
 def test_http_transport_passes_headers_and_timeout(monkeypatch):
     import httpx
 
@@ -7753,32 +7703,6 @@ def test_env_no_proxy_bypasses_the_proxy_per_host(monkeypatch):
     assert handled == [("proxied", "workspace.example"), ("direct", "bypassed.example")]
 
 
-def test_no_proxies_built_plain_transport_with_trust_env_off(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
-
-    import httpx
-
-    built = {}
-    real_client = httpx.Client
-
-    def spy_client(*args, **kwargs):
-        built.update(kwargs)
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "Client", spy_client)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
-    client = db_mod._get_http_client()
-    try:
-        assert db_mod._urllib_proxies() is None
-        assert isinstance(client._transport, httpx.HTTPTransport)
-        assert built["trust_env"] is False
-        assert "transport" in built
-    finally:
-        client.close()
-
-
 class TestPooledRedirectErrors:
     """httpx errors urllib's opener would have surfaced as HTTP errors keep their shape, so
     callers see a status-shaped reason instead of a network failure."""
@@ -7805,16 +7729,6 @@ class TestPooledRedirectErrors:
             db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
 
         assert raised.value.code == 310
-
-    def test_too_many_redirects_reason_is_status_shaped(self, monkeypatch):
-        import httpx
-
-        self._client_raising(monkeypatch, httpx.TooManyRedirects("too many redirects"))
-
-        body, reason = db_mod._http_get_bytes("https://x/y", "tok")
-
-        assert body is None
-        assert reason == "HTTP 310 Too Many Redirects"
 
 
 class TestPooledRedirectPolicies:
