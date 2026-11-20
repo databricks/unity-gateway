@@ -1183,6 +1183,11 @@ do not cover plugin-write/process-start failures, native plugin refresh, or daem
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
+`test_config_io.py` covers atomic JSON writes with the default file mode and an
+explicit POSIX mode. Real temporary-file cases check that existing readers keep
+the old contents during replacement and that a read-only directory preserves the
+original file and permissions. Permission cases require an unprivileged POSIX user.
+
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
