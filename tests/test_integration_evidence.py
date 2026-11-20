@@ -1,5 +1,6 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
+import hashlib
 import json
 import os
 import re
@@ -814,6 +815,57 @@ def test_tagged_calculation_uses_a_short_native_task_name():
     task = SubagentCalculation("1+2", "3")
 
     assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_codex_assignment_digests_match_native_delivery(encrypted):
+    marker = "ug_123abc"
+    assignment = f"Calculate 1+1 and reply {marker}=2"
+    ciphertext = "gAAAAABrAFzz" + "a" * 80
+    content = [
+        {
+            "type": "input_text",
+            "text": f"Message Type: NEW_TASK\nTask name: /root/{marker}__sr_on\n"
+            "Sender: /root\nPayload:\n" + ("" if encrypted else assignment),
+        }
+    ]
+    if encrypted:
+        content.append({"type": "encrypted_content", "encrypted_content": ciphertext})
+    call = {
+        "type": "function_call",
+        "name": "spawn_agent",
+        "arguments": json.dumps(
+            {"task_name": marker, "message": ciphertext if encrypted else assignment}
+        ),
+    }
+    delivery = {"type": "agent_message", "content": content}
+    sessions = {
+        "parent": [{"type": "response_item", "payload": call}],
+        "child": [{"type": "response_item", "payload": delivery}],
+    }
+    expected = marker if encrypted else assignment
+    assert codex.routed_assignment_digests(sessions, marker) == {
+        hashlib.sha256(expected.encode()).hexdigest()
+    }
+    assert not codex.routed_assignment_digests(sessions, "ug_other")
+    if not encrypted:
+        assert hashlib.sha256(marker.encode()).hexdigest() not in codex.routed_assignment_digests(
+            sessions, marker
+        )
+        return
+    for changed in (
+        {"task_name": "ug_other", "message": ciphertext},
+        {"task_name": marker, "message": ciphertext + "different"},
+        {"task_name": marker, "message": {"encrypted": ciphertext}},
+    ):
+        call["arguments"] = json.dumps(changed)
+        assert not codex.routed_assignment_digests(sessions, marker)
+    call["arguments"] = json.dumps({"task_name": marker, "message": ciphertext})
+    call["name"] = "send_message"
+    assert not codex.routed_assignment_digests(sessions, marker)
+    call["name"] = "spawn_agent"
+    content.pop()
+    assert not codex.routed_assignment_digests(sessions, marker)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

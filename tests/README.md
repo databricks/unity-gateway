@@ -9,6 +9,13 @@ update that leaves the client too old; explicit routing remains gated. Routing C
 These are component checks; the installed-version journeys are documented in the
 [integration guide](integration/README.md).
 
+Codex calculation routing evidence supports plaintext assignments and native encrypted
+delivery. Plaintext must match the audited assignment digest. For encrypted delivery,
+the original spawn's ciphertext must match the child's NEW_TASK receipt, and its task
+name must match the audited fallback digest. Component checks reject mismatched names,
+ciphertexts, missing delivery, and non-spawn calls. This does not establish plaintext
+routing for encrypted tasks; the dedicated native v2 assignment journey checks that separately.
+
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
 Checks resolve external and pay-per-token destinations using selected credentials;

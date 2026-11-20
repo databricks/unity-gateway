@@ -23,7 +23,7 @@ from utils.agents.claude import (
     claude_delivered_child_answers,
     parent_tool_calls,
 )
-from utils.agents.codex import completed_smart_router_results
+from utils.agents.codex import completed_smart_router_results, routed_assignment_digests
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -151,24 +151,7 @@ def _run_calculation(
 
     assert new_decisions, new_decisions
     if agent == "codex":
-        # Correlate the audit hashes with plaintext assignments in native rollouts.
-        assignments = set()
-        for records in agent_sessions(session, agent).values():
-            for row in records:
-                item = row.get("payload", {})
-                if row.get("type") != "response_item" or item.get("type") != "agent_message":
-                    continue
-                for part in item.get("content", []):
-                    text = part.get("text", "")
-                    if part.get("type") != "input_text" or not text.startswith(
-                        "Message Type: NEW_TASK\n"
-                    ):
-                        continue
-                    _, separator, assignment = text.partition("\nPayload:\n")
-                    if separator and task.marker in assignment:
-                        assignments.add(
-                            hashlib.sha256(assignment.strip().encode("utf-8")).hexdigest()
-                        )
+        assignments = routed_assignment_digests(agent_sessions(session, agent), task.marker)
         assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
     else:
         assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
