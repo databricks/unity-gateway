@@ -2765,6 +2765,9 @@ def _get_model_services_page(
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
 _MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+# Workspaces whose memo came from the persisted launch cache, so discovery's hit label
+# says where the hit came from: `cache_hit` stays a real in-process walk's hit.
+_PRIMED_MODEL_SERVICES: set[str] = set()
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
@@ -2782,11 +2785,13 @@ def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | No
 def prime_model_services_cache(workspace: str, entries: list[ModelServiceEntry]) -> None:
     """Seed the listing cache from persisted launch-cache state, so discovery needs no network."""
     _MODEL_SERVICES_CACHE.setdefault(workspace, list(entries))
+    _PRIMED_MODEL_SERVICES.add(workspace)
 
 
 def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
+    _PRIMED_MODEL_SERVICES.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
     _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
     _RELAY_LOOKUP_FAILED_AT.clear()
@@ -2901,6 +2906,8 @@ def list_model_service_entries(
         return listed, last_reason or "model-services listing stopped early"
     if listed:
         if complete and use_cache:
+            # A real walk replaces the primed entry, so later hits report `cache_hit`.
+            _PRIMED_MODEL_SERVICES.discard(workspace)
             _MODEL_SERVICES_CACHE[workspace] = list(listed)
         return listed, None
     return [], last_reason or "model-services listing returned no models"
@@ -3009,7 +3016,10 @@ def discover_model_services(
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
     """
-    metrics.annotate(cache_hit=workspace in _MODEL_SERVICES_CACHE)
+    metrics.annotate(
+        launch_cache_hit=workspace in _PRIMED_MODEL_SERVICES,
+        cache_hit=workspace in _MODEL_SERVICES_CACHE and workspace not in _PRIMED_MODEL_SERVICES,
+    )
     ids, reason = list_model_services(workspace, token)
     if not ids:
         return {}, [], [], [], reason

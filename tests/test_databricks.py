@@ -821,6 +821,30 @@ class TestDiscoverModelServices:
         assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
         assert db_mod.cached_model_service_entries(WS) == entries
 
+    def test_primed_discovery_reports_launch_cache_hit(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        annotations: list[dict] = []
+        monkeypatch.setattr(db_mod.metrics, "annotate", lambda **kwargs: annotations.append(kwargs))
+
+        def page(url, token):
+            return {"model_services": [_model_service("system.ai.claude-sonnet-5")]}, None
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", page)
+        db_mod.prime_model_services_cache(
+            WS, [db_mod.ModelServiceEntry("system.ai.claude-sonnet-5", ())]
+        )
+        db_mod.discover_model_services(WS, "token")
+        hits = [a for a in annotations if "launch_cache_hit" in a]
+        # A disk-seeded memo is a launch-cache hit, not an in-process one.
+        assert hits[-1] == {"launch_cache_hit": True, "cache_hit": False}
+
+        # A real walk replaces the primed memo, so later hits are in-process ones.
+        db_mod.clear_model_services_cache()
+        db_mod.discover_model_services(WS, "token")  # walks and memoizes
+        db_mod.discover_model_services(WS, "token")  # in-process hit
+        hits = [a for a in annotations if "launch_cache_hit" in a]
+        assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):

@@ -127,12 +127,12 @@ from ucode.launch_cache import (
     entry_probe,
     launch_cache_enabled,
     load_entry,
-    merge_entry,
     prime_from_entry,
     probe_payload,
     refresh_due,
     services_payload,
     spawn_refresher,
+    try_merge_entry,
 )
 from ucode.managed_budget import (
     budget_usage_percent,
@@ -887,8 +887,9 @@ def configure_shared_state(
             ):
                 # Cold lookup with the cache on, written only once the discovery has been
                 # joined: record the results for the next launch. Only a verified-available
-                # probe and a non-empty listing are ever persisted.
-                merge_entry(
+                # probe and a non-empty listing are ever persisted. The key lock keeps the
+                # write from interleaving with a mid-flight refresher's read and invalidate.
+                try_merge_entry(
                     cache_key(launch_cache_identity),
                     launch_cache_identity,
                     {
@@ -4832,10 +4833,11 @@ def _launch_tool(
                     discovered_catalog=discovered,
                 )
                 if cached_picker_catalog is None and launch_cache_enabled():
-                    # The catalog came from the network: record it for the next launch.
+                    # The catalog came from the network: record it for the next launch,
+                    # under the key lock like the cold save.
                     if launch_cache_entry_identity is None:
                         launch_cache_entry_identity = entry_identity(state)
-                    merge_entry(
+                    try_merge_entry(
                         cache_key(launch_cache_entry_identity),
                         launch_cache_entry_identity,
                         {"catalog": catalog_payload(discovered)},

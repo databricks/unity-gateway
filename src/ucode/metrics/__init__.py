@@ -106,6 +106,7 @@ BOOL_LABELS = frozenset(
         "interactive_wait",
         "in_process_cache_hit",
         "cache_hit",
+        "launch_cache_hit",
         "deadline_reached",
         "show_all",
         "client_disconnected",

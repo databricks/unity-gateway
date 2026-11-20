@@ -50,6 +50,8 @@ MAX_AGE_SECONDS = 24 * 60 * 60
 REFRESH_THROTTLE_SECONDS = 180
 # How long a second refresher waits for the first's key lock before giving up on it.
 REFRESH_LOCK_TIMEOUT_SECONDS = 30
+# How long a launch's merge waits for a refresher's key lock before skipping the write.
+MERGE_LOCK_TIMEOUT_SECONDS = 1
 
 
 def launch_cache_enabled() -> bool:
@@ -161,16 +163,75 @@ def merge_entry(key: str, identity: dict, payload: dict) -> None:
         pass
 
 
-def clear_cache() -> None:
-    """Drop every entry and its lock (configure and login invalidate; keys isolate the rest).
+def try_merge_entry(key: str, identity: dict, payload: dict) -> bool:
+    """Merge under the key's lock, without stalling the launch on a mid-flight refresher.
 
-    Every lock's entry is gone once the entries are, so every lock is dead weight: the
-    key changed underneath it (a re-login or upgrade), and no launch waits on it again."""
+    A refresher holds the key's lock across its whole fetch, so a merge that fits inside
+    the lock never interleaves with its read-fetch-invalidate, and the ``checked_at`` it
+    bumps cannot make that refresher skip dropping a failed result. When the key is held,
+    the write is skipped — the next launch fetches and records again."""
+    from ucode.os_compatibility.file_lock_cross_os import (
+        acquire_exclusive_file_lock,
+        release_file_lock,
+    )
+
+    with (_cache_dir() / f"{key}.lock").open("a+b") as lock_file:
+        try:
+            acquire_exclusive_file_lock(lock_file, timeout=MERGE_LOCK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            return False
+        try:
+            merge_entry(key, identity, payload)
+        finally:
+            release_file_lock(lock_file)
+    return True
+
+
+def _generation_path() -> Path:
+    return _cache_dir() / "generation"
+
+
+def _read_generation() -> int:
+    try:
+        return int(_generation_path().read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _bump_generation() -> None:
+    try:
+        _generation_path().write_text(f"{_read_generation() + 1}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_cache() -> None:
+    """Drop every entry and its dead locks, and invalidate in-flight refreshers.
+
+    The generation bump makes a refresher that fetched before this clear refuse to
+    write its pre-clear results back. A held lock stays: pruning it would let a second
+    refresher for the same key run alongside, and the next clear prunes it instead."""
+    from ucode.os_compatibility.file_lock_cross_os import (
+        acquire_exclusive_file_lock,
+        release_file_lock,
+    )
+
     directory = config_io.APP_DIR / CACHE_DIR_NAME
     try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _bump_generation()
         for path in directory.glob("*.json"):
             path.unlink(missing_ok=True)
         for path in directory.glob("*.lock"):
+            try:
+                with path.open("a+b") as lock_file:
+                    try:
+                        acquire_exclusive_file_lock(lock_file, timeout=0)
+                    except TimeoutError:
+                        continue
+                    release_file_lock(lock_file)
+            except OSError:
+                continue
             path.unlink(missing_ok=True)
     except OSError:
         pass
@@ -336,6 +397,7 @@ def _refresh(identity: dict) -> int:
     if config_fingerprint() != identity.get("config_fingerprint"):
         return 1
     key = cache_key(identity)
+    generation = _read_generation()
     # One refresher per key at a time: a second launch's refresher waits here, then
     # sees the first one's fresh entry, and a failure cannot drop an entry another
     # refresher wrote in between. The lock file stays in place, like the other
@@ -347,12 +409,12 @@ def _refresh(identity: dict) -> int:
             # Another refresher holds the key; its write serves the next launch.
             return 0
         try:
-            return _refresh_locked(key, identity)
+            return _refresh_locked(key, identity, generation)
         finally:
             release_file_lock(lock_file)
 
 
-def _refresh_locked(key: str, identity: dict) -> int:
+def _refresh_locked(key: str, identity: dict, generation: int) -> int:
     from ucode.databricks import clear_model_services_cache
 
     workspace = identity.get("workspace") or ""
@@ -375,6 +437,10 @@ def _refresh_locked(key: str, identity: dict) -> int:
             _invalidate(key, seen)
             return 1
         catalog = list_anthropic_model_catalog(workspace, token)
+        if _read_generation() != generation:
+            # A login or configure cleared the cache while this refresher fetched; its
+            # pre-clear results must not be written back behind the invalidation.
+            return 1
         # Only a non-empty catalog is cached, like the launch path: an empty one
         # would suppress the picker for the entry's whole age with no fallback. A
         # failed catalog drops the cached one instead of refreshing its age.

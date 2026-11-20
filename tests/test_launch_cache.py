@@ -233,6 +233,19 @@ class TestEntry:
         assert not _entries()
         assert not lock.exists()
 
+    def test_clear_cache_leaves_a_held_lock_and_prunes_dead_ones(self):
+        key = _key()
+        lc.merge_entry(key, _identity(), {})
+        lock_path = lc._cache_dir() / f"{key}.lock"
+        with lock_path.open("a+b") as lock_file:
+            acquire_exclusive_file_lock(lock_file)
+            lc.clear_cache()
+            # A live refresher holds this key; pruning the lock would let a second
+            # refresher for it run alongside.
+            assert lock_path.exists()
+        lc.clear_cache()
+        assert not lock_path.exists()
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
     def test_cache_dir_and_entries_are_private(self):
         key = _key()
@@ -319,13 +332,13 @@ class TestConfigureIsolation:
 
         monkeypatch.setattr(cli_mod, "load_entry", recording_load)
         writes: list[str] = []
-        real_merge = lc.merge_entry
+        real_merge = lc.try_merge_entry
 
         def recording_merge(key, identity, payload):
             writes.append(key)
-            real_merge(key, identity, payload)
+            return real_merge(key, identity, payload)
 
-        monkeypatch.setattr(cli_mod, "merge_entry", recording_merge)
+        monkeypatch.setattr(cli_mod, "try_merge_entry", recording_merge)
         state = cli_mod.configure_shared_state(
             WORKSPACE, profile="p", tools=["claude"], use_launch_cache=use_launch_cache
         )
@@ -663,6 +676,47 @@ class TestRefresher:
         assert spawned["argv"][:4] == [sys.executable, "-P", "-m", "ucode.launch_cache"]
         assert spawned["argv"][4:6] == ["--refresh", "--identity"]
         assert json.loads(base64.urlsafe_b64decode(spawned["argv"][6].encode())) == identity
+
+    def test_a_clear_during_the_fetch_is_not_written_back(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+        key = _key()
+
+        def clear_then_succeed(*_a, **_k):
+            # A login or configure clears the cache while this refresher fetches.
+            lc.clear_cache()
+            return CATALOG
+
+        monkeypatch.setattr(lc, "list_anthropic_model_catalog", clear_then_succeed)
+        assert lc.main(refresh_args()) == 1
+        assert lc.load_entry(key) is None
+        assert not _entries()
+
+
+class TestLaunchMerge:
+    def test_merge_under_the_key_lock(self):
+        key = _key()
+        _store(key, {"probe": lc.probe_payload(PROBE)}, checked_at=time.time())
+        assert lc.try_merge_entry(key, _identity(), {"catalog": lc.catalog_payload(CATALOG)})
+        entry = lc.load_entry(key, _identity())
+        assert entry is not None
+        assert lc.entry_catalog(entry) is not None
+
+    def test_a_merge_is_skipped_while_a_refresher_holds_the_key(self):
+        key = _key()
+        _store(key, {"probe": lc.probe_payload(PROBE)}, checked_at=time.time())
+        before = lc._read_entry(key)
+        lock_path = lc._cache_dir() / f"{key}.lock"
+        with lock_path.open("a+b") as lock_file:
+            acquire_exclusive_file_lock(lock_file)
+            # A mid-flight refresher holds the key: the launch skips the write instead of
+            # bumping `checked_at` under its read-fetch-invalidate.
+            assert not lc.try_merge_entry(
+                key, _identity(), {"catalog": lc.catalog_payload(CATALOG)}
+            )
+        assert lc._read_entry(key) == before
+        # Once the key is free, the same merge goes through.
+        assert lc.try_merge_entry(key, _identity(), {"catalog": lc.catalog_payload(CATALOG)})
+        assert lc.entry_catalog(lc._read_entry(key)) is not None
 
 
 class TestLaunchPath:
