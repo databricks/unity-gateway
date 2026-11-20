@@ -941,6 +941,21 @@ class TestListModelProviderServices:
         assert entry["relayed"] is True
         assert entry["provider_type"] == "openai"
 
+    def test_flags_relayed_github_copilot(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.copilot-seats",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_GITHUB_COPILOT",
+                    "github_copilot": {"relayed": {}},
+                    "targets": [{"model": "claude-sonnet-5.5"}],
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "github_copilot"
+        assert entry["targets"] == ["claude-sonnet-5.5"]
+
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
@@ -1322,6 +1337,13 @@ class TestResolveProviderService:
         )
         assert service is None
         assert "can't route to" in error
+
+    def test_copilots_supported_list_leaves_out_github_copilot(self):
+        error = db_mod._provider_service_unusable_reason(
+            "copilot", {"provider_type": "gemini_enterprise"}, "main.a.gemini"
+        )
+        assert error is not None and "(supported: anthropic," in error
+        assert "github_copilot" not in error
 
     def test_copilot_accepts_openai(self, monkeypatch):
         self._patch(monkeypatch)
@@ -1829,6 +1851,55 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("copilot", service)
         assert db_mod.service_usable_for_tool("claude", service)
+
+    _COPILOT_RELAY = {
+        "name": "main.s.copilot-seats",
+        "provider_type": "github_copilot",
+        "targets": ["claude-sonnet-5.5"],
+        "relayed": True,
+    }
+
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_refused_for_now(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "can't route GitHub Copilot through yet" in reason
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
+    def test_other_agents_refuse_a_github_copilot_relay(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "'github_copilot' provider" in reason
+
+    def test_github_copilot_without_a_relay_is_refused(self):
+        service = {**self._COPILOT_RELAY, "relayed": False}
+        reason = db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        assert reason is not None
+        assert "doesn't relay a subscription" in reason
+
+    def test_provider_flag_explains_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
+        )
+
+        service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
+
+        assert service is None
+        assert error is not None
+        assert "relays a GitHub Copilot subscription" in error
+
+    def test_picker_leaves_out_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
+            ["main.s.anthropic"],
+            None,
+        )
 
 
 class TestModelProviderFeatureUnavailable:
