@@ -163,6 +163,12 @@ CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
+WEB_SEARCH_MODEL_PREFERENCES = (
+    "system.ai.gpt-6-luna",
+    "databricks-gpt-6-luna",
+    "system.ai.gpt-5-mini",
+    "databricks-gpt-5-mini",
+)
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
@@ -200,11 +206,10 @@ def minimum_version_error() -> str | None:
 
 def select_web_search_model(models: list[str]) -> str | None:
     """Keep web search on its preferred models as new coding models become available."""
-    for name in ("gpt-6-luna", "gpt-5-mini"):
-        for model in (f"system.ai.{name}", f"databricks-{name}"):
-            if model in models:
-                return model
-    return models[0] if models else None
+    return next(
+        (model for model in WEB_SEARCH_MODEL_PREFERENCES if model in models),
+        next(iter(models), None),
+    )
 
 
 def _resolve_web_search_model(state: dict) -> str | None:
