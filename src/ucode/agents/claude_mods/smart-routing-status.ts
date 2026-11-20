@@ -26,7 +26,7 @@ export function showStatusBand(): void {
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  // A turn that ends before the startup check settles keeps the hide for the band's first turn.
+  // A turn that ends while the startup check is pending keeps the hide armed for the next turn.
   if (!band.isHideArmed || validation.isPending) return false
   band.isVisible = false
   band.isHideArmed = false

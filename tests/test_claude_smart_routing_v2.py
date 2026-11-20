@@ -993,7 +993,7 @@ class TestV2ModelPickerDiscovery:
             ),
         ],
     )
-    def test_startup_validation_sends_the_routes_select_menu_and_provider(
+    def test_startup_validation_gets_the_launch_model_list_and_provider(
         self, tmp_path, monkeypatch, provider, model, expected
     ):
         validation_start = Mock()

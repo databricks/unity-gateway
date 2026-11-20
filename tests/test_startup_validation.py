@@ -28,17 +28,17 @@ def _wait_for_result(path):
 
 
 @pytest.mark.parametrize(
-    "response",
+    "response,disabled,failed",
     [
-        ({"is_supported": True}, None),
-        ({"is_supported": False}, None),
-        (None, "HTTP 503"),
-        ({"is_supported": "false"}, None),
-        RuntimeError("network down"),
+        (({"is_supported": True}, None), False, False),
+        (({"is_supported": False}, None), True, False),
+        ((None, "HTTP 503"), False, True),
+        (({"is_supported": "false"}, None), False, False),
+        (RuntimeError("network down"), False, True),
     ],
 )
-def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
-    response, tmp_path, monkeypatch, metrics_recorder
+def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
+    response, disabled, failed, tmp_path, monkeypatch, metrics_recorder
 ):
     post = (
         Mock(side_effect=response)
@@ -57,12 +57,10 @@ def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
     )
     result = _wait_for_result(validation.result_path(controls))
     post.assert_called_once()
-    unsupported = isinstance(response, tuple) and (response[0] or {}).get("is_supported") is False
-    assert result == {"routing_disabled": unsupported}
-    assert session_routing_enabled(controls) is not unsupported
-    if not unsupported:
+    assert result == {"routing_disabled": disabled}
+    assert session_routing_enabled(controls) is not disabled
+    if not disabled:
         assert controls.read_text() == "{}"
-    failed = isinstance(response, Exception) or response[1] is not None
     errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
     assert [(labels.get("operation"), labels.get("phase")) for _, labels in errors] == (
         [(metrics.STARTUP_VALIDATION_OPERATION, "startup")] if failed else []
@@ -121,36 +119,25 @@ def test_unsupported_result_past_the_deadline_leaves_routing_on(tmp_path, monkey
     assert controls.read_text() == "{}"
 
 
-def test_result_write_failure_is_isolated(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failing", ["result", "controls"])
+def test_failed_write_is_isolated_and_keeps_the_result_honest(failing, tmp_path, monkeypatch):
     monkeypatch.setattr(
         validation.threading, "Thread", lambda *, target, daemon: SimpleNamespace(start=target)
     )
-    writer = Mock(side_effect=RuntimeError("disk unavailable"))
-    monkeypatch.setattr(validation, "atomic_write_json", writer)
-    validation.start(
-        "https://example.com",
-        "test-token",
-        [("m", "claude")],
-        router_name="stable",
-        session_controls=tmp_path / "env.json",
-    )
-    writer.assert_called_once()
-
-
-def test_failed_controls_write_does_not_report_routing_off(tmp_path, monkeypatch):
     monkeypatch.setattr(
         validation, "_http_post_json", lambda *a, **k: ({"is_supported": False}, None)
     )
+    controls = tmp_path / "env.json"
+    controls.write_text("{}")
+    failing_path = validation.result_path(controls) if failing == "result" else controls
     real_write = validation.atomic_write_json
 
     def write(path, value):
-        if path == controls:
+        if path == failing_path:
             raise OSError("read-only")
         real_write(path, value)
 
     monkeypatch.setattr(validation, "atomic_write_json", write)
-    controls = tmp_path / "env.json"
-    controls.write_text("{}")
     validation.start(
         "https://example.com",
         "test-token",
@@ -158,4 +145,11 @@ def test_failed_controls_write_does_not_report_routing_off(tmp_path, monkeypatch
         router_name="stable",
         session_controls=controls,
     )
-    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    if failing == "result":
+        assert not validation.result_path(controls).exists()
+        assert session_routing_enabled(controls) is False
+    else:
+        assert json.loads(validation.result_path(controls).read_text()) == {
+            "routing_disabled": False
+        }
+        assert controls.read_text() == "{}"

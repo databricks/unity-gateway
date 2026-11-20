@@ -17,7 +17,7 @@ from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
 
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
-# urllib applies the timeout per socket operation, so the whole check also has this deadline.
+# urllib applies the timeout per socket operation, so a result past this deadline counts as a timeout.
 VALIDATION_TIMEOUT_SECONDS = 4
 
 

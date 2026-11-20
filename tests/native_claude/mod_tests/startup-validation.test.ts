@@ -142,34 +142,30 @@ test('a session without controls shows the band once session start runs', { opti
   await ui.unmount();
 });
 
-test('a turn that ends while the check is pending does not hide the band', { options: VALIDATED }, async ($, on) => {
-  const { clock, files } = engine(on);
-  on('prompt.submit', ($, e) => ({ text: e.text }));
-  on('turn.complete', () => ({ text: '' }));
-  const ui = await $.ui.mount(abovePrompt);
-  await $.session.start(start);
-  await $.prompt.submit({ text: 'early prompt' });
-  await $.turn.complete({ answer: 'done' });
-  files['/session/env.validation.json'] = '{"routing_disabled":false}';
-  await clock.advance(100);
-  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
-  await ui.unmount();
-});
+const turnCases = [
+  { name: 'a turn that ends while the check is pending does not hide the band', endsBeforeResult: true },
+  { name: 'a band that appears mid-turn hides when that turn ends', endsBeforeResult: false },
+];
 
-test('a band that appears mid-turn hides when that turn ends', { options: VALIDATED }, async ($, on) => {
-  const { clock, files } = engine(on);
-  on('prompt.submit', ($, e) => ({ text: e.text }));
-  on('turn.complete', () => ({ text: '' }));
-  const ui = await $.ui.mount(abovePrompt);
-  await $.session.start(start);
-  await $.prompt.submit({ text: 'early prompt' });
-  files['/session/env.validation.json'] = '{"routing_disabled":false}';
-  await clock.advance(100);
-  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
-  await $.turn.complete({ answer: 'done' });
-  expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
-  await ui.unmount();
-});
+for (const { name, endsBeforeResult } of turnCases) {
+  test(name, { options: VALIDATED }, async ($, on) => {
+    const { clock, files } = engine(on);
+    on('prompt.submit', ($, e) => ({ text: e.text }));
+    on('turn.complete', () => ({ text: '' }));
+    const ui = await $.ui.mount(abovePrompt);
+    await $.session.start(start);
+    await $.prompt.submit({ text: 'early prompt' });
+    if (endsBeforeResult) await $.turn.complete({ answer: 'done' });
+    files['/session/env.validation.json'] = '{"routing_disabled":false}';
+    await clock.advance(100);
+    expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+    if (!endsBeforeResult) {
+      await $.turn.complete({ answer: 'done' });
+      expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+    }
+    await ui.unmount();
+  });
+}
 
 test('without the startup check the band shows from the first paint', { options: ROUTED }, async ($, on) => {
   const { state } = engine(on);
