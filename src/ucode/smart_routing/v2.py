@@ -679,6 +679,7 @@ def route_claude_subagent(
     notice, for hooks that earlier UG versions persisted in settings files.
     """
     excluded_models = payload.get("excluded_models", []) if not hook_output else []
+    # Explicit exclusions constrain eligibility; malformed input must not silently drop them.
     if not isinstance(excluded_models, list) or any(
         not isinstance(model, str) for model in excluded_models
     ):
