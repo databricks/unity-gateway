@@ -4674,13 +4674,13 @@ class TestProbeUnityGatewayCapabilities:
     def test_definitive_auth_failure_matches_invalid_token_403(self):
         # A stale PAT 403s with an "Invalid access token" body — that's the token being
         # rejected, not a missing grant, so it must classify as a definitive auth failure.
-        assert db_mod._looks_like_definitive_auth_failure(
+        assert db_mod.looks_like_definitive_auth_failure(
             'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
         )
-        assert db_mod._looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
-        assert db_mod._looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
+        assert db_mod.looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
+        assert db_mod.looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
         # A plain permission 403 (missing grant) is left to permission routing.
-        assert not db_mod._looks_like_definitive_auth_failure(
+        assert not db_mod.looks_like_definitive_auth_failure(
             "HTTP 403: Missing Unity Catalog grants"
         )
 

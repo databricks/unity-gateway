@@ -2343,7 +2343,7 @@ class AuthTokenError(RuntimeError):
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
     """Raise a concise auth error for a rejected token; ignore other failures."""
-    if reason and _looks_like_definitive_auth_failure(reason):
+    if reason and looks_like_definitive_auth_failure(reason):
         raise AuthTokenError("Your access token is expired or invalid.")
 
 
@@ -4260,7 +4260,7 @@ def list_all_mcp_services(
             or (cancel_event is not None and cancel_event.is_set())
         ):
             return fast_names, fast_reason
-        if _looks_like_definitive_auth_failure(fast_reason):
+        if looks_like_definitive_auth_failure(fast_reason):
             return [], fast_reason
 
     def probe(catalog, schema):
@@ -4656,7 +4656,7 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     reason = model_service_probe.detail
     if isinstance(reason, WorkspaceSelectionReason):
         raise RuntimeError(reason)
-    if _looks_like_definitive_auth_failure(reason):
+    if looks_like_definitive_auth_failure(reason):
         _raise_unity_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):
         _raise_unity_gateway_scope_failure(workspace, reason)
@@ -4694,7 +4694,7 @@ def _looks_like_transient_failure(reason: str) -> bool:
     return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
 
 
-def _looks_like_definitive_auth_failure(reason: str) -> bool:
+def looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
     Matches a 401, an invalid-token 400 (the Unity Gateway's `Invalid Token`), or a

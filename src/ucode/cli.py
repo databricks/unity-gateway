@@ -85,7 +85,6 @@ from ucode.custom_oauth import (
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     AnthropicModelCatalog,
-    _looks_like_definitive_auth_failure,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -104,6 +103,7 @@ from ucode.databricks import (
     is_model_provider_feature_unavailable,
     list_anthropic_model_catalog,
     list_profile_entries,
+    looks_like_definitive_auth_failure,
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
@@ -4428,7 +4428,7 @@ def _launch_tool(
                 # falls back to the serial fetch on the live token, never fails the launch.
                 return None
             error = speculative.error_msg
-            if error and _looks_like_definitive_auth_failure(error):
+            if error and looks_like_definitive_auth_failure(error):
                 # The token the speculation rode is definitively rejected (a 401, an
                 # invalid-token 400, an invalid-access-token 403) and configure's auth step may
                 # have repaired it; refetch with the live token.
