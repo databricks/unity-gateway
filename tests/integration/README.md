@@ -1332,6 +1332,8 @@ The existing saved-model variant remains. Component tests cover short `-m`, laun
 policy for both agents, Isaac's config-only Codex arguments, and native
 utility-subcommand and remote-attachment exclusion;
 these are not live coverage.
+Those component model-forwarding cases use a supported Codex version independent
+of the test runner's installed binaries.
 The classifier reuses UG's model/config syntax; other native options with separate
 values retain their prior unrouted behavior rather than guessing their arity.
 

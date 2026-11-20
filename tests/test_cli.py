@@ -1351,6 +1351,9 @@ class TestSubcommandRouting:
     def test_forwarded_model_keeps_subagent_routing(
         self, monkeypatch, tool, model, model_flag, version, launch_args, routed
     ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+        )
         managed = None
         if version is None:
             if not launch_args:

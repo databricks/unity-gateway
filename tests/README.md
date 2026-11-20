@@ -1097,6 +1097,8 @@ sign-in or TUI test.
 `test_cli.py` covers forwarded model arguments under explicit enable/disable, managed
 defaults and routing presets for Claude and Codex, including pinned-root bypass of
 first-prompt routing and Isaac's config-only Codex launch arguments.
+The model-forwarding cases fix Codex's reported version at 0.165.0 so managed routing
+does not depend on an agent installed on the test runner.
 `test_codex_config.py` distinguishes native options and their
 values from positional prompts and utility subcommands. It reuses UG's model/config
 syntax instead of mirroring all native options. Other options with separate values
