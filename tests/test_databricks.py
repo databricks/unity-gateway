@@ -7506,8 +7506,7 @@ def test_http_transport_passes_headers_and_timeout(monkeypatch):
     assert "accept" not in headers
 
 
-def test_system_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
-    monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+def _clear_proxy_env(monkeypatch):
     for name in (
         "HTTP_PROXY",
         "http_proxy",
@@ -7515,8 +7514,14 @@ def test_system_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
         "https_proxy",
         "ALL_PROXY",
         "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def test_system_proxies_use_urllib_system_proxy_and_bypass(monkeypatch):
+    _clear_proxy_env(monkeypatch)
     monkeypatch.setattr(
         db_mod.urllib_request,
         "getproxies",
@@ -7526,7 +7531,7 @@ def test_system_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
         db_mod.urllib_request, "proxy_bypass", lambda host: host == "internal.example"
     )
 
-    proxies = db_mod._system_proxies()
+    proxies = db_mod._urllib_proxies()
     assert proxies == {
         "http": "http://system-proxy:8080",
         "https": "http://system-proxy:8080",
@@ -7600,36 +7605,18 @@ def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
 
 
 def test_schemeless_system_proxy_is_normalized(monkeypatch):
-    monkeypatch.setattr(db_mod.sys, "platform", "darwin")
-    for name in (
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _clear_proxy_env(monkeypatch)
     monkeypatch.setattr(
         db_mod.urllib_request, "getproxies", lambda: {"https": "system-proxy:3128", "all": ""}
     )
 
-    proxies = db_mod._system_proxies()
+    proxies = db_mod._urllib_proxies()
 
     assert proxies == {"https": "http://system-proxy:3128"}
 
 
 def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
-    monkeypatch.setattr(db_mod.sys, "platform", "win32")
-    for name in (
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _clear_proxy_env(monkeypatch)
     monkeypatch.setattr(
         db_mod.urllib_request,
         "getproxies",
@@ -7658,12 +7645,12 @@ def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
         return StubTransport("proxied" if kwargs.get("proxy") else "direct")
 
     monkeypatch.setattr(httpx, "HTTPTransport", stub_transport)
-    proxies = db_mod._system_proxies()
+    proxies = db_mod._urllib_proxies()
     assert proxies == {
         "http": "http://registry-proxy:8080",
         "https": "http://registry-proxy:8080",
     }
-    transport = db_mod._system_proxy_transport(httpx, proxies, httpx.Limits())
+    transport = db_mod._proxy_transport(httpx, proxies, httpx.Limits())
     try:
         transport.handle_request(httpx.Request("GET", "https://workspace.example/api"))
         transport.handle_request(httpx.Request("GET", "https://bypassed.example/api"))
@@ -7672,11 +7659,98 @@ def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
     assert handled == [("proxied", "workspace.example"), ("direct", "bypassed.example")]
 
 
-def test_env_proxies_win_over_system_proxies(monkeypatch):
-    monkeypatch.setattr(db_mod.sys, "platform", "win32")
-    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
+def test_socks_all_proxy_is_ignored_and_requests_go_direct(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("ALL_PROXY", "socks5://socks-proxy:1080")
 
-    assert db_mod._system_proxies() is None
+    assert db_mod._urllib_proxies() is None
+
+    import httpx
+
+    built = {}
+    real_client = httpx.Client
+
+    def spy_client(*args, **kwargs):
+        built.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", spy_client)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
+    client = db_mod._get_http_client()
+    try:
+        assert isinstance(client._transport, httpx.HTTPTransport)
+        assert built["trust_env"] is False
+    finally:
+        client.close()
+
+
+def test_socks_https_proxy_is_used_as_an_http_connect_proxy(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "socks5://socks-proxy:1080")
+
+    assert db_mod._urllib_proxies() == {"https": "http://socks-proxy:1080"}
+
+
+def test_env_no_proxy_bypasses_the_proxy_per_host(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
+    monkeypatch.setenv("NO_PROXY", "bypassed.example")
+
+    import httpx
+
+    handled = []
+
+    class StubTransport(httpx.BaseTransport):
+        def __init__(self, name):
+            self.name = name
+
+        def handle_request(self, request):
+            handled.append((self.name, request.url.host))
+            return httpx.Response(200)
+
+        def close(self):
+            pass
+
+    def stub_transport(**kwargs):
+        return StubTransport("proxied" if kwargs.get("proxy") else "direct")
+
+    monkeypatch.setattr(httpx, "HTTPTransport", stub_transport)
+    proxies = db_mod._urllib_proxies()
+    assert proxies == {"https": "http://env-proxy:3128"}
+    transport = db_mod._proxy_transport(httpx, proxies, httpx.Limits())
+    try:
+        transport.handle_request(httpx.Request("GET", "https://workspace.example/api"))
+        transport.handle_request(httpx.Request("GET", "https://bypassed.example/api"))
+    finally:
+        transport.close()
+    assert handled == [("proxied", "workspace.example"), ("direct", "bypassed.example")]
+
+
+def test_no_proxies_built_plain_transport_with_trust_env_off(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
+
+    import httpx
+
+    built = {}
+    real_client = httpx.Client
+
+    def spy_client(*args, **kwargs):
+        built.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", spy_client)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
+    client = db_mod._get_http_client()
+    try:
+        assert db_mod._urllib_proxies() is None
+        assert isinstance(client._transport, httpx.HTTPTransport)
+        assert built["trust_env"] is False
+        assert "transport" in built
+    finally:
+        client.close()
 
 
 class TestPooledRedirectErrors:

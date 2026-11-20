@@ -386,41 +386,37 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
         return False
 
 
-def _system_proxies() -> dict[str, str] | None:
-    if sys.platform not in ("darwin", "win32") or any(
-        os.environ.get(name)
-        for name in (
-            "HTTP_PROXY",
-            "http_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-        )
-    ):
-        return None
+def _urllib_proxies() -> dict[str, str] | None:
+    """The http/https proxies urllib's ProxyHandler would use (env first, then the system
+    settings), normalized for httpx; None when there are none.
+
+    ``all_proxy`` is dropped (urllib ignores it, and a socks scheme would need httpx's
+    optional ``socksio``); a socks proxy URL becomes ``http://host:port``, which is what
+    urllib effectively does for https requests — a CONNECT tunnel to that host:port."""
     proxies = urllib_request.getproxies()
-    system_proxies: dict[str, str] = {}
-    for scheme in ("http", "https", "all"):
+    http_proxies: dict[str, str] = {}
+    for scheme in ("http", "https"):
         proxy = proxies.get(scheme)
         if not proxy:
             continue
-        if "://" not in proxy:
-            # macOS and the Windows registry can report scheme-less values ("host:port");
-            # urllib's proxy handler treats those as HTTP proxies, so make that explicit
-            # for httpx.
+        proxy_scheme, _, host_port = proxy.partition("://")
+        if not host_port:
+            # Scheme-less values ("host:port", from env or the system settings) are HTTP
+            # proxies to urllib's proxy handler; make that explicit for httpx.
             proxy = f"http://{proxy}"
-        system_proxies[scheme] = proxy
-    return system_proxies or None
+        elif proxy_scheme not in ("http", "https"):
+            proxy = f"http://{host_port}"
+        http_proxies[scheme] = proxy
+    return http_proxies or None
 
 
 def _urllib_proxy_for_request(scheme: str, host: str, proxies: dict[str, str]) -> str | None:
     if urllib_request.proxy_bypass(host):
         return None
-    return proxies.get(scheme) or proxies.get("all")
+    return proxies.get(scheme)
 
 
-def _system_proxy_transport(httpx, proxies, limits):
+def _proxy_transport(httpx, proxies, limits):
     class SystemProxyTransport(httpx.BaseTransport):
         def __init__(self):
             # trust_env covers SSL_CERT_FILE/SSL_CERT_DIR only; HTTPTransport never mounts
@@ -474,16 +470,20 @@ def _get_http_client() -> httpx.Client:
             # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
             tls.apply()
             limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
-            system_proxies = _system_proxies()
+            proxies = _urllib_proxies()
             transport = (
-                _system_proxy_transport(httpx, system_proxies, limits) if system_proxies else None
+                _proxy_transport(httpx, proxies, limits)
+                if proxies
+                else httpx.HTTPTransport(trust_env=True, limits=limits)
             )
             client = httpx.Client(
-                trust_env=transport is None,
+                transport=transport,
+                # Proxy and bypass routing above follows urllib; trust_env is off so httpx
+                # never mounts ALL_PROXY (and socks proxies needing socksio) behind our back.
+                trust_env=False,
                 follow_redirects=True,
                 limits=limits,
                 cookies=CookieJar(policy=_RejectCookiesPolicy()),
-                **({"transport": transport} if transport is not None else {}),
             )
             _HTTP_CLIENT = client
             _HTTP_CLIENT_PID = pid
