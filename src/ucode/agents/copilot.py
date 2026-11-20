@@ -865,13 +865,12 @@ def build_runtime_env(
     workspace traces Copilot, its OTLP export.
 
     Inherited ``COPILOT_PROVIDER*`` settings are dropped so a user's own BYOK setup can't take
-    over a ug session; with ``otel``, so are inherited exporter settings, so traces go only to the
-    workspace."""
+    over a ug session. Inherited exporter settings are always dropped, so traces go only where ug
+    configures them."""
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("COPILOT_PROVIDER")
-        and not (otel and key.startswith(_INHERITED_OTEL_PREFIXES))
+        if not key.startswith("COPILOT_PROVIDER") and not key.startswith(_INHERITED_OTEL_PREFIXES)
     }
     env["COPILOT_PROVIDERS_CONFIG"] = str(registry_path)
     env["COPILOT_MODEL"] = model.ref
@@ -1328,13 +1327,14 @@ def seat_relay_env(api_url: str, *, mcp_host: str | None, tracing: bool = False)
     """Copilot's environment for a session on a GitHub Copilot seat relay: signed in to GitHub,
     with every Copilot API call sent to the relay at ``api_url``, and GitHub MCP sent straight to
     ``mcp_host`` (the caller's Copilot API host) when it's known. With ``tracing``, Copilot exports
-    OTLP to the same relay, and inherited exporter settings are dropped."""
+    OTLP to the same relay. Inherited exporter settings are always dropped, so traces go only where
+    ug configures them."""
     env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith("COPILOT_PROVIDER")
         and key not in _SEAT_RELAY_DROPPED_ENV
-        and not (tracing and key.startswith(_INHERITED_OTEL_PREFIXES))
+        and not key.startswith(_INHERITED_OTEL_PREFIXES)
     }
     env["COPILOT_API_URL"] = api_url
     # Copilot opens /responses as a WebSocket first, which the relay refuses; only `true` (not
