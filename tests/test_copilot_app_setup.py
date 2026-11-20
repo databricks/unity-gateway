@@ -281,6 +281,19 @@ class TestRemove:
         assert result.row == desktop_setup.COPILOT_APP_REMOVAL_PENDING
         assert plugin.plugin_root().exists()
 
+    def test_status_after_revert_shows_the_pending_removal_then_cleans_up(self):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        desktop_setup.revert_copilot_app()
+
+        assert desktop_setup.copilot_app_unconfigured_status() == (
+            desktop_setup.COPILOT_APP_REMOVAL_PENDING
+        )
+        _settings_path().write_text("{}")
+
+        assert desktop_setup.copilot_app_unconfigured_status() is None
+        assert not plugin.plugin_root().exists()
+        assert not _settings_path().exists()
+
     def test_reverting_with_the_app_open_after_a_pending_removal_finishes_it(self, app):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         desktop_setup.revert_copilot_app()

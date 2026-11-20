@@ -532,6 +532,17 @@ _COPILOT_REGISTRATION_LABELS = {
 }
 
 
+def copilot_app_unconfigured_status() -> str | None:
+    """The app's row in ``ug status`` once Copilot is no longer configured: a revert with the app
+    closed is still pending until the plugin's next start."""
+    if not copilot_app_enabled():
+        return None
+    _cleanup_copilot_app_leftover()
+    if copilot_app_plugin.status() == "removal_pending":
+        return COPILOT_APP_REMOVAL_PENDING
+    return None
+
+
 def copilot_app_status(
     state: dict, *, provider: str | None, location: str | None
 ) -> CopilotAppStatus | None:

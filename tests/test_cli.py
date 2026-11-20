@@ -3539,6 +3539,21 @@ class TestStatus:
         assert result.exit_code == 0, result.output
         assert "GitHub Copilot app: off (workspace-managed)" in output
 
+    def test_status_shows_a_pending_copilot_app_removal_after_revert(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.agents.desktop.setup.copilot_app_unconfigured_status",
+                return_value="removal pending: soon",
+            ),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app" in output
+        assert "removal pending: soon" in output
+
     def test_status_labels_self_configured_setup(self, monkeypatch):
         with (
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),

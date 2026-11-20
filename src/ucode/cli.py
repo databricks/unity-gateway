@@ -2033,6 +2033,11 @@ def status() -> int:
         rows.append(("Endpoint", str(base_url or "not configured")))
         _print_status_panel(_agent_label(tool), rows)
 
+    if AGENT_COPILOT not in configured_tools:
+        from ucode.agents.desktop.setup import copilot_app_unconfigured_status
+
+        if pending := copilot_app_unconfigured_status():
+            _print_status_panel("GitHub Copilot app", [("Status", pending)])
     if not configured_tools:
         print_note("No coding agents are configured.")
     return 0
