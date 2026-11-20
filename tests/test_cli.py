@@ -2332,7 +2332,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
         resolve_provider = MagicMock(return_value=(None, None, relayed))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
@@ -2761,7 +2761,7 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda s: (None, False))
         monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda s, m: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(
             cli_mod,
             "list_anthropic_model_catalog",
@@ -10778,39 +10778,41 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
     """The Anthropic picker catalog is settled by inputs known before `configure_shared_state`
     runs, so the launch starts it speculatively and reads the result where it always did."""
 
-    WS = "https://example.databricks.com"
     WAIT_SECONDS = 5
 
     @staticmethod
     def _invoke_with_overlapped_catalog(
-        monkeypatch, *, managed, argv=("claude",), persisted_provider=None
+        monkeypatch,
+        *,
+        managed,
+        argv=("claude",),
+        persisted_provider=None,
+        auto_picker=False,
+        expect_catalog_start=True,
     ):
         state = dict(MINIMAL_STATE)
         catalog_started = threading.Event()
-        catalog_threads: list[threading.Thread] = []
-        catalog_during_configure = threading.Event()
+        catalog_calls: list[tuple[threading.Thread, dict]] = []
         picker_catalog = db_mod.AnthropicModelCatalog(
             model_ids=["main.default.claude-sonnet-5"],
             model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
         )
 
-        catalog_calls: list = []
-
-        def fake_catalog(*_args, **_kwargs):
-            catalog_calls.append(threading.current_thread())
-            catalog_threads.append(threading.current_thread())
+        def fake_catalog(*_args, **kwargs):
+            catalog_calls.append((threading.current_thread(), kwargs))
             catalog_started.set()
             return picker_catalog
 
         def fake_configure_shared_state(*_args, **_kwargs):
-            assert catalog_started.wait(
-                TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS
-            ), "picker catalog did not start during configure"
-            catalog_during_configure.set()
+            # The speculative fetch must be in flight by the time configure runs; a launch that
+            # never sees it start fails right here.
+            if expect_catalog_start:
+                assert catalog_started.wait(
+                    TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS
+                ), "picker catalog did not start during configure"
             return state
 
         configure = MagicMock(side_effect=lambda _tool, configured, *_args, **_kwargs: configured)
-        launch = MagicMock()
         monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
@@ -10823,23 +10825,20 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
-        monkeypatch.setattr(cli_mod, "launch_agent", launch)
+        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
+        if auto_picker:
+            monkeypatch.setattr(cli_mod.smart_routing_config, "auto_mode_enabled", lambda: True)
+            monkeypatch.setattr(cli_mod, "_routes_launch", lambda *a, **k: True)
 
-        try:
-            result = runner.invoke(app, list(argv))
-        finally:
-            for thread in catalog_threads:
-                thread.join(TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS)
+        result = runner.invoke(app, list(argv))
+        for thread in {entry[0] for entry in catalog_calls}:
+            thread.join(TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS)
 
         return {
             "result": result,
-            "state": state,
             "configure": configure,
-            "launch": launch,
-            "picker_catalog": picker_catalog,
-            "catalog_during_configure": catalog_during_configure,
-            "catalog_thread": catalog_threads[0] if catalog_threads else None,
             "catalog_calls": catalog_calls,
+            "catalog_thread": catalog_calls[0][0] if catalog_calls else None,
         }
 
     def test_unmanaged_picker_catalog_starts_during_configure_and_feeds_it(self, monkeypatch):
@@ -10848,7 +10847,6 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         )
 
         assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["catalog_during_configure"].is_set()
         assert calls["catalog_thread"] is not None and calls["catalog_thread"].daemon
         assert len(calls["catalog_calls"]) == 1
         assert "main.default.claude-sonnet-5" in (
@@ -10864,7 +10862,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         calls = self._invoke_with_overlapped_catalog(monkeypatch, managed=managed)
 
         assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["catalog_during_configure"].is_set()
+        assert len(calls["catalog_calls"]) == 1
+        assert calls["catalog_calls"][0][1] == {"parent_schema": "main.default"}
 
     def test_profile_mismatch_refetches_serially(self, monkeypatch):
         state = dict(MINIMAL_STATE)
@@ -10874,7 +10873,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
         )
 
-        def fake_catalog(*_args, **_kwargs):
+        def fake_catalog(*_args, **kwargs):
             catalog_started.set()
             return picker_catalog
 
@@ -10883,7 +10882,6 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             assert catalog_started.wait(self.WAIT_SECONDS)
             return {**state, "profile": "resolved-profile"}
 
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
         monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
@@ -10895,7 +10893,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(
             cli_mod, "list_anthropic_model_catalog", MagicMock(side_effect=fake_catalog)
         )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
         monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
         result = runner.invoke(app, ["claude"])
@@ -10984,7 +10982,6 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             model_ids=[], model_id_to_display_name={}, error_msg="HTTP 403 Forbidden"
         )
         state = dict(MINIMAL_STATE)
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
         monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
@@ -10996,13 +10993,38 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(
             cli_mod, "list_anthropic_model_catalog", MagicMock(return_value=error_catalog)
         )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
         monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
         result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
         assert cli_mod.list_anthropic_model_catalog.call_count == 1
+
+    def test_auto_picker_starts_no_unmanaged_catalog(self, monkeypatch):
+        state = dict(MINIMAL_STATE)
+        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
+        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
+        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "list_anthropic_model_catalog",
+            MagicMock(side_effect=AssertionError("auto picker must not fetch the catalog")),
+        )
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, auto_picker=True, expect_catalog_start=False
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["catalog_calls"] == []
 
     def test_relayed_provider_launch_starts_no_catalog(self, monkeypatch):
         state = {**MINIMAL_STATE, "provider_services": {"claude": "main.default.relay"}}
@@ -11014,17 +11036,14 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, True))
-        monkeypatch.setattr(
-            cli_mod,
-            "list_anthropic_model_catalog",
-            MagicMock(side_effect=AssertionError("relayed launch must not fetch the catalog")),
-        )
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", MagicMock())
         monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
         monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
         result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
+        assert cli_mod.list_anthropic_model_catalog.call_count == 0
 
     def test_catalog_error_still_fails_the_launch(self, monkeypatch):
         state = dict(MINIMAL_STATE)
@@ -11044,9 +11063,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(
-            cli_mod,
-            "list_anthropic_model_catalog",
-            MagicMock(return_value=error_catalog),
+            cli_mod, "list_anthropic_model_catalog", MagicMock(return_value=error_catalog)
         )
         monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
         monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
