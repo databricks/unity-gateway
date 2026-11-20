@@ -116,7 +116,7 @@ Authentication and API instrumentation uses these constants (all in `metrics`):
 | `DATABRICKS_LOGIN_DURATION_MS` | `timed()` or `measure()` around browser login, with `login_method` (`cli` or `sdk`); call `mark_login()` when login starts so startup samples include `interactive_login`. |
 | `DATABRICKS_LOGIN_OPERATION` | The error operation for login measurements and `failure()` on a nonzero login-process exit; report the exit code without changing the caller's retry behavior. |
 | `CODING_AGENT_CONFIG_FETCH_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around fetching the workspace's managed coding-agent configuration. |
-| `MODEL_SERVICE_DISCOVERY_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around listing and classifying model services, with `cache_hit` for the in-process catalog cache. |
+| `MODEL_SERVICE_DISCOVERY_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around listing and classifying model services, with `cache_hit` for the in-process catalog cache and `launch_cache_hit` when the memo was seeded from the persisted launch cache (`UG_LAUNCH_CACHE`). |
 | `MODEL_SERVICE_ACCESS_CHECK_DURATION_MS` | `timed()` around the model-services access check, including all pages it reads. |
 | `HTTP_REQUEST_DURATION_MS` | `record()` once per HTTP attempt, including failures, with `api_operation`, `http_method`, `attempt`, and `http_status_code` when a response exists; excludes retry backoff. |
 | `HTTP_RETRY_COUNT` | `record(..., 1)` before each retry, with `api_operation` and `http_method`; never count the first attempt or count an outer retry twice. |

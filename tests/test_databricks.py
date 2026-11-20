@@ -771,6 +771,101 @@ class TestDiscoverModelServices:
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
         assert db_mod.cached_model_service_entries(WS) is None
 
+    def test_incomplete_walk_is_not_memoized(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        pages = [
+            {"model_services": [_model_service("system.ai.gpt-5")], "next_page_token": "t2"},
+        ]
+
+        def blip(url, token):
+            if pages:
+                return pages.pop(0), None
+            return None, "HTTP 503"
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", blip)
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+        # Today's best-effort behavior: the partial listing comes back with no reason.
+        assert reason is None
+        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
+        # But a truncated walk never feeds the memo the launch-cache cold save reads.
+        assert db_mod.cached_model_service_entries(WS) is None
+
+    def test_complete_only_reports_a_truncated_walk(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        pages = [
+            {"model_services": [_model_service("system.ai.gpt-5")], "next_page_token": "t2"},
+        ]
+
+        def blip(url, token):
+            if pages:
+                return pages.pop(0), None
+            return None, "HTTP 503"
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", blip)
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token", complete_only=True)
+        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
+        assert reason == "HTTP 503"
+
+    def test_complete_only_accepts_a_complete_walk(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [_model_service("system.ai.gpt-5")]}, None),
+        )
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token", complete_only=True)
+        assert reason is None
+        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
+        assert db_mod.cached_model_service_entries(WS) == entries
+
+    def test_primed_discovery_reports_launch_cache_hit(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        annotations: list[dict] = []
+        monkeypatch.setattr(db_mod.metrics, "annotate", lambda **kwargs: annotations.append(kwargs))
+
+        def page(url, token):
+            return {"model_services": [_model_service("system.ai.claude-sonnet-5")]}, None
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", page)
+        db_mod.prime_model_services_cache(
+            WS, [db_mod.ModelServiceEntry("system.ai.claude-sonnet-5", ())]
+        )
+        db_mod.discover_model_services(WS, "token")
+        hits = [a for a in annotations if "launch_cache_hit" in a]
+        # A disk-seeded memo is a launch-cache hit, not an in-process one.
+        assert hits[-1] == {"launch_cache_hit": True, "cache_hit": False}
+
+        # A real walk replaces the primed memo, so later hits are in-process ones.
+        db_mod.clear_model_services_cache()
+        db_mod.discover_model_services(WS, "token")  # walks and memoizes
+        db_mod.discover_model_services(WS, "token")  # in-process hit
+        hits = [a for a in annotations if "launch_cache_hit" in a]
+        assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
+
+    def test_priming_does_not_override_a_walked_memo(self, monkeypatch):
+        db_mod.clear_model_services_cache()
+        annotations: list[dict] = []
+        monkeypatch.setattr(db_mod.metrics, "annotate", lambda **kwargs: annotations.append(kwargs))
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [_model_service("system.ai.gpt-5")]}, None),
+        )
+        db_mod.discover_model_services(WS, "token")  # walks and memoizes
+        db_mod.prime_model_services_cache(
+            WS, [db_mod.ModelServiceEntry("system.ai.claude-sonnet-5", ())]
+        )
+        db_mod.discover_model_services(WS, "token")
+        hits = [a for a in annotations if "launch_cache_hit" in a]
+        # A real memoized walk stays an in-process hit, with its own entries.
+        assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
+        assert [entry.id for entry in db_mod.cached_model_service_entries(WS)] == [
+            "system.ai.gpt-5"
+        ]
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):

@@ -137,6 +137,14 @@ def _custom_cli_profile(workspace: str, client_id: str) -> str:
     return f"ug-oauth-{urlparse(workspace).hostname}-{client_id}"
 
 
+def custom_oauth_cli_profile(workspace: str, config: CustomOAuthConfig) -> str:
+    """The Databricks CLI profile that carries this custom client's tokens.
+
+    The one profile resolution for the launch path and for helpers that must not
+    drift from it (the launch cache's detached refresher)."""
+    return config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
+
+
 def ensure_custom_oauth_cli_token(
     workspace: str,
     config: CustomOAuthConfig,
@@ -149,7 +157,7 @@ def ensure_custom_oauth_cli_token(
     """
     ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
     workspace = normalize_workspace_url(workspace)
-    profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
+    profile = custom_oauth_cli_profile(workspace, config)
     config["profile"] = profile
     if external_bearer_configured():
         save_databricks_cli_oauth_profile(
