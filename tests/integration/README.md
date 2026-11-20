@@ -711,10 +711,15 @@ The same component suite checks ownership retention across an empty search-model
 catalog and subsequent external handoff or standalone refresh. That recovery path
 does not yet have a live integration journey.
 
-Fresh Claude-only search discovery and registration are covered by component
+Fresh Claude-only and provider-mode search discovery and registration are covered by component
 tests in `../test_claude_search_discovery.py`, including legacy catalog fallback,
-an explicit model override, and no available GPT model. Live search remains
-outside this integration suite.
+an explicit model override, and no available GPT model. `../test_cli.py` checks provider mode
+replaces saved legacy search names with UC model-service IDs and preserves agent models,
+including fallback when UC discovery is empty or unavailable. Live search remains
+outside this integration suite. The component discovery matrix covers preferring UC GPT-6 Luna,
+then UC GPT-5 Mini, then the discovered default in standard and provider-mode setup. Legacy
+catalogs retain their existing default, with one case per setup path. `../test_agent_claude.py`
+keeps explicit overrides ahead of that order and checks invalid saved model entries are skipped.
 
 CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including

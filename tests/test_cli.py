@@ -7986,7 +7986,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
-    def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch):
+    def test_skip_model_discovery_keeps_web_search_lookup_synchronous(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
         started: list[object] = []
         listings: list[str] = []
@@ -7994,7 +7994,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
-            lambda w, t: listings.append(w) or ({}, [], [], [], None),
+            lambda w, t: listings.append(w) or ({}, ["system.ai.gpt-5"], [], [], None),
         )
         monkeypatch.setattr(
             cli_mod, "discover_codex_models", lambda w, t: (["system.ai.gpt-5"], None)
@@ -8005,7 +8005,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         )
 
         assert started == []
-        assert listings == []
+        assert listings == [self.WS]
         # Provider mode keeps its separate single-call web-search lookup.
         assert state["web_search_model"] == "system.ai.gpt-5"
 
@@ -8334,9 +8334,7 @@ class TestConfigureSharedStateMcpCleanup:
 
 
 class TestConfigureSharedStateSkipDiscovery:
-    """With skip_model_discovery (provider mode), the heavy family discovery is
-    skipped; only a single web-search model is fetched, and existing model lists
-    are preserved rather than clobbered."""
+    """Provider mode discovers its search model through UC first and preserves agent models."""
 
     @staticmethod
     def _stub(monkeypatch):
@@ -8353,22 +8351,43 @@ class TestConfigureSharedStateSkipDiscovery:
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
 
-    def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("uc_models", "reason", "expected"),
+        [
+            (
+                ["system.ai.gpt-6-astra", "system.ai.gpt-5-mini", "system.ai.gpt-6-luna"],
+                None,
+                "system.ai.gpt-6-luna",
+            ),
+            (["system.ai.gpt-6-astra", "system.ai.gpt-5-mini"], None, "system.ai.gpt-5-mini"),
+            (["system.ai.gpt-5"], None, "system.ai.gpt-5"),
+            ([], None, "databricks-gpt-5"),
+            ([], "model-services unavailable", "databricks-gpt-5"),
+        ],
+    )
+    def test_fetches_web_search_model_without_replacing_agent_models(
+        self, monkeypatch, uc_models, reason, expected
+    ):
         import ucode.cli as cli_mod
 
         ws = "https://prov.databricks.com"
         self._stub(monkeypatch)
-        # Pretend a prior Databricks configure left models behind.
+        # A previous provider configure saved the legacy search model.
         monkeypatch.setattr(
             cli_mod,
             "load_state",
-            lambda: {"workspace": ws, "claude_models": {"opus": "databricks-claude-opus-4-8"}},
+            lambda: {
+                "workspace": ws,
+                "claude_models": {"opus": "databricks-claude-opus-4-8"},
+                "web_search_model": "databricks-gpt-5",
+            },
         )
-
-        def _boom(*a, **k):
-            raise AssertionError("discover_model_services must not run in provider mode")
-
-        monkeypatch.setattr(cli_mod, "discover_model_services", _boom)
+        uc_calls: list = []
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: uc_calls.append((w, t)) or ({}, uc_models, [], [], reason),
+        )
         codex_calls: list = []
         monkeypatch.setattr(
             cli_mod,
@@ -8378,10 +8397,12 @@ class TestConfigureSharedStateSkipDiscovery:
 
         state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
 
-        assert codex_calls == [(ws, "token")]
-        assert state["web_search_model"] == "databricks-gpt-5"
+        assert state["web_search_model"] == expected
+        assert uc_calls == [(ws, "token")]
+        assert codex_calls == ([] if uc_models else [(ws, "token")])
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+        assert "codex_models" not in state
 
 
 class TestConfigureSharedStateCopilotCatalog:
