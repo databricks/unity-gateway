@@ -55,6 +55,7 @@ export const host = {
   agentHostModels: [] as string[],
   modelListeners: [] as (() => void)[],
   commandArgs: [] as unknown[],
+  openAttempts: 0,
   reset(): void {
     this.copilotChat = undefined;
     this.extensionListeners = [];
@@ -68,6 +69,7 @@ export const host = {
     this.agentHostModels = [];
     this.modelListeners = [];
     this.commandArgs = [];
+    this.openAttempts = 0;
   },
 };
 export const lm = {
@@ -99,6 +101,10 @@ export const commands = {
       throw new Error(`command '${id}' not found`);
     }
     const selector = (args[0] as { modelSelector?: { vendor?: string; id?: string } } | undefined)?.modelSelector;
+    if (selector && !selector.vendor) {
+      host.openAttempts += 1;
+      await Promise.resolve();
+    }
     if (selector && !selector.vendor && !host.agentHostModels.includes(selector.id ?? "")) {
       throw new Error(`No language models found matching selector: ${JSON.stringify(selector)}.`);
     }
