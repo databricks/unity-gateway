@@ -1028,8 +1028,8 @@ These checks do not establish live login or launch-time savings.
 `TestConfigureSharedStateOverlapsProbeAndListing` in `test_cli.py` checks that the
 model-service listing starts on a daemon thread before the gateway probe returns, that a
 probe failure raises its own error while the listing is still blocked, that a listing error
-propagates without saving state, that `skip_model_discovery` never starts the listing but
-keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
+propagates without saving state, that `skip_model_discovery` keeps its web-search lookup
+synchronous, and that the overlap reuses the process-local probe and listing
 caches. The skip-preflight tests also reject starting a background worker. These component
 checks control the HTTP boundary with events; they do not establish live gateway timing,
 agent launch, or launch-time savings.
@@ -1048,11 +1048,18 @@ catalogs. It also checks that an empty search-model catalog preserves registrati
 ownership for later external handoff or standalone refresh. These are component
 checks, not a live Isaac or gateway journey.
 
-`test_claude_search_discovery.py` covers fresh Claude-only setup through model
+`test_claude_search_discovery.py` covers fresh Claude-only and provider-mode setup through model
 discovery, saved state, and search registration, with both UC and legacy model
-catalogs. It also checks explicit search-model precedence and preservation of an
+catalogs. `TestConfigureSharedStateSkipDiscovery` in `test_cli.py` checks provider mode
+prefers UC model-service IDs, replaces a saved legacy search model, and falls back to
+serving endpoints when UC returns no GPT models or fails, preserving existing agent models.
+The discovery matrix verifies UC Luna, UC Mini, then the discovered default across both setup
+paths, and one legacy fallback case per setup path, without reordering the agent's catalog.
+The discovery tests also check explicit search-model precedence and preservation of an
 existing Isaac server when no GPT model is available. These component tests mock
 external discovery and the Claude CLI; they do not establish live search coverage.
+`TestResolveWebSearchModel` in `test_agent_claude.py` checks malformed saved model entries,
+including blank/non-string names, whitespace normalization, and an entirely invalid list.
 
 `test_agent_claude.py`, `test_agent_codex.py`, and `test_managed_files.py` cover headless repair of
 conflicting managed settings, compatible/absent no-ops, policy and backup preservation, denied
