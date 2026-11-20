@@ -449,6 +449,8 @@ def _models(app: _AppConnection, provider_id: str) -> list[dict[str, Any]]:
 
 def _connect(*, warn_version: bool = True, timeout: float = _REQUEST_TIMEOUT_S) -> _AppConnection:
     app = _AppConnection(copilot_home(), timeout=timeout)
+    if not warn_version:
+        return app
     try:
         version = _version(app)
     except CopilotAppNotRunning:

@@ -633,6 +633,12 @@ def test_a_rejected_token_is_an_app_error(app):
         copilot_app.unregister()
 
 
+def test_status_skips_the_healthcheck(app):
+    copilot_app.status(_app_providers())
+
+    assert app.sent("get_healthcheck") == []
+
+
 def test_status_waits_only_briefly_for_a_hung_app(app, monkeypatch):
     waits = []
     real_next = copilot_app._AppConnection._next

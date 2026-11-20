@@ -800,10 +800,15 @@ def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: s
     if desktop_setup.copilot_app_state(state).get("copilot_app_integration") is False:
         try:
             result = desktop_setup.revert_copilot_app()
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             print_warning(f"Could not remove ug's plugin from the GitHub Copilot app: {exc}")
             return
-        if result not in ("not set up", desktop_setup.COPILOT_APP_DRY_RUN):
+        if result.startswith("failed: "):
+            print_warning(
+                "Could not remove ug's plugin from the GitHub Copilot app: "
+                + result.removeprefix("failed: ")
+            )
+        elif result not in ("not set up", desktop_setup.COPILOT_APP_DRY_RUN):
             print_note(
                 "This workspace's managed configuration turns off the GitHub Copilot app, so "
                 f"ug's plugin was removed from it ({result})."

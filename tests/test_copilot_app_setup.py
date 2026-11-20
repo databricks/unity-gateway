@@ -304,6 +304,17 @@ class TestConfigureCopilotApp:
         assert app.providers == {}
         assert "turns off the GitHub Copilot app" in _out(capsys)
 
+    def test_managed_off_switch_warns_when_the_removal_fails(self, monkeypatch, capsys):
+        monkeypatch.setattr(desktop_setup, "revert_copilot_app", lambda: "failed: refused")
+
+        agents_mod.configure_copilot_app(
+            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
+        )
+
+        out = _out(capsys)
+        assert "Could not remove ug's plugin from the GitHub Copilot app: refused" in out
+        assert "was removed" not in out
+
     def test_managed_off_switch_reads_the_managed_config(self, monkeypatch):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         monkeypatch.setattr(
@@ -336,6 +347,17 @@ class TestRemove:
         assert plugin.status() == "removal_pending"
         assert _settings()["enabledPlugins"] == {plugin.PLUGIN_KEY: True}
         assert _extension_config()["remove"] is True
+
+    def test_a_closed_app_and_an_unwritable_settings_file_fail_the_revert(self, monkeypatch):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        monkeypatch.setattr(plugin, "defer_remove", lambda: False)
+
+        def refuse():
+            raise plugin.SettingsError("settings.json is a symlink")
+
+        monkeypatch.setattr(plugin, "remove", refuse)
+
+        assert desktop_setup.revert_copilot_app().startswith("failed: settings.json is a symlink")
 
     def test_a_later_run_deletes_what_the_plugin_left_behind(self):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)

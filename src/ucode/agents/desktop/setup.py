@@ -558,7 +558,10 @@ def revert_copilot_app() -> str:
         if marked:
             return COPILOT_APP_REMOVAL_PENDING
         # Without an installed plugin nothing can remove the rows later.
-        copilot_app_plugin.remove()
+        try:
+            copilot_app_plugin.remove()
+        except copilot_app_plugin.SettingsError as exc:
+            return f"failed: {exc}; remove ug's databricks-unity-gateway entries from it yourself"
         return (
             "removed ug's plugin; open the GitHub Copilot app and run `ug revert` again to remove "
             "the Databricks models from it"
