@@ -48,6 +48,8 @@ ENTRY_VERSION = 1
 MAX_AGE_SECONDS = 24 * 60 * 60
 # At most one background refresh per key per few minutes, however many launches run.
 REFRESH_THROTTLE_SECONDS = 180
+# How long a second refresher waits for the first's key lock before giving up on it.
+REFRESH_LOCK_TIMEOUT_SECONDS = 30
 
 
 def launch_cache_enabled() -> bool:
@@ -125,14 +127,33 @@ def load_entry(key: str, identity: dict | None = None) -> dict | None:
     return entry
 
 
+def _part_age_key(part: str) -> str:
+    return f"{part}_checked_at"
+
+
+def _part_fresh(entry: dict, part: str) -> bool:
+    """The part's own age: merging one part never refreshes another's, and an entry
+    written before per-part ages existed reads as stale."""
+    checked_at = entry.get(_part_age_key(part))
+    return isinstance(checked_at, (int, float)) and time.time() - checked_at <= MAX_AGE_SECONDS
+
+
 def merge_entry(key: str, identity: dict, payload: dict) -> None:
-    """Merge ``payload`` into the entry, refreshing its age; parts stay independent."""
+    """Merge ``payload`` into the entry; each part carries its own age, and a None
+    part drops that part instead of refreshing its age."""
     entry = _read_entry(key) or {}
-    entry.update(payload)
+    now = time.time()
+    for part, data in payload.items():
+        if data is None:
+            entry.pop(part, None)
+            entry.pop(_part_age_key(part), None)
+        else:
+            entry[part] = data
+            entry[_part_age_key(part)] = now
     entry["version"] = ENTRY_VERSION
     entry["key"] = key
     entry["identity"] = identity
-    entry["checked_at"] = time.time()
+    entry["checked_at"] = now
     try:
         # mkstemp-created, so the replaced file is 0600 like the rest of ~/.ucode.
         config_io.atomic_write_json(_entry_path(key), entry)
@@ -151,6 +172,8 @@ def clear_cache() -> None:
 
 
 def entry_catalog(entry: dict) -> AnthropicModelCatalog | None:
+    if not _part_fresh(entry, "catalog"):
+        return None
     catalog = entry.get("catalog")
     if not isinstance(catalog, dict):
         return None
@@ -167,6 +190,8 @@ def entry_catalog(entry: dict) -> AnthropicModelCatalog | None:
 
 
 def entry_probe(entry: dict) -> GatewayProbe | None:
+    if not _part_fresh(entry, "probe"):
+        return None
     probe = entry.get("probe")
     # Only a verified-available gateway is cached; anything else blocks as today.
     if not isinstance(probe, dict) or not probe.get("resource_available"):
@@ -180,6 +205,8 @@ def entry_probe(entry: dict) -> GatewayProbe | None:
 
 
 def entry_model_services(entry: dict) -> list[ModelServiceEntry] | None:
+    if not _part_fresh(entry, "model_services"):
+        return None
     entries = entry.get("model_services")
     if not isinstance(entries, list) or not entries:
         return None
@@ -285,18 +312,50 @@ def _refresh_token(workspace: str, identity: dict) -> str:
     return fetch_databricks_token_untimed(workspace, identity.get("profile"), allow_reauth=False)
 
 
+def _invalidate(key: str, seen: dict | None) -> None:
+    """Drop the entry, unless another refresher superseded it while this one fetched."""
+    current = _read_entry(key)
+    if current is None:
+        return
+    if seen is None or current.get("checked_at") != seen.get("checked_at"):
+        return
+    _entry_path(key).unlink(missing_ok=True)
+
+
 def _refresh(identity: dict) -> int:
-    from ucode.databricks import clear_model_services_cache
+    from ucode.os_compatibility.file_lock_cross_os import (
+        acquire_exclusive_file_lock,
+        release_file_lock,
+    )
 
     # A credentials rewrite between the spawn and now must not mint a cache entry
     # for the old identity's fetches.
     if config_fingerprint() != identity.get("config_fingerprint"):
         return 1
-    workspace = identity.get("workspace") or ""
     key = cache_key(identity)
-    entry = _read_entry(key)
-    if entry is not None:
-        checked_at = entry.get("checked_at")
+    # One refresher per key at a time: a second launch's refresher waits here, then
+    # sees the first one's fresh entry, and a failure cannot drop an entry another
+    # refresher wrote in between. The lock file stays in place, like the other
+    # helpers', so waiters always lock the same inode.
+    with (_cache_dir() / f"{key}.lock").open("a+b") as lock_file:
+        try:
+            acquire_exclusive_file_lock(lock_file, timeout=REFRESH_LOCK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # Another refresher holds the key; its write serves the next launch.
+            return 0
+        try:
+            return _refresh_locked(key, identity)
+        finally:
+            release_file_lock(lock_file)
+
+
+def _refresh_locked(key: str, identity: dict) -> int:
+    from ucode.databricks import clear_model_services_cache
+
+    workspace = identity.get("workspace") or ""
+    seen = _read_entry(key)
+    if seen is not None:
+        checked_at = seen.get("checked_at")
         if isinstance(checked_at, (int, float)) and (
             time.time() - checked_at < REFRESH_THROTTLE_SECONDS
         ):
@@ -308,20 +367,22 @@ def _refresh(identity: dict) -> int:
         services, reason = list_model_service_entries(workspace, token)
         if not probe.resource_available or not services or reason is not None:
             # Never leave a failed or empty lookups result behind to serve later.
-            _entry_path(key).unlink(missing_ok=True)
+            _invalidate(key, seen)
             return 1
         catalog = list_anthropic_model_catalog(workspace, token)
+        # Only a non-empty catalog is cached, like the launch path: an empty one
+        # would suppress the picker for the entry's whole age with no fallback. A
+        # failed catalog drops the cached one instead of refreshing its age.
         payload = {
             "probe": probe_payload(probe),
             "model_services": services_payload(services),
+            "catalog": None
+            if catalog.error_msg or not catalog.model_ids
+            else catalog_payload(catalog),
         }
-        # Only a non-empty catalog is cached, like the launch path: an empty one
-        # would suppress the picker for the entry's whole age with no fallback.
-        if not catalog.error_msg and catalog.model_ids:
-            payload["catalog"] = catalog_payload(catalog)
         merge_entry(key, identity, payload)
     except Exception:
-        _entry_path(key).unlink(missing_ok=True)
+        _invalidate(key, seen)
         return 1
     return 0
 

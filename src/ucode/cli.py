@@ -4525,6 +4525,15 @@ def _launch_tool(
             use_launch_cache=tool == "claude" and launch_cache_enabled(),
             **configure_kwargs,
         )
+        if launch_cache_entry_identity is not None:
+            # configure may switch the profile or workspace (a re-login rewrites the
+            # credentials file): the cached catalog belongs to the pre-configure identity,
+            # so re-check it here like the speculation does, and record fresh results
+            # under the identity configure settled on.
+            configured_identity = entry_identity(state)
+            if configured_identity != launch_cache_entry_identity:
+                cached_picker_catalog = None
+            launch_cache_entry_identity = configured_identity
         # An admin-published managed config wins over the developer's own settings. Layered on after
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
