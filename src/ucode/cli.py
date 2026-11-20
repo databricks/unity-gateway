@@ -4435,11 +4435,8 @@ def _launch_tool(
                 # have repaired it; refetch with the live token.
                 metrics.failure("models_list", error, continued_with_fallback=True)
                 return None
-            if error:
-                # Any other failure (a plain 403, a transient error) would fail a live-token
-                # fetch the same way, so use the speculative result instead of doubling the
-                # request.
-                return speculative
+            # Any other error (a plain 403, a transient error) would fail a live-token fetch the
+            # same way, so use the speculative result instead of doubling the request.
             return speculative
 
         state = configure_shared_state(
