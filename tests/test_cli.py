@@ -1119,7 +1119,7 @@ class TestSubcommandRouting:
         self, monkeypatch, tool, launch_args, launch_env, expected_version, routed_tools
     ):
         monkeypatch.setattr(
-            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
         )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
@@ -1183,8 +1183,10 @@ class TestSubcommandRouting:
             assert result.exit_code == 0, result.output
             assert observed == [enabled, False]
 
-    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
-    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
+    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.170.0", "0.171.0-alpha.12"])
+    @pytest.mark.parametrize(
+        "recovery", ["decline", "upgrade", "disable", "managed-default", "managed-upgrade"]
+    )
     def test_codex_routing_version_requires_upgrade_or_explicit_disable(
         self, tmp_path, monkeypatch, installed_version, recovery
     ):
@@ -1206,7 +1208,7 @@ class TestSubcommandRouting:
                 return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
             assert argv == ["codex", "update"]
             updates.append(argv)
-            version = "0.164.0"
+            version = "0.171.0"
             return subprocess.CompletedProcess(argv, 0)
 
         def launch_native(*_args, **_kwargs):
@@ -1220,7 +1222,7 @@ class TestSubcommandRouting:
         launch = cli_mod.launch_agent
         # An explicit version keeps Codex routed (managed config is then ignored). The
         # managed-default case leaves the selector unset: the shared preset applies.
-        if recovery == "managed-default":
+        if recovery.startswith("managed"):
             monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
@@ -1229,18 +1231,23 @@ class TestSubcommandRouting:
         with (
             _launch_policy_patches(managed) as calls,
             patch(
-                "ucode.agents.prompt_yes_no_default", return_value=recovery == "upgrade"
+                "ucode.agents.prompt_yes_no_default",
+                return_value=recovery in {"upgrade", "managed-upgrade"},
             ) as prompt,
         ):
             calls["launch"].side_effect = launch
             args = ["codex", "--disable-smart-routing"] if recovery == "disable" else ["codex"]
             result = runner.invoke(app, args)
 
-        assert result.exit_code == (1 if recovery == "decline" else 0), result.output
-        assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery in {"disable", "managed-default"})
-        assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
+        assert result.exit_code == (1 if recovery in {"decline", "managed-default"} else 0), (
+            result.output
+        )
+        assert routed == (["0.171.0"] if recovery in {"upgrade", "managed-upgrade"} else [])
+        assert bool(plain) == (recovery == "disable")
+        assert updates == (
+            [["codex", "update"]] if recovery in {"upgrade", "managed-upgrade"} else []
+        )
+        assert prompt.call_count == (0 if recovery == "disable" else 1)
         if recovery in {"decline", "managed-default"}:
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
@@ -1301,7 +1308,7 @@ class TestSubcommandRouting:
         self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
     ):
         monkeypatch.setattr(
-            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
         )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
