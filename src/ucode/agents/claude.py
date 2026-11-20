@@ -198,19 +198,25 @@ def minimum_version_error() -> str | None:
     )
 
 
+def select_web_search_model(models: list[str]) -> str | None:
+    """Keep web search on its preferred models as new coding models become available."""
+    for name in ("gpt-6-luna", "gpt-5-mini"):
+        for model in (f"system.ai.{name}", f"databricks-{name}"):
+            if model in models:
+                return model
+    return models[0] if models else None
+
+
 def _resolve_web_search_model(state: dict) -> str | None:
-    """Pick the model the web_search MCP server should call. Prefers an
-    explicit override in state, otherwise the first endpoint discovered as
-    Responses-API-capable. Returns None if no GPT endpoint is available —
-    callers should skip the MCP wiring in that case."""
+    """Use an explicit search override before selecting from discovered models."""
     override = state.get("web_search_model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     codex_models = state.get("codex_models") or []
     if isinstance(codex_models, list) and codex_models:
-        first = codex_models[0]
-        if isinstance(first, str) and first.strip():
-            return first.strip()
+        selected = select_web_search_model(codex_models)
+        if isinstance(selected, str) and selected.strip():
+            return selected.strip()
     return None
 
 

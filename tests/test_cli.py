@@ -8354,6 +8354,12 @@ class TestConfigureSharedStateSkipDiscovery:
     @pytest.mark.parametrize(
         ("uc_models", "reason", "expected"),
         [
+            (
+                ["system.ai.gpt-6-astra", "system.ai.gpt-5-mini", "system.ai.gpt-6-luna"],
+                None,
+                "system.ai.gpt-6-luna",
+            ),
+            (["system.ai.gpt-6-astra", "system.ai.gpt-5-mini"], None, "system.ai.gpt-5-mini"),
             (["system.ai.gpt-5"], None, "system.ai.gpt-5"),
             ([], None, "databricks-gpt-5"),
             ([], "model-services unavailable", "databricks-gpt-5"),

@@ -832,8 +832,7 @@ def configure_shared_state(
                 _, ws_models, _, _, _ = discover_model_services(workspace, token)
                 if not ws_models:
                     ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+            web_search_model = claude_agent.select_web_search_model(ws_models)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes

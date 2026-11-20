@@ -1053,7 +1053,9 @@ discovery, saved state, and search registration, with both UC and legacy model
 catalogs. `TestConfigureSharedStateSkipDiscovery` in `test_cli.py` checks provider mode
 prefers UC model-service IDs, replaces a saved legacy search model, and falls back to
 serving endpoints when UC returns no GPT models or fails, preserving existing agent models.
-The discovery tests also check explicit search-model precedence and preservation of an
+The discovery matrix verifies Luna, Mini, then the discovered default across both setup
+paths and both catalog types, without reordering the agent's catalog. The discovery tests
+also check explicit search-model precedence and preservation of an
 existing Isaac server when no GPT model is available. These component tests mock
 external discovery and the Claude CLI; they do not establish live search coverage.
 

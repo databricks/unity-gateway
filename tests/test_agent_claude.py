@@ -1104,7 +1104,10 @@ class TestResolveWebSearchModel:
         assert claude._resolve_web_search_model({"codex_models": []}) is None
 
     def test_override_wins_over_codex_models(self):
-        state = {"web_search_model": "winner", "codex_models": ["loser"]}
+        state = {
+            "web_search_model": "winner",
+            "codex_models": ["system.ai.gpt-6-luna", "system.ai.gpt-5-mini"],
+        }
         assert claude._resolve_web_search_model(state) == "winner"
 
 

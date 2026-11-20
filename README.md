@@ -439,7 +439,10 @@ your agent.
 
 Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
-requires an available Responses-capable model.
+requires an available Responses-capable model. Automatic selection prefers
+GPT-6 Luna, then GPT-5 Mini, then the first discovered model. This applies to
+both regular and provider-mode setup, using the model ID from the workspace's
+catalog. Explicit search-model overrides keep precedence.
 
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
