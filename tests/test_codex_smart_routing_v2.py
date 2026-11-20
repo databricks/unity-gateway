@@ -647,15 +647,17 @@ class TestLaunchCodex:
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
     @pytest.mark.parametrize(
-        ("source_model", "catalog_source", "launch_source", "failure"),
+        ("source_model", "catalog_source", "launch_source", "failure", "rendered_overlay"),
         [
-            (None, None, None, None),
-            ("mps-primary", None, None, None),
-            (None, "managed", None, None),
-            (None, "user", None, None),
-            (None, "managed", "explicit", None),
-            (None, None, None, "builder"),
-            (None, "managed", "explicit", "write"),
+            (None, None, None, None, False),
+            ("mps-primary", None, None, None, False),
+            (None, "managed", None, None, False),
+            (None, "user", None, None, False),
+            (None, "managed", "explicit", None, False),
+            (None, None, None, "builder", False),
+            (None, "managed", "explicit", "write", False),
+            (None, "user", None, "write", False),
+            (None, "user", None, "write", True),
         ],
         ids=[
             "default-model",
@@ -665,10 +667,19 @@ class TestLaunchCodex:
             "launch-catalog-wins",
             "builder-failure-keeps-launch",
             "write-failure-keeps-catalog",
+            "write-failure-keeps-configured-catalog",
+            "write-failure-keeps-rendered-catalog",
         ],
     )
     def test_app_server_launch_keeps_the_source_launch_model(
-        self, tmp_path, monkeypatch, source_model, catalog_source, launch_source, failure
+        self,
+        tmp_path,
+        monkeypatch,
+        source_model,
+        catalog_source,
+        launch_source,
+        failure,
+        rendered_overlay,
     ):
         launches = []
         token_calls = []
@@ -727,8 +738,12 @@ class TestLaunchCodex:
                 ["app-server"],
                 binary="codex",
                 start_model="gpt-start",
-                render_overlay=lambda *_args, **_kw: pytest.fail("rendered the default overlay"),
-                launch_config=launch_config,
+                render_overlay=lambda *_args, **_kw: (
+                    dict(launch_config)
+                    if rendered_overlay
+                    else pytest.fail("rendered the default overlay")
+                ),
+                launch_config=None if rendered_overlay else launch_config,
                 available_models=["mps-primary"],
             )
 
@@ -745,10 +760,11 @@ class TestLaunchCodex:
             assert token_calls == [True]
             assert builder_calls == [(WS, "token")]
         elif failure == "write":
-            assert config["model_catalog_json"] == str(catalogs["explicit"])
+            expected_source = launch_source or catalog_source
+            assert config["model_catalog_json"] == str(catalogs[expected_source])
             assert not output.exists()
-            assert json.loads(catalogs["explicit"].read_text(encoding="utf-8")) == {
-                "models": [{"slug": "explicit-model", "source": "explicit"}]
+            assert json.loads(catalogs[expected_source].read_text(encoding="utf-8")) == {
+                "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
             }
         elif catalog_source or launch_source:
             expected_source = launch_source or catalog_source

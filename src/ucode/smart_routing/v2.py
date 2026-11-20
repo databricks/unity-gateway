@@ -1192,9 +1192,12 @@ def launch_codex(
     )
     session_env_path = _prepare_smart_router_session("codex")
     try:
+        catalog_path = overlay.get("model_catalog_json") or custom_catalog_path()
+        if catalog_path is not None:
+            overlay["model_catalog_json"] = str(catalog_path)
         overlay["model_catalog_json"] = _codex_routing_catalog(
             binary,
-            overlay.get("model_catalog_json") or custom_catalog_path(),
+            catalog_path,
             list(dict.fromkeys([*available_models, start_model])),
             session_env_path.with_suffix(".models.json"),
             workspace=workspace,
