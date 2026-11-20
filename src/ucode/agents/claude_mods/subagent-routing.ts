@@ -81,8 +81,8 @@ const taskLabel = (record: RoutingRecord): string => {
 // The heading the parent's call is given before launch: the predicted model, checked at spawn.
 const heading = (record: RoutingRecord): string =>
   `${record.name} · ${shortModel(record.model)} · ${record.title}`
-// A neutral task title from the call's own prompt, never from the description a model may have
-// written around the model it was asked to use.
+// A neutral task title: the prompt's first sentence, so a description a model wrote around the
+// model it was asked to use is only a fallback when the prompt is empty.
 const taskTitle = (input: Record<string, any>): string =>
   safeText(input.prompt, 400)?.split(/(?<=[.!?])\s/)[0].replace(/[.!?]+$/, '').slice(0, 60).trim()
   || safeText(input.description, 60) || 'Subagent task'

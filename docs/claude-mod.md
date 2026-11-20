@@ -48,7 +48,9 @@ completed-task notices read the receipt: they show the launched model and, when 
 from the heading, a `⚠ heading said <model>` flag. A host that reports no launch model is
 logged and its labels are not saved. Session-scoped display files keep the receipts across
 resume; the resumed transcript already carries the rewritten description.
-An Auto-picker launch keeps the model's own headings: its session model is a picker alias that cannot act as
+Rewriting a reply voids a server-side auto-mode verdict for it, so Claude's own fallback reviewer
+classifies the rewritten call instead; `CLAUDE_CODE_AUTO_MODE_SERVER=1` keeps the original reply and its
+verdict. An Auto-picker launch keeps the model's own headings: its session model is a picker alias that cannot act as
 the fallback reviewer once the server-side auto-mode verdict is void.
 Native task descriptions, full prompts, agent addresses and permissions are unchanged.
 In subagent-only mode, the native tool description explains that a requested model
