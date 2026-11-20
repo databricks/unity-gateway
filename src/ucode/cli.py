@@ -27,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth, managed_files, metrics
+from ucode import custom_oauth, managed_files, metrics, tls
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -39,6 +39,7 @@ from ucode.agents import (
     configure_single_tool,
     configure_tool,
     ensure_bootstrap_dependencies,
+    ensure_minimum_version,
     ensure_provider_state,
     explicit_model_arg_value,
     install_databricks_ai_tools_for_agents,
@@ -66,14 +67,13 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.codex_config import is_codex_app_server_launch, is_codex_interactive_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ISAAC_LAUNCH_MODE_ENV_VAR,
-    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -103,7 +103,6 @@ from ucode.databricks import (
     is_model_provider_feature_unavailable,
     list_anthropic_model_catalog,
     list_profile_entries,
-    list_tool_provider_services,
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
@@ -112,6 +111,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    tool_provider_service_choices,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -273,6 +273,7 @@ from ucode.workspace import (
     selector_headers,
     split_workspace_key,
     state_workspace_key,
+    workspace_id_args,
     workspace_key,
 )
 
@@ -824,15 +825,14 @@ def configure_shared_state(
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
     if skip_model_discovery:
-        # Provider mode: the agent routes through a Model Provider Service and
-        # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
+        # The agent uses its provider, but web search needs a hosted model. Prefer UC IDs
+        # so gateway-only models do not inherit legacy serving-endpoint names.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+                _, ws_models, _, _, _ = discover_model_services(workspace, token)
+                if not ws_models:
+                    ws_models, _ = discover_codex_models(workspace, token)
+            web_search_model = claude_agent.select_web_search_model(ws_models)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -980,10 +980,12 @@ def _check_copilot_model_source(
 ) -> None:
     """Resolve the Copilot source the way `ug copilot` will, before anything is written or saved.
 
-    A bad source fails here instead of leaving Copilot configured and the source unsaved.
+    A bad source fails here instead of leaving Copilot configured and the source unsaved. A seat
+    relay registers no models, so only its service is checked.
     """
     if provider is not None:
-        copilot_agent.provider_service_catalog(state, provider, None)
+        if not copilot_agent.uses_seat_relay(state, provider):
+            copilot_agent.provider_service_catalog(state, provider, None)
     elif model_location is not None:
         copilot_agent.location_catalog(state, model_location)
 
@@ -1327,7 +1329,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     # silently dropping back to Databricks.
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
-        names, reason = list_tool_provider_services(tool, state["workspace"], token)
+        choices, reason = tool_provider_service_choices(tool, state["workspace"], token)
     offers_location = tool in MODEL_LOCATION_TOOLS
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
@@ -1336,15 +1338,15 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
             print_warning(f"Could not list model provider services: {reason}")
             if not offers_location:
                 print_note("Falling back to Databricks models.")
-        names = []
-    elif not names and not offers_location:
+        choices = []
+    elif not choices and not offers_location:
         # Feature is on but no service matches this tool's provider type.
         print_note(f"Using Databricks models for {display}.")
-    if not names and not offers_location:
+    if not choices and not offers_location:
         return _use_databricks()
 
     options = [("databricks", "Databricks Hosted")]
-    if names:
+    if choices:
         options.append(("mps", "External Models"))
     if offers_location:
         options.append(("location", "Custom Model Location"))
@@ -1362,9 +1364,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
         print_success(f"{display} will discover models in {location}")
         return state
 
-    selected = prompt_for_selection(
-        "Select a model provider service:", [(name, name) for name in names]
-    )
+    selected = prompt_for_selection("Select a model provider service:", choices)
     if selected is None:
         raise KeyboardInterrupt
     state = set_model_location(state, tool, None)
@@ -3044,6 +3044,66 @@ def mcp_proxy_cmd(
     run_proxy(url, host, profile, use_pat, workspace_id)
 
 
+@app.command(
+    "copilot-seat-runtime",
+    hidden=True,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def copilot_seat_runtime_cmd(
+    ctx: typer.Context,
+    runtime: Annotated[str, typer.Option("--runtime", help="VS Code's bundled Copilot runtime.")],
+    provider: Annotated[
+        str, typer.Option("--provider", help="The GitHub Copilot seat relay service.")
+    ],
+    host: Annotated[str, typer.Option("--host", help="The workspace configure set up.")],
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="The Databricks CLI profile configure used.")
+    ] = None,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+) -> None:
+    """Run VS Code's Copilot runtime with its Copilot API calls through the seat relay, only while
+    ug is still configured for the workspace and profile VS Code was set up with."""
+    import sys
+    from contextlib import redirect_stdout
+
+    # The runtime talks to VS Code over this process's stdio.
+    with redirect_stdout(sys.stderr):
+        state = load_state()
+        workspace = state.get("workspace")
+        if not workspace:
+            print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
+            raise typer.Exit(1)
+        # Another workspace's state would send this one's prompts and GitHub token through it.
+        current_profile = state.get("profile")
+        if workspace.rstrip("/") != host.rstrip("/") or current_profile != profile:
+
+            def label(url: str, name: str | None) -> str:
+                return f"{url} (profile `{name}`)" if name else url
+
+            print(
+                f"VS Code's Copilot was set up for {label(host, profile)}, but ug is now "
+                f"configured for {label(workspace, current_profile)}. Run `ug configure --agents "
+                "copilot`, then restart VS Code.",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+        saved_workspace_id = next(iter(workspace_id_args(workspace)[1:]), None)
+        if workspace_id and saved_workspace_id not in (None, workspace_id):
+            print(
+                f"ug's saved configuration for {workspace} doesn't match the workspace ID VS Code's "
+                "Copilot was set up with. Run `ug configure --agents copilot`, then restart VS Code.",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+        if workspace_id:
+            pin(workspace, workspace_id)
+        if managed := load_managed_state(state_workspace_key(state)):
+            state = resolve_state(managed, state, "copilot")
+        apply_pat_environment(state)
+        returncode = copilot_agent.run_seat_runtime(state, provider, runtime, list(ctx.args))
+    raise typer.Exit(returncode)
+
+
 @app.command("cowork-hook", hidden=True)
 def cowork_hook_cmd(
     host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
@@ -3372,6 +3432,7 @@ def codex_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
@@ -3443,6 +3504,7 @@ def codex_router_hook_cmd(
                 token=token,
                 available_models=model or [],
                 audit_decision=True,
+                **({"provider": provider} if provider else {}),
             )
     output = stamp_spawn(payload, enabled=enabled, output=output)
     if output is not None:
@@ -3463,31 +3525,51 @@ def smart_router_describe_cmd() -> None:
 def smart_router_logs_cmd(
     session: Annotated[str, typer.Option("--session")],
     decision: Annotated[str | None, typer.Option("--decision")] = None,
+    harness: Annotated[str, typer.Option("--harness")] = AGENT_CLAUDE,
+    output_format: Annotated[str, typer.Option("--format")] = "json",
 ) -> None:
-    """Print a session's recorded smart-routing decisions as JSON on stdout."""
+    """Print a session's recorded smart-routing decisions as JSON, or a table with --format table."""
     from ucode.smart_routing import session_log
 
-    def emit(payload: dict[str, object]) -> None:
-        sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
+    as_table = output_format == "table"
 
+    def fail(message: str) -> typer.Exit:
+        if as_table:
+            sys.stdout.write(f"error: {message}\n")
+        else:
+            sys.stdout.write(json.dumps({"v": 1, "error": message}) + "\n")
+        return typer.Exit(1)
+
+    if harness not in (AGENT_CLAUDE, AGENT_CODEX):
+        raise fail(f"unknown harness {harness!r}; expected {AGENT_CLAUDE} or {AGENT_CODEX}")
+    if output_format not in ("json", "table"):
+        raise fail(f"unknown format {output_format!r}; expected json or table")
     try:
-        records = session_log.read_decisions("claude", session)
+        records = session_log.read_decisions(harness, session)
     except OSError as exc:
-        emit(
-            {
-                "error": f"cannot read session log at "
-                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
-            }
-        )
-        raise typer.Exit(1) from exc
+        raise fail(
+            f"cannot read session log at "
+            f"{session_log.session_log_path(harness, session)}: {exc.strerror or exc}"
+        ) from exc
+    if as_table and decision is not None:
+        try:
+            output = session_log.render_detail(session_log.find_decision(records, decision))
+        except (LookupError, ValueError) as exc:
+            raise fail(str(exc)) from exc
+        sys.stdout.write(output + "\n")
+        return
+    if as_table:
+        sys.stdout.write(session_log.render_table(records) + "\n")
+        return
     if decision is None:
-        emit({"decisions": [session_log.overview(record) for record in records]})
+        sys.stdout.write(
+            json.dumps({"v": 1, "decisions": [session_log.overview(r) for r in records]}) + "\n"
+        )
         return
     record = next((r for r in records if r.get("decision_id") == decision), None)
     if record is None:
-        emit({"error": "decision not found"})
-        raise typer.Exit(1)
-    emit({"decision": record})
+        raise fail("decision not found")
+    sys.stdout.write(json.dumps({"v": 1, "decision": record}) + "\n")
 
 
 @app.command("claude-router-hook", hidden=True)
@@ -3651,6 +3733,11 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
             smart_routing_v2.restore_smart_routing_env(previous)
 
 
+# Omnigent matches these replies exactly; update Omnigent if either changes.
+_SMART_ROUTER_STATE_REPLY = "Smart Router is {state} for this session"
+_SMART_ROUTER_UNCHANGED_REPLY = "Smart Router is already {state} for this session"
+
+
 def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
     if enabled is None:
         return False
@@ -3658,25 +3745,24 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         controls = session_env_path()
     except RuntimeError:
         return False
+    from ucode.smart_routing.feedback import smart_router_feedback_required
     from ucode.smart_routing.session_env import session_routing_enabled
 
+    state = "on" if enabled else "off"
     try:
         unchanged = session_routing_enabled(controls) == enabled
     except (OSError, UnicodeError, ValueError):
         unchanged = False
     if unchanged:
-        print_success(f"Smart Router is already {'on' if enabled else 'off'} for this session")
+        print_success(_SMART_ROUTER_UNCHANGED_REPLY.format(state=state))
         return True
-    if (
-        not enabled
-        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni"
-        and len((reason or "").strip()) < 16
-    ):
+    feedback_required = not enabled and smart_router_feedback_required()
+    if feedback_required and len((reason or "").strip()) < 16:
         print_err(
             "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why, then pass their reason with "
-            "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
+            "surrounding whitespace. Use the Smart Router skill to collect and submit feedback, "
+            "or pass a reason with --smart-router-feedback to toggle routing directly. "
+            "The direct CLI command does not submit feedback."
         )
         raise typer.Exit(2)
     try:
@@ -3685,7 +3771,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
-    print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
+    print_success(_SMART_ROUTER_STATE_REPLY.format(state=state))
     return True
 
 
@@ -3950,15 +4036,17 @@ def _should_launch_smart_routing(
 
 
 def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt: bool) -> bool:
-    """Whether the forwarded arguments represent an interactive launch."""
+    """Whether the forwarded arguments represent an interactive launch or Codex's app-server."""
     if not tool_args or explicit_prompt:
         return True
+    if tool == AGENT_CODEX:
+        return is_codex_interactive_launch(tool_args) or is_codex_app_server_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
     """Whether smart routing supports this agent and provider combination."""
-    return not provider or tool == "claude"
+    return not provider or tool in {AGENT_CLAUDE, AGENT_CODEX}
 
 
 def _routes_launch(
@@ -3976,7 +4064,6 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services are supported for Claude only.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
@@ -4358,6 +4445,29 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CODEX and managed_smart_routing_applies:
+            if relayed:
+                routing_unavailable = (
+                    "Smart routing is unavailable with a ChatGPT subscription relay."
+                )
+            else:
+                try:
+                    routing_unavailable = codex_agent.minimum_version_error(
+                        smart_routing_enabled=True
+                    )
+                    if routing_unavailable:
+                        ensure_minimum_version(
+                            "codex",
+                            lambda: codex_agent.minimum_version_error(smart_routing_enabled=True),
+                        )
+                        routing_unavailable = None
+                except RuntimeError as exc:
+                    routing_unavailable = str(exc)
+            if routing_unavailable:
+                print_warning(f"{routing_unavailable} Running without smart routing.")
+                smart_routing_enabled = False
+                managed_smart_routing_applies = False
+                previous = {**smart_routing_v2.disable_smart_routing(), **previous}
         if tool == AGENT_CLAUDE and not provider and not parent_schema:
             # A static model list (no provider) can still name a model service that routes to a
             # subscription relay; that launch must swap credentials like a relayed provider.
@@ -4558,7 +4668,7 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
-            if managed is None and (explicit_provider or parent_schema) and not model:
+            if managed is None and (provider or parent_schema) and not model:
                 # The permanent Default row should also resolve within the selected catalog.
                 state["_claude_launch_default_model"] = (
                     claude_agent.default_model(
@@ -4696,7 +4806,11 @@ def _has_explicit_prompt(ctx: typer.Context) -> bool:
     if not isinstance(suffix, tuple):
         return False
     suffix_args = list(suffix)
-    return ctx.args == suffix_args and len(suffix_args) <= 1
+    return (
+        ctx.args == suffix_args
+        and len(suffix_args) <= 1
+        and (not suffix_args or not suffix_args[0].startswith("-"))
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -4888,24 +5002,20 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    # Hidden while Codex is unrouted by default; the Smart Router skill still toggles with them.
     enable_smart_routing: Annotated[
         bool,
-        typer.Option("--enable-smart-routing", hidden=True),
+        typer.Option("--enable-smart-routing", help="Enable smart routing for this session."),
     ] = False,
     disable_smart_routing: Annotated[
         bool,
-        typer.Option("--disable-smart-routing", hidden=True),
+        typer.Option("--disable-smart-routing", help="Disable smart routing for this session."),
     ] = False,
     smart_router_feedback: Annotated[
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
 ) -> None:
-    """Launch Codex via Databricks.
-
-    Smart Routing is currently only supported for the Claude Code harness.
-    """
+    """Launch Codex via Databricks."""
     # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
@@ -5363,6 +5473,16 @@ def configure(
             "choice (off by default).",
         ),
     ] = None,
+    tls_trust_store: Annotated[
+        str | None,
+        typer.Option(
+            "--tls-trust-store",
+            help="Certificates ug's own HTTPS requests trust: 'os' (the operating system's "
+            "trust store, the default, which includes a TLS-inspection proxy's root) or "
+            "'python' (Python's certificate chain). Saved for later `ug` commands; "
+            "UG_TLS_TRUST_STORE overrides it. Omit to keep the saved choice.",
+        ),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option(
@@ -5463,6 +5583,8 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    if tls_trust_store is not None:
+        _configure_tls_trust_store(tls_trust_store)
     if from_file is not None and not (global_scope and dry_run):
         print_err("--from-file previews a draft, so it requires --global --dry-run.")
         raise typer.Exit(2)
@@ -6122,6 +6244,7 @@ def upgrade_cmd() -> None:
     try:
         result = subprocess_cross_os.run(
             ["uv", "tool", "install", "--reinstall", upgrade_requirement],
+            env=tls.uv_environment(),
             check=False,
             capture_output=True,
             text=True,
@@ -6138,6 +6261,7 @@ def upgrade_cmd() -> None:
                 legacy_removed = True
                 subprocess_cross_os.run(
                     ["uv", "tool", "install", "--force", git_url],
+                    env=tls.uv_environment(),
                     check=True,
                 )
                 migrated = True
@@ -6236,7 +6360,26 @@ def _verify_upgraded_commands() -> None:
             )
 
 
+def _configure_tls_trust_store(requested: str) -> None:
+    """Save ``--tls-trust-store`` and switch this run to it before its first request."""
+    trust_store = requested.strip().lower()
+    if trust_store not in tls.TRUST_STORES:
+        print_err(f"--tls-trust-store must be one of: {', '.join(tls.TRUST_STORES)}.")
+        raise typer.Exit(2)
+    tls.save_trust_store(trust_store)
+    override = os.environ.get(tls.TRUST_STORE_ENV_VAR, "").strip().lower()
+    if override in tls.TRUST_STORES and override != trust_store:
+        print_warning(
+            f"{tls.TRUST_STORE_ENV_VAR}={override} overrides the saved TLS trust store "
+            f"'{trust_store}' while it is set."
+        )
+        return
+    tls.apply(trust_store)
+
+
 def main() -> None:
+    # `python -m ucode.cli` wrappers (Desktop MDM, the smart-router skill) skip the entry point.
+    tls.apply()
     app()
 
 

@@ -60,11 +60,11 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
+    custom_model_services,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
     model_service_relay_lookup,
     model_services_need_subscription_relay,
-    relay_candidate_model_services,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -163,6 +163,10 @@ CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
+WEB_SEARCH_MODEL_PREFERENCES = (
+    "system.ai.gpt-6-luna",
+    "system.ai.gpt-5-mini",
+)
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
@@ -198,19 +202,23 @@ def minimum_version_error() -> str | None:
     )
 
 
+def select_web_search_model(models: list[str]) -> str | None:
+    """Keep web search on its preferred models as new coding models become available."""
+    models = [model.strip() for model in models if isinstance(model, str) and model.strip()]
+    return next(
+        (model for model in WEB_SEARCH_MODEL_PREFERENCES if model in models),
+        next(iter(models), None),
+    )
+
+
 def _resolve_web_search_model(state: dict) -> str | None:
-    """Pick the model the web_search MCP server should call. Prefers an
-    explicit override in state, otherwise the first endpoint discovered as
-    Responses-API-capable. Returns None if no GPT endpoint is available —
-    callers should skip the MCP wiring in that case."""
+    """Use an explicit search override before selecting from discovered models."""
     override = state.get("web_search_model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     codex_models = state.get("codex_models") or []
-    if isinstance(codex_models, list) and codex_models:
-        first = codex_models[0]
-        if isinstance(first, str) and first.strip():
-            return first.strip()
+    if isinstance(codex_models, list):
+        return select_web_search_model(codex_models)
     return None
 
 
@@ -280,6 +288,11 @@ CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 # settings `env` value beats the shell's, so ug blanks them for the Claude process only.
 CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
+# Provider switches Claude Code also honors from the shell or user settings; a stale one left over
+# from using the provider directly routes around the gateway. ug blanks them like the credentials.
+CLAUDE_BLANKED_PROVIDER_ENV_KEYS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+CLAUDE_BLANKED_ENV_KEYS = CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS + CLAUDE_BLANKED_PROVIDER_ENV_KEYS
+CLAUDE_BLANKED_ENV_PATHS = [["env", key] for key in CLAUDE_BLANKED_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
@@ -370,6 +383,12 @@ def _parse_managed_settings(text: str) -> dict:
     return settings
 
 
+def read_native_settings(path: Path) -> dict:
+    """Read a Claude settings object. A missing file contributes no settings."""
+    text = read_managed_file(path)
+    return _parse_managed_settings(text) if text is not None else {}
+
+
 def get_family_defaults(
     state: dict, *, managed_config: bool, provider: str | None, parent_schema: str | None
 ) -> dict[str, str] | None:
@@ -387,8 +406,7 @@ def get_family_defaults(
     if path is None or managed_settings_skipped():
         return None
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except RuntimeError:
         return None
     env = settings.get("env")
@@ -750,6 +768,7 @@ def render_overlay(
         "CLAUDE_CODE_USE_GATEWAY": "1",
         # Also outrank the subscription login, so relayed launches blank them too.
         **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+        **dict.fromkeys(CLAUDE_BLANKED_PROVIDER_ENV_KEYS, ""),
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -1695,7 +1714,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
     models = state.get("claude_static_models")
-    candidates = relay_candidate_model_services(models if isinstance(models, list) else [])
+    candidates = custom_model_services(models if isinstance(models, list) else [])
     if not candidates:
         state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
         return False
@@ -2251,7 +2270,7 @@ def _managed_settings_conflicts(
     owned_paths = [
         path
         for path in owned_paths
-        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_CREDENTIAL_PATHS
+        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_ENV_PATHS
     ]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
@@ -2457,8 +2476,8 @@ def header_mod_active(*, require_current: bool = False) -> bool:
     return True
 
 
-def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
-    """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
+def _settle_blank_env_keys(desired: dict, existing: dict, *, add: bool) -> None:
+    """Add ug's blank env keys to the managed file only when asked; otherwise keep it as found.
 
     Like the header mod, they are written by ``ug configure`` and never by a plain launch: another
     writer of the file drops keys it doesn't template, and re-adding them would rewrite the
@@ -2469,15 +2488,21 @@ def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> No
         return
     existing_env = existing.get("env")
     existing_env = existing_env if isinstance(existing_env, dict) else {}
-    for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+    for key in CLAUDE_BLANKED_ENV_KEYS:
         held = existing_env.get(key)
         if add and isinstance(held, str) and held.strip():
             # Someone else's explicit value (e.g. IT's): never replace it silently.
             env[key] = held
+            if key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+                detail = (
+                    "so Claude may use it instead of the gateway credential and fail with a 401"
+                )
+            else:
+                detail = "so Claude may route around the gateway and fail with a 400"
             print_warning(
                 f"Claude Code managed settings at {_managed_settings_path()} set env.{key}; "
-                f"ug left it as is, so Claude may use it instead of the gateway credential and "
-                f"fail with a 401. Ask your administrator to remove it, or blank it yourself."
+                f"ug left it as is, {detail}. Ask your administrator to remove it, or blank it "
+                f"yourself."
             )
         elif add:
             env[key] = ""
@@ -2642,7 +2667,7 @@ def _reconcile_managed_settings(
                 ],
             ]
     # Only the explicit `ug configure` path adds the blanks.
-    _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
+    _settle_blank_env_keys(desired_settings, managed_before, add=_explicit_configure)
     if _explicit_configure:
         desired_settings.setdefault(
             CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0], CLAUDE_PARENT_SETTINGS_BEHAVIOR
@@ -2844,8 +2869,7 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     Reads BOM-tolerantly like Claude Code, so a BOM-prefixed policy file is not mistaken for empty.
     """
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except (RuntimeError, OSError, ValueError):
         return True
     permissions = settings.get("permissions")
@@ -2853,18 +2877,12 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     return isinstance(deny, list) and "WebSearch" in deny
 
 
-def _use_server_side_web_search(state: dict) -> bool:
-    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
-
-    A deny in a scope the launch can't override (managed, user, or project settings) would leave
-    no search tool at all, so the launch then keeps ug's MCP instead.
-    """
-    if not server_side_web_search_enabled(state):
-        return False
+def native_settings_paths() -> tuple[Path, ...]:
+    """Native managed, user and project settings that can affect a Claude launch."""
     managed_path = _managed_settings_path()
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     directories = [Path.cwd(), *Path.cwd().parents]
-    for blocker in (
+    return (
         *(
             [
                 managed_path,
@@ -2884,7 +2902,18 @@ def _use_server_side_web_search(state: dict) -> bool:
             for d in directories
             for name in ("settings.json", "settings.local.json")
         ),
-    ):
+    )
+
+
+def _use_server_side_web_search(state: dict) -> bool:
+    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
+
+    A deny in a scope the launch can't override (managed, user, or project settings) would leave
+    no search tool at all, so the launch then keeps ug's MCP instead.
+    """
+    if not server_side_web_search_enabled(state):
+        return False
+    for blocker in native_settings_paths():
         if _denies_web_search_or_unreadable(blocker):
             print_warning(
                 f"Server-side web search is enabled, but {blocker} denies WebSearch (or can't be "

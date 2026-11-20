@@ -1,15 +1,26 @@
 """Managed catalog discovery, default launches, and explicit model selection."""
 
+import json
+
 import pytest
 
 from tests.integration.utils.agents import claude, codex
-from tests.integration.utils.evidence import FileTask, assert_completed_task_model
+from tests.integration.utils.evidence import (
+    FileTask,
+    assert_completed_task_model,
+    assert_no_session_registry_left,
+    assert_no_terminal_api_error,
+    copilot_ref,
+    copilot_selected_models,
+)
 from tests.integration.utils.model_discovery import assert_picker_inventory
 from tests.integration.utils.provider_catalog import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     parse_anthropic_provider_page,
     parse_codex_provider_catalog,
 )
+from tests.integration.utils.request_recorder import assert_served
+from tests.integration.utils.terminal import AgentTerminal
 
 from .base import BaseCujTest
 from .catalog_discovery_expectations import (
@@ -23,7 +34,7 @@ from .catalog_discovery_expectations import (
     MODEL_SCHEMA,
     OTHER_MODEL_SCHEMA,
 )
-from .helpers.constants import CLAUDE, CODEX
+from .helpers.constants import CLAUDE, CODEX, COPILOT, INFERENCE_PATHS
 from .helpers.desktop import assert_claude_desktop_unchanged, enable_claude_desktop
 from .helpers.evidence import (
     SessionEvidence,
@@ -355,3 +366,66 @@ class TestCatalogDiscovery(BaseCujTest):
         assert_completed_task_model(session, CODEX, task.value, model)
         assert_inference_evidence(recorder, checkpoint, CODEX, task, model)
         session.assert_not_routed()
+
+    @pytest.mark.copilot
+    @pytest.mark.tui
+    def test_catalog_discovery_copilot_registry_and_default_task(self, cuj):
+        """Scenario: configure, launch ug copilot, read its live model registry, then submit a
+        task.
+
+        Expected: the registry holds exactly the Claude-visible scoped services (Sonnet, Haiku, Kimi
+        and GPT Luna) under their full names on the gateway's Anthropic route, and neither Gemini
+        nor the other schema's decoys. The task completes on the managed default, claude_sonnet,
+        whose Messages requests ask for its full name and get a non-empty HTTP 200; the
+        credential-bearing registry is removed on exit.
+        """
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
+        task = FileTask(session)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
+        command = [
+            str(session.binary),
+            COPILOT,
+            "--allow-all-tools",
+            "--no-auto-update",
+            "--disable-builtin-mcps",
+        ]
+        with AgentTerminal(session, COPILOT, command, "catalog-discovery-copilot") as tui:
+            tui.boot()
+            paths = list(session.home.glob(".copilot/ug-providers-*.json"))
+            assert len(paths) == 1, paths
+            registry = json.loads(paths[0].read_text())
+            models = [
+                {key: row[key] for key in ("id", "wireModel", "provider")}
+                for row in registry["models"]
+            ]
+            session.record("catalog-discovery-copilot-models.json", models)
+            # Copilot's wires follow model names; these service names fall back to Anthropic.
+            assert {row["wireModel"]: row["provider"] for row in models} == dict.fromkeys(
+                CLAUDE_MODELS, "databricks"
+            ), models
+            tui.submit(task.prompt)
+
+            def completed(screen):
+                assert_no_terminal_api_error(screen)
+                assert "Do you want to proceed?" not in screen, screen
+                return task.completed(session, COPILOT)
+
+            tui.wait_for(completed, "completed native Copilot file task", timeout=240)
+            tui.exit_normally()
+        task.assert_completed(session, COPILOT)
+        assert_completed_task_model(session, COPILOT, task.value, CLAUDE_DEFAULT)
+        assert copilot_ref("databricks", CLAUDE_DEFAULT) in copilot_selected_models(session)
+        requests = [
+            request
+            for request in recorder.requests_after(checkpoint)
+            if request.method == "POST"
+            and request.path == INFERENCE_PATHS[CLAUDE]
+            and task.filename.encode() in request.body
+        ]
+        assert requests, "No Copilot Messages request carried the task"
+        for request in requests:
+            assert_served(recorder, request, CLAUDE_DEFAULT)
+        session.assert_not_routed()
+        assert_no_session_registry_left(session)

@@ -16,11 +16,11 @@ input with the permission mode) carries `smart router ON` or `smart router OFF`,
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
-prompt hint for the main model. Native's initial `/model` confirmation reads
-`Auto on: subagents smart-routed`; saving a main model prints a notice naming the saved model.
+prompt hint for the main model. Native displays `Auto mode: Subagents smart routed.`
+when the user selects Auto. Saving a main model updates the prompt hint silently.
 The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
-picker closes, or on `/model auto`. It uses the compact native question modal, with no
-effort controls. Native `/effort` remains unchanged.
+picker closes, or on `/model auto`. Use the arrow keys to scroll through the available main models.
+Use native `/effort` to change effort.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
@@ -107,14 +107,11 @@ native advice. The activation context
 puts the skill location and loading instruction before the delegation guidance so
 Claude can recover the full workflow when its hook output is truncated.
 
-While orchestration is active, `prompt.submit` drops the native empty waiting
-placeholder only for a direct child that `agent.list` confirms is still waiting.
-This avoids a parent-model request; the child continues and delivers its final report.
-The recorded Claude 2.1.316 format is recognized. Claude 2.1.290 uses an
-`Agent "..." finished` summary, which retains normal delivery and can still wake the parent.
-Actual reports, errors, attachments, unknown formats and missing task state retain
-normal delivery. Existing routing and orchestration controls apply. Claude may
-still display its local `Prompt dropped by a hook` status.
+With orchestration enabled, the exact Claude 2.1.316 empty waiting notice is
+dropped only for a direct child that `agent.list` confirms is still waiting.
+Reports, errors, attachments, unknown formats and missing state retain delivery,
+including Claude 2.1.290's `finished` format. This avoids a parent-model request;
+the native `Prompt dropped by a hook` notice remains visible.
 
 The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
 `route-subagent` hook that an earlier UG version persisted still gets its PreToolUse

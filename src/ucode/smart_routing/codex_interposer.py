@@ -14,7 +14,9 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
+from ucode.smart_routing.codex_feedback import CodexFeedbackInput, CodexSmartRouter
 from ucode.smart_routing.codex_metadata import RoutingMetadata
+from ucode.smart_routing.feedback import FeedbackUpload
 
 SETTINGS_UPDATED = "thread/settings/updated"
 SETTINGS_UPDATE = "thread/settings/update"
@@ -213,6 +215,7 @@ async def _handle_tui(
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
+    provider: str | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -231,6 +234,7 @@ async def _handle_tui(
                 prompt,
                 list(available_models or []),
                 log=log,
+                **({"provider": provider} if provider else {}),
             )
 
     sess = _Session(
@@ -245,6 +249,10 @@ async def _handle_tui(
         controller = (
             RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
+        smart_router = CodexSmartRouter(session_controls) if session_controls is not None else None
+        feedback_input = CodexFeedbackInput(tui.send)
+        tool_tasks: set[asyncio.Task] = set()
+        tool_turns: dict[tuple[str, str], asyncio.Event] = {}
         queued_frames: asyncio.Queue = asyncio.Queue()
 
         def parse(frame) -> dict | None:
@@ -260,6 +268,16 @@ async def _handle_tui(
             assert controller is not None
             async for frame in tui:
                 message = parse(frame)
+                if message is not None and feedback_input.consume(message):
+                    continue
+                if message is not None and message.get("method") == "turn/interrupt":
+                    params = message.get("params")
+                    if (
+                        isinstance(params, dict)
+                        and isinstance(params.get("threadId"), str)
+                        and (params.get("turnId") is None or isinstance(params.get("turnId"), str))
+                    ):
+                        feedback_input.cancel(params["threadId"], params.get("turnId"))
                 if message is not None and message.get("method") in (None, "turn/interrupt"):
                     await upstream.send(frame)
                 else:
@@ -279,6 +297,8 @@ async def _handle_tui(
                 if isinstance(frame, str):
                     message = parse(frame)
                     if controller is not None and message is not None:
+                        assert smart_router is not None
+                        smart_router.before_tui(message)
                         message = await controller.before_tui(message)
                         frame = json.dumps(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
@@ -308,12 +328,95 @@ async def _handle_tui(
                 else:
                     await upstream.send(frame)
 
+        async def run_router_tool(message: dict, turn_done: asyncio.Event):
+            assert smart_router is not None
+            params = message["params"]
+
+            async def ask(question: dict):
+                return await feedback_input.ask(params["threadId"], params["turnId"], question)
+
+            response = await smart_router.call(params, ask)
+            result = json.loads(response["contentItems"][0]["text"]) if response["success"] else {}
+            report_id = result.get("feedback_id", "")
+            process = (
+                smart_router.uploads.pop(report_id) if result.get("delivery") == "pending" else None
+            )
+            await upstream.send(json.dumps({"id": message["id"], "result": response}))
+            if process is not None:
+                await monitor_delivery(message, report_id, process, turn_done)
+
+        async def monitor_delivery(
+            message: dict, report_id: str, process: FeedbackUpload, turn_done: asyncio.Event
+        ):
+            assert smart_router is not None
+            try:
+                status = await smart_router.delivery(report_id, process)
+            except (OSError, ValueError):
+                status = {
+                    "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}.",
+                }
+            await delivery_notice(message, status["message"], turn_done)
+
+        async def delivery_notice(message: dict, text: str, turn_done: asyncio.Event):
+            await turn_done.wait()
+            item = {
+                "type": "agentMessage",
+                "id": f"ug-feedback-{uuid.uuid4().hex}",
+                "text": text,
+                "phase": None,
+                "memoryCitation": None,
+            }
+            for method in (ITEM_STARTED, ITEM_COMPLETED):
+                timestamp_key = "startedAtMs" if method == ITEM_STARTED else "completedAtMs"
+                await tui.send(
+                    json.dumps(
+                        {
+                            "method": method,
+                            "params": {
+                                "item": item,
+                                "threadId": message["params"]["threadId"],
+                                "turnId": message["params"]["turnId"],
+                                timestamp_key: int(time.time() * 1000),
+                            },
+                        }
+                    )
+                )
+
+        def tool_done(task: asyncio.Task):
+            tool_tasks.discard(task)
+            if not task.cancelled() and (exc := task.exception()) is not None:
+                log(f"[ERR] Smart Router tool: {type(exc).__name__}")
+
         async def app_to_tui():
             async for frame in upstream:
                 message = parse(frame)
+                if smart_router is not None and message is not None:
+                    smart_router.observe(message)
+                    if smart_router.handles(message):
+                        key = (message["params"]["threadId"], message["params"]["turnId"])
+                        turn_done = tool_turns.setdefault(key, asyncio.Event())
+                        task = asyncio.create_task(run_router_tool(message, turn_done))
+                        tool_tasks.add(task)
+                        task.add_done_callback(tool_done)
+                        continue
                 if controller is not None and message is not None:
                     controller.observe(message)
                 await tui.send(frame)
+                if message is not None and message.get("method") == "turn/completed":
+                    params = message.get("params")
+                    turn = params.get("turn") if isinstance(params, dict) else None
+                    if (
+                        isinstance(params, dict)
+                        and isinstance(params.get("threadId"), str)
+                        and isinstance(turn, dict)
+                        and isinstance(turn.get("id"), str)
+                    ):
+                        key = (params["threadId"], turn["id"])
+                        turn_done = tool_turns.pop(key, None)
+                        if turn_done is not None:
+                            feedback_input.cancel(*key)
+                            turn_done.set()
+                        feedback_input.canceled_turns.discard(key)
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))
@@ -328,6 +431,9 @@ async def _handle_tui(
             for task in done:
                 task.result()
         finally:
+            for task in tool_tasks:
+                task.cancel()
+            await asyncio.gather(*tool_tasks, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -346,6 +452,7 @@ async def _serve(
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
+    provider: str | None = None,
 ):
     async def handler(tui):
         try:
@@ -360,6 +467,7 @@ async def _serve(
                 token_provider,
                 switch_message_fn,
                 session_controls,
+                provider,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -383,6 +491,7 @@ def start_interposer_thread(
     log_path: Path | None = None,
     ready_timeout: float = 10.0,
     session_controls: Path | None = None,
+    provider: str | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:
@@ -414,6 +523,7 @@ def start_interposer_thread(
                     token_provider,
                     switch_message_fn,
                     session_controls,
+                    provider,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]

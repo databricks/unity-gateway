@@ -1,5 +1,5 @@
-import type { AgentInfo, PromptSubmitInput } from 'claude-code';
-import { expect, test } from 'claude-code/testing';
+import type { AgentInfo, On, PromptSubmitInput } from 'claude-code';
+import { expect, mock, test } from 'claude-code/testing';
 import { waitingAgent } from '../hooks/waiting-notifications.ts';
 
 // Claude 2.1.316 Auto Mode output, with a fixture task, tool id and path.
@@ -61,4 +61,67 @@ test('optional metadata and escaped descriptions keep the same child identity', 
     .replace('Watch CI', 'Watch A &amp; B &lt;CI&gt;');
   const escaped = {...agent, description: 'Watch A & B <CI>'};
   expect(waitingAgent({...prompt, text}, [escaped])).toEqual(escaped);
+});
+
+const routed = {
+  ENABLE_SMART_ROUTING_V2: '0',
+  ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+  ENABLE_SMART_ROUTER_ORCHESTRATOR: '1',
+  orchestratorInstructions: 'Delegate independent work.',
+};
+
+// Only the host's environment, task lookup and delivery boundary are controlled.
+// The plugin's registered prompt.submit callback and status band run unchanged.
+function deliveryHost(on: On, env: Record<string, string>, agents: () => AgentInfo[]) {
+  mock.clock(on);
+  on('ui.render', {component: 'AbovePrompt'}, ($, e) => $.ui.resolve(e).Text({children: ['native']}));
+  on('turn.complete', () => ({text: ''}));
+  const delivered: PromptSubmitInput[] = [];
+  on('env.get', ($, e) => ({value: env[e.name]}));
+  on('agent.list', () => ({value: agents()}));
+  on('prompt.submit', ($, e) => {
+    delivered.push(e);
+    return {text: e.text};
+  });
+  return delivered;
+}
+
+const bandSlot = {plugin: 'ug-smart-router', surface: 'terminal', component: 'AbovePrompt', props: {}} as const;
+const hasBand = (tree: unknown) => JSON.stringify(tree).includes('unity gateway smart router');
+
+test('registered submit drops only the empty notice without arming the band', {options: routed}, async ($, on) => {
+  const child = {...agent};
+  const delivered = deliveryHost(on, routed, () => [child]);
+  const band = await $.ui.mount(bandSlot);
+  expect(hasBand(await band.drawn())).toBe(true);
+  expect(await $.prompt.submit(prompt)).toEqual({drop: 'Watch CI is still running in the background.'});
+  expect(delivered).toEqual([]);
+  await $.turn.complete({answer: ''});
+  expect(hasBand(await band.drawn())).toBe(true);
+
+  child.status = 'completed';
+  const report = {...prompt, text: notice.replace(/<result>[\s\S]*?<\/result>/, '<result>Finished the report.</result>')};
+  expect(await $.prompt.submit(report)).toEqual({text: report.text});
+  expect(delivered).toEqual([report]);
+  await $.turn.complete({answer: 'Read the report.'});
+  expect(hasBand(await band.drawn())).toBe(false);
+});
+
+for (const key of ['ENABLE_SMART_ROUTER_ORCHESTRATOR', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY']) {
+  test(`registered submit delivers waiting notices with ${key} off`, {options: routed}, async ($, on) => {
+    const env = {...routed, [key]: '0'};
+    const delivered = deliveryHost(on, env, () => [agent]);
+    const band = await $.ui.mount(bandSlot);
+    expect(hasBand(await band.drawn())).toBe(true);
+    expect(await $.prompt.submit(prompt)).toEqual({text: notice});
+    expect(delivered).toEqual([prompt]);
+    await $.turn.complete({answer: ''});
+    expect(hasBand(await band.drawn())).toBe(false);
+  });
+}
+
+test('registered submit preserves delivery when task lookup fails', {options: routed}, async ($, on) => {
+  const delivered = deliveryHost(on, routed, () => {throw new Error('Task state unavailable');});
+  expect(await $.prompt.submit(prompt)).toEqual({text: notice});
+  expect(delivered).toEqual([prompt]);
 });
