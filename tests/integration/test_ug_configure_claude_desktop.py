@@ -76,7 +76,7 @@ def _prepare_desktop(session, workspace):
     unrelated_plugin = installed["plugins"][UNRELATED_PLUGIN_ID]
     assert unrelated_plugin
     config_library = desktop_config_library(session)
-    config_library.mkdir(parents=True)
+    config_library.mkdir(parents=True, exist_ok=True)
     (config_library / f"{UNRELATED_PROFILE_ID}.json").write_text(json.dumps(UNRELATED_PROFILE))
     (config_library / "_meta.json").write_text(
         json.dumps(

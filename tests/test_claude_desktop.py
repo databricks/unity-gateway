@@ -882,14 +882,10 @@ def test_native_revert_without_ownership_does_not_create_files(
     assert not state_path.exists()
 
 
-@pytest.mark.parametrize("application_data_name", ["Claude-3p", "Claude"])
 def test_native_resolution_initializes_library_after_app_has_opened(
-    native_directory: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    application_data_name: str,
+    native_directory: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    native_directory.parent.with_name(application_data_name).mkdir(parents=True)
+    native_directory.parent.mkdir(parents=True)
     monkeypatch.setattr(desktop, "_claude_desktop_installed", lambda: True)
 
     configured = _configure(tmp_path / "state.json")
@@ -898,6 +894,33 @@ def test_native_resolution_initializes_library_after_app_has_opened(
     assert _read(configured.metadata_path)["entries"] == [
         {"id": configured.profile_id, "name": desktop.PROFILE_NAME}
     ]
+
+
+@pytest.mark.parametrize("native_directory", ["linux"], indirect=True)
+def test_linux_first_launch_initializes_third_party_library(
+    native_directory: Path, tmp_path: Path
+) -> None:
+    native_directory.parent.with_name("Claude").mkdir(parents=True)
+
+    configured = _configure(tmp_path / "state.json")
+
+    assert configured.profile_path.is_file()
+    assert configured.profile_path.parent == native_directory
+    assert _read(configured.metadata_path)["appliedId"] == configured.profile_id
+
+
+@pytest.mark.parametrize("native_directory", ["win32"], indirect=True)
+def test_windows_standard_app_data_requires_installed_package(
+    native_directory: Path, tmp_path: Path
+) -> None:
+    native_directory.parent.with_name("Claude").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+
+    with pytest.raises(desktop.ClaudeDesktopUnavailableError, match="will not install"):
+        _configure(state_path)
+
+    assert not native_directory.parent.exists()
+    assert not state_path.exists()
 
 
 def test_native_library_file_is_rejected_without_modification(tmp_path, directory):
