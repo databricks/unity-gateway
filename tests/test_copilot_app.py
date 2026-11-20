@@ -511,10 +511,22 @@ def test_an_error_for_another_request_is_skipped(app):
 
 
 def test_an_error_without_a_request_id_answers_the_pending_request(app):
-    app.before_reply["get_healthcheck"] = [{"type": "error", "message": "Invalid message format"}]
+    app.before_reply["list_model_providers"] = [
+        {"type": "error", "message": "Invalid message format"}
+    ]
 
     with pytest.raises(copilot_app.CopilotAppError, match="Invalid message format"):
         copilot_app.unregister()
+
+
+def test_an_app_without_the_healthcheck_is_an_unknown_version(app, capsys):
+    app.fail = "get_healthcheck"
+    seed(app, _app_providers())
+
+    assert copilot_app.unregister() is True
+    assert "GitHub Copilot app (unknown version) hasn't been verified" in " ".join(
+        capsys.readouterr().out.split()
+    )
 
 
 def test_an_app_that_quits_mid_unregister_is_not_running(app):

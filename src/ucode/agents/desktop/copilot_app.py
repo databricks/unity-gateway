@@ -415,9 +415,12 @@ def _connect() -> _AppConnection:
     app = _AppConnection(copilot_home())
     try:
         version = _version(app)
-    except CopilotAppError:
+    except CopilotAppNotRunning:
         app.close()
         raise
+    except CopilotAppError:
+        # The version only decides the warning below.
+        version = None
     if version not in VERIFIED_APP_VERSIONS:
         print_warning(
             f"GitHub Copilot app {version or '(unknown version)'} hasn't been verified with ug; "
