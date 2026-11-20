@@ -323,10 +323,10 @@ export function register(on: On, options: PluginOptions): void {
       const session_id = await $.session.id();
       routedDisplays.sessionId = session_id;
       const root = await $.env.get('UCODE_AGENT_LABELS_DIR');
-      if (!root) throw new Error('Subagent display directory is unavailable');
+      // Only smart-routed launches save display files.
       routedDisplays.root = root;
       const directory = `${root}/${encodeURIComponent(session_id)}`;
-      if (await $.fs.exists(directory)) for (const entry of await $.fs.list(directory)) {
+      if (root && await $.fs.exists(directory)) for (const entry of await $.fs.list(directory)) {
         if (entry.kind !== 'file' || entry.isLink || !entry.name.startsWith('agent-') || !entry.name.endsWith('.json')) continue;
         try {
           const saved = savedRoutedDisplay(JSON.parse(await $.fs.read(`${directory}/${entry.name}`)), session_id);

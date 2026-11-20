@@ -283,8 +283,15 @@ export async function* routeAgentStream($: any, step: any, source: AsyncGenerato
     for (const [index, call] of calls) {
       try { inputs.set(index, JSON.parse(call.json || '{}')) } catch { /* leave the call as the model wrote it */ }
     }
-    await Promise.all([...calls].map(([index, call]) => inputs.has(index)
-      ? routeCall($, { ...inputs.get(index), tool: call.tool, tool_use_id: call.id, agentId: step.agentId }) : undefined))
+    // A call that cannot be routed goes on as the model wrote it; it must not cost the reply.
+    await Promise.all([...calls].map(async ([index, call]) => {
+      if (!inputs.has(index)) return
+      try {
+        await routeCall($, { ...inputs.get(index), tool: call.tool, tool_use_id: call.id, agentId: step.agentId })
+      } catch {
+        $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      }
+    }))
     const written = new Set<number>()
     for (const chunk of held) {
       const call = chunk.kind === 'input' ? calls.get(chunk.index) : undefined
@@ -357,9 +364,9 @@ export const registerSubagentRouting = (
       routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
-    if (route && result.agentId && !result.model) {
+    if (route && result.agentId && !result.deny && !result.model) {
       $.ui.log('Claude did not report the launched model; routed labels cannot be verified for this subagent.')
-    } else if (route && result.agentId) {
+    } else if (route && result.agentId && !result.deny) {
       try {
         const session_id = await $.session.id()
         const saved = savedRoutedDisplay({ session_id, agent_id: result.agentId, name: taskLabel(route),
@@ -410,9 +417,9 @@ export const registerSubagentRouting = (
       ...e,
       props: { ...e.props, tool: name,
         ...(record && input !== null && typeof input === 'object' && !Array.isArray(input)
-          && record.spawned?.model
-          ? { input: { ...input, description: shortModel(record.spawned.model)
-            + mismatchNote(record.model, record.spawned.model) } } : {}),
+          && record.spawned?.model && differs(record.model, record.spawned.model)
+          ? { input: { ...input, description: receiptLabel({ animal: record.name, title: record.title,
+            selected: record.model, launched: record.spawned.model }) } } : {}),
       },
     } : e)
     if (!record && !pending.has(e.requestId)) return original

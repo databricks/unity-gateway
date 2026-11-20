@@ -140,7 +140,7 @@ test('routing changes the matching spawn model while preserving the task and its
   }
   const launched = await $.ui.mount(row('call-a'));
   expect(await launched.find({ type: 'Text', text: '⚠ Launched Model: claude-sonnet-5 (differs from the selected model)' })).toBeDefined();
-  expect(displayInputs[displayInputs.length - 1].description).toBe('claude-sonnet-5 ⚠ heading said gpt-5-6-sol');
+  expect(displayInputs[displayInputs.length - 1].description).toMatch(/^[A-Z][a-z]+ · claude-sonnet-5 · inspect the parser ⚠ heading said gpt-5-6-sol$/);
   await launched.unmount();
   const denied = await $.ui.mount(row('denied'));
   expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
@@ -788,9 +788,8 @@ test('routed joke titles use the selected model without rewriting reviewed argum
     };
     await $.agent.spawn(spawn);
     const ui = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
-    expect(await ui.find({ type: 'Text', text: 'routed-model' })).toBeDefined();
-    expect(JSON.stringify(await ui.drawn())).not.toContain('Joke from');
-    expect(displayed.get(call.tool_use_id).input).toEqual({ ...call, description: 'routed-model' });
+    // The launch matches the heading, so the native row keeps its own text.
+    expect(displayed.get(call.tool_use_id).input).toEqual(call);
     const label = `${displayed.get(call.tool_use_id).tool} — routed-model`;
     expect(spawned[spawned.length - 1]).toEqual({
       ...spawn, model: 'catalog.schema.routed-model',
@@ -1072,4 +1071,53 @@ test('a routing failure while the reply streams is not retried at tool.call', as
   expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
   await $.tool.call({ tool: 'Agent', tool_use_id: 'retry-0', ...call });
   expect(routerCalls).toHaveLength(1);
+});
+
+test('a routing error keeps the reply, and a denied spawn that names an agent saves no label', async ($, on) => {
+  const writes: any[] = [];
+  const logs: string[] = [];
+  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
+  on('session.id', () => { throw new Error('session unavailable'); });
+  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'r' }) } }));
+  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'tool', index: 0, id: 'err-0', name: 'Agent' };
+    yield { kind: 'input', index: 0, json: JSON.stringify(call) };
+    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
+  });
+  const turn = await collectParentTurn($, 'route-error', 0);
+  expect(turn.chunks.map(chunk => chunk.kind)).toEqual(['tool', 'input', 'stop']);
+  expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
+  expect(logs).toContain('Smart Router could not route this subagent; using its original settings.');
+  expect(writes).toHaveLength(0);
+});
+
+test('a denied spawn that still names an agent saves no display label', async ($, on) => {
+  const writes: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'r' }) } }));
+  on('tool.call', () => ({ result: 'launched' }));
+  on('agent.spawn', () => ({ deny: 'refused', agentId: 'child-denied' } as any));
+  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'denied-0', ...originalInput });
+  await $.agent.spawn({
+    tool_use_id: 'denied-0', prompt: originalInput.prompt, description: originalInput.description,
+    subagentType: originalInput.subagent_type, parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' as const },
+    background: true, fork: false, permissionMode: 'default', cwd: '/workspace',
+  });
+  expect(writes).toHaveLength(0);
+});
+
+test('session start without a display directory restores nothing and logs nothing', async ($, on) => {
+  const logs: string[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', () => ({ value: undefined }));
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
+  expect(logs).toEqual([]);
 });
