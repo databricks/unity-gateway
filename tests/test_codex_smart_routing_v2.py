@@ -314,6 +314,8 @@ class TestLaunchCodex:
         monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(v2, "custom_catalog_path", lambda: None)
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
 
         class FakeProcess:
             def __init__(self, argv, **kwargs):

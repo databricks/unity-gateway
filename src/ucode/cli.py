@@ -73,8 +73,6 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ISAAC_LAUNCH_MODE_ENV_VAR,
-    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3747,6 +3745,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         controls = session_env_path()
     except RuntimeError:
         return False
+    from ucode.smart_routing.feedback import smart_router_feedback_required
     from ucode.smart_routing.session_env import session_routing_enabled
 
     state = "on" if enabled else "off"
@@ -3757,16 +3756,13 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if unchanged:
         print_success(_SMART_ROUTER_UNCHANGED_REPLY.format(state=state))
         return True
-    if (
-        not enabled
-        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni"
-        and len((reason or "").strip()) < 16
-    ):
+    feedback_required = not enabled and smart_router_feedback_required()
+    if feedback_required and len((reason or "").strip()) < 16:
         print_err(
             "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why, then pass their reason with "
-            "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
+            "surrounding whitespace. Use the Smart Router skill to collect and submit feedback, "
+            "or pass a reason with --smart-router-feedback to toggle routing directly. "
+            "The direct CLI command does not submit feedback."
         )
         raise typer.Exit(2)
     try:

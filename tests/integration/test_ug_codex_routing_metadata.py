@@ -5,7 +5,7 @@ import os
 
 import pytest
 from test_ug_smart_routing_hooks import _select_smart_router_version, _toggle_with_skill
-from utils.agents.codex import assert_agent_interaction_completed, completed_command_outputs
+from utils.agents.codex import assert_agent_interaction_completed, completed_smart_router_results
 from utils.evidence import (
     agent_sessions,
     assistant_answers,
@@ -88,16 +88,13 @@ def _wait_for(tui, predicate, description, *, timeout):
 
 
 def _assert_toggle_executed_once(session, enabled):
-    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
     outputs = [
         output
         for records in _root_sessions(session)
-        for output in completed_command_outputs(
-            records, command_contains=f"-m ucode.cli codex {flag}"
-        )
+        for output in completed_smart_router_results(records, "on" if enabled else "off")
     ]
     assert len(outputs) == 1, outputs
-    assert f"Smart Router is {'on' if enabled else 'off'} for this session" in outputs[0]
+    assert f"Smart Router is {'on' if enabled else 'off'} for this session" in outputs[0]["message"]
 
 
 @pytest.mark.live

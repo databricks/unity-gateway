@@ -10,7 +10,6 @@ Smart Router skill and spawn real children before and after its session-local to
 
 import hashlib
 import json
-import os
 import re
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from utils.agents.claude import (
     claude_delivered_child_answers,
     parent_tool_calls,
 )
-from utils.agents.codex import completed_command_outputs
+from utils.agents.codex import completed_smart_router_results
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -42,7 +41,7 @@ from utils.managed import (
     use_smart_routing_fixture,
 )
 from utils.request_recorder import record_claude_response_protocol, served_inference_request
-from utils.terminal import AgentTerminal, codex_command_approval_pending
+from utils.terminal import AgentTerminal
 
 pytestmark = pytest.mark.harness_latest
 
@@ -246,17 +245,15 @@ def _toggle_with_skill(
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    action = "on" if enabled else "off"
 
     def confirmation_count():
         confirmations = 0
         for path, records in agent_sessions(session, agent).items():
             if is_child_session(agent, path, records):
                 continue
-            outputs = completed_command_outputs(
-                records, command_contains=f"-m ucode.cli codex {flag}"
-            )
-            confirmations += sum(confirmation in output for output in outputs)
+            outputs = completed_smart_router_results(records, action)
+            confirmations += sum(confirmation in output.get("message", "") for output in outputs)
         return confirmations
 
     before_confirmations = confirmation_count()
@@ -270,33 +267,9 @@ def _toggle_with_skill(
 
     before_answers = root_answer_count()
     tui.submit(invocation)
-    approval_sent = False
-    python = (
-        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
-    )
-    command = f"{python} -m ucode.cli codex {flag}"
-    commands = (command,)
-    if os.name == "nt":
-        commands += (
-            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-            '{ Write-Output "SMART_ROUTER_ENV_UNSET"; exit 2 }; ' + command,
-            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-            '{ Write-Output "SMART_ROUTER_ENV_UNSET" } else { ' + command + " }",
-        )
-    else:
-        commands += (
-            'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && '
-            + command,
-        )
 
     def toggled(screen):
-        nonlocal approval_sent
-        # Fresh remote Codex sessions can be read-only. Approve only this
-        # requested toggle through the native dialog, keeping the sandbox intact.
-        if not approval_sent and codex_command_approval_pending(screen, commands):
-            tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
-            approval_sent = True
-            return False
+        assert "Would you like to run the following command" not in screen, screen
         try:
             controls_now = json.loads(controls[0].read_text())
         except PermissionError:
