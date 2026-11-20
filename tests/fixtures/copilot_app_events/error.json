@@ -1,0 +1,119 @@
+{
+ "sessionId": "00000000-0000-4000-8000-000000000001",
+ "events": [
+  {
+   "type": "user.message",
+   "id": "1ef912a8-e640-4c3a-b1ab-8ded887275bc",
+   "parentId": "b2f42fe0-261c-4779-8cbb-e32f4837da06",
+   "timestamp": "2026-11-20T22:33:20.975Z",
+   "data": {
+    "interactionId": "64006a93-c2f1-445e-8925-bdb4e95af78c",
+    "turnId": "0",
+    "messageId": "63a511c8-330d-4bd1-8413-4629251a4504"
+   }
+  },
+  {
+   "type": "assistant.turn_start",
+   "id": "ce91757c-718d-4426-ac0e-f52645f03169",
+   "parentId": "e73a4dce-cc16-4abf-b21a-46ae8489f014",
+   "timestamp": "2026-11-20T22:33:20.982Z",
+   "data": {
+    "turnId": "0",
+    "interactionId": "64006a93-c2f1-445e-8925-bdb4e95af78c",
+    "agentMode": "interactive"
+   }
+  },
+  {
+   "type": "model.call_start",
+   "id": "0a5b9299-4aeb-426a-bc90-b1a6095cd31c",
+   "parentId": "ce91757c-718d-4426-ac0e-f52645f03169",
+   "timestamp": "2026-11-20T22:33:20.985Z",
+   "ephemeral": true,
+   "data": {
+    "turnId": "0",
+    "model": "system.ai.does-not-exist"
+   }
+  },
+  {
+   "type": "model.call_failure",
+   "id": "bbe41e98-bfdc-4ddb-8ee7-7d5333a0f5dc",
+   "parentId": "ce91757c-718d-4426-ac0e-f52645f03169",
+   "timestamp": "2026-11-20T22:33:21.525Z",
+   "ephemeral": true,
+   "data": {
+    "model": "system.ai.does-not-exist",
+    "apiCallId": "f7f58ad3-3ac4-4ac3-97d0-50afcd069c2a",
+    "statusCode": 404,
+    "durationMs": 539,
+    "apiEndpoint": "/chat/completions",
+    "failureKind": "api",
+    "modelProvider": "other",
+    "providerType": "openai",
+    "errorMessage": "<content>"
+   }
+  },
+  {
+   "type": "model.call_finished",
+   "id": "da1e455c-b4f8-46f7-b3db-68f7082a6fce",
+   "parentId": "ce91757c-718d-4426-ac0e-f52645f03169",
+   "timestamp": "2026-11-20T22:33:21.526Z",
+   "ephemeral": true,
+   "data": {
+    "turnId": "0",
+    "dispatchDurationMs": 540,
+    "outcome": "error",
+    "interactionId": "64006a93-c2f1-445e-8925-bdb4e95af78c"
+   }
+  },
+  {
+   "type": "model.turn_failed",
+   "id": "581e3a70-fda4-4e32-b10b-4a4eae4d0b3e",
+   "parentId": "ce91757c-718d-4426-ac0e-f52645f03169",
+   "timestamp": "2026-11-20T22:33:21.574Z",
+   "ephemeral": true,
+   "data": {
+    "model": "system.ai.does-not-exist",
+    "turn": 0,
+    "error": "<content>"
+   }
+  },
+  {
+   "type": "assistant.turn_end",
+   "id": "9e3def29-045b-4870-91b2-ff9aae6b13e2",
+   "parentId": "ce91757c-718d-4426-ac0e-f52645f03169",
+   "timestamp": "2026-11-20T22:33:21.574Z",
+   "data": {
+    "turnId": "0"
+   }
+  },
+  {
+   "type": "session.error",
+   "id": "0a0522fd-a679-4991-a2c3-dd4e0def1c47",
+   "parentId": "9e3def29-045b-4870-91b2-ff9aae6b13e2",
+   "timestamp": "2026-11-20T22:33:21.575Z",
+   "data": {
+    "errorType": "query",
+    "message": "<content>",
+    "statusCode": 404
+   }
+  },
+  {
+   "type": "assistant.idle",
+   "id": "b3dfddcf-721d-4728-9a7e-ec86043c5534",
+   "parentId": "0a0522fd-a679-4991-a2c3-dd4e0def1c47",
+   "timestamp": "2026-11-20T22:33:21.576Z",
+   "ephemeral": true,
+   "data": {}
+  },
+  {
+   "type": "session.idle",
+   "id": "f767e141-26d4-4b15-8dab-0ed8b86372b7",
+   "parentId": "0a0522fd-a679-4991-a2c3-dd4e0def1c47",
+   "timestamp": "2026-11-20T22:33:21.577Z",
+   "ephemeral": true,
+   "data": {
+    "mode": "interactive"
+   }
+  }
+ ]
+}
