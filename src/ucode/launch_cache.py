@@ -6,11 +6,18 @@ regions each costs several RTTs. With ``UG_LAUNCH_CACHE=1`` a launch serves thos
 from the last successful results under ``~/.ucode/launch-cache/`` and spawns a
 detached refresher for the next launch (the launch process execs the agent, so an
 in-process thread would die with it). `ug configure` never reads this cache.
+
+The entry identity and invalidation rules follow the persisted gateway-check
+record (#1389): workspace, profile, auth mode, custom OAuth, and ug version;
+configure and login always refresh; a failed refresh invalidates instead of
+serving. This cache extends that with the discovery listing and picker catalog,
+a credentials-file digest, a 24h max age, and the background refresher.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -63,26 +70,28 @@ def config_fingerprint() -> dict:
     }
 
 
-def cache_key(workspace: str, profile: str | None, workspace_id: str | None) -> str:
-    payload = json.dumps(
-        [
-            ENTRY_VERSION,
-            workspace.rstrip("/"),
-            profile or "",
-            workspace_id or "",
-            config_fingerprint(),
-            ug_version(),
-        ],
-        sort_keys=True,
-    )
+def entry_identity(state: dict) -> dict:
+    """The workspace and credentials a cache entry may serve."""
+    return {
+        "workspace": (state.get("workspace") or "").rstrip("/"),
+        "workspace_id": state.get("workspace_id") or "",
+        "profile": state.get("profile"),
+        "use_pat": bool(state.get("use_pat")),
+        "custom_oauth": state.get("custom_oauth"),
+        "config_fingerprint": config_fingerprint(),
+        "ug_version": ug_version(),
+    }
+
+
+def cache_key(identity: dict) -> str:
+    payload = json.dumps([ENTRY_VERSION, identity], sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def entry_key_for_state(state: dict) -> str | None:
-    workspace = state.get("workspace")
-    if not workspace:
+    if not state.get("workspace"):
         return None
-    return cache_key(workspace, state.get("profile"), state.get("workspace_id"))
+    return cache_key(entry_identity(state))
 
 
 def _cache_dir() -> Path:
@@ -95,7 +104,7 @@ def _entry_path(key: str) -> Path:
     return _cache_dir() / f"{key}.json"
 
 
-def _read_entry(key: str) -> dict | None:
+def _read_entry(key: str, identity: dict | None = None) -> dict | None:
     try:
         entry = json.loads(_entry_path(key).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -104,27 +113,30 @@ def _read_entry(key: str) -> dict | None:
         return None
     if entry.get("key") != key:
         return None
+    if identity is not None and entry.get("identity") != identity:
+        return None
     return entry
 
 
-def load_entry(key: str) -> dict | None:
-    """The cache entry for ``key``, or None when missing, stale, or corrupt."""
-    entry = _read_entry(key)
+def load_entry(key: str, identity: dict | None = None) -> dict | None:
+    """The cache entry for ``key``, or None when missing, stale, corrupt, or foreign."""
+    entry = _read_entry(key, identity)
     if entry is None:
         return None
-    saved_at = entry.get("saved_at")
-    if not isinstance(saved_at, (int, float)) or time.time() - saved_at > MAX_AGE_SECONDS:
+    checked_at = entry.get("checked_at")
+    if not isinstance(checked_at, (int, float)) or time.time() - checked_at > MAX_AGE_SECONDS:
         return None
     return entry
 
 
-def merge_entry(key: str, payload: dict) -> None:
+def merge_entry(key: str, identity: dict, payload: dict) -> None:
     """Merge ``payload`` into the entry, refreshing its age; parts stay independent."""
     entry = _read_entry(key) or {}
     entry.update(payload)
     entry["version"] = ENTRY_VERSION
     entry["key"] = key
-    entry["saved_at"] = time.time()
+    entry["identity"] = identity
+    entry["checked_at"] = time.time()
     try:
         # mkstemp-created, so the replaced file is 0600 like the rest of ~/.ucode.
         config_io.atomic_write_json(_entry_path(key), entry)
@@ -214,26 +226,17 @@ def services_payload(services: list[ModelServiceEntry]) -> list[dict]:
     return [{"id": service.id, "api_types": list(service.api_types)} for service in services]
 
 
-def spawn_refresher(workspace: str, profile: str | None, workspace_id: str | None) -> None:
+def spawn_refresher(identity: dict) -> None:
     """Detach a refresher that rewrites the cache for the next launch.
 
     The launch process execs the agent, so the refresher must outlive it: a new
-    session with DEVNULL stdio holds none of the agent's pipes."""
+    session with DEVNULL stdio holds none of the agent's pipes. The identity
+    travels as JSON so the refresher re-fetches for exactly this workspace and
+    credential set, and re-verifies the credentials file before writing."""
     from ucode.os_compatibility import subprocess_cross_os
 
-    argv = [
-        sys.executable,
-        "-P",
-        "-m",
-        "ucode.launch_cache",
-        "--refresh",
-        "--workspace",
-        workspace,
-        "--profile",
-        profile or "",
-        "--workspace-id",
-        workspace_id or "",
-    ]
+    encoded = base64.urlsafe_b64encode(json.dumps(identity).encode()).decode()
+    argv = [sys.executable, "-P", "-m", "ucode.launch_cache", "--refresh", "--identity", encoded]
     options = (
         {"creationflags": subprocess.CREATE_NO_WINDOW}
         if sys.platform == "win32"
@@ -255,26 +258,32 @@ def refresh_due(key: str) -> bool:
     entry = _read_entry(key)
     if entry is None:
         return False
-    saved_at = entry.get("saved_at")
-    return not isinstance(saved_at, (int, float)) or (
-        time.time() - saved_at >= REFRESH_THROTTLE_SECONDS
+    checked_at = entry.get("checked_at")
+    return not isinstance(checked_at, (int, float)) or (
+        time.time() - checked_at >= REFRESH_THROTTLE_SECONDS
     )
 
 
-def _refresh(workspace: str, profile: str, workspace_id: str) -> int:
+def _refresh(identity: dict) -> int:
     from ucode.databricks import clear_model_services_cache
 
-    key = cache_key(workspace, profile or None, workspace_id or None)
+    # A credentials rewrite between the spawn and now must not mint a cache entry
+    # for the old identity's fetches.
+    if config_fingerprint() != identity.get("config_fingerprint"):
+        return 1
+    workspace = identity.get("workspace") or ""
+    profile = identity.get("profile") or None
+    key = cache_key(identity)
     entry = _read_entry(key)
     if entry is not None:
-        saved_at = entry.get("saved_at")
-        if isinstance(saved_at, (int, float)) and (
-            time.time() - saved_at < REFRESH_THROTTLE_SECONDS
+        checked_at = entry.get("checked_at")
+        if isinstance(checked_at, (int, float)) and (
+            time.time() - checked_at < REFRESH_THROTTLE_SECONDS
         ):
             return 0
     clear_model_services_cache()
     try:
-        token = get_databricks_token(workspace, profile or None)
+        token = get_databricks_token(workspace, profile)
         probe = probe_unity_gateway_capabilities(workspace, token)
         services, reason = list_model_service_entries(workspace, token)
         if not probe.resource_available or not services or reason is not None:
@@ -288,7 +297,7 @@ def _refresh(workspace: str, profile: str, workspace_id: str) -> int:
         }
         if not catalog.error_msg:
             payload["catalog"] = catalog_payload(catalog)
-        merge_entry(key, payload)
+        merge_entry(key, identity, payload)
     except Exception:
         _entry_path(key).unlink(missing_ok=True)
         return 1
@@ -298,13 +307,17 @@ def _refresh(workspace: str, profile: str, workspace_id: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m ucode.launch_cache")
     parser.add_argument("--refresh", action="store_true")
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--profile", default="")
-    parser.add_argument("--workspace-id", default="")
+    parser.add_argument("--identity", required=True, help="base64url JSON of the entry identity")
     args = parser.parse_args(argv)
     if not args.refresh:
         parser.error("--refresh is required")
-    return _refresh(args.workspace, args.profile, args.workspace_id)
+    try:
+        identity = json.loads(base64.urlsafe_b64decode(args.identity.encode()))
+    except (ValueError, UnicodeDecodeError):
+        return 2
+    if not isinstance(identity, dict) or not identity.get("workspace"):
+        return 2
+    return _refresh(identity)
 
 
 if __name__ == "__main__":

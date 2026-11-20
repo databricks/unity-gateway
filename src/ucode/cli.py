@@ -118,10 +118,11 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.launch_cache import (
+    cache_key,
     catalog_payload,
     clear_cache,
     entry_catalog,
-    entry_key_for_state,
+    entry_identity,
     entry_probe,
     launch_cache_enabled,
     load_entry,
@@ -789,8 +790,12 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    launch_cache_key = entry_key_for_state(state) if use_launch_cache else None
-    launch_cache_entry = load_entry(launch_cache_key) if launch_cache_key else None
+    launch_cache_identity = entry_identity(state) if use_launch_cache else None
+    launch_cache_entry = (
+        load_entry(cache_key(launch_cache_identity), launch_cache_identity)
+        if launch_cache_identity
+        else None
+    )
     with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
@@ -812,14 +817,15 @@ def configure_shared_state(
         print_warning(f"Model service: {model_service_probe.detail}")
     if (
         model_service_probe.resource_available
-        and launch_cache_key is not None
+        and launch_cache_identity is not None
         and (launch_cache_entry is None or entry_probe(launch_cache_entry) is None)
         and (services := cached_model_service_entries(workspace)) is not None
     ):
         # Cold lookup with the cache on: record the results for the next launch. Only a
         # verified-available probe and a non-empty listing are ever persisted.
         merge_entry(
-            launch_cache_key,
+            cache_key(launch_cache_identity),
+            launch_cache_identity,
             {
                 "probe": probe_payload(model_service_probe),
                 "model_services": services_payload(services),
@@ -4426,12 +4432,13 @@ def _launch_tool(
             and bool(managed_parent_schema or (managed is None and bool(parent_schema)))
         )
         cached_picker_catalog: AnthropicModelCatalog | None = None
+        launch_cache_entry_identity: dict | None = None
         if unmanaged_picker_catalog and launch_cache_enabled():
             # Serve the picker catalog from the last results instead of the speculative
             # request; the launch's detached refresher rewrites the cache for the next one.
-            launch_cache_entry_key = entry_key_for_state(state)
-            launch_cache_entry = (
-                load_entry(launch_cache_entry_key) if launch_cache_entry_key else None
+            launch_cache_entry_identity = entry_identity(state)
+            launch_cache_entry = load_entry(
+                cache_key(launch_cache_entry_identity), launch_cache_entry_identity
             )
             if launch_cache_entry is not None:
                 cached_picker_catalog = entry_catalog(launch_cache_entry)
@@ -4771,9 +4778,13 @@ def _launch_tool(
                 )
                 if cached_picker_catalog is None and launch_cache_enabled():
                     # The catalog came from the network: record it for the next launch.
-                    catalog_key = entry_key_for_state(state)
-                    if catalog_key:
-                        merge_entry(catalog_key, {"catalog": catalog_payload(discovered)})
+                    if launch_cache_entry_identity is None:
+                        launch_cache_entry_identity = entry_identity(state)
+                    merge_entry(
+                        cache_key(launch_cache_entry_identity),
+                        launch_cache_entry_identity,
+                        {"catalog": catalog_payload(discovered)},
+                    )
         if (
             coding_agent_config_defaults
             and not claude_inputs_from_configure
@@ -4881,9 +4892,8 @@ def _launch_tool(
             # This launch may have served lookups from the launch cache. The process execs
             # Claude, so the cache is refreshed by a detached refresher, throttled to one
             # run per key per few minutes, that must not hold the agent's stdio.
-            refresh_key = entry_key_for_state(state)
-            if refresh_key and refresh_due(refresh_key):
-                spawn_refresher(state["workspace"], state.get("profile"), state.get("workspace_id"))
+            if refresh_due(cache_key(entry_identity(state))):
+                spawn_refresher(entry_identity(state))
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:

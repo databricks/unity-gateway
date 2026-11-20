@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import sys
@@ -43,9 +44,41 @@ def _launch_cache_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "databrickscfg"))
 
 
-def _store(key: str, payload: dict, *, saved_at: float | None = None) -> None:
-    entry = {**payload, "version": lc.ENTRY_VERSION, "key": key}
-    entry["saved_at"] = time.time() if saved_at is None else saved_at
+def _identity(**overrides):
+    identity = {
+        "workspace": WORKSPACE,
+        "workspace_id": "123",
+        "profile": "p",
+        "use_pat": False,
+        "custom_oauth": None,
+        "config_fingerprint": lc.config_fingerprint(),
+        "ug_version": lc.ug_version(),
+    }
+    identity.update(overrides)
+    return identity
+
+
+def refresh_args(identity=None):
+    encoded = base64.urlsafe_b64encode(json.dumps(identity or _identity()).encode()).decode()
+    return ["--refresh", "--identity", encoded]
+
+
+def _key(**kwargs) -> str:
+    return lc.cache_key(_identity(**kwargs))
+
+
+def _key_custom(**overrides) -> str:
+    return lc.cache_key({**_identity(), **overrides})
+
+
+def _store(key: str, payload: dict, *, checked_at: float | None = None, identity=None) -> None:
+    entry = {
+        **payload,
+        "version": lc.ENTRY_VERSION,
+        "key": key,
+        "identity": identity or _identity(),
+    }
+    entry["checked_at"] = time.time() if checked_at is None else checked_at
     lc._cache_dir().mkdir(parents=True, exist_ok=True)
     (lc._cache_dir() / f"{key}.json").write_text(json.dumps(entry), encoding="utf-8")
 
@@ -57,14 +90,14 @@ def _entries() -> list[Path]:
 
 class TestKey:
     def test_same_inputs_same_key(self):
-        assert lc.cache_key(WORKSPACE, "p", "123") == lc.cache_key(WORKSPACE, "p", "123")
+        assert _key() == _key()
 
     def test_workspace_profile_and_id_isolate(self):
         keys = {
-            lc.cache_key(WORKSPACE, "p", "123"),
-            lc.cache_key("https://other.databricks.com", "p", "123"),
-            lc.cache_key(WORKSPACE, "other", "123"),
-            lc.cache_key(WORKSPACE, "p", "456"),
+            _key(),
+            _key(workspace="https://other.databricks.com"),
+            _key(profile="other"),
+            _key(workspace_id="456"),
         }
         assert len(keys) == 4
 
@@ -72,37 +105,36 @@ class TestKey:
         cfg = tmp_path / "databrickscfg"
         cfg.write_text("[p]\nhost = x\n")
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
-        before = lc.cache_key(WORKSPACE, "p", "123")
-        cfg.write_text("[p]\nhost = y\n")
-        assert lc.cache_key(WORKSPACE, "p", "123") != before
+        before = lc.cache_key(_identity(config_fingerprint={"sha256": "a"}))
+        after = lc.cache_key(_identity(config_fingerprint={"sha256": "b"}))
+        assert after != before
 
     def test_ug_version_rotates(self, monkeypatch):
-        monkeypatch.setattr(lc, "ug_version", lambda: "1")
-        before = lc.cache_key(WORKSPACE, "p", "123")
-        monkeypatch.setattr(lc, "ug_version", lambda: "2")
-        assert lc.cache_key(WORKSPACE, "p", "123") != before
+        before = lc.cache_key(_identity(ug_version="1"))
+        assert lc.cache_key(_identity(ug_version="2")) != before
 
-    def test_missing_credentials_file_isolated_from_existing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "absent"))
-        missing = lc.cache_key(WORKSPACE, "p", "123")
-        cfg = tmp_path / "cfg"
-        cfg.write_text("")
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
-        assert lc.cache_key(WORKSPACE, "p", "123") != missing
+    def test_auth_mode_and_oauth_isolate(self):
+        keys = {
+            _key(),
+            _key_custom(use_pat=True),
+            _key_custom(custom_oauth={"client_id": "c"}),
+        }
+        assert len(keys) == 3
 
 
 class TestEntry:
     def test_roundtrip_and_parts(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
+        key = _key()
         lc.merge_entry(
             key,
+            _identity(),
             {
                 "probe": lc.probe_payload(PROBE),
                 "model_services": lc.services_payload(SERVICES),
                 "catalog": lc.catalog_payload(CATALOG),
             },
         )
-        entry = lc.load_entry(key)
+        entry = lc.load_entry(key, _identity())
         assert entry is not None
         assert lc.entry_probe(entry) == PROBE
         assert lc.entry_model_services(entry) == SERVICES
@@ -112,62 +144,72 @@ class TestEntry:
         assert catalog.model_id_to_display_name == CATALOG.model_id_to_display_name
 
     def test_stale_entry_not_served(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {}, saved_at=time.time() - lc.MAX_AGE_SECONDS - 1)
+        key = _key()
+        _store(key, {}, checked_at=time.time() - lc.MAX_AGE_SECONDS - 1)
         assert lc.load_entry(key) is None
 
     def test_corrupt_entry_not_served(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
+        key = _key()
         lc._cache_dir().mkdir(parents=True, exist_ok=True)
         (lc._cache_dir() / f"{key}.json").write_text("{not json", encoding="utf-8")
         assert lc.load_entry(key) is None
 
-    def test_entry_for_another_key_not_served(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {}, saved_at=time.time())
-        other = lc.cache_key("https://other.databricks.com", "p", "123")
+    def test_entry_for_another_key_or_identity_not_served(self):
+        key = _key()
+        _store(key, {}, checked_at=time.time())
+        other = lc.cache_key(_identity(workspace="https://other.databricks.com"))
         entry = json.loads((lc._cache_dir() / f"{key}.json").read_text(encoding="utf-8"))
         entry["key"] = other
         (lc._cache_dir() / f"{key}.json").write_text(json.dumps(entry), encoding="utf-8")
         assert lc.load_entry(other) is None
         assert lc.load_entry(key) is None
+        # A matching key with a foreign identity must not serve either.
+        entry = json.loads((lc._cache_dir() / f"{key}.json").read_text(encoding="utf-8"))
+        entry["identity"]["profile"] = "someone-else"
+        (lc._cache_dir() / f"{key}.json").write_text(json.dumps(entry), encoding="utf-8")
+        assert lc.load_entry(key, _identity()) is None
 
     def test_failed_probe_never_served(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
+        key = _key()
         _store(
             key,
             {"probe": {"reachable": False, "detail": "HTTP 503", "resource_available": False}},
-            saved_at=time.time(),
+            checked_at=time.time(),
         )
         entry = lc.load_entry(key)
         assert entry is not None
         assert lc.entry_probe(entry) is None
 
     def test_clear_cache_removes_every_entry(self):
-        lc.merge_entry(lc.cache_key(WORKSPACE, "p", "123"), {})
-        lc.merge_entry(lc.cache_key("https://other.databricks.com", "p", "123"), {})
+        lc.merge_entry(_key(), _identity(), {})
+        lc.merge_entry(
+            _key(workspace="https://other.databricks.com"),
+            _identity(workspace="https://other.databricks.com"),
+            {},
+        )
         lc.clear_cache()
-        assert lc.load_entry(lc.cache_key(WORKSPACE, "p", "123")) is None
+        assert lc.load_entry(_key()) is None
         assert not _entries()
 
     def test_cache_dir_and_entries_are_private(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        lc.merge_entry(key, {})
+        key = _key()
+        lc.merge_entry(key, _identity(), {})
         assert (lc._cache_dir().stat().st_mode & 0o777) == 0o700
         assert (lc._entry_path(key).stat().st_mode & 0o777) == 0o600
 
 
 class TestPrime:
     def test_prime_serves_probe_and_discovery_without_network(self, monkeypatch):
-        key = lc.cache_key(WORKSPACE, "p", "123")
+        key = _key()
         lc.merge_entry(
             key,
+            _identity(),
             {
                 "probe": lc.probe_payload(PROBE),
                 "model_services": lc.services_payload(SERVICES),
             },
         )
-        entry = lc.load_entry(key)
+        entry = lc.load_entry(key, _identity())
         assert entry is not None
 
         def no_network(*_args, **_kwargs):
@@ -199,17 +241,17 @@ class TestConfigureIsolation:
         reads: list[str] = []
         real_load = lc.load_entry
 
-        def recording_load(key):
+        def recording_load(key, identity=None):
             reads.append(key)
-            return real_load(key)
+            return real_load(key, identity)
 
         monkeypatch.setattr(cli_mod, "load_entry", recording_load)
         writes: list[str] = []
         real_merge = lc.merge_entry
 
-        def recording_merge(key, payload):
+        def recording_merge(key, identity, payload):
             writes.append(key)
-            real_merge(key, payload)
+            real_merge(key, identity, payload)
 
         monkeypatch.setattr(cli_mod, "merge_entry", recording_merge)
         state = cli_mod.configure_shared_state(
@@ -228,7 +270,7 @@ class TestConfigureIsolation:
         state, reads, writes = self._run(monkeypatch, use_launch_cache=True)
         assert len(reads) == 1
         assert len(writes) == 1
-        assert writes[0] == lc.cache_key(WORKSPACE, "p", state.get("workspace_id"))
+        assert writes[0] == lc.cache_key(lc.entry_identity(state))
         entry = lc.load_entry(writes[0])
         assert entry is not None
         assert lc.entry_probe(entry) == PROBE
@@ -236,12 +278,13 @@ class TestConfigureIsolation:
 
     def test_hit_does_not_rewrite_a_served_probe(self, monkeypatch):
         # configure_shared_state resolves the key from its state, where the URL carries no
-        # workspace id.
-        key = lc.cache_key(WORKSPACE, "p", None)
+        # workspace id; its identity also reflects the isolated credentials file.
+        key = _key(workspace_id="")
         _store(
             key,
             {"probe": lc.probe_payload(PROBE), "model_services": lc.services_payload(SERVICES)},
-            saved_at=time.time(),
+            checked_at=time.time(),
+            identity=_identity(workspace_id=""),
         )
         db_mod.clear_model_services_cache()
         _state, reads, writes = self._run(monkeypatch, use_launch_cache=True)
@@ -259,9 +302,8 @@ class TestRefresher:
 
     def test_refresh_writes_every_part(self, monkeypatch):
         self._patch_lookups(monkeypatch)
-        args = ["--refresh", "--workspace", WORKSPACE, "--profile", "p", "--workspace-id", "123"]
-        assert lc.main(args) == 0
-        entry = lc.load_entry(lc.cache_key(WORKSPACE, "p", "123"))
+        assert lc.main(refresh_args()) == 0
+        entry = lc.load_entry(_key(), _identity())
         assert entry is not None
         assert lc.entry_probe(entry) == PROBE
         assert lc.entry_model_services(entry) == SERVICES
@@ -274,10 +316,9 @@ class TestRefresher:
             raise AssertionError("refresh must be throttled")
 
         monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", boom)
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {}, saved_at=time.time())
-        args = ["--refresh", "--workspace", WORKSPACE, "--profile", "p", "--workspace-id", "123"]
-        assert lc.main(args) == 0
+        key = _key()
+        _store(key, {}, checked_at=time.time())
+        assert lc.main(refresh_args()) == 0
 
     def test_failed_refresh_invalidates_instead_of_serving(self, monkeypatch):
         self._patch_lookups(monkeypatch)
@@ -286,11 +327,27 @@ class TestRefresher:
             raise RuntimeError("gateway unavailable")
 
         monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", failing_probe)
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {"catalog": lc.catalog_payload(CATALOG)}, saved_at=time.time() - 400)
-        args = ["--refresh", "--workspace", WORKSPACE, "--profile", "p", "--workspace-id", "123"]
-        assert lc.main(args) == 1
+        key = _key()
+        _store(key, {"catalog": lc.catalog_payload(CATALOG)}, checked_at=time.time() - 400)
+        assert lc.main(refresh_args()) == 1
         assert lc.load_entry(key) is None
+
+    def test_refresh_rejects_a_credentials_file_that_changed_since_spawn(
+        self, monkeypatch, tmp_path
+    ):
+        self._patch_lookups(monkeypatch)
+
+        def boom(*_a, **_k):
+            raise AssertionError("stale identity must not refetch")
+
+        monkeypatch.setattr(lc, "get_databricks_token", boom)
+        identity = _identity()
+        changed = {
+            **identity,
+            "config_fingerprint": {"path": "other", "exists": True, "sha256": "z"},
+        }
+        assert lc.main(refresh_args(identity=changed)) == 1
+        assert lc.load_entry(_key()) is None
 
     def test_spawn_is_detached_without_the_agent_stdio(self, monkeypatch):
         spawned: dict = {}
@@ -298,18 +355,15 @@ class TestRefresher:
             "ucode.os_compatibility.subprocess_cross_os.popen",
             lambda argv, **kwargs: spawned.update(argv=argv, kwargs=kwargs) or MagicMock(),
         )
-        lc.spawn_refresher(WORKSPACE, "p", "123")
+        identity = _identity()
+        lc.spawn_refresher(identity)
         assert spawned["kwargs"]["stdin"] is subprocess.DEVNULL
         assert spawned["kwargs"]["stdout"] is subprocess.DEVNULL
         assert spawned["kwargs"]["stderr"] is subprocess.DEVNULL
         assert spawned["kwargs"]["start_new_session"] is True
-        assert spawned["argv"][:5] == [
-            sys.executable,
-            "-P",
-            "-m",
-            "ucode.launch_cache",
-            "--refresh",
-        ]
+        assert spawned["argv"][:4] == [sys.executable, "-P", "-m", "ucode.launch_cache"]
+        assert spawned["argv"][4:6] == ["--refresh", "--identity"]
+        assert json.loads(base64.urlsafe_b64decode(spawned["argv"][6].encode())) == identity
 
 
 class TestLaunchPath:
@@ -335,23 +389,21 @@ class TestLaunchPath:
             yield
 
     def test_hit_serves_catalog_without_a_lookup_and_starts_refresher(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
         _store(
-            key,
+            _key(),
             {"catalog": lc.catalog_payload(CATALOG)},
-            saved_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1,
+            checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1,
         )
         list_catalog = MagicMock(side_effect=AssertionError("cached launch must not fetch catalog"))
         spawn = MagicMock()
         with self._launch(list_catalog, spawn):
             result = runner.invoke(cli_mod.app, ["claude"])
         assert result.exit_code == 0, result.output
-        spawn.assert_called_once_with(WORKSPACE, "p", "123")
+        spawn.assert_called_once_with(_identity())
         list_catalog.assert_not_called()
 
     def test_hit_within_throttle_does_not_refresh(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {"catalog": lc.catalog_payload(CATALOG)}, saved_at=time.time())
+        _store(_key(), {"catalog": lc.catalog_payload(CATALOG)}, checked_at=time.time())
         list_catalog = MagicMock(return_value=CATALOG)
         spawn = MagicMock()
         with self._launch(list_catalog, spawn):
@@ -367,7 +419,7 @@ class TestLaunchPath:
             result = runner.invoke(cli_mod.app, ["claude"])
         assert result.exit_code == 0, result.output
         list_catalog.assert_called_once()
-        entry = lc.load_entry(lc.cache_key(WORKSPACE, "p", "123"))
+        entry = lc.load_entry(_key())
         assert entry is not None
         assert lc.entry_catalog(entry) is not None
         # The results were just fetched; the refresher only runs for older entries.
@@ -387,8 +439,8 @@ class TestLaunchPath:
 
 class TestInvalidation:
     def test_configure_invalidates(self):
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {}, saved_at=time.time())
+        key = _key()
+        _store(key, {}, checked_at=time.time())
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -399,8 +451,8 @@ class TestInvalidation:
         assert lc.load_entry(key) is None
 
     def test_login_invalidates(self, monkeypatch):
-        key = lc.cache_key(WORKSPACE, "p", "123")
-        _store(key, {}, saved_at=time.time())
+        key = _key()
+        _store(key, {}, checked_at=time.time())
         monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
         monkeypatch.setattr(db_mod, "find_profile_name_for_workspace", lambda *_a, **_k: "p")
         monkeypatch.setattr(db_mod, "run", lambda *_a, **_k: None)
