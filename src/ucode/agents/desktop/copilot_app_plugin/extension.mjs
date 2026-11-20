@@ -44,11 +44,16 @@ if (config.remove) {
     synced === "changed" ? launchRestart({ ...syncOptions, ugPath: config.ugPath }) : null,
   );
   let session;
+  // session.log is async, and a rejected one must not end the extension.
+  const say = (message) =>
+    Promise.resolve()
+      .then(() => session.log(message, { level: "error" }))
+      .catch(() => {});
   const tokenSource = createTokenSource(config);
   const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
     const hint = hintFor(error, config);
     if (!session || !hint) return false;
-    session.log(hint, { level: "error" });
+    say(hint);
     return true;
   });
   session = await joinSession({
@@ -59,7 +64,7 @@ if (config.remove) {
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();
     // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
-    if (event.type === "session.error") session.log(config.loginHint, { level: "error" });
+    if (event.type === "session.error") say(config.loginHint);
   });
   const launched = await restart;
   if (launched) await tellRestart(session, launched);

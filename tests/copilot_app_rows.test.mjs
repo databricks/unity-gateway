@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
 
-import { copilotHome, readEndpoint, syncInBackground, syncOnce, tryLock } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
+import { LOCK_FILE, LOCK_STALE_MS, copilotHome, readEndpoint, syncInBackground, syncOnce, tryLock } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
 import { FakeApp } from "./copilot_app_fake.mjs";
 
 // The Copilot runtime's Node has a global WebSocket; Node before 22 doesn't.
@@ -164,22 +164,22 @@ test("repeated syncs leave exactly one copy of each row", async (t) => {
 
 test("only one extension process syncs at a time; a stale lock is taken over", async (t) => {
   const { app, options } = await setup(t);
-  const lock = join(options.stateDir, "app-sync.lock");
+  const lock = join(options.stateDir, LOCK_FILE);
   writeFileSync(lock, "");
   assert.equal(await syncOnce({ app: ROWS }, options), "busy");
   assert.equal(app.received.length, 0);
 
-  const old = new Date(Date.now() - 120_000);
+  const old = new Date(Date.now() - 2 * LOCK_STALE_MS);
   utimesSync(lock, old, old);
   assert.equal(await syncOnce({ app: ROWS }, options), "changed");
 });
 
 test("a lock taken over as stale is released only by its new owner", () => {
   const dir = mkdtempSync(join(tmpdir(), "ug-copilot-lock-"));
-  const lock = join(dir, "app-sync.lock");
+  const lock = join(dir, LOCK_FILE);
   const first = tryLock(lock, Date.now);
   assert.equal(tryLock(lock, Date.now), null);
-  const old = new Date(Date.now() - 120_000);
+  const old = new Date(Date.now() - 2 * LOCK_STALE_MS);
   utimesSync(lock, old, old);
   const second = tryLock(lock, Date.now);
   assert.ok(second);

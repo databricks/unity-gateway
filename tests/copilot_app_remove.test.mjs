@@ -18,7 +18,7 @@ import { test as nodeTest } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { removeInBackground, removeOnce, removeSettingsKeys, settingsPath } from "../src/ucode/agents/desktop/copilot_app_plugin/app-remove.mjs";
-import { copilotHome, syncOnce } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
+import { LOCK_FILE, LOCK_STALE_MS, copilotHome, syncOnce } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
 import { FakeApp } from "./copilot_app_fake.mjs";
 
 const skip = typeof WebSocket === "function" ? false : "this Node has no global WebSocket";
@@ -98,13 +98,13 @@ test("once the keys are gone, another session's extension does nothing", async (
 
 test("only one extension process removes at a time; a stale lock is taken over", async (t) => {
   const { app, path, options } = await setup(t);
-  const lock = join(options.stateDir, "app-sync.lock");
+  const lock = join(options.stateDir, LOCK_FILE);
   writeFileSync(lock, "");
   assert.equal(await removeOnce(CONFIG, options), "busy");
   assert.equal(app.connections, 0);
   assert.deepEqual(read(path), UG_KEYS);
 
-  const old = new Date(Date.now() - 120_000);
+  const old = new Date(Date.now() - 2 * LOCK_STALE_MS);
   utimesSync(lock, old, old);
   assert.equal(await removeOnce(CONFIG, options), "removed");
   assert.equal(existsSync(lock), false);

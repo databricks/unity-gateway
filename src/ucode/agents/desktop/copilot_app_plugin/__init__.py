@@ -364,17 +364,18 @@ def _has_ug_keys(settings: dict, root: Path) -> bool:
     return bool(_ug_entries(settings, root))
 
 
-def _read_extension_config(root: Path) -> dict | None:
+def _read_extension_config(root: Path, plugin: str = PLUGIN) -> dict | None:
     try:
-        config = json.loads((_extension_dir(root) / "config.json").read_text(encoding="utf-8"))
+        path = _extension_dir(root, plugin) / "config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return config if isinstance(config, dict) else None
 
 
 def _removal_requested(root: Path) -> bool:
-    config = _read_extension_config(root)
-    return config is not None and config.get("remove") is True
+    configs = (_read_extension_config(root, plugin) for _marketplace, plugin in _IDS)
+    return any(config is not None and config.get("remove") is True for config in configs)
 
 
 def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
@@ -418,6 +419,11 @@ def install(
     # Checked before anything is written, so a refusal leaves no plugin behind.
     for key in (_MARKETPLACES_KEY, _ENABLED_KEY):
         _object(dict(settings), key, path)
+    marketplaces = settings.get(_MARKETPLACES_KEY) or {}
+    if MARKETPLACE in marketplaces and not _owns_marketplace(settings, root or plugin_root()):
+        raise SettingsError(
+            f"{path}: {_MARKETPLACES_KEY}.{MARKETPLACE} already names another plugin marketplace"
+        )
     _check_writable(path)
     created = not path.exists()
     root = write_plugin(config, root)
@@ -462,14 +468,17 @@ def defer_remove(root: Path | None = None, settings_path: Path | None = None) ->
     settings = read_settings(path)
     # The extension rewrites settings.json under the same rules, so ug refuses what it would.
     _check_writable(path)
-    if not _installed(settings, root):
+    installed = _installed_id(settings, root)
+    if installed is None:
         return False
-    config = _read_extension_config(root)
+    # An earlier build's install has its extension under its own plugin name.
+    plugin = installed[1]
+    config = _read_extension_config(root, plugin)
     if config is None:
         return False
     config["remove"] = True
     config["pluginRoot"] = str(root)
-    atomic_write_json(_extension_dir(root) / "config.json", config)
+    atomic_write_json(_extension_dir(root, plugin) / "config.json", config)
     return True
 
 

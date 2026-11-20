@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -405,6 +406,7 @@ class TestSettings:
         assert not plugin.plugin_root().exists()
         assert target.read_text() == "{}"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
     def test_rewriting_settings_keeps_their_mode(self, home):
         path = _settings(home)
         path.parent.mkdir()
@@ -661,6 +663,17 @@ class TestEarlierIds:
         assert json.loads(plugin.copilot_settings_path().read_text()) == {"model": "m"}
         assert not plugin.plugin_root().exists()
 
+    def test_a_deferred_remove_marks_an_earlier_installs_extension(self, home):
+        root = plugin.plugin_root()
+        self._legacy_install(root)
+        config = root / "plugins" / "databricks" / "extensions" / "databricks" / "config.json"
+        config.write_text("{}")
+
+        assert plugin.defer_remove()
+
+        assert json.loads(config.read_text())["remove"] is True
+        assert plugin.status() == "removal_pending"
+
     def test_an_earlier_id_at_another_path_isnt_ugs(self, home):
         self._legacy_install(plugin.plugin_root(), path="/elsewhere")
 
@@ -685,3 +698,16 @@ def test_install_refuses_a_non_object_key_before_writing_the_plugin(home, key):
 
     assert not plugin.plugin_root().exists()
     assert json.loads(path.read_text()) == {key: []}
+
+
+def test_install_leaves_another_marketplace_of_its_name_alone(home):
+    path = plugin.copilot_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    foreign = {"source": {"source": "directory", "path": "/elsewhere"}}
+    path.write_text(json.dumps({"extraKnownMarketplaces": {plugin.MARKETPLACE: foreign}}))
+
+    with pytest.raises(plugin.SettingsError, match="another plugin marketplace"):
+        plugin.install(_config())
+
+    assert not plugin.plugin_root().exists()
+    assert json.loads(path.read_text())["extraKnownMarketplaces"] == {plugin.MARKETPLACE: foreign}
