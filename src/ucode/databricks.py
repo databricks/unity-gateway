@@ -401,9 +401,16 @@ def _macos_system_proxies() -> dict[str, str] | None:
     ):
         return None
     proxies = urllib_request.getproxies()
-    system_proxies = {
-        scheme: proxy for scheme in ("http", "https", "all") if (proxy := proxies.get(scheme))
-    }
+    system_proxies: dict[str, str] = {}
+    for scheme in ("http", "https", "all"):
+        proxy = proxies.get(scheme)
+        if not proxy:
+            continue
+        if "://" not in proxy:
+            # macOS can report scheme-less values ("host:port"); urllib's proxy handler
+            # treats those as HTTP proxies, so make that explicit for httpx.
+            proxy = f"http://{proxy}"
+        system_proxies[scheme] = proxy
     return system_proxies or None
 
 
@@ -528,6 +535,13 @@ def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledRes
     )
     try:
         response = _get_http_client().send(httpx_request, follow_redirects=True)
+    except httpx.TooManyRedirects as exc:
+        # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
+        # callers see a status-shaped failure, not a network one. httpx drops the last response,
+        # so report the generic 310 (Too Many Redirects) status.
+        raise urllib_error.HTTPError(
+            request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
+        ) from exc
     except httpx.RequestError as exc:
         pending = [exc]
         seen: set[int] = set()
@@ -548,6 +562,10 @@ def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledRes
             elif current.__context__ is not None:
                 pending.append(current.__context__)
         raise urllib_error.URLError(reason) from exc
+    except httpx.HTTPError as exc:
+        # Other transport-level httpx errors (the pool closed, a stream broke): urllib has no
+        # counterpart, so surface them as network errors like the RequestError mapping above.
+        raise urllib_error.URLError(exc) from exc
 
     pooled_response = _PooledResponse(response)
     if not 200 <= response.status_code < 300:
