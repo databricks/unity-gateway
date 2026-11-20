@@ -169,6 +169,19 @@ def test_ug_codex_native_v2_plain_assignment_routing(
             tui.wait_for_task(task, timeout=300)
             tui.exit_normally()
 
+        hooks = read_jsonl(session.home / ".codex/native-pre-tool-use.jsonl")
+        assignments = {
+            row["tool_input"]["message"]
+            for row in hooks
+            if row.get("tool_input", {}).get("task_name") == task_name
+            and isinstance(row["tool_input"].get("message"), str)
+        }
+        assert len(assignments) == 1, assignments
+        native_assignment = assignments.pop()
+        # The parent may include the newline immediately before the END delimiter.
+        assert native_assignment in (assignment, assignment + "\n"), native_assignment
+        assignment = native_assignment
+
         routing_requests = [
             request
             for request in recorder.requests_after(request_checkpoint)
@@ -264,7 +277,6 @@ def test_ug_codex_native_v2_plain_assignment_routing(
     assert child_provider == parent_provider
     assert tomllib.loads(provider_config.read_text())["model_provider"] == "Databricks"
 
-    hooks = read_jsonl(session.home / ".codex/native-pre-tool-use.jsonl")
     matching_hooks = [
         row
         for row in hooks
