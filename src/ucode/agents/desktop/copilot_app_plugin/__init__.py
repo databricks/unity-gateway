@@ -51,6 +51,7 @@ _SOURCE_FILES = (
     "app-rows.mjs",
     "app-remove.mjs",
     "app-restart.mjs",
+    "app-tracing.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -117,6 +118,9 @@ class PluginConfig:
     # Every provider id ug may have written to the app; the extension deletes those not in
     # ``app_providers``.
     owned_provider_ids: tuple[str, ...] = ()
+    # Where the extension exports the spans it builds from the session's events; None turns
+    # tracing off.
+    traces_endpoint: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -230,6 +234,11 @@ def extension_config(config: PluginConfig) -> dict:
             "providers": [_app_entry(rows) for rows in config.app_providers],
             "ownedProviderIds": list(config.owned_provider_ids),
         },
+        "tracing": (
+            {"endpoint": config.traces_endpoint, "headers": dict(config.headers)}
+            if config.traces_endpoint
+            else None
+        ),
     }
 
 
@@ -469,42 +478,23 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     _write_settings(path, settings)
 
 
-def is_ug_headers_provider(value: object) -> bool:
-    args = value.get("args") if isinstance(value, dict) else None
-    return isinstance(args, list) and "otel-headers" in args
-
-
-def headers_provider(settings_path: Path | None = None) -> object:
-    """Copilot's ``telemetry.headersProvider``, or None."""
-    telemetry = read_settings(settings_path).get(_TELEMETRY_KEY)
-    return telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
-
-
-def set_headers_provider(provider: Mapping[str, Any], settings_path: Path | None = None) -> bool:
-    """Set ``telemetry.headersProvider``, keeping every other setting. It's the only user
-    ``telemetry`` key ug writes: the runtime ignores the whole file over most others. Returns
-    whether the file changed."""
-    path = settings_path or copilot_settings_path()
-    settings = read_settings(path)
-    telemetry = _object(settings, _TELEMETRY_KEY, path)
-    if telemetry.get(_HEADERS_PROVIDER_KEY) == provider:
-        return False
-    telemetry[_HEADERS_PROVIDER_KEY] = dict(provider)
-    _write_settings(path, settings)
-    return True
+def tracing_on(root: Path | None = None) -> bool:
+    """Whether the installed extension exports spans."""
+    config = _read_extension_config(root or plugin_root())
+    return config is not None and isinstance(config.get("tracing"), dict)
 
 
 def remove_headers_provider(settings_path: Path | None = None) -> bool:
-    """Remove ug's ``telemetry.headersProvider``; another one stays. Returns whether it was
-    removed."""
+    """Remove the ``telemetry.headersProvider`` running ``ug otel-headers`` that earlier builds
+    wrote; another one stays. Returns whether it was removed."""
     path = settings_path or copilot_settings_path()
     if not path.exists():
         return False
     settings = read_settings(path)
     telemetry = settings.get(_TELEMETRY_KEY)
-    if not isinstance(telemetry, dict) or not is_ug_headers_provider(
-        telemetry.get(_HEADERS_PROVIDER_KEY)
-    ):
+    provider = telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
+    args = provider.get("args") if isinstance(provider, dict) else None
+    if not isinstance(telemetry, dict) or not isinstance(args, list) or "otel-headers" not in args:
         return False
     del telemetry[_HEADERS_PROVIDER_KEY]
     if not telemetry:

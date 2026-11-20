@@ -159,6 +159,18 @@ class TestExtensionConfig:
             "ownedProviderIds": [],
         }
 
+    def test_tracing_is_off_unless_it_has_an_endpoint(self):
+        assert plugin.extension_config(_config())["tracing"] is None
+        config = plugin.extension_config(
+            _config(
+                headers={"X-Team": "data"}, traces_endpoint="https://h/ai-gateway/otel/v1/traces"
+            )
+        )
+        assert config["tracing"] == {
+            "endpoint": "https://h/ai-gateway/otel/v1/traces",
+            "headers": {"X-Team": "data"},
+        }
+
     def test_a_pat_token_command_and_hint(self):
         config = plugin.extension_config(_config(use_pat=True))
         assert config["tokenCommand"][-1] == "--use-pat"
@@ -241,6 +253,7 @@ class TestWritePlugin:
             "app-rows.mjs",
             "app-remove.mjs",
             "app-restart.mjs",
+            "app-tracing.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (

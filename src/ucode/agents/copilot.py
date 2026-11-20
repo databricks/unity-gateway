@@ -844,13 +844,6 @@ OTEL_TRACES_PATH = f"{OTEL_PATH}/v1/traces"
 # Copilot always exports metrics, which the gateway doesn't take; the proxy drops them.
 OTEL_METRICS_PATH = f"{OTEL_PATH}/v1/metrics"
 _INHERITED_OTEL_PREFIXES = ("OTEL_EXPORTER_OTLP_", "COPILOT_OTEL_")
-# What turns on the GitHub Copilot app's trace export to the gateway. The app's MCP servers inherit
-# it, so ug's own servers get it blanked.
-APP_OTEL_ENV_NAMES = (
-    "COPILOT_OTEL_ENABLED",
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-)
 
 
 def otel_env(proxy_base_url: str, session_secret: str | None = None) -> dict[str, str]:
@@ -966,11 +959,6 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def installed_version() -> tuple[int, int, int] | None:
-    """The installed Copilot CLI's version, or None without one."""
-    return _parse_version(agent_version(SPEC["binary"]))
-
-
 def minimum_version_error() -> str | None:
     installed = agent_version(SPEC["binary"])
     parsed = _parse_version(installed)
@@ -992,7 +980,6 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
         "command": argv[0],
         "args": list(argv[1:]),
         "tools": ["*"],
-        "env": dict.fromkeys(APP_OTEL_ENV_NAMES, ""),
     }
 
 
