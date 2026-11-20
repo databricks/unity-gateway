@@ -2061,6 +2061,7 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool = True,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -2099,6 +2100,7 @@ def _get_databricks_token_for_profile(
             profile,
             force_refresh=force_refresh,
             browser_login=browser_login,
+            allow_reauth=allow_reauth,
             token_epoch=token_epoch,
         )
 
@@ -2109,6 +2111,7 @@ def _fetch_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool = True,
     token_epoch: int,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
@@ -2191,7 +2194,7 @@ def _fetch_databricks_token_for_profile(
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
         token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
-    elif not token and _auth_login_supports_no_browser(cli):
+    elif not token and allow_reauth and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -2257,6 +2260,7 @@ def get_databricks_token(
     *,
     force_refresh: bool = False,
     browser_login: bool = False,
+    allow_reauth: bool = True,
 ) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -2291,6 +2295,7 @@ def get_databricks_token(
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
+        allow_reauth=allow_reauth,
     )
 
     metrics.bind(workspace, token)

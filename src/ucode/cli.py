@@ -4387,22 +4387,25 @@ def _launch_tool(
         )
         if unmanaged_picker_catalog or scoped_picker_catalog:
             picker_catalog_started_profile = _get_catalog_profile(state)
-            # A token fetched before `configure_shared_state`'s auth check can fail on stale
-            # credentials the auth step below would repair; skip the speculation and let the
-            # normal path recover rather than changing that flow.
-            try:
-                picker_catalog_token = get_databricks_token(
-                    state["workspace"], picker_catalog_started_profile
+            speculation_kwargs = (
+                {} if unmanaged_picker_catalog else {"parent_schema": parent_schema}
+            )
+
+            def _speculative_catalog() -> AnthropicModelCatalog:
+                """Fetch the picker catalog in the background, non-interactively.
+
+                Only the plain ``databricks auth token`` call runs — no ``auth login``, no
+                browser, nothing that can prompt — so the main thread never waits on it and a
+                failure never doubles configure's own fetch. Its exception rides the future;
+                the join site falls back to the serial fetch on the live token."""
+                token = get_databricks_token(
+                    state["workspace"], picker_catalog_started_profile, allow_reauth=False
                 )
-            except Exception:
-                picker_catalog_started_profile = None
-            else:
-                picker_catalog_future = _start_in_background(
-                    list_anthropic_model_catalog,
-                    state["workspace"],
-                    picker_catalog_token,
-                    **({} if unmanaged_picker_catalog else {"parent_schema": parent_schema}),
+                return list_anthropic_model_catalog(
+                    state["workspace"], token, **speculation_kwargs
                 )
+
+            picker_catalog_future = _start_in_background(_speculative_catalog)
 
         def _speculative_picker_catalog() -> AnthropicModelCatalog | None:
             """The speculative catalog result when its profile still matches and it succeeded;
