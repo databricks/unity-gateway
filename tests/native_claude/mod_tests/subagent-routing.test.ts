@@ -1126,3 +1126,24 @@ test('session start without a display directory restores nothing and logs nothin
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
   expect(logs).toEqual([]);
 });
+
+test('a consumer that stops reading closes the reply stream beneath', async ($, on) => {
+  let closed = false;
+  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'r' }) } }));
+  on('turn.step', async function* ($, e) {
+    try {
+      yield { kind: 'tool', index: 0, id: 'close-0', name: 'Agent' };
+      yield { kind: 'input', index: 0, json: JSON.stringify(call) };
+      yield { kind: 'stop', stopReason: 'tool_use', usage: null };
+    } finally {
+      closed = true;
+    }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
+  });
+  const stream = $.turn.step({ turnId: 'close', index: 0, model: 'parent-model', messageCount: 3, agentId: undefined });
+  await stream.next();
+  await stream.return(undefined);
+  expect(closed).toBe(true);
+});

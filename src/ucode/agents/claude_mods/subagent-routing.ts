@@ -317,15 +317,20 @@ export async function* routeAgentStream($: any, step: any, source: AsyncGenerato
     held.length = 0
     calls.clear()
   }
-  while (true) {
-    const next = await source.next()
-    if (next.done) { yield* release(); return next.value }
-    const chunk = next.value
-    if (chunk.kind === 'tool' && (chunk.name === 'Agent' || chunk.name === 'Task')) calls.set(chunk.index, { tool: chunk.name, id: chunk.id, json: '' })
-    if (!calls.size) { yield chunk; continue }
-    if (chunk.kind === 'input' && calls.has(chunk.index)) calls.get(chunk.index)!.json += chunk.json
-    held.push(chunk)
-    if (chunk.kind === 'stop') yield* release()
+  // A consumer that stops reading must also stop the reply stream beneath this one.
+  try {
+    while (true) {
+      const next = await source.next()
+      if (next.done) { yield* release(); return next.value }
+      const chunk = next.value
+      if (chunk.kind === 'tool' && (chunk.name === 'Agent' || chunk.name === 'Task')) calls.set(chunk.index, { tool: chunk.name, id: chunk.id, json: '' })
+      if (!calls.size) { yield chunk; continue }
+      if (chunk.kind === 'input' && calls.has(chunk.index)) calls.get(chunk.index)!.json += chunk.json
+      held.push(chunk)
+      if (chunk.kind === 'stop') yield* release()
+    }
+  } finally {
+    await source.return?.(undefined)
   }
 }
 
