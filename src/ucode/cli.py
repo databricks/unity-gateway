@@ -4423,15 +4423,17 @@ def _launch_tool(
                 return None
             try:
                 speculative = picker_catalog_future.result()
-            except Exception:
+            except Exception as exc:
                 # The speculation is best effort: a failed background token or catalog fetch
                 # falls back to the serial fetch on the live token, never fails the launch.
+                metrics.failure("models_list", exc, continued_with_fallback=True)
                 return None
             error = speculative.error_msg
             if error and looks_like_definitive_auth_failure(error):
                 # The token the speculation rode is definitively rejected (a 401, an
                 # invalid-token 400, an invalid-access-token 403) and configure's auth step may
                 # have repaired it; refetch with the live token.
+                metrics.failure("models_list", error, continued_with_fallback=True)
                 return None
             if error:
                 # Any other failure (a plain 403, a transient error) would fail a live-token

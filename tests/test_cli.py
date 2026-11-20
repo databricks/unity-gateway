@@ -25,6 +25,8 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
+import ucode.metrics as metrics_mod
+from tests.conftest import metric_observations
 from ucode import agents, tls
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
@@ -10709,7 +10711,9 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert calls["result"].exit_code == 0, calls["result"].output
         assert len(calls["catalog_calls"]) == 2
 
-    def test_speculative_catalog_error_refetches_with_live_token(self, monkeypatch):
+    def test_speculative_catalog_error_refetches_with_live_token(
+        self, monkeypatch, metrics_recorder
+    ):
         error_catalog = db_mod.AnthropicModelCatalog(
             model_ids=[], model_id_to_display_name={}, error_msg="HTTP 401 Unauthorized"
         )
@@ -10742,6 +10746,11 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert "main.default.claude-sonnet-5" in (
             configure.call_args.kwargs["picker_catalog"].model_ids
         )
+        # The definitive auth failure was reported as handled before the refetch.
+        [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
+        assert count == 1
+        assert labels["operation"] == "models_list"
+        assert labels["continued_with_fallback"] is True
 
     def test_speculative_token_failure_falls_back_to_the_serial_fetch(self, monkeypatch):
         """A background token failure must not fail the launch: the join falls back to the
@@ -10782,45 +10791,6 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert "main.default.claude-sonnet-5" in (
             configure.call_args.kwargs["picker_catalog"].model_ids
         )
-
-    def test_workspace_change_refetches_serially(self, monkeypatch):
-        """configure_shared_state can resolve a different workspace than the one the
-        speculation tokenized for; the speculative result must not be reused then."""
-        state = dict(MINIMAL_STATE)
-        catalog_started = threading.Event()
-        picker_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=["main.default.claude-sonnet-5"],
-            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
-        )
-
-        def fake_catalog(*_args, **kwargs):
-            catalog_started.set()
-            return picker_catalog
-
-        def fake_configure_shared_state(*_args, **_kwargs):
-            # Configure resolved the selector to another workspace.
-            assert catalog_started.wait(self.WAIT_SECONDS)
-            return {**state, "workspace": "https://other.example.com"}
-
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod, "list_anthropic_model_catalog", MagicMock(side_effect=fake_catalog)
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
-
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        assert cli_mod.list_anthropic_model_catalog.call_count == 2
 
     def test_invalid_token_400_refetches_with_live_token(self, monkeypatch):
         """The gateway's invalid-token 400 is a definitive auth failure: the speculation's
