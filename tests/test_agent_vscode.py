@@ -365,6 +365,7 @@ class TestSeatRelay:
 
     @pytest.fixture
     def seats(self, monkeypatch, runtime):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.LINUX)
         monkeypatch.setattr(vscode, "uses_seat_relay", lambda state, provider, tool: True)
         monkeypatch.setattr(vscode, "ug_binary", lambda: "/bin/ug")
         monkeypatch.setattr(vscode, "bundled_runtime", lambda code: runtime)
