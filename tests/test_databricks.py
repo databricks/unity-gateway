@@ -7472,7 +7472,8 @@ def test_http_transport_maps_refused_connections_to_network_errors(monkeypatch):
     _, reason = db_mod._http_get_bytes(f"http://127.0.0.1:{port}/api", "token")
     assert reason is not None
     assert reason.startswith("network error:")
-    assert "Connection refused" in reason
+    # Windows words it "[WinError 10061] ... actively refused it".
+    assert "refused" in reason.lower()
 
 
 def test_http_transport_passes_headers_and_timeout(monkeypatch):
