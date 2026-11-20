@@ -24,6 +24,7 @@ CLICK_TIMEOUT_MS = 2000
 POLL_S = 0.25
 # How long a screen gets to react to an action before the same screen is read as new.
 SETTLE_S = 3
+SIGNED_OUT_NOTICE_GRACE_S = 6
 
 # ug's extension asks for this on a profile where Copilot Chat never finished its setup. The toast
 # stays up after Copilot Chat is turned on another way, over the chat's model picker.
@@ -38,9 +39,13 @@ _SCREEN = """() => {
   const dialog = [...document.querySelectorAll('.monaco-dialog-box')].find(visible);
   const picker = [...document.querySelectorAll('.chat-model-picker-widget')].find(visible);
   const button = document.querySelector('.interactive-input-part .model-picker-split');
+  const target = document.querySelector('.interactive-input-part .chat-session-target-picker-item');
+  // A finished tool call renders in a collapsible confirmation widget with nothing to approve.
   const confirmation = [...document.querySelectorAll(
     '.chat-confirmation-widget-container, .chat-confirmation-widget, .chat-confirmation-widget2'
-  )].filter(visible).pop();
+  )].filter(e => visible(e)
+    && !e.matches('.chat-confirmation-widget-collapsible')
+    && !e.querySelector('.chat-confirmation-widget-collapsible')).pop();
   const response = [...document.querySelectorAll(
     '.interactive-item-container.interactive-response'
   )].pop();
@@ -61,14 +66,15 @@ _SCREEN = """() => {
     pickerSearch: !!(picker && picker.querySelector('input')),
     pickerQuery: picker && picker.querySelector('input') ? picker.querySelector('input').value : null,
     modelButton: button ? button.getAttribute('aria-label') : null,
+    sessionTarget: target ? text(target) : null,
     confirmation: confirmation ? text(confirmation) : null,
     response: response
       ? {busy: response.classList.contains('chat-response-loading'), text: text(response)}
       : null,
     responses: document.querySelectorAll('.interactive-item-container.interactive-response').length,
     welcome: !!welcome && visible(welcome),
-    byokToast: visible(document.evaluate(
-      "//*[normalize-space(text())='Set BYOK utility models']", document, null,
+    signedOutNotice: visible(document.evaluate(
+      "//*[normalize-space(text())='Choose how you want to use Copilot.']", document, null,
       XPathResult.FIRST_ORDERED_NODE_TYPE, null
     ).singleNodeValue),
     modelsEditor: !!modelsEditor,
@@ -103,7 +109,7 @@ class VSCode:
         self.actions: list[str] = []
         self.states: list[str] = []
         self.started = time.monotonic()
-        self.copilot_chat_ready = False
+        self.copilot_session_ready = False
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
@@ -217,11 +223,7 @@ class VSCode:
             return None
 
     def screen(self) -> dict:
-        screen = self.page.evaluate(_SCREEN)
-        # The toast hides itself after some seconds, so remember it from any read.
-        if screen["byokToast"]:
-            self.copilot_chat_ready = True
-        return screen
+        return self.page.evaluate(_SCREEN)
 
     def shot(self, name: str) -> None:
         self.shots += 1
@@ -310,7 +312,7 @@ class VSCode:
                 self._seen("picked", screen)
                 last, picked_since = "picked", picked_since or time.monotonic()
                 if time.monotonic() - picked_since >= SETTLE_S:
-                    self._wait_for_copilot_chat()
+                    self._wait_for_copilot_session()
                     self.shot("model-picked")
                     return
                 time.sleep(POLL_S)
@@ -418,17 +420,25 @@ class VSCode:
         else:
             raise UnknownScreen(f"Unknown screen while picking {label}: {screen}")
 
-    def _wait_for_copilot_chat(self) -> None:
-        # Copilot Chat shows this toast once it runs on Databricks models. A prompt sent before
-        # then goes to VS Code's setup agent, which asks for a GitHub sign-in.
-        if self.copilot_chat_ready:
+    def _wait_for_copilot_session(self) -> None:
+        """Require the chat to be a Copilot session that can run on the added models.
+
+        The Copilot session shows nothing when it can, only a sign-in notice when it can't, and
+        that notice can come a few seconds after the models change."""
+        if self.copilot_session_ready:
             return
-        self._wait(
-            lambda: self.screen()["byokToast"],
-            STEP_TIMEOUT_S,
-            "Copilot Chat to start on the Databricks models",
+        target = self._wait(
+            lambda: self.screen()["sessionTarget"], STEP_TIMEOUT_S, "the chat's session type"
         )
-        self.shot("copilot-chat-ready")
+        assert target == "Copilot", f"The chat opened a {target!r} session, not a Copilot session"
+        quiet_until = time.monotonic() + SIGNED_OUT_NOTICE_GRACE_S
+        while time.monotonic() < quiet_until:
+            if self.screen()["signedOutNotice"]:
+                self.shot("copilot-session-signed-out")
+                raise AssertionError("The Copilot session asks for a sign-in on Databricks models")
+            time.sleep(POLL_S)
+        self.copilot_session_ready = True
+        self.shot("copilot-session-ready")
 
     def assert_not_in_picker(self, label: str) -> None:
         """Search Copilot Chat's model picker for ``label``, require no match, and close it."""
