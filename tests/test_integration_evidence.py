@@ -1236,6 +1236,45 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
     )
 
 
+def test_codex_skill_confirmation_allows_only_guarded_duplicates_after_success():
+    successful = {
+        "type": "DynamicToolCall",
+        "tool": "ug_smart_router",
+        "arguments": {"action": "off"},
+        "status": "completed",
+        "success": True,
+        "content_items": [{"type": "inputText", "text": '{"message":"Smart Router is off"}'}],
+    }
+    denied = {
+        **successful,
+        "status": "failed",
+        "success": False,
+        "content_items": [
+            {
+                "type": "inputText",
+                "text": "Use $smart-router off to turn Smart Router off. Routing is unchanged.",
+            }
+        ],
+    }
+
+    def records(*items):
+        return [
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": item}}
+            for item in items
+        ]
+
+    assert codex.completed_smart_router_results(records(successful, denied), "off") == [
+        {"message": "Smart Router is off"}
+    ]
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records(denied), "off")
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records(denied, successful), "off")
+    denied["content_items"][0]["text"] = "Another failure. Routing is unchanged."
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records(successful, denied), "off")
+
+
 def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():
     calls = [_call(1), _call(2)]
     assert claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _RESUMED)) == "child-id"

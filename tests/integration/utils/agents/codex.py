@@ -114,6 +114,20 @@ def completed_smart_router_results(records: list[dict], action: str) -> list[dic
             continue
         if item.get("arguments", {}).get("action") != action:
             continue
+        if (
+            action == "off"
+            and results
+            and item.get("status") == "failed"
+            and item.get("success") is False
+            and item.get("content_items")
+            == [
+                {
+                    "type": "inputText",
+                    "text": "Use $smart-router off to turn Smart Router off. Routing is unchanged.",
+                }
+            ]
+        ):
+            continue
         assert item.get("status") == "completed" and item.get("success") is True, item
         contents = item.get("content_items")
         assert isinstance(contents, list) and len(contents) == 1, item
