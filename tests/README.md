@@ -3,13 +3,17 @@
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
-`test_codex_smart_routing_v2.py` checks POSIX/Windows wiring and the required upgrade
-from older builds to stable 0.171.0. `test_agent_codex.py` owns version boundaries,
-including prerelease rejection at the minimum, and slow-probe recovery;
-`test_cli.py` covers explicit and managed upgrade/decline/disable through the public command. The separate
-footer version gate was removed because routed launch now enforces the requirement.
-These are component checks; native UI and credentialed gateway validation are
-separate, as described in the [validation guide](../docs/codex-smart-router-statusline.md).
+`test_codex_smart_routing_v2.py` also checks the footer's POSIX/Windows app-server
+registration, terminal selection, and preservation of unrelated MCP entries.
+Native UI and credentialed gateway validation are separate, as described in the
+[validation guide](../docs/codex-smart-router-statusline.md).
+
+The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
+stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
+`test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed required
+upgrades, refusal/failure, and explicit routing disable. Routing CI pins 0.171.0.
+These are component checks; the installed-version journeys are documented in the
+[integration guide](integration/README.md).
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.

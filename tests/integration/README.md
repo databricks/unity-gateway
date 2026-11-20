@@ -1,17 +1,20 @@
 # Integration tests
 
-The Codex footer has offline protocol, process-isolation, and launcher
-coverage in `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`.
-Those component checks also cover Claude-style green ON/gray OFF badges, nullable
-snapshots, Python's `-P` provider launch flag, and terminal config isolation. Native
-UI checks must verify badge colors as well as the ON/OFF text; OFF remains visible,
-matching Claude's persistent hint.
-Routing CI now pins stable Codex `0.171.0`; older routed clients must upgrade
-through the existing gate (component coverage includes decline/failure and
-prereleases). The separate footer version gate was removed. Native UI checks use the
+The Codex footer has offline protocol, process-isolation, and launcher coverage in
+`../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
+checks cover green ON/gray OFF badges, nullable snapshots, Python's `-P` provider
+launch flag, and terminal config isolation. Native checks must verify badge colors
+and ON/OFF text; OFF stays visible, matching Claude's persistent hint. See the
 [footer validation steps](../../docs/codex-smart-router-statusline.md). A native
 footer or resource read alone does not establish gateway inference or routed-child
-coverage. Windows native footer rendering remains a manual validation step.
+coverage. Windows native footer rendering remains untested.
+
+Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
+`../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
+explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
+journey on older clients declines the upgrade, requires a blocked launch, then
+explicitly disables routing to complete native child work. The app-server protocol
+journey retains its known-old-client fallback without an interactive prompt.
 
 CUJ7's `test_ug_claude_saved_provider_smart_routing` and
 `test_ug_codex_saved_provider_smart_routing` configure a saved provider in the unmanaged

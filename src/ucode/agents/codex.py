@@ -218,7 +218,7 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
             return None
         return (
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
-            f"or newer for the Smart Router footer and native delegation; found {version}. "
+            f"or newer for native delegation and status-line provider support; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
         )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
