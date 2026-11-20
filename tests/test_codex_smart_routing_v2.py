@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -444,6 +445,19 @@ class TestLaunchCodex:
         interposer_args = {}
         stopped = []
         token_calls = []
+        request_started, release_request = threading.Event(), threading.Event()
+        validation_requests = []
+        released, request_done = [], threading.Event()
+
+        def validate(url, token, body, **kwargs):
+            validation_requests.append((token, body, kwargs.get("headers")))
+            request_started.set()
+            released.append(release_request.wait(3))
+            request_done.set()
+            return {"is_supported": True}, None
+
+        monkeypatch.setattr(v2.startup_validation, "_http_post_json", validate)
+        monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -468,6 +482,10 @@ class TestLaunchCodex:
                 processes.append(self)
 
             def wait(self, timeout=None):
+                if timeout is None:
+                    assert request_started.wait(1)
+                    assert not release_request.is_set()
+                    release_request.set()
                 return 0 if timeout is not None else 7
 
             def terminate(self):
@@ -508,6 +526,7 @@ class TestLaunchCodex:
                     "profile": "myprof",
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
+                    "_codex_launch_provider": "provider-a",
                 },
                 ["--search", *model_args],
                 binary="codex",
@@ -516,6 +535,21 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 7
+        # The check thread swallows errors, so its wait result is asserted here.
+        assert request_done.wait(3) and released == [True]
+        assert validation_requests == [
+            (
+                "token-1",
+                {
+                    "route_options": [
+                        {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
+                        {"model": "system.ai.glm-5-2", "harness": "codex"},
+                    ],
+                    "route_selector": {"router_name": v2.routing.configured_router_name()},
+                },
+                {v2.startup_validation.MODEL_PROVIDER_SERVICE_HEADER: "provider-a"},
+            )
+        ]
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
