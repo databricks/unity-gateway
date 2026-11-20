@@ -441,8 +441,9 @@ Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
 requires an available Responses-capable model. Automatic selection prefers
 `system.ai.gpt-6-luna`, then `system.ai.gpt-5-mini`, then the first discovered
-model. This applies to both regular and provider-mode setup. Explicit search-model
-overrides keep precedence.
+model. This applies to both regular and provider-mode setup. A saved search-model
+override takes precedence when resolving the model; provider-mode configuration
+refreshes that saved value from discovery.
 
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
