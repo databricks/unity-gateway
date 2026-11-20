@@ -3839,6 +3839,31 @@ class TestGetDatabricksToken:
         assert sum("auth token" in call for call in calls) == 2
         assert calls.count("auth login --help") == 1
 
+    def test_skipped_reauth_failure_is_not_memoized(self, tmp_path, monkeypatch):
+        """The speculative allow_reauth=False fetch must not poison configure's own fetch: a
+        non-transient failure it memoizes would skip configure's auth login --no-browser."""
+        flag = tmp_path / "reauthed"
+        env, log = self._logging_fake(
+            tmp_path,
+            self._HELP_WITH_NO_BROWSER
+            + "if '--no-browser' in sys.argv[1:]:\n"
+            + f"    Path({str(flag)!r}).write_text('')\n"
+            + f"if Path({str(flag)!r}).exists():\n"
+            + "    print(json.dumps({'access_token': 'after-reauth'}))\n"
+            + "else:\n"
+            + "    print('no cached credentials', file=sys.stderr)\n"
+            + "    sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, allow_reauth=False)
+
+        # The default fetch still attempts the non-interactive re-auth instead of raising the
+        # memoized failure, and the re-auth repairs the cache.
+        assert get_databricks_token(WS) == "after-reauth"
+        assert sum("auth login" in call for call in log.read_text().splitlines()) >= 1
+
     def test_force_refresh_retries_a_memoized_failure(self, tmp_path, monkeypatch):
         flag = tmp_path / "logged-in"
         env, log = self._logging_fake(
