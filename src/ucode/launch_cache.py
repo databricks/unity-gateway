@@ -311,8 +311,8 @@ def _refresh_token(workspace: str, identity: dict) -> str:
         profile = custom_oauth_cli_profile(workspace, custom_oauth)
         if not has_valid_databricks_auth(workspace, profile):
             raise RuntimeError("the custom-OAuth profile has no saved login")
-        return fetch_databricks_token_untimed(workspace, profile, allow_reauth=False)
-    return fetch_databricks_token_untimed(workspace, identity.get("profile"), allow_reauth=False)
+        return fetch_databricks_token_untimed(workspace, profile)
+    return fetch_databricks_token_untimed(workspace, identity.get("profile"))
 
 
 def _invalidate(key: str, seen: dict | None) -> None:

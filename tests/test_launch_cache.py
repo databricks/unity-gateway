@@ -461,15 +461,16 @@ class TestRefresher:
 
     def test_refresh_never_reauths(self, monkeypatch):
         self._patch_lookups(monkeypatch)
-        seen: dict = {}
+        calls: list = []
 
-        def token(_workspace, _profile, **kwargs):
-            seen.update(kwargs)
+        def token(workspace, profile, **kwargs):
+            calls.append((workspace, profile, kwargs))
             return "token"
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
         assert lc.main(refresh_args()) == 0
-        assert seen.get("allow_reauth") is False
+        # The untimed fetch never re-auths for any caller; the refresher passes no overrides.
+        assert calls == [(WORKSPACE, "p", {})]
 
     def test_failed_token_fetch_invalidates(self, monkeypatch):
         self._patch_lookups(monkeypatch)
@@ -489,7 +490,7 @@ class TestRefresher:
         fetched: list = []
 
         def token(_workspace, profile, **kwargs):
-            fetched.append((profile, kwargs.get("allow_reauth")))
+            fetched.append((profile, kwargs))
             return "token"
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
@@ -497,7 +498,7 @@ class TestRefresher:
         custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
         identity = _identity(custom_oauth={**custom_oauth, "profile": "ug-oauth-p"})
         assert lc.main(refresh_args(identity=identity)) == 0
-        assert fetched == [("ug-oauth-p", False)]
+        assert fetched == [("ug-oauth-p", {})]
 
     def test_custom_oauth_refresh_falls_back_to_the_derived_profile(self, monkeypatch):
         self._patch_lookups(monkeypatch)
@@ -505,7 +506,7 @@ class TestRefresher:
         fetched: list = []
 
         def token(_workspace, profile, **kwargs):
-            fetched.append((profile, kwargs.get("allow_reauth")))
+            fetched.append((profile, kwargs))
             return "token"
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
@@ -513,7 +514,7 @@ class TestRefresher:
         custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
         identity = _identity(custom_oauth=custom_oauth)
         assert lc.main(refresh_args(identity=identity)) == 0
-        assert fetched == [("ug-oauth-example.databricks.com-cid", False)]
+        assert fetched == [("ug-oauth-example.databricks.com-cid", {})]
 
     def test_custom_oauth_refresh_without_a_saved_login_gives_up(self, monkeypatch):
         self._patch_lookups(monkeypatch)
