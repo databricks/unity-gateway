@@ -58,9 +58,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     import ucode.tls as tls_mod
-    from ucode import copilot_app as copilot_app_mod
-    from ucode import copilot_app_plugin as copilot_app_plugin_mod
-    from ucode import copilot_app_setup as copilot_app_setup_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
@@ -68,8 +65,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     from ucode.agents import copilot as copilot_mod
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
+    from ucode.agents.desktop import copilot_app as copilot_app_mod
+    from ucode.agents.desktop import copilot_app_plugin as copilot_app_plugin_mod
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
+    from ucode.agents.desktop import setup as desktop_setup_mod
     from ucode.smart_routing import session_log as session_log_mod
 
     state_dir = tmp_path / ".ucode"
@@ -93,7 +93,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     # No test may find the developer's GitHub Copilot app, change its settings or providers, or
     # write ug's plugin for it.
     monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP", raising=False)
-    monkeypatch.setattr(copilot_app_setup_mod, "installed", lambda: False)
+    monkeypatch.setattr(desktop_setup_mod, "copilot_app_installed", lambda: False)
     copilot_home = tmp_path / ".copilot"
     monkeypatch.setattr(
         copilot_app_mod,

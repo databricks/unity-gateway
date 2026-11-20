@@ -2008,9 +2008,9 @@ def status() -> int:
         if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
             rows.append(("VS Code", "off (workspace-managed)"))
         if tool == AGENT_COPILOT:
-            from ucode import copilot_app_setup
+            from ucode.agents.desktop.setup import copilot_app_status
 
-            app_status = copilot_app_setup.status(
+            app_status = copilot_app_status(
                 effective_state,
                 provider=provider_service,
                 location=get_model_location(effective_state, tool),
@@ -2128,10 +2128,10 @@ def revert() -> int:
         # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
         vscode_result = "failed"
-    from ucode import copilot_app_setup
+    from ucode.agents.desktop.setup import revert_copilot_app
 
     try:
-        copilot_app_result = copilot_app_setup.remove()
+        copilot_app_result = revert_copilot_app()
     except OSError as exc:
         print_warning(f"Could not revert the GitHub Copilot app: {exc}. Run ug revert again.")
         copilot_app_result = "failed"

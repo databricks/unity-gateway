@@ -11,8 +11,10 @@ import pytest
 
 from tests.test_copilot_app import CATALOG, FakeApp, seed
 from ucode import agents as agents_mod
-from ucode import copilot_app, copilot_app_setup, databricks, state
-from ucode import copilot_app_plugin as plugin
+from ucode import databricks, state
+from ucode.agents.desktop import copilot_app
+from ucode.agents.desktop import copilot_app_plugin as plugin
+from ucode.agents.desktop import setup as desktop_setup
 from ucode.agents.vscode import copilot_models as real_copilot_models
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.workspace import SELECTOR_HEADER_NAMES, selector_headers
@@ -26,7 +28,7 @@ def _app_home(tmp_path, monkeypatch):
     """The app's settings and ug's plugin live under ``tmp_path``; the conftest already keeps
     every test away from a real app, and nothing here can start one."""
     monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
-    monkeypatch.setattr(copilot_app_setup, "installed", lambda: True)
+    monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: True)
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
     monkeypatch.setattr("ucode.agents.copilot.agent_version", lambda binary: "1.0.91")
     monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug/bin/ug")
@@ -70,7 +72,7 @@ def _register(fake, app_state=STATE, **kwargs):
 
 class TestConfigure:
     def test_installs_the_plugin_with_the_app_rows(self, capsys):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         assert plugin.status() == "installed"
         assert _settings()["enabledPlugins"] == {plugin.PLUGIN_KEY: True}
@@ -89,21 +91,21 @@ class TestConfigure:
         assert "restart it once more or open Settings -> Model providers" in out
 
     def test_never_talks_to_the_running_app(self, app):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         assert app.received == []
 
     def test_the_plugin_sends_ugs_copilot_headers(self, monkeypatch):
         monkeypatch.setattr(
-            copilot_app_setup,
-            "resolved_state",
+            desktop_setup,
+            "copilot_app_state",
             lambda state: {**state, "copilot_http_headers": {"X-Team": "data"}},
         )
         monkeypatch.setattr(
             "ucode.workspace.workspace_headers", lambda url=None: {"X-Databricks-Org-Id": "42"}
         )
 
-        copilot_app_setup.configure(STATE, provider="main.default.mps", location=None)
+        desktop_setup.configure_copilot_app(STATE, provider="main.default.mps", location=None)
 
         for provider in _extension_config()["providers"]:
             headers = provider["headers"]
@@ -114,7 +116,7 @@ class TestConfigure:
             assert headers["X-Databricks-Org-Id"] == "42"
 
     def test_the_plugin_selects_the_saved_workspace_on_a_shared_host(self):
-        copilot_app_setup.configure(
+        desktop_setup.configure_copilot_app(
             {**STATE, "workspace_id": "1234567890"}, provider=None, location=None
         )
 
@@ -128,15 +130,15 @@ class TestConfigure:
 
     def test_an_admin_header_cant_select_another_workspace(self, monkeypatch):
         monkeypatch.setattr(
-            copilot_app_setup,
-            "resolved_state",
+            desktop_setup,
+            "copilot_app_state",
             lambda state: {
                 **state,
                 "copilot_http_headers": {SELECTOR_HEADER_NAMES[1]: "999"},
             },
         )
 
-        copilot_app_setup.configure(
+        desktop_setup.configure_copilot_app(
             {**STATE, "workspace_id": "1234567890"}, provider=None, location=None
         )
 
@@ -144,7 +146,7 @@ class TestConfigure:
             assert provider["headers"][SELECTOR_HEADER_NAMES[1]] == "1234567890"
 
     def test_records_the_databricks_cli_for_helpers_without_it_on_path(self):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         assert state.recorded_databricks_cli() == "/opt/databricks/bin/databricks"
 
@@ -153,7 +155,7 @@ class TestConfigure:
         _settings_path().parent.mkdir(parents=True)
         _settings_path().write_text(content)
 
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         assert _settings_path().read_text() == content
         assert not plugin.plugin_root().exists()
@@ -163,7 +165,7 @@ class TestConfigure:
         _settings_path().parent.mkdir(parents=True)
         _settings_path().write_text(json.dumps({"telemetry": {"filePath": "/tmp/spans"}}))
 
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         assert plugin.status() == "installed"
         out = _out(capsys)
@@ -176,7 +178,7 @@ class TestConfigure:
 
         monkeypatch.setattr("ucode.agents.vscode.copilot_models", no_models)
 
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         assert not plugin.plugin_root().exists()
         assert "Skipped the GitHub Copilot app: No models" in _out(capsys)
@@ -194,7 +196,7 @@ class TestConfigureCopilotApp:
             agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
         finally:
             agents_mod.request_copilot_app_with_copilot(True)
-        monkeypatch.setattr(copilot_app_setup, "installed", lambda: False)
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
         agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
 
         assert not plugin.plugin_root().exists()
@@ -210,10 +212,10 @@ class TestConfigureCopilotApp:
 
         assert not plugin.plugin_root().exists()
         assert app.received == []
-        assert copilot_app_setup.status(STATE, provider=None, location=None) is None
+        assert desktop_setup.copilot_app_status(STATE, provider=None, location=None) is None
 
     def test_managed_off_switch_removes_the_plugin_and_providers(self, app, capsys):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         _register(app)
 
         agents_mod.configure_copilot_app(
@@ -225,7 +227,7 @@ class TestConfigureCopilotApp:
         assert "turns off the GitHub Copilot app" in _out(capsys)
 
     def test_managed_off_switch_reads_the_managed_config(self, monkeypatch):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         monkeypatch.setattr(
             "ucode.managed_config.load_managed_state",
             lambda workspace: {"enabled_agents": {"copilot": {"app_integration_enabled": False}}},
@@ -238,18 +240,18 @@ class TestConfigureCopilotApp:
 
 class TestRemove:
     def test_unregisters_the_running_app_and_removes_the_plugin(self, app):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         _register(app)
 
-        assert copilot_app_setup.remove() == "removed"
+        assert desktop_setup.revert_copilot_app() == "removed"
         assert app.providers == {}
         assert plugin.status() == "not_installed"
         assert "enabledPlugins" not in _settings()
 
     def test_a_closed_app_keeps_its_rows_until_revert_runs_again(self):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
-        result = copilot_app_setup.remove()
+        result = desktop_setup.revert_copilot_app()
 
         assert result.startswith("removed ug's plugin, but the app is closed")
         assert "run `ug revert` again" in result
@@ -258,19 +260,19 @@ class TestRemove:
     def test_a_second_revert_after_opening_the_app_removes_the_rows(self, app):
         _register(app)
 
-        assert copilot_app_setup.remove() == "removed"
+        assert desktop_setup.revert_copilot_app() == "removed"
         assert app.providers == {}
 
     def test_nothing_set_up(self):
-        assert copilot_app_setup.remove() == "not set up"
+        assert desktop_setup.revert_copilot_app() == "not set up"
 
 
 class TestStatus:
     def _status(self, app_state=STATE):
-        return copilot_app_setup.status(app_state, provider=None, location=None)
+        return desktop_setup.copilot_app_status(app_state, provider=None, location=None)
 
     def test_installed_and_registered(self, app):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         _register(app)
 
         result = self._status()
@@ -289,7 +291,7 @@ class TestStatus:
         assert "their turns fail without it" in result.warnings[0]
 
     def test_a_disabled_plugin(self, app):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         _register(app)
         settings = _settings()
         settings["enabledPlugins"][plugin.PLUGIN_KEY] = False
@@ -302,7 +304,7 @@ class TestStatus:
         assert "is turned off" in result.warnings[0]
 
     def test_invalid_settings(self, app):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         _register(app)
         _settings_path().write_text("{")
 
@@ -313,7 +315,7 @@ class TestStatus:
         assert "isn't valid JSON" in result.warnings[0]
 
     def test_telemetry_keys_are_reported(self):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         settings = _settings()
         settings["telemetry"] = {"enabled": True, "endpoint": "http://localhost:4318"}
         _settings_path().write_text(json.dumps(settings))
@@ -326,7 +328,7 @@ class TestStatus:
         assert "managed settings" in result.warnings[0]
 
     def test_another_workspace_is_out_of_date(self, app):
-        copilot_app_setup.configure(STATE, provider=None, location=None)
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
         _register(app, {**STATE, "workspace": "https://other.cloud.databricks.com"})
 
         result = self._status()
@@ -351,7 +353,7 @@ class TestStatus:
         assert result.row == "off (workspace-managed)"
 
     def test_not_installed_and_never_set_up(self, monkeypatch):
-        monkeypatch.setattr(copilot_app_setup, "installed", lambda: False)
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
 
         assert self._status() is None
 
@@ -359,9 +361,9 @@ class TestStatus:
 def test_ignored_settings_reason_names_only_rejected_telemetry_keys(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"telemetry": {"exporter": "x"}, "model": "y"}))
-    assert copilot_app_setup.ignored_settings_reason(path) is None
+    assert desktop_setup.copilot_settings_ignored_reason(path) is None
     path.write_text(json.dumps({"telemetry": {"protocol": "http", "resourceAttributes": {}}}))
-    reason = copilot_app_setup.ignored_settings_reason(path)
+    reason = desktop_setup.copilot_settings_ignored_reason(path)
     assert reason is not None
     assert "telemetry.protocol, telemetry.resourceAttributes" in reason
 
@@ -404,7 +406,7 @@ def test_a_missing_catalog_names_the_app():
 
 
 def test_a_dry_run_changes_nothing(monkeypatch, app, capsys):
-    copilot_app_setup.configure(STATE, provider=None, location=None)
+    desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
     _register(app)
     before = _settings_path().read_text()
     config = _extension_config()
@@ -419,7 +421,7 @@ def test_a_dry_run_changes_nothing(monkeypatch, app, capsys):
     agents_mod.configure_copilot_app(
         {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
     )
-    assert copilot_app_setup.remove() == "unchanged (dry run)"
+    assert desktop_setup.revert_copilot_app() == "unchanged (dry run)"
 
     assert _settings_path().read_text() == before
     assert _extension_config() == config

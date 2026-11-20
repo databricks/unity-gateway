@@ -3493,7 +3493,7 @@ class TestStatus:
             assert ("VS Code: off (workspace-managed)" in output) is shown
 
     def test_status_shows_the_copilot_app_row_and_its_warnings(self, monkeypatch):
-        from ucode.copilot_app_setup import AppStatus
+        from ucode.agents.desktop.setup import CopilotAppStatus
 
         state = {
             **MINIMAL_STATE,
@@ -3504,12 +3504,14 @@ class TestStatus:
 
         def app_status(effective_state, *, provider, location):
             seen.append(effective_state)
-            return AppStatus("plugin disabled, models registered", ("their turns fail without it",))
+            return CopilotAppStatus(
+                "plugin disabled, models registered", ("their turns fail without it",)
+            )
 
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.load_managed_state", return_value=None),
-            patch("ucode.copilot_app_setup.status", side_effect=app_status),
+            patch("ucode.agents.desktop.setup.copilot_app_status", side_effect=app_status),
         ):
             result = runner.invoke(app, ["status"])
 
@@ -4849,7 +4851,7 @@ class TestRevert:
             patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
             patch("ucode.cli.restore_file", return_value=False),
             patch("ucode.cli.revert_legacy_shared_config", return_value=False),
-            patch("ucode.copilot_app_setup.remove", return_value=result),
+            patch("ucode.agents.desktop.setup.revert_copilot_app", return_value=result),
             patch("ucode.cli.clear_state"),
         ):
             outcome = runner.invoke(app, ["revert"])

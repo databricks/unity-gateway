@@ -793,25 +793,25 @@ def request_copilot_app_with_copilot(requested: bool = True) -> None:
 def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
     """Install ug's plugin in the GitHub Copilot desktop app when it is installed, or remove it
     when the workspace's managed config turns the app off."""
-    from ucode import copilot_app_setup
+    from ucode.agents.desktop import setup as desktop_setup
 
-    if not copilot_app_setup.enabled():
+    if not desktop_setup.copilot_app_enabled():
         return
-    if copilot_app_setup.resolved_state(state).get("copilot_app_integration") is False:
+    if desktop_setup.copilot_app_state(state).get("copilot_app_integration") is False:
         try:
-            result = copilot_app_setup.remove()
+            result = desktop_setup.revert_copilot_app()
         except OSError as exc:
             print_warning(f"Could not remove ug's plugin from the GitHub Copilot app: {exc}")
             return
-        if result not in ("not set up", copilot_app_setup.DRY_RUN_RESULT):
+        if result not in ("not set up", desktop_setup.COPILOT_APP_DRY_RUN):
             print_note(
                 "This workspace's managed configuration turns off the GitHub Copilot app, so "
                 f"ug's plugin was removed from it ({result})."
             )
         return
-    if not _copilot_app_with_copilot or not copilot_app_setup.installed():
+    if not _copilot_app_with_copilot or not desktop_setup.copilot_app_installed():
         return
-    copilot_app_setup.configure(state, provider=provider, location=parent_schema)
+    desktop_setup.configure_copilot_app(state, provider=provider, location=parent_schema)
 
 
 def configure_single_tool(
