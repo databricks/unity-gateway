@@ -152,3 +152,25 @@ failed test, with `branch`, `ts`, `error` and `job_url`). Before changing a test
   state (for example a FAILED UC connection), not the test.
 - Read the job's evidence artifact. Compare the agent's stdout with its transcript
   before blaming the prompt or the model.
+
+
+## Live CLI metrics coverage
+
+`integration/test_ug_metrics_delivery.py` runs in the existing `anthropic_mps`
+staging lanes with the CI-pinned Claude/Copilot versions. It requires workspace
+metrics ingestion enabled and explicitly sets `UG_ENABLE_METRICS_EXPORT=1` in each
+isolated session. An HTTP 404 is a failure, not a capability skip.
+
+- `test_ug_configure_delivers_metrics_after_exit`: installed `ug configure` exits
+  successfully; captured OTLP contains configure/auth/API histograms, accepted by
+  the real gateway with HTTP 200. This is command telemetry, not inference coverage.
+- `test_ug_copilot_tui_delivers_startup_and_proxy_metrics`: a real Copilot TUI completes
+  a file-reading task through the staging Anthropic MPS; inference and the startup/
+  proxy metric uploads return HTTP 200, and Copilot exits normally.
+
+Use the shared recorder's optional TLS context with a temporary certificate trusted
+only by the test processes. Decode recorded protobuf bytes and check expected labels
+across batches; allow the normal 60-second periodic flush. Never call application
+instrumentation to manufacture observations. Keep failure-isolation and authentication
+component tests; live happy-path delivery replaces mocked success-path handoff and
+wire-format assertions.

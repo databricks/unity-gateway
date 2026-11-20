@@ -2,67 +2,25 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import queue
-import ssl
 import subprocess
 import sys
 import threading
-from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 
-
-@pytest.fixture
-def localhost_certificate(tmp_path):
-    # Generate disposable TLS material for the local receiver; never commit a private key.
-    key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-    now = datetime.now(UTC)
-    certificate = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(minutes=1))
-        .not_valid_after(now + timedelta(days=1))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
-            ),
-            critical=False,
-        )
-        .sign(key, hashes.SHA256())
-    )
-    path = tmp_path / "metrics-localhost.pem"
-    path.write_bytes(
-        certificate.public_bytes(serialization.Encoding.PEM)
-        + key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    )
-    return path
+from tests.integration.utils.tls import localhost_tls
 
 
 @pytest.mark.parametrize("handoff", [False, True], ids=["command-exit", "agent-launch"])
-def test_short_command_delivers_final_metric_after_parent_exits(
-    tmp_path, handoff, localhost_certificate
-):
+def test_short_command_delivers_final_metric_after_parent_exits(tmp_path, handoff):
     received = queue.Queue()
     respond = threading.Event()
-    certificate = localhost_certificate
+    context, certificate = localhost_tls(tmp_path / "tls")
 
     class Receiver(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -80,8 +38,6 @@ def test_short_command_delivers_final_metric_after_parent_exits(
         def log_message(self, *args):
             pass
 
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(certificate)
     with ThreadingHTTPServer(("127.0.0.1", 0), Receiver) as server:
         server.socket = context.wrap_socket(server.socket, server_side=True)
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)

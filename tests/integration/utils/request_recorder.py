@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import threading
 import time
 from collections.abc import Iterator
@@ -82,11 +83,12 @@ class _Server(ThreadingHTTPServer):
 class TuiRequestRecorder:
     """A per-test recording reverse proxy for requests made by a TUI."""
 
-    def __init__(self, upstream: str) -> None:
+    def __init__(self, upstream: str, *, tls: ssl.SSLContext | None = None) -> None:
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("upstream must be an absolute HTTP(S) URL")
         self.upstream = upstream.rstrip("/")
+        self._tls = tls
         self._condition = threading.Condition()
         self._requests: list[RecordedRequest] = []
         self._responses: dict[int, RecordedResponse] = {}
@@ -99,7 +101,8 @@ class TuiRequestRecorder:
     def url(self) -> str:
         if self._server is None:
             raise RuntimeError("TuiRequestRecorder is not running")
-        return f"http://127.0.0.1:{self._server.server_address[1]}"
+        scheme = "https" if self._tls else "http"
+        return f"{scheme}://127.0.0.1:{self._server.server_address[1]}"
 
     def __enter__(self) -> Self:
         # One connection per forwarded request: a pooled keep-alive connection that the gateway
@@ -130,6 +133,8 @@ class TuiRequestRecorder:
             do_POST = forward
 
         self._server = _Server(("127.0.0.1", 0), Handler)
+        if self._tls is not None:
+            self._server.socket = self._tls.wrap_socket(self._server.socket, server_side=True)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self
