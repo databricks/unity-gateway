@@ -4,6 +4,7 @@ app, against a fake of the app's WebSocket API."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -425,7 +426,8 @@ def test_ignored_settings_reason_names_only_rejected_telemetry_keys(tmp_path):
 
 
 def test_a_recorded_databricks_cli_is_found_off_path(tmp_path, monkeypatch):
-    cli = tmp_path / "bin" / "databricks"
+    # Windows finds executables by PATHEXT, not an execute bit.
+    cli = tmp_path / "bin" / ("databricks.exe" if os.name == "nt" else "databricks")
     cli.parent.mkdir()
     cli.write_text("#!/bin/sh\necho 'Databricks CLI v0.280.0'\n")
     cli.chmod(0o755)
@@ -435,7 +437,8 @@ def test_a_recorded_databricks_cli_is_found_off_path(tmp_path, monkeypatch):
     try:
         assert databricks._iter_databricks_executables() == []
         state.record_databricks_cli(str(cli))
-        assert databricks._iter_databricks_executables() == [str(cli)]
+        found = databricks._iter_databricks_executables()
+        assert [os.path.normcase(path) for path in found] == [os.path.normcase(str(cli))]
     finally:
         databricks.clear_databricks_cli_cache()
 
