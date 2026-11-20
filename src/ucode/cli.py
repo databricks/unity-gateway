@@ -4354,7 +4354,7 @@ def _launch_tool(
         # speculatively here and overlap it with the probe and discovery that
         # `configure_shared_state` runs. A launch shape whose routing wouldn't read the catalog
         # abandons the request on its daemon thread.
-        picker_catalog_future: Future | None = None
+        picker_catalog_future: Future[AnthropicModelCatalog] | None = None
         picker_catalog_started_profile: str | None = None
         picker_catalog_started_identity: tuple[str, str | None, str | None] | None = None
         launch_only_auto_picker = (
