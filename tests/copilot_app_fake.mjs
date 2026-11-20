@@ -49,7 +49,7 @@ function parser(onText, onClose) {
 }
 
 // The app's WebSocket API as recorded from app 1.4.2: provider and model CRUD, its token and
-// origin checks, and injectable errors.
+// origin checks, session events for connections with session channels on, and injectable errors.
 export class FakeApp {
   constructor() {
     this.token = "per-launch-token";
@@ -60,6 +60,7 @@ export class FakeApp {
     this.handshakes = [];
     this.connections = 0;
     this.sockets = new Set();
+    this.watchers = new Set();
     this.busy = 0;
     this.fail = null;
     this.drop = null;
@@ -84,14 +85,19 @@ export class FakeApp {
 
   _upgrade(request, socket) {
     this.handshakes.push(request.headers);
-    const token = new URL(request.url, "http://x").searchParams.get("token");
+    const params = new URL(request.url, "http://x").searchParams;
+    const token = params.get("token");
     if (request.headers.origin || token !== this.token) {
       socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
     }
     this.connections++;
     this.sockets.add(socket);
-    socket.on("close", () => this.sockets.delete(socket));
+    if (params.get("session_channels") === "true") this.watchers.add(socket);
+    socket.on("close", () => {
+      this.sockets.delete(socket);
+      this.watchers.delete(socket);
+    });
     const accept = createHash("sha1")
       .update(request.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
       .digest("base64");
@@ -150,6 +156,11 @@ export class FakeApp {
       return { type: "provider_model_deleted", model_id: message.model_id };
     }
     return { type: "error", message: `unknown variant \`${kind}\`` };
+  }
+
+  emit(sessionId, type) {
+    const frame = encode(JSON.stringify({ type: "session_event", session_id: sessionId, event: { type, data: {} } }));
+    for (const socket of this.watchers) socket.write(frame);
   }
 
   sent(kind) {

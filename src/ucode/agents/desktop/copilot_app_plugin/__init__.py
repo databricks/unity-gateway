@@ -4,6 +4,8 @@ ug writes a local plugin marketplace it owns and turns it on in Copilot's ``sett
 plugin's extension writes ug's providers and model rows to the app's model picker over the app's
 local WebSocket API and serves them straight from the AI Gateway under the same ids. It gets each
 request's Databricks token from ``ug auth-token``, reusing it until shortly before it expires.
+The app's window loads the picker's providers only when it starts, so after a sync that changed
+ug's rows, the extension restarts the app once, when no chat is running a turn.
 
 With the app closed, ug can't delete its rows, so ``defer_remove`` leaves that and the settings keys
 to the extension's next start, and ``cleanup_leftover`` deletes the directory afterwards.
@@ -35,7 +37,14 @@ Status = Literal["installed", "removal_pending", "disabled", "not_installed", "i
 
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
-_SOURCE_FILES = ("extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs")
+_SOURCE_FILES = (
+    "extension.mjs",
+    "ug-plugin.mjs",
+    "app-rows.mjs",
+    "app-remove.mjs",
+    "app-restart.mjs",
+    "restart-helper.mjs",
+)
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
 UNLOAD_WAIT_S = 5.0

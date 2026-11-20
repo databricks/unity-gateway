@@ -190,16 +190,16 @@ test("without owned providers the keys go without connecting", async (t) => {
   assert.deepEqual(read(path), {});
 });
 
-test("a later install syncs its rows again", async (t) => {
+test("a later install syncs its rows and restarts the app again", async (t) => {
   const { app, options } = await setup(t);
   const rows = {
     providers: [{ provider: { id: GPT, name: "gpt", kind: "custom" }, secret: null, models: [] }],
     ownedProviderIds: [CLAUDE, GPT],
   };
-  assert.equal(await syncOnce({ app: rows }, options), "synced");
+  assert.equal(await syncOnce({ app: rows }, options), "changed");
   assert.equal(await removeOnce({ ...CONFIG, app: rows }, options), "removed");
   assert.equal(app.providers.has(GPT), false);
-  assert.equal(await syncOnce({ app: rows }, options), "synced");
+  assert.equal(await syncOnce({ app: rows }, options), "changed");
   assert.equal(app.providers.has(GPT), true);
 });
 
@@ -225,7 +225,7 @@ const FAKE_SDK = `data:text/javascript,${encodeURIComponent(`
 
 async function runExtension(t, options, { joinFails = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ug-copilot-extension-"));
-  for (const name of ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs"]) {
+  for (const name of ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs", "app-restart.mjs"]) {
     copyFileSync(join(SOURCE, name), join(dir, name));
   }
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...CONFIG, providers: [{ name: CLAUDE }], models: [{ id: "m" }] }));

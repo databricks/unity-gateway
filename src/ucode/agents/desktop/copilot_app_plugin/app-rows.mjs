@@ -7,14 +7,28 @@ export const REQUEST_TIMEOUT_MS = 15_000;
 export const LOCK_STALE_MS = 60_000;
 export const LOCK_FILE = "app-sync.lock";
 export const SYNC_STAMP_FILE = "app-sync.json";
+export const RESTART_MARKER_FILE = "app-restart.json";
 
 export function copilotHome(env = process.env) {
   return env.COPILOT_HOME || join(homedir(), ".copilot");
 }
 
 // Each run file holds the value, then the app's pid.
+function runFields(home, name) {
+  return readFileSync(join(home, "run", name), "utf8").trim().split(/\s+/);
+}
+
 function runValue(home, name) {
-  return readFileSync(join(home, "run", name), "utf8").trim().split(/\s+/)[0] || null;
+  return runFields(home, name)[0] || null;
+}
+
+export function readAppPid(home) {
+  try {
+    const pid = Number.parseInt(runFields(home, "ws.port")[1], 10);
+    return Number.isInteger(pid) && pid > 1 ? pid : null;
+  } catch {
+    return null;
+  }
 }
 
 export function readEndpoint(home) {
@@ -30,9 +44,10 @@ export function readEndpoint(home) {
 export class AppError extends Error {}
 
 class AppConnection {
-  constructor(ws, timeoutMs) {
+  constructor(ws, timeoutMs, onMessage) {
     this._ws = ws;
     this._timeoutMs = timeoutMs;
+    this._onMessage = onMessage;
     this._backlog = [];
     this._waiter = null;
     this.closed = false;
@@ -56,6 +71,10 @@ class AppConnection {
       const waiter = this._waiter;
       this._waiter = null;
       waiter.resolve(message);
+    } else if (this._onMessage) {
+      try {
+        this._onMessage(message);
+      } catch {}
     } else {
       this._backlog.push(message);
     }
@@ -108,13 +127,15 @@ class AppConnection {
   }
 }
 
-export async function connectApp(endpoint, { WebSocketImpl, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+// With ``onMessage``, the connection turns session channels on and passes it every message no
+// request is waiting for. The app then sends every session's events, including its window's chats.
+export async function connectApp(endpoint, { WebSocketImpl, timeoutMs = REQUEST_TIMEOUT_MS, onMessage } = {}) {
   const Impl = WebSocketImpl ?? globalThis.WebSocket;
   if (!Impl) throw new AppError("This Copilot runtime has no WebSocket client.");
-  const url = `ws://127.0.0.1:${endpoint.port}/?token=${encodeURIComponent(endpoint.token)}&requester_id=ug&session_channels=false`;
+  const url = `ws://127.0.0.1:${endpoint.port}/?token=${encodeURIComponent(endpoint.token)}&requester_id=ug&session_channels=${Boolean(onMessage)}`;
   // No Origin: the app refuses any origin but its own window. Node's WebSocket sends none.
   const ws = new Impl(url);
-  const app = new AppConnection(ws, timeoutMs);
+  const app = new AppConnection(ws, timeoutMs, onMessage);
   try {
     await app.wait((message) => message.type === "server_hello");
   } catch (error) {
@@ -152,30 +173,56 @@ export async function deleteProviders(app, providerIds) {
   }
 }
 
+// The app's list replies can carry fields of their own, so a row matches when every field ug writes
+// has the same value.
+function matches(wanted, actual) {
+  if (wanted === null || typeof wanted !== "object") return wanted === actual;
+  if (Array.isArray(wanted)) {
+    return Array.isArray(actual) && actual.length === wanted.length && wanted.every((value, i) => matches(value, actual[i]));
+  }
+  return (
+    actual !== null &&
+    typeof actual === "object" &&
+    !Array.isArray(actual) &&
+    Object.entries(wanted).every(([name, value]) => matches(value, actual[name]))
+  );
+}
+
 // Writes ``rows`` (config.app) to the app, and deletes the providers and models of ug's that
-// aren't in it. Upserts with fixed ids, so running it again changes nothing.
+// aren't in it. Upserts with fixed ids, so running it again changes nothing. Returns whether the
+// app's rows differed from ``rows``.
 export async function syncRows(app, rows) {
   const existing = await listProviders(app);
   const wanted = new Set(rows.providers.map((entry) => entry.provider.id));
+  let changed = false;
   for (const id of rows.ownedProviderIds) {
-    if (existing.has(id) && !wanted.has(id)) await deleteProvider(app, id);
+    if (existing.has(id) && !wanted.has(id)) {
+      await deleteProvider(app, id);
+      changed = true;
+    }
   }
   for (const { provider, secret, models } of rows.providers) {
     const message = { type: "upsert_model_provider", provider };
     if (secret && !existing.get(provider.id)?.hasSecret) message.secret = secret;
+    if (message.secret || !matches(provider, existing.get(provider.id))) changed = true;
     await app.request(message, "model_provider_upserted");
     const wantedModels = new Set(models.map((model) => model.id));
+    const listed = new Map();
     for (const model of await listModels(app, provider.id)) {
+      listed.set(model.id, model);
       if (!wantedModels.has(model.id)) {
         await app.request({ type: "delete_provider_model", model_id: model.id }, "provider_model_deleted", {
           model_id: model.id,
         });
+        changed = true;
       }
     }
     for (const model of models) {
+      if (!matches(model, listed.get(model.id))) changed = true;
       await app.request({ type: "upsert_provider_model", model }, "provider_model_upserted");
     }
   }
+  return changed;
 }
 
 export function tryLock(path, now) {
@@ -203,13 +250,22 @@ function readStamp(path) {
   }
 }
 
+function writeStamp(path, digest) {
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify({ digest }));
+  renameSync(temp, path);
+}
+
 // Every session runs its own extension process. Each one syncs only when the app's launch token or
-// the rows changed since the last sync, and one at a time.
+// the rows changed since the last sync, and one at a time. "changed" tells the one process that
+// first wrote these rows to the app to restart it: the window loads the picker's providers only
+// when it starts, before any extension runs.
 export async function syncOnce(config, { home = copilotHome(), stateDir, now = Date.now, ...connect } = {}) {
   const rows = config.app;
   if (!rows || !rows.providers?.length && !rows.ownedProviderIds?.length) return "skipped";
   const endpoint = readEndpoint(home);
   if (!endpoint) return "not_running";
+  const rowsDigest = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
   const digest = createHash("sha256").update(JSON.stringify(rows)).update("\0").update(endpoint.token).digest("hex");
   const stampPath = join(stateDir, SYNC_STAMP_FILE);
   if (readStamp(stampPath) === digest) return "current";
@@ -217,15 +273,19 @@ export async function syncOnce(config, { home = copilotHome(), stateDir, now = D
   if (!tryLock(lockPath, now)) return "busy";
   try {
     const app = await connectApp(endpoint, connect);
+    let changed;
     try {
-      await syncRows(app, rows);
+      changed = await syncRows(app, rows);
     } finally {
       app.close();
     }
-    const temp = `${stampPath}.${process.pid}.tmp`;
-    writeFileSync(temp, JSON.stringify({ digest }));
-    renameSync(temp, stampPath);
-    return "synced";
+    // Keyed by the rows alone, so the restarted app's sync can't restart it again, even if the
+    // app's lists never match the rows exactly.
+    const markerPath = join(stateDir, RESTART_MARKER_FILE);
+    const restart = changed && readStamp(markerPath) !== rowsDigest;
+    if (restart) writeStamp(markerPath, rowsDigest);
+    writeStamp(stampPath, digest);
+    return restart ? "changed" : "synced";
   } finally {
     try {
       unlinkSync(lockPath);

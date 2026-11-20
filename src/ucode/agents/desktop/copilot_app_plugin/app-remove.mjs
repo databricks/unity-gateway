@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 
 import {
   LOCK_FILE,
+  RESTART_MARKER_FILE,
   SYNC_STAMP_FILE,
   connectApp,
   copilotHome,
@@ -118,10 +119,12 @@ export async function removeOnce(config, { home = copilotHome(), stateDir, now =
       } finally {
         app.close();
       }
-      // A later install must write the rows again, not match the last sync.
-      try {
-        unlinkSync(join(stateDir, SYNC_STAMP_FILE));
-      } catch {}
+      // A later install must write the rows and restart the app again, not match the last sync.
+      for (const name of [SYNC_STAMP_FILE, RESTART_MARKER_FILE]) {
+        try {
+          unlinkSync(join(stateDir, name));
+        } catch {}
+      }
     }
     if (refusal) throw refusal;
     removeSettingsKeys(path, config.pluginRoot);

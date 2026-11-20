@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
@@ -53,7 +53,7 @@ test("syncOnce writes the rows, then does nothing until they or the app launch c
   const { app, options } = await setup(t);
   app.providers.set("mine", { id: "mine", name: "Mine", kind: "custom" });
 
-  assert.equal(await syncOnce({ app: ROWS }, options), "synced");
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
   assert.deepEqual([...app.providers.keys()].sort(), [CLAUDE, GPT, "mine"].sort());
   assert.deepEqual([...app.secrets], [[CLAUDE, PLACEHOLDER.value]]);
   assert.deepEqual([...app.models.keys()].sort(), [`${CLAUDE}/claude-sonnet-4.6`, `${GPT}/gpt-5-2`]);
@@ -71,6 +71,72 @@ test("syncOnce writes the rows, then does nothing until they or the app launch c
   assert.ok(app.sent("upsert_model_provider").slice(-2).every((message) => !message.secret));
 });
 
+function relaunch(app, options, token) {
+  app.token = token;
+  app.writeRunFiles(options.home);
+}
+
+test("only the first sync that changes the app's rows asks for a restart", async (t) => {
+  const { app, options } = await setup(t);
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
+  assert.ok(existsSync(join(options.stateDir, "app-restart.json")));
+
+  relaunch(app, options, "restarted");
+  assert.equal(await syncOnce({ app: ROWS }, options), "synced");
+
+  const next = { ...ROWS, providers: [providerRows(GPT, "gpt", ["gpt-6"])] };
+  assert.equal(await syncOnce({ app: next }, options), "changed");
+  relaunch(app, options, "restarted-again");
+  assert.equal(await syncOnce({ app: next }, options), "synced");
+});
+
+test("rows the app already has don't ask for a restart", async (t) => {
+  const { app, options } = await setup(t);
+  await syncOnce({ app: ROWS }, { ...options, stateDir: mkdtempSync(join(tmpdir(), "ug-copilot-state-")) });
+  assert.equal(await syncOnce({ app: structuredClone(ROWS) }, options), "synced");
+  assert.ok(!existsSync(join(options.stateDir, "app-restart.json")));
+});
+
+test("a deleted row, a new row or a missing secret is a change", async (t) => {
+  const { app, options } = await setup(t);
+  const fresh = () => ({ ...options, stateDir: mkdtempSync(join(tmpdir(), "ug-copilot-state-")) });
+  await syncOnce({ app: ROWS }, fresh());
+
+  app.models.set(`${GPT}/old`, { id: `${GPT}/old`, providerId: GPT, modelId: "old" });
+  assert.equal(await syncOnce({ app: ROWS }, fresh()), "changed");
+
+  app.models.delete(`${GPT}/gpt-5-2`);
+  assert.equal(await syncOnce({ app: ROWS }, fresh()), "changed");
+
+  app.models.get(`${CLAUDE}/claude-sonnet-4.6`).displayName = "renamed in the app";
+  assert.equal(await syncOnce({ app: ROWS }, fresh()), "changed");
+
+  app.secrets.clear();
+  app.providers.set(CLAUDE, { ...app.providers.get(CLAUDE), hasSecret: false });
+  assert.equal(await syncOnce({ app: ROWS }, fresh()), "changed");
+
+  app.providers.set(OPEN, { id: OPEN, name: "open", kind: "custom" });
+  assert.equal(await syncOnce({ app: ROWS }, fresh()), "changed");
+  assert.equal(await syncOnce({ app: ROWS }, fresh()), "synced");
+});
+
+test("an app that reports the rows differently asks for one restart, not one per launch", async (t) => {
+  const { app, options } = await setup(t);
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
+  for (const [launch, token] of ["first", "second"].entries()) {
+    for (const model of app.models.values()) delete model.displayName;
+    relaunch(app, options, token);
+    assert.equal(await syncOnce({ app: ROWS }, options), "synced", `launch ${launch}`);
+  }
+});
+
+test("of several extension processes, one asks for the restart", async (t) => {
+  const { options } = await setup(t);
+  const results = await Promise.all([0, 1, 2, 3].map(() => syncOnce({ app: ROWS }, options)));
+  assert.equal(results.filter((result) => result === "changed").length, 1);
+  assert.ok(results.every((result) => ["changed", "busy", "current"].includes(result)));
+});
+
 test("syncOnce deletes ug's stale providers and rows but no one else's", async (t) => {
   const { app, options } = await setup(t);
   await syncOnce({ app: ROWS }, options);
@@ -82,7 +148,7 @@ test("syncOnce deletes ug's stale providers and rows but no one else's", async (
     providers: [providerRows(GPT, "gpt", ["gpt-6"]), providerRows(OPEN, "open", ["glm-5"])],
     ownedProviderIds: ROWS.ownedProviderIds,
   };
-  assert.equal(await syncOnce({ app: next }, options), "synced");
+  assert.equal(await syncOnce({ app: next }, options), "changed");
 
   assert.deepEqual([...app.providers.keys()].sort(), [GPT, OPEN, "mine"].sort());
   assert.deepEqual([...app.models.keys()].sort(), [`${GPT}/gpt-6`, `${OPEN}/glm-5`, "odd"].sort());
@@ -105,7 +171,7 @@ test("only one extension process syncs at a time; a stale lock is taken over", a
 
   const old = new Date(Date.now() - 120_000);
   utimesSync(lock, old, old);
-  assert.equal(await syncOnce({ app: ROWS }, options), "synced");
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
 });
 
 test("a reply for another request is skipped", async (t) => {
@@ -115,7 +181,7 @@ test("a reply for another request is skipped", async (t) => {
     { type: "model_providers_list", providers: [{ id: "y" }] },
     { type: "error", message: "boom", request_id: "ug-someone-else" },
   ];
-  assert.equal(await syncOnce({ app: ROWS }, options), "synced");
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
   assert.equal(app.providers.size, 2);
 });
 
@@ -129,7 +195,7 @@ test("an error without a request_id answers the pending request", async (t) => {
 test("the sync retries while the app applies another change", async (t) => {
   const { app, options } = await setup(t);
   app.busy = 2;
-  assert.equal(await syncOnce({ app: ROWS }, options), "synced");
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
   assert.equal(app.models.size, 2);
 });
 
@@ -146,7 +212,7 @@ test("failures are logged, never thrown, and the next run retries", async (t) =>
   assert.match(logs[1], /closed the connection/);
 
   app.drop = null;
-  assert.equal(await syncOnce({ app: ROWS }, options), "synced");
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
 });
 
 test("a closed app or a stale token is not synced", async (t) => {

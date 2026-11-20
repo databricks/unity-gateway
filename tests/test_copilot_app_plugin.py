@@ -236,6 +236,8 @@ class TestWritePlugin:
             "ug-plugin.mjs",
             "app-rows.mjs",
             "app-remove.mjs",
+            "app-restart.mjs",
+            "restart-helper.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (
@@ -564,7 +566,15 @@ class TestStatus:
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestExtensionSource:
     @pytest.mark.parametrize(
-        "name", ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs"]
+        "name",
+        [
+            "extension.mjs",
+            "ug-plugin.mjs",
+            "app-rows.mjs",
+            "app-remove.mjs",
+            "app-restart.mjs",
+            "restart-helper.mjs",
+        ],
     )
     def test_syntax(self, name):
         subprocess.run([NODE, "--check", str(PLUGIN_SOURCE / name)], check=True)
@@ -575,6 +585,7 @@ class TestExtensionSource:
             "copilot_app_plugin.test.mjs",
             "copilot_app_rows.test.mjs",
             "copilot_app_remove.test.mjs",
+            "copilot_app_restart.test.mjs",
         ],
     )
     def test_node_unit_tests(self, name):

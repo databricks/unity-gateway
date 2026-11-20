@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { joinSession } from "@github/copilot-sdk/extension";
 
 import { removeInBackground } from "./app-remove.mjs";
+import { createActivity, restartWhenIdle } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
 import {
   buildProviders,
@@ -41,11 +42,15 @@ if (config.remove) {
     providers: buildProviders(config, bearerTokenProvider),
     models: config.models,
   });
+  const activity = createActivity();
   session.on((event) => {
+    activity.note(session.sessionId, event.type);
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();
     // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
     if (event.type === "session.error") session.log(config.loginHint, { level: "error" });
   });
-  if (retry(await firstSync)) await syncInBackground(config, syncOptions, logSyncFailure);
+  let synced = await firstSync;
+  if (retry(synced)) synced = await syncInBackground(config, syncOptions, logSyncFailure);
+  if (synced === "changed") await restartWhenIdle(session, activity, syncOptions);
 }
