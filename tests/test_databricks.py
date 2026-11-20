@@ -7537,6 +7537,47 @@ def test_macos_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
     assert db_mod._urllib_proxy_for_request("https", "internal.example", proxies) is None
 
 
+def test_pooled_client_built_on_tls_trust_store(monkeypatch):
+    """The pooled client's SSL context comes from #168's trust-store helper: tls.apply() runs
+    first, so the context it builds (and both transports share) verifies against the
+    configured store, exactly as the urllib path did."""
+    import httpx
+
+    order = []
+    real_apply = db_mod.tls.apply
+    real_context = db_mod.ssl.create_default_context
+    contexts = []
+
+    def spy_apply(*args, **kwargs):
+        order.append("apply")
+        return real_apply(*args, **kwargs)
+
+    def spy_context(*args, **kwargs):
+        context = real_context(*args, **kwargs)
+        contexts.append(context)
+        order.append("context")
+        return context
+
+    built = {}
+    real_client = httpx.Client
+
+    def spy_client(*args, **kwargs):
+        built.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(db_mod.tls, "apply", spy_apply)
+    monkeypatch.setattr(db_mod.ssl, "create_default_context", spy_context)
+    monkeypatch.setattr(httpx, "Client", spy_client)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+
+    client = db_mod._get_http_client()
+    try:
+        assert order == ["apply", "context"]
+        assert built["verify"] is contexts[-1]
+    finally:
+        client.close()
+
+
 def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
     parent_pid = os.getpid()
     parent_client = db_mod._get_http_client()
