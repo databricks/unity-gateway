@@ -4393,6 +4393,7 @@ def _launch_tool(
         # abandons the request on its daemon thread.
         picker_catalog_future: Future | None = None
         picker_catalog_started_profile: str | None = None
+        picker_catalog_started_identity: tuple[str, str | None, str | None] | None = None
         launch_only_auto_picker = (
             tool == AGENT_CLAUDE
             and smart_routing_config.auto_mode_enabled()
@@ -4443,11 +4444,20 @@ def _launch_tool(
                 )
 
             picker_catalog_future = _start_in_background(_speculative_catalog)
+            picker_catalog_started_identity = (
+                state["workspace"],
+                state.get("workspace_id"),
+                picker_catalog_started_profile,
+            )
 
         def _speculative_picker_catalog() -> AnthropicModelCatalog | None:
             """The speculative catalog result when its profile still matches and it succeeded;
             None sends the caller to the serial fetch with the live token."""
-            if picker_catalog_future is None or picker_catalog_started_profile != catalog_profile:
+            if (
+                picker_catalog_future is None
+                or picker_catalog_started_identity
+                != (state["workspace"], state.get("workspace_id"), catalog_profile)
+            ):
                 return None
             try:
                 speculative = picker_catalog_future.result()
