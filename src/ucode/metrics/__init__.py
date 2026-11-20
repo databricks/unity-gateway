@@ -30,6 +30,8 @@ UG_CLI_ERROR = "ug_cli_error"
 DATABRICKS_TOKEN_FETCH_OPERATION = "databricks_token_fetch"
 DATABRICKS_TOKEN_FETCH_DURATION_MS = f"{DATABRICKS_TOKEN_FETCH_OPERATION}_duration_ms"
 DATABRICKS_LOGIN_OPERATION = "databricks_login"
+# The api_operation label for the gateway's model listing (`/models`).
+MODELS_LIST_OPERATION = "models_list"
 DATABRICKS_LOGIN_DURATION_MS = f"{DATABRICKS_LOGIN_OPERATION}_duration_ms"
 CODING_AGENT_CONFIG_FETCH_DURATION_MS = "coding_agent_config_fetch_duration_ms"
 MODEL_SERVICE_ACCESS_CHECK_DURATION_MS = "model_service_access_check_duration_ms"
@@ -656,7 +658,7 @@ def api_operation(url: str) -> str:
         ("/traces", "otel_traces"),
         ("/metrics", "otel_metrics"),
         ("/logs", "otel_logs"),
-        ("/models", "models_list"),
+        ("/models", MODELS_LIST_OPERATION),
         ("/skills", "skills"),
         ("/mcp", "mcp"),
         ("/scim/", "scim_me"),

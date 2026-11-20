@@ -4474,7 +4474,7 @@ def _launch_tool(
                 # The token the speculation rode is definitively rejected (a 401, an
                 # invalid-token 400, an invalid-access-token 403) and configure's auth step may
                 # have repaired it; refetch with the live token.
-                metrics.failure("models_list", error, continued_with_fallback=True)
+                metrics.failure(metrics.MODELS_LIST_OPERATION, error, continued_with_fallback=True)
                 return None
             # Any other error (a plain 403, a transient error) would fail a live-token fetch the
             # same way, so use the speculative result instead of doubling the request.
