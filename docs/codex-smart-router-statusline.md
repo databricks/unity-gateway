@@ -48,8 +48,10 @@ For a configured test workspace and an explicitly selected profile:
    Codex may add its own trust and onboarding records, such as
    `tui.screen_reader_detection_done`; compare `tui.status_line` and
    `tui.status_line_provider` independently of that bookkeeping.
-9. With an older client, verify the upgrade gate blocks routed launch until the
-   upgrade succeeds. `--disable-smart-routing` retains ordinary launch behavior.
+9. With an older client and explicit routing selected, verify the upgrade gate blocks
+   routed launch until the upgrade succeeds. With managed routing and no explicit
+   selection, decline the upgrade and require a warning, a completed task, and no footer.
+   `--disable-smart-routing` retains ordinary launch behavior.
 
 Existing native routing journeys can be run with pinned stable Codex through
 `scripts/run_integration.py --ug-version checkout --codex-version 0.171.0
@@ -77,6 +79,8 @@ Routed launches require stable Codex `0.171.0` or newer. Earlier builds, includi
 `0.171.0-alpha.*`, must pass the existing native upgrade flow before starting.
 Declining or failing the upgrade blocks routed launch; `--disable-smart-routing`
 keeps ordinary launch behavior. `UG_AUTO_UPGRADE_AGENT=1` selects automatic upgrade.
+When routing comes from the managed default, an unsuccessful upgrade instead warns
+and continues without routing or the footer, with no extra launch flag required.
 The footer is registered after that launch gate, without a second version probe.
 
 Upstream contract and starter:
