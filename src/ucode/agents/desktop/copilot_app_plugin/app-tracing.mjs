@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { withSessionId } from "./ug-plugin.mjs";
@@ -10,6 +11,10 @@ export const MAX_BUFFERED_SPANS = 2_000;
 export const MAX_SPANS_PER_EXPORT = 500;
 export const RETRY_DELAYS_MS = [1_000, 4_000];
 export const EXPORT_TIMEOUT_MS = 15_000;
+// The CLI sends SIGKILL 5 s after SIGTERM.
+export const TERMINATE_WAIT_MS = 3_500;
+export const OUTCOME_LOG_FILE = "tracing-exports.json";
+export const OUTCOME_LOG_LIMIT = 50;
 
 const SPAN_KIND_INTERNAL = 1;
 const SPAN_KIND_CLIENT = 3;
@@ -335,21 +340,57 @@ export function exportBody(spans) {
 // A 429 or 503 turns the export away; a 408, 502 or 504 may come after the spans were written.
 const RETRYABLE_STATUSES = new Set([429, 503]);
 
-// Spans wait in memory, at most MAX_BUFFERED_SPANS, and go out in one export at a time. An export
-// that keeps failing is dropped and logged; nothing here throws or holds up a turn.
+// The extension's stderr reaches no log the user can find, so each export's outcome also goes to a
+// small file in the extension's directory.
+export function createOutcomeLog(path, { limit = OUTCOME_LOG_LIMIT } = {}) {
+  let writing = Promise.resolve();
+  const record = (outcome) => {
+    writing = writing
+      .then(async () => {
+        let entries = [];
+        try {
+          const parsed = JSON.parse(await readFile(path, "utf8"));
+          if (Array.isArray(parsed)) entries = parsed;
+        } catch {
+          // A missing or unreadable log starts over.
+        }
+        const next = `${path}.${process.pid}.tmp`;
+        await writeFile(next, `${JSON.stringify([...entries, outcome].slice(-limit), null, 1)}\n`);
+        await rename(next, path);
+      })
+      .catch(() => {});
+    return writing;
+  };
+  return record;
+}
+
+// Spans go out as soon as they end, coalesced within one tick, one export at a time, so a process
+// that stops right after a turn has already sent them. At most MAX_BUFFERED_SPANS wait. An export
+// that fails is dropped, logged and recorded; nothing here throws or holds up a turn.
 export function createExporter({
   endpoint,
   headers,
   token,
   log,
+  record = () => {},
+  sessionId,
   fetchImpl = fetch,
   retryDelaysMs = RETRY_DELAYS_MS,
   wait = delay,
   timeoutMs = EXPORT_TIMEOUT_MS,
+  now = Date.now,
 }) {
   const queue = [];
   let dropped = 0;
   let running = null;
+  let scheduled = false;
+  const note = (outcome) => {
+    try {
+      record({ time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...outcome });
+    } catch {
+      // Recording must not stop an export.
+    }
+  };
 
   async function post(body) {
     const send = async (value) =>
@@ -373,31 +414,47 @@ export function createExporter({
   // span, and a timeout or dropped connection may follow a write.
   async function sendBatch(spans) {
     const body = JSON.stringify(exportBody(spans));
-    let problem = "";
-    for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
-      if (attempt > 0) await wait(retryDelaysMs[attempt - 1]);
+    let failure;
+    let attempts = 0;
+    for (;;) {
+      if (attempts > 0) await wait(retryDelaysMs[attempts - 1]);
+      attempts++;
       let status;
       try {
         status = await post(body);
       } catch (error) {
-        problem = error?.message ?? String(error);
+        failure = { error: String(error?.message ?? error).slice(0, 200) };
         break;
       }
-      if (status >= 200 && status < 300) return;
-      problem = `HTTP ${status}`;
-      if (!RETRYABLE_STATUSES.has(status)) break;
+      if (status >= 200 && status < 300) {
+        note({ outcome: "sent", spans: spans.length, status, attempts });
+        return;
+      }
+      failure = { status };
+      if (!RETRYABLE_STATUSES.has(status) || attempts > retryDelaysMs.length) break;
     }
-    log(`Databricks tracing: dropped ${spans.length} spans (${problem}).`);
+    note({ outcome: "dropped", spans: spans.length, ...failure, attempts });
+    log(`Databricks tracing: dropped ${spans.length} spans (${failure.error ?? `HTTP ${failure.status}`}).`);
   }
 
   async function drain() {
     while (queue.length > 0) {
       if (dropped > 0) {
+        note({ outcome: "overflow", spans: dropped });
         log(`Databricks tracing: dropped ${dropped} spans that didn't fit in the buffer.`);
         dropped = 0;
       }
       await sendBatch(queue.splice(0, MAX_SPANS_PER_EXPORT));
     }
+  }
+
+  function flush() {
+    running ??= drain()
+      .catch((error) => log(`Databricks tracing: export failed: ${error?.message ?? error}`))
+      .finally(() => {
+        running = null;
+      });
+    return running;
   }
 
   return {
@@ -407,14 +464,26 @@ export function createExporter({
         queue.shift();
         dropped++;
       }
-    },
-    flush() {
-      running ??= drain()
-        .catch((error) => log(`Databricks tracing: export failed: ${error?.message ?? error}`))
-        .finally(() => {
-          running = null;
+      if (!scheduled) {
+        scheduled = true;
+        queueMicrotask(() => {
+          scheduled = false;
+          flush();
         });
-      return running;
+      }
+    },
+    flush,
+    // Resolves once every span added so far was sent or dropped, or after ``ms``.
+    async drain(ms) {
+      let timer;
+      const bound = new Promise((resolve) => {
+        timer = setTimeout(resolve, ms);
+      });
+      const done = (async () => {
+        while (queue.length > 0 || running) await flush();
+      })();
+      await Promise.race([done, bound]);
+      clearTimeout(timer);
     },
     get pending() {
       return queue.length;
@@ -422,9 +491,11 @@ export function createExporter({
   };
 }
 
-const FLUSH_EVENTS = new Set(["assistant.turn_end", "session.idle", "session.shutdown"]);
-
-export function createTracer(config, token, { sessionId = process.env.SESSION_ID, log, fetchImpl, ids, now } = {}) {
+export function createTracer(
+  config,
+  token,
+  { sessionId = process.env.SESSION_ID, log, record, fetchImpl, ids, now } = {},
+) {
   const tracing = config.tracing;
   if (!tracing?.endpoint) return null;
   let serverAddress;
@@ -438,6 +509,8 @@ export function createTracer(config, token, { sessionId = process.env.SESSION_ID
     headers: withSessionId(tracing.headers, sessionId),
     token,
     log,
+    sessionId,
+    ...(record ? { record } : {}),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
   const builder = createSpanBuilder({
@@ -447,14 +520,12 @@ export function createTracer(config, token, { sessionId = process.env.SESSION_ID
     ...(ids ? { ids } : {}),
     ...(now ? { now } : {}),
   });
-  const flush = () => exporter.flush().catch(() => {});
   let waiting = null;
   const replayed = new Set();
   function processEvent(event) {
     try {
       if (event?.id && replayed.has(event.id)) return;
       builder.handle(event);
-      if (FLUSH_EVENTS.has(event?.type)) flush();
     } catch (error) {
       log(`Databricks tracing: skipped an event: ${error?.message ?? error}`);
     }
@@ -479,14 +550,13 @@ export function createTracer(config, token, { sessionId = process.env.SESSION_ID
       waiting = null;
       for (const event of live) processEvent(event);
     },
-    async shutdown() {
+    async shutdown(ms = TERMINATE_WAIT_MS) {
       try {
         builder.end();
       } catch {
         // Ending open spans must not stop the final flush.
       }
-      await flush();
-      if (exporter.pending > 0) await flush();
+      await exporter.drain(ms);
     },
     exporter,
   };
@@ -499,4 +569,15 @@ export function latestInteraction(events) {
     if (event?.type === "user.message") start = index;
   });
   return start < 0 ? [] : events.slice(start);
+}
+
+// The CLI stops an extension with SIGTERM, whose default would end the process with exports still
+// in flight. The signal is raised again afterwards, so the process still ends the way it would have.
+export function exportBeforeTerminating(tracer, proc = process, ms = TERMINATE_WAIT_MS) {
+  proc.once("SIGTERM", () => {
+    tracer
+      .shutdown(ms)
+      .catch(() => {})
+      .finally(() => proc.kill(proc.pid, "SIGTERM"));
+  });
 }

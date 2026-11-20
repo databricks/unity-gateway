@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -7,8 +10,10 @@ import {
   MAX_SPANS_PER_EXPORT,
   SERVICE_NAME,
   createExporter,
+  createOutcomeLog,
   createSpanBuilder,
   createTracer,
+  exportBeforeTerminating,
   exportBody,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/app-tracing.mjs";
 
@@ -446,4 +451,169 @@ test("an unreadable history leaves the live events traced", async () => {
   await tracer.shutdown();
 
   assert.equal(sent().length, 2);
+});
+
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+};
+
+function sentNames(requests) {
+  return requests.flatMap((request) => request.body.resourceSpans[0].scopeSpans[0].spans.map((span) => span.name));
+}
+
+test("each span is handed to fetch as soon as it ends, without waiting for a turn boundary", async () => {
+  const { sessionId, events } = fixture("claude-tool");
+  const { fetchImpl, requests } = fakeFetch([200]);
+  const tracer = createTracer({ tracing: { endpoint: ENDPOINT, headers: {} } }, tokenSource(["t"]), {
+    sessionId,
+    log: () => {},
+    fetchImpl,
+  });
+  const firstTurnEnd = events.findIndex((event) => event.type === "assistant.turn_end");
+
+  for (const event of events.slice(0, firstTurnEnd)) tracer.handle(event);
+  await settle();
+  assert.deepEqual(sentNames(requests), ["chat system.ai.claude-sonnet-4-6", "execute_tool bash"]);
+
+  for (const event of events.slice(firstTurnEnd)) tracer.handle(event);
+  await settle();
+  assert.deepEqual(sentNames(requests).slice(2), ["chat system.ai.claude-sonnet-4-6", "invoke_agent"]);
+  assert.equal(tracer.exporter.pending, 0);
+});
+
+test("spans ending together go out in one export", async () => {
+  const { fetchImpl, requests } = fakeFetch([200]);
+  const exporter = createExporter({ endpoint: ENDPOINT, headers: {}, token: tokenSource(["t"]), log: () => {}, fetchImpl });
+  exporter.add({ name: "a" });
+  exporter.add({ name: "b" });
+  await settle();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(sentNames(requests), ["a", "b"]);
+});
+
+function fakeProcess() {
+  const proc = new EventEmitter();
+  proc.pid = 4242;
+  proc.kills = [];
+  proc.kill = (pid, signal) => proc.kills.push([pid, signal]);
+  return proc;
+}
+
+test("on SIGTERM the extension finishes its exports, then ends as the signal would have", async () => {
+  const { sessionId, events } = fixture("gpt");
+  const requests = [];
+  let release;
+  const slow = new Promise((resolve) => {
+    release = resolve;
+  });
+  const fetchImpl = async (url, init) => {
+    requests.push(JSON.parse(init.body));
+    await slow;
+    return new Response(null, { status: 200 });
+  };
+  const tracer = createTracer({ tracing: { endpoint: ENDPOINT, headers: {} } }, tokenSource(["t"]), {
+    sessionId,
+    log: () => {},
+    fetchImpl,
+  });
+  const proc = fakeProcess();
+  exportBeforeTerminating(tracer, proc, 5_000);
+  for (const event of events.filter((event) => event.type !== "session.idle")) tracer.handle(event);
+  await settle();
+
+  proc.emit("SIGTERM");
+  await settle();
+  assert.deepEqual(proc.kills, []);
+  release();
+  await settle();
+
+  const names = requests.flatMap((body) => body.resourceSpans[0].scopeSpans[0].spans.map((span) => span.name));
+  assert.deepEqual(names, ["chat system.ai.gpt-6-luna", "invoke_agent"]);
+  assert.deepEqual(proc.kills, [[4242, "SIGTERM"]]);
+  assert.equal(proc.listenerCount("SIGTERM"), 0);
+});
+
+test("a hung export doesn't hold SIGTERM past its bound", async () => {
+  const tracer = createTracer({ tracing: { endpoint: ENDPOINT, headers: {} } }, tokenSource(["t"]), {
+    sessionId: "s",
+    log: () => {},
+    fetchImpl: () => new Promise(() => {}),
+  });
+  const proc = fakeProcess();
+  exportBeforeTerminating(tracer, proc, 20);
+  tracer.handle({ type: "user.message", timestamp: "2026-01-01T00:00:00.000Z", data: {} });
+
+  proc.emit("SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.deepEqual(proc.kills, [[4242, "SIGTERM"]]);
+});
+
+test("each export's outcome is recorded, including a 502 that isn't retried", async () => {
+  const outcomes = [];
+  const { fetchImpl } = fakeFetch([200, 502]);
+  const exporter = createExporter({
+    endpoint: ENDPOINT,
+    headers: {},
+    token: tokenSource(["t"]),
+    log: () => {},
+    record: (outcome) => outcomes.push(outcome),
+    sessionId: "s1",
+    fetchImpl,
+    wait: async () => {},
+    now: () => Date.parse("2026-01-01T00:00:00.000Z"),
+  });
+
+  exporter.add({ name: "a" });
+  exporter.add({ name: "b" });
+  await exporter.drain(1_000);
+  exporter.add({ name: "c" });
+  await exporter.drain(1_000);
+
+  assert.deepEqual(outcomes, [
+    { time: "2026-01-01T00:00:00.000Z", sessionId: "s1", outcome: "sent", spans: 2, status: 200, attempts: 1 },
+    { time: "2026-01-01T00:00:00.000Z", sessionId: "s1", outcome: "dropped", spans: 1, status: 502, attempts: 1 },
+  ]);
+});
+
+test("a network error and a buffer overflow are recorded too", async () => {
+  const outcomes = [];
+  const { fetchImpl } = fakeFetch([new Error("connect ECONNREFUSED")]);
+  const exporter = createExporter({
+    endpoint: ENDPOINT,
+    headers: {},
+    token: tokenSource(["t"]),
+    log: () => {},
+    record: (outcome) => outcomes.push(outcome),
+    fetchImpl,
+  });
+  for (let i = 0; i < MAX_BUFFERED_SPANS + 1; i++) exporter.add({ name: String(i) });
+
+  await exporter.drain(1_000);
+
+  assert.deepEqual(
+    outcomes.map(({ outcome, spans, error }) => [outcome, spans, error]),
+    [
+      ["overflow", 1, undefined],
+      ["dropped", MAX_SPANS_PER_EXPORT, "connect ECONNREFUSED"],
+      ["dropped", MAX_SPANS_PER_EXPORT, "connect ECONNREFUSED"],
+      ["dropped", MAX_SPANS_PER_EXPORT, "connect ECONNREFUSED"],
+      ["dropped", MAX_SPANS_PER_EXPORT, "connect ECONNREFUSED"],
+    ],
+  );
+});
+
+test("the outcome log keeps the last entries and survives a broken file", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ug-tracing-log-")), "tracing-exports.json");
+  const record = createOutcomeLog(path, { limit: 3 });
+
+  await record({ n: 1 });
+  for (let n = 2; n <= 5; n++) record({ n });
+  await record({ n: 6 });
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), [{ n: 4 }, { n: 5 }, { n: 6 }]);
+
+  const broken = createOutcomeLog(path, { limit: 3 });
+  writeFileSync(path, "not json");
+  await broken({ n: 7 });
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), [{ n: 7 }]);
 });

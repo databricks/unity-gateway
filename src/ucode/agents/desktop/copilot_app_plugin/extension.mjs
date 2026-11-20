@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -6,7 +7,7 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { removeInBackground } from "./app-remove.mjs";
 import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
-import { createTracer } from "./app-tracing.mjs";
+import { OUTCOME_LOG_FILE, createOutcomeLog, createTracer, exportBeforeTerminating } from "./app-tracing.mjs";
 import {
   buildProviders,
   createTokenSource,
@@ -57,7 +58,11 @@ if (config.remove) {
     say(hint);
     return true;
   });
-  const tracer = createTracer(config, tokenSource, { log: logSyncFailure });
+  const tracer = createTracer(config, tokenSource, {
+    log: logSyncFailure,
+    record: createOutcomeLog(join(syncOptions.stateDir, OUTCOME_LOG_FILE)),
+  });
+  if (tracer) exportBeforeTerminating(tracer);
   session = await joinSession({
     providers: buildProviders(config, bearerTokenProvider),
     models: config.models,
