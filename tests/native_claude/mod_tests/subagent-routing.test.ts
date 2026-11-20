@@ -920,7 +920,6 @@ test('completed notification labels restore per child and render without storage
   for (const props of [
     { ...notice.props, origin: { kind: 'composer' as const }, task: undefined },
     { ...notice.props, task: { ...notice.props.task, id: 'unrouted-child' } },
-    { ...notice.props, task: { ...notice.props.task, status: 'failed' } },
   ]) {
     const other = await $.ui.mount({ ...notice, props });
     expect(renders[renders.length - 1]).toEqual({ ...expected, props });
@@ -936,6 +935,12 @@ test('completed notification labels restore per child and render without storage
   } });
   expect(await cleared.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
   await cleared.unmount();
+  // A failed or killed child launched elsewhere is flagged like a completed one.
+  const failed = await $.ui.mount({ ...notice, props: { ...notice.props,
+    task: { ...notice.props.task, id: 'after-clear', status: 'failed' },
+  } });
+  expect(renders[renders.length - 1].props.text).toBe(`${notice.props.text}\n⚠ Launched on launched-model, not the selected-model in the heading`);
+  await failed.unmount();
   await $.session.end({ reason: 'resume' });
   const retained = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear' },

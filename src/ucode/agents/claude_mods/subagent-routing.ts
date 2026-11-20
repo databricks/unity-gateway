@@ -281,9 +281,12 @@ async function routeCall($: any, e: any): Promise<void> {
 export async function* routeAgentStream($: any, step: any, source: AsyncGenerator<any, any>): AsyncGenerator<any, any> {
   // Rewriting the reply would void a server-side auto-mode verdict, so that review keeps its input.
   if (await $.serverReview()) return yield* source
-  // Nothing to head when routing is off, so the reply streams untouched.
-  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length
-      || (routing.autoModels && !await $.routingEnabled())) return yield* source
+  // Nothing to head when routing is off, so the reply streams untouched. An Auto launch keeps
+  // the model's heading too: its session model is a picker alias, which cannot stand in as the
+  // fallback reviewer once the server-side verdict is void.
+  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels) {
+    return yield* source
+  }
   const held: any[] = []
   const calls = new Map<number, { tool: string; id: string; json: string }>()
   const release = async function* (): AsyncGenerator<any> {
@@ -400,7 +403,7 @@ export const registerSubagentRouting = (
   // Claude's own notice already names the heading; a launch that differs from it is called out.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
-    if (e.props.origin?.kind !== 'task-notification' || task?.status !== 'completed' || !task.id) return next(e)
+    if (e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || !differs(saved.selected, saved.launched)) return next(e)
     return next({ ...e, props: { ...e.props,
