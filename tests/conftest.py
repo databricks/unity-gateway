@@ -70,6 +70,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
     from ucode.agents.desktop import setup as desktop_setup_mod
+    from ucode.agents.desktop import shell_profile_env as shell_profile_env_mod
     from ucode.smart_routing import session_log as session_log_mod
 
     state_dir = tmp_path / ".ucode"
@@ -90,6 +91,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
     monkeypatch.setattr(agents_mod, "_copilot_app_with_copilot", True)
+    monkeypatch.setattr(agents_mod, "_copilot_app_windows_tracing", None)
+    # Nor may any test write the developer's shell profiles.
+    monkeypatch.setattr(shell_profile_env_mod, "_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(shell_profile_env_mod, "_system_zdotdir", lambda: None)
+    monkeypatch.setattr(
+        shell_profile_env_mod, "_config_home", lambda: tmp_path / "home" / ".config"
+    )
     # No test may find the developer's GitHub Copilot app, change its settings or providers, or
     # write ug's plugin for it.
     monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP", raising=False)

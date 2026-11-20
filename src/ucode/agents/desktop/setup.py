@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ucode.agents.copilot import CopilotModel, claude_model_name
-from ucode.agents.desktop import copilot_app, copilot_app_plugin
+from ucode.agents.desktop import copilot_app, copilot_app_plugin, copilot_app_tracing
 from ucode.agents.desktop.claude import (
     can_initialize_claude_desktop_directory,
     claude_desktop_directory,
@@ -492,8 +492,9 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
         print_warning(f"Skipped the GitHub Copilot app: {exc}")
         return
     desired = copilot_app.desired_providers(state["workspace"], catalog, provider_service=provider)
+    config = copilot_app_plugin_config(state, desired)
     try:
-        copilot_app_plugin.install(copilot_app_plugin_config(state, desired))
+        copilot_app_plugin.install(config)
     except copilot_app_plugin.SettingsError as exc:
         print_warning(
             f"Skipped the GitHub Copilot app: {exc}, and ug doesn't rewrite a settings file it "
@@ -524,6 +525,66 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
             f"To start new chats on {name}, pick it in the GitHub Copilot app; Settings -> "
             "Sessions -> Default model makes it stick."
         )
+    _configure_copilot_app_tracing(state, config.ug_path)
+
+
+COPILOT_APP_WINDOWS_TRACING_KEY = "copilot_app_windows_tracing"
+_COPILOT_APP_TRACING_RESTART_NOTE = (
+    "Restart the GitHub Copilot app to pick up the change to its tracing."
+)
+
+
+def _copilot_otel_headers_args(state: dict) -> list[str]:
+    from ucode.databricks import build_otel_headers_argv
+
+    args = build_otel_headers_argv(
+        state["workspace"], state.get("profile"), use_pat=bool(state.get("use_pat"))
+    )[1:]
+    # The app outlives this process's workspace selection, so the saved id counts too.
+    workspace_id = state.get("workspace_id")
+    if isinstance(workspace_id, str) and workspace_id and "--workspace-id" not in args:
+        args += ["--workspace-id", workspace_id]
+    return args
+
+
+def _configure_copilot_app_tracing(state: dict, ug_path: str) -> None:
+    """Export the app's traces when the workspace traces Copilot, and stop when it doesn't."""
+    from ucode.agents.copilot import installed_version
+
+    floor = copilot_app_tracing.FIRST_HEADERS_PROVIDER_VERSION
+    try:
+        if not state.get("copilot_otel_tracing"):
+            changed = copilot_app_tracing.disable()
+        elif (version := installed_version()) is not None and version < floor:
+            print_warning(
+                "GitHub Copilot app tracing is off: GitHub Copilot CLI "
+                f"{'.'.join(map(str, version))} ignores the whole settings file it shares with the "
+                f"app once tracing is set up there. Update it to {'.'.join(map(str, floor))} or "
+                "newer, then run `ug configure --agents copilot` again."
+            )
+            changed = copilot_app_tracing.disable()
+        else:
+            changed = copilot_app_tracing.enable(
+                state["workspace"],
+                copilot_app_tracing.headers_provider(ug_path, _copilot_otel_headers_args(state)),
+                windows_opt_in=state.get(COPILOT_APP_WINDOWS_TRACING_KEY) is True,
+            )
+    except (copilot_app_plugin.SettingsError, OSError, RuntimeError) as exc:
+        print_warning(f"Could not set up the GitHub Copilot app's tracing: {exc}")
+        return
+    if changed:
+        print_note(_COPILOT_APP_TRACING_RESTART_NOTE)
+
+
+def disable_copilot_app_tracing() -> bool:
+    """Remove what ug wrote for the app's tracing. Problems only warn."""
+    if is_dry_run():
+        return False
+    try:
+        return copilot_app_tracing.disable()
+    except (copilot_app_plugin.SettingsError, OSError) as exc:
+        print_warning(f"Could not remove the GitHub Copilot app's tracing setup: {exc}")
+        return False
 
 
 COPILOT_APP_REMOVAL_PENDING = (
@@ -537,6 +598,13 @@ def revert_copilot_app() -> str:
     if is_dry_run():
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return COPILOT_APP_DRY_RUN
+    # First, so a settings file ug created is empty once the plugin's keys go too.
+    tracing_removed = disable_copilot_app_tracing()
+    result = _revert_copilot_app_plugin()
+    return "removed" if tracing_removed and result == "not set up" else result
+
+
+def _revert_copilot_app_plugin() -> str:
     _cleanup_copilot_app_leftover()
     had_plugin = copilot_app_plugin.plugin_root().exists()
     if not had_plugin and not copilot_app_installed():
@@ -603,6 +671,11 @@ _COPILOT_PLUGIN_PROBLEMS = {
     "disabled": "is turned off",
     "not_installed": "is missing",
     "invalid_settings": "isn't loaded, since Copilot's settings.json isn't valid JSON",
+}
+_COPILOT_TRACING_LABELS = {
+    "on": "on",
+    "windows_opt_in": f"off (opt in with {copilot_app_tracing.WINDOWS_OPT_IN_FLAG})",
+    "not_set_up": "not set up",
 }
 _COPILOT_REGISTRATION_LABELS = {
     "registered": "registered",
@@ -673,4 +746,12 @@ def copilot_app_status(
             "`ug configure --agents copilot` again."
         )
     row = f"plugin {plugin_label}, models {_COPILOT_REGISTRATION_LABELS.get(registration, registration)}"
+    if state.get("copilot_otel_tracing"):
+        tracing = copilot_app_tracing.status()
+        row += f", tracing {_COPILOT_TRACING_LABELS[tracing]}"
+        if tracing == "not_set_up":
+            warnings.append(
+                "This workspace traces Copilot, but the GitHub Copilot app's tracing isn't set "
+                "up. Run `ug configure --agents copilot` again."
+            )
     return CopilotAppStatus(row, tuple(warnings))
