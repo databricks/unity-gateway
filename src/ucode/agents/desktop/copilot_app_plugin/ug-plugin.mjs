@@ -4,6 +4,7 @@ import { delimiter, dirname } from "node:path";
 
 export const REFRESH_MARGIN_MS = 120_000;
 export const DEFAULT_TOKEN_TTL_MS = 300_000;
+export const MIN_TOKEN_REUSE_MS = 30_000;
 const TOKEN_COMMAND_TIMEOUT_MS = 30_000;
 
 export function loadConfig(url) {
@@ -21,10 +22,13 @@ export function jwtExpiryMs(token) {
   }
 }
 
+// On Windows the variable is usually `Path`; a second, differently cased key would leave the child
+// with two.
 export function childEnv(config, env = process.env) {
+  const name = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
   const databricksDir = config.databricksPath ? [dirname(config.databricksPath)] : [];
-  const path = [...(config.pathDirs || []), ...databricksDir, env.PATH].filter(Boolean).join(delimiter);
-  return { ...env, PATH: path };
+  const path = [...(config.pathDirs || []), ...databricksDir, env[name]].filter(Boolean).join(delimiter);
+  return { ...env, [name]: path };
 }
 
 export function runCommand(argv, env) {
@@ -65,7 +69,11 @@ export function createTokenSource(config, { run = runCommand, now = Date.now } =
         .then((value) => {
           if (started === generation) {
             const expiry = jwtExpiryMs(value);
-            const refreshAt = expiry ? expiry - REFRESH_MARGIN_MS : now() + DEFAULT_TOKEN_TTL_MS;
+            // A token the CLI hands out close to its expiry is still reused briefly, rather than
+            // minting again for every request.
+            const refreshAt = expiry
+              ? Math.max(expiry - REFRESH_MARGIN_MS, Math.min(expiry, now() + MIN_TOKEN_REUSE_MS))
+              : now() + DEFAULT_TOKEN_TTL_MS;
             cached = { value, refreshAt };
           }
           return value;

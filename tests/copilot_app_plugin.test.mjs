@@ -13,6 +13,8 @@ import {
   hintFor,
   isAuthRejection,
   jwtExpiryMs,
+  MIN_TOKEN_REUSE_MS,
+  runCommand,
   withLoginHint,
   withSessionId,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/ug-plugin.mjs";
@@ -40,6 +42,37 @@ test("childEnv puts the configured dirs ahead of PATH", () => {
   const env = childEnv(config, { PATH: "/usr/bin", HOME: "/h" });
   assert.equal(env.PATH, ["/opt/ug/bin", "/opt/databricks", "/usr/bin"].join(delimiter));
   assert.equal(env.HOME, "/h");
+});
+
+test("childEnv keeps Windows' Path casing", () => {
+  const env = childEnv(config, { Path: "C:\\bin", HOME: "/h" });
+  assert.deepEqual(Object.keys(env).filter((key) => key.toUpperCase() === "PATH"), ["Path"]);
+  assert.equal(env.Path, ["/opt/ug/bin", "/opt/databricks", "C:\\bin"].join(delimiter));
+});
+
+test("a token close to its expiry is still reused briefly", async () => {
+  let clock = 3600 * 1000 - 60_000;
+  let calls = 0;
+  const token = createTokenSource(config, { run: async () => (calls++, jwt(3600)), now: () => clock });
+  await token();
+  clock += MIN_TOKEN_REUSE_MS - 1;
+  await token();
+  assert.equal(calls, 1);
+  clock += 1;
+  await token();
+  assert.equal(calls, 2);
+});
+
+test("runCommand returns the token, and fails on a nonzero exit, no output or no program", async () => {
+  const script = (code) => [process.execPath, "-e", code];
+  assert.equal(await runCommand(script("console.log(' tok ')"), process.env), "tok");
+  await assert.rejects(runCommand(script("console.error('first\\nlast'); process.exit(3)"), process.env), (error) => {
+    assert.equal(error.code, 3);
+    assert.match(error.message, /last/);
+    return true;
+  });
+  await assert.rejects(runCommand(script(""), process.env), /printed no token/);
+  await assert.rejects(runCommand(["/nonexistent/ug"], process.env), (error) => error.code === "ENOENT");
 });
 
 test("createTokenSource caches until shortly before expiry", async () => {

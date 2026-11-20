@@ -672,3 +672,16 @@ class TestEarlierIds:
         assert settings["extraKnownMarketplaces"][self.LEGACY_MARKETPLACE]["source"]["path"] == (
             "/elsewhere"
         )
+
+
+@pytest.mark.parametrize("key", ["extraKnownMarketplaces", "enabledPlugins"])
+def test_install_refuses_a_non_object_key_before_writing_the_plugin(home, key):
+    path = plugin.copilot_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({key: []}))
+
+    with pytest.raises(plugin.SettingsError, match=key):
+        plugin.install(_config())
+
+    assert not plugin.plugin_root().exists()
+    assert json.loads(path.read_text()) == {key: []}

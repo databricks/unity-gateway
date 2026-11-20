@@ -104,8 +104,8 @@ export function removeSettingsKeys(path, pluginRoot) {
 export async function removeOnce(config, { home = copilotHome(), stateDir, now = Date.now, ...connect } = {}) {
   if (!config.remove) return "skipped";
   const path = settingsPath(home);
-  const lockPath = join(stateDir, LOCK_FILE);
-  if (!tryLock(lockPath, now)) return "busy";
+  const release = tryLock(join(stateDir, LOCK_FILE), now);
+  if (!release) return "busy";
   try {
     let current;
     let refusal = null;
@@ -137,9 +137,7 @@ export async function removeOnce(config, { home = copilotHome(), stateDir, now =
     removeSettingsKeys(path, config.pluginRoot);
     return "removed";
   } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {}
+    release();
   }
 }
 

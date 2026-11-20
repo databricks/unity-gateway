@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
 
-import { copilotHome, readEndpoint, syncInBackground, syncOnce } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
+import { copilotHome, readEndpoint, syncInBackground, syncOnce, tryLock } from "../src/ucode/agents/desktop/copilot_app_plugin/app-rows.mjs";
 import { FakeApp } from "./copilot_app_fake.mjs";
 
 // The Copilot runtime's Node has a global WebSocket; Node before 22 doesn't.
@@ -172,6 +172,21 @@ test("only one extension process syncs at a time; a stale lock is taken over", a
   const old = new Date(Date.now() - 120_000);
   utimesSync(lock, old, old);
   assert.equal(await syncOnce({ app: ROWS }, options), "changed");
+});
+
+test("a lock taken over as stale is released only by its new owner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ug-copilot-lock-"));
+  const lock = join(dir, "app-sync.lock");
+  const first = tryLock(lock, Date.now);
+  assert.equal(tryLock(lock, Date.now), null);
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(lock, old, old);
+  const second = tryLock(lock, Date.now);
+  assert.ok(second);
+  first();
+  assert.ok(existsSync(lock));
+  second();
+  assert.equal(existsSync(lock), false);
 });
 
 test("a reply for another request is skipped", async (t) => {

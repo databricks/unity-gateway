@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -223,20 +223,40 @@ export async function syncRows(app, rows) {
   return changed;
 }
 
+// Returns the function that releases the lock, or null while another extension process holds it.
+// The lock file names its owner, so a process whose lock was taken over as stale can't release the
+// new owner's.
 export function tryLock(path, now) {
+  const owner = `${process.pid}-${randomUUID()}`;
+  const release = () => {
+    try {
+      if (readFileSync(path, "utf8") === owner) unlinkSync(path);
+    } catch {}
+  };
+  const take = () => {
+    writeFileSync(path, owner, { flag: "wx" });
+    return release;
+  };
   try {
-    closeSync(openSync(path, "wx"));
-    return true;
+    return take();
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
   try {
-    if (now() - statSync(path).mtimeMs < LOCK_STALE_MS) return false;
-    unlinkSync(path);
-    closeSync(openSync(path, "wx"));
-    return true;
+    const stale = readFileSync(path, "utf8");
+    if (now() - statSync(path).mtimeMs < LOCK_STALE_MS) return null;
+    // Only one process can move the stale lock away. If it was replaced in the meantime, the new
+    // owner's lock goes back.
+    const moved = `${path}.${owner}`;
+    renameSync(path, moved);
+    if (readFileSync(moved, "utf8") !== stale) {
+      renameSync(moved, path);
+      return null;
+    }
+    unlinkSync(moved);
+    return take();
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -267,8 +287,8 @@ export async function syncOnce(config, { home = copilotHome(), stateDir, now = D
   const digest = createHash("sha256").update(JSON.stringify(rows)).update("\0").update(endpoint.token).digest("hex");
   const stampPath = join(stateDir, SYNC_STAMP_FILE);
   if (readStamp(stampPath) === digest) return "current";
-  const lockPath = join(stateDir, LOCK_FILE);
-  if (!tryLock(lockPath, now)) return "busy";
+  const release = tryLock(join(stateDir, LOCK_FILE), now);
+  if (!release) return "busy";
   try {
     const app = await connectApp(endpoint, connect);
     let changed;
@@ -285,9 +305,7 @@ export async function syncOnce(config, { home = copilotHome(), stateDir, now = D
     writeStamp(stampPath, digest);
     return restart ? "changed" : "synced";
   } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {}
+    release();
   }
 }
 

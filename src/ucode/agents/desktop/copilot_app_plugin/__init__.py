@@ -414,7 +414,10 @@ def install(
     config: PluginConfig, root: Path | None = None, settings_path: Path | None = None
 ) -> Path:
     path = settings_path or copilot_settings_path()
-    read_settings(path)
+    settings = read_settings(path)
+    # Checked before anything is written, so a refusal leaves no plugin behind.
+    for key in (_MARKETPLACES_KEY, _ENABLED_KEY):
+        _object(dict(settings), key, path)
     _check_writable(path)
     created = not path.exists()
     root = write_plugin(config, root)
