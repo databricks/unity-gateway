@@ -10934,7 +10934,9 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert labels["operation"] == "models_list"
         assert labels["continued_with_fallback"] is True
 
-    def test_speculative_token_failure_falls_back_to_the_serial_fetch(self, monkeypatch):
+    def test_speculative_token_failure_falls_back_to_the_serial_fetch(
+        self, monkeypatch, metrics_recorder
+    ):
         """A background token failure must not fail the launch: the join falls back to the
         serial fetch on the live token."""
         # The token failure kills the speculation before any catalog request, so configure
@@ -10948,6 +10950,11 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         assert calls["result"].exit_code == 0, calls["result"].output
         assert len(calls["catalog_calls"]) == 1
+        # The raised exception is the background token fetch, reported under its operation.
+        [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
+        assert count == 1
+        assert labels["operation"] == "databricks_token_fetch"
+        assert labels["continued_with_fallback"] is True
         assert "main.default.claude-sonnet-5" in (
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
