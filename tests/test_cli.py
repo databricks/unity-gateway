@@ -10834,6 +10834,28 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
 
+    def test_expected_login_miss_falls_back_without_an_error_report(
+        self, monkeypatch, metrics_recorder
+    ):
+        """A no-reauth speculation miss on missing credentials is expected: configure's auth
+        step performs the login, so the join falls back without reporting a token-fetch
+        failure; other failures still report."""
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            token_error=db_mod.DatabricksLoginRequiredError(
+                "Databricks CLI returned no access token"
+            ),
+            expect_catalog_start=False,
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+        assert metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR) == []
+        assert "main.default.claude-sonnet-5" in (
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        )
+
     def test_persistent_403_makes_exactly_one_request(self, monkeypatch):
         """A non-auth catalog failure would fail a live-token fetch the same way, so the
         speculative result is kept instead of doubling the request on every launch."""
