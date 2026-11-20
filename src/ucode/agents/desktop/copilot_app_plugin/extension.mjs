@@ -64,6 +64,7 @@ if (config.remove) {
   });
   session.on((event) => {
     tracer?.handle(event);
+    if (event?.type === "session.shutdown") tracer?.shutdown();
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();
     // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
