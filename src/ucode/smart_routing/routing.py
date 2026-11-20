@@ -152,6 +152,7 @@ class SubagentNoticeConfig:
     display_model_mapper: Callable[[str], str] | None = None
     leading_newline: bool = False
     name_suffix: str = ""
+    show_message: bool = True
 
     def name(self, tool_input: dict[str, Any]) -> str | None:
         return _nonempty_string(tool_input.get(self.name_field))
@@ -382,9 +383,8 @@ def route_spawn_tool(
     model_id_mapper: Callable[[str], str],
     notice_config: SubagentNoticeConfig,
     record_decision: Callable[[dict[str, Any], str, RoutingDecision, str], None] | None = None,
-    show_notice: bool = True,
 ) -> dict[str, Any] | None:
-    """Route one subagent-spawn call, optionally omitting its user-facing notice."""
+    """Route one subagent-spawn call, omitting the notice when the config hides it."""
     route = resolve_spawn_route(
         payload,
         is_spawn_agent=is_spawn_agent,
@@ -402,7 +402,7 @@ def route_spawn_tool(
         "updatedInput": {**route.tool_input, "model": route.routed_model},
     }
     result: dict[str, Any] = {"hookSpecificOutput": output}
-    if show_notice:
+    if notice_config.show_message:
         # Include the same routing notice in both hook response fields.
         routing_message = notice_config.message(
             route.decision,

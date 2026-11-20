@@ -198,61 +198,45 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
-def test_blind_orch_version_hides_model_details_without_auto(agent):
-    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL}
-    applied = source.copy()
-
-    previous = config.apply_config(applied, agent=agent)
-
-    assert applied == {
-        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
-        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
-    }
-    assert not config.auto_mode_enabled(source)
-    v2.restore_smart_routing_env(previous, applied)
-    assert applied == source
-
-
 @pytest.mark.parametrize(
-    ("agent", "expected"),
+    "version",
     [
-        (
-            AGENT_CLAUDE,
-            {
-                **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
-                ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
-            },
-        ),
-        (
-            AGENT_CODEX,
-            {
-                **dict.fromkeys(
-                    (
-                        ENABLE_SMART_ROUTING_ENV_VAR,
-                        ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-                        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
-                        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
-                    ),
-                    "0",
-                ),
-                ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
-            },
-        ),
+        config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
+        config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     ],
 )
-def test_blind_orch_claude_only_version(agent, expected):
+def test_claude_only_versions_turn_codex_routing_off(version):
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
+
+    assert config.resolve_environment(source, agent=AGENT_CODEX) == {
+        **dict.fromkeys(
+            (
+                ENABLE_SMART_ROUTING_ENV_VAR,
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+                ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
+            ),
+            "0",
+        ),
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+    }
+
+
+def test_blind_orch_claude_only_claude_matches_blind_preset():
     source = {
         SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY
     }
-    applied = source.copy()
+    assert (
+        config.resolve_environment(source, agent=AGENT_CLAUDE)
+        == _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL]
+    )
 
-    previous = config.apply_config(applied, agent=agent)
 
-    assert applied == expected
-    assert not config.auto_mode_enabled(source)
-    v2.restore_smart_routing_env(previous, applied)
-    assert applied == source
+@pytest.mark.parametrize("hidden", ["0", "1", None])
+def test_subagent_model_visible_only_when_not_zero(hidden):
+    env = {} if hidden is None else {ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: hidden}
+    assert config.subagent_model_visible(env) is (hidden != "0")
 
 
 @pytest.mark.parametrize(

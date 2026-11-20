@@ -287,8 +287,8 @@ export const registerSubagentRouting = (
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
   // also says routing is under way, timed from the oldest call still waiting.
-  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
-    if (!showModel || !pending.size) return next(e)
+  if (showModel) on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
     const seconds = starts.length ? await secondsSince($, Math.min(...starts)) : undefined
     const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`

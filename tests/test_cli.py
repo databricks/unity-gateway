@@ -692,6 +692,12 @@ def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
     launch.assert_called_once()
 
 
+_CODEX_NOTICE_VISIBILITY_CASES = [
+    (smart_routing_config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, False),
+    (smart_routing_config.SUBAGENT_ORCH_V0, True),
+]
+
+
 class TestSubcommandRouting:
     @pytest.mark.parametrize("tool", TOOLS)
     def test_subcommand_calls_correct_tool(self, tool):
@@ -2027,13 +2033,7 @@ class TestSubcommandRouting:
         assert json.loads(result.output) == routed
         return mock_token, mock_route
 
-    @pytest.mark.parametrize(
-        ("version", "show_notice"),
-        [
-            (smart_routing_config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, False),
-            (smart_routing_config.SUBAGENT_ORCH_V0, True),
-        ],
-    )
+    @pytest.mark.parametrize(("version", "show_notice"), _CODEX_NOTICE_VISIBILITY_CASES)
     def test_codex_subagent_hook_resolves_notice_visibility(self, version, show_notice):
         from ucode.smart_routing import codex_routing
 
@@ -2075,13 +2075,7 @@ class TestSubcommandRouting:
         assert ("systemMessage" in output) is show_notice
         assert ("permissionDecisionReason" in hook) is show_notice
 
-    @pytest.mark.parametrize(
-        ("version", "show_notice"),
-        [
-            (smart_routing_config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, False),
-            (smart_routing_config.SUBAGENT_ORCH_V0, True),
-        ],
-    )
+    @pytest.mark.parametrize(("version", "show_notice"), _CODEX_NOTICE_VISIBILITY_CASES)
     def test_codex_record_subagent_hook_respects_notice_visibility(self, version, show_notice):
         with patch(
             "ucode.smart_routing.codex_routing.record_subagent_start",

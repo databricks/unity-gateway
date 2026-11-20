@@ -74,7 +74,6 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3448,7 +3447,7 @@ def codex_router_hook_cmd(
     except (OSError, UnicodeError, ValueError):
         return
     enabled = smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CODEX)
-    show_subagent_model = environment.get(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR) != "0"
+    show_subagent_model = smart_routing_config.subagent_model_visible(environment)
 
     from ucode.smart_routing.codex_routing import (
         is_spawn_agent_tool,

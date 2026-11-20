@@ -147,9 +147,10 @@ def route_pre_tool_use(
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
-        notice_config=replace(SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix),
+        notice_config=replace(
+            SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix, show_message=show_notice
+        ),
         record_decision=record,
-        show_notice=show_notice,
     )
 
 
