@@ -7539,42 +7539,45 @@ def test_system_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
 
 
 def test_pooled_client_built_on_tls_trust_store(monkeypatch):
-    """The pooled client's SSL context comes from #168's trust-store helper: tls.apply() runs
-    first, so the context it builds (and both transports share) verifies against the
-    configured store, exactly as the urllib path did."""
+    """tls.apply() runs before the client and its transports are built, so httpx's default SSL
+    contexts verify against the trust store selected for the whole process; no per-client
+    ssl context or verify= is passed (AGENTS.md)."""
     import httpx
 
     order = []
     real_apply = db_mod.tls.apply
-    real_context = db_mod.ssl.create_default_context
-    contexts = []
 
     def spy_apply(*args, **kwargs):
         order.append("apply")
         return real_apply(*args, **kwargs)
 
-    def spy_context(*args, **kwargs):
-        context = real_context(*args, **kwargs)
-        contexts.append(context)
-        order.append("context")
-        return context
-
     built = {}
+    real_transport = httpx.HTTPTransport
+    transports = []
+
+    def spy_transport(**kwargs):
+        order.append("transport")
+        transports.append(real_transport(**kwargs))
+        return transports[-1]
+
     real_client = httpx.Client
 
     def spy_client(*args, **kwargs):
+        order.append("client")
         built.update(kwargs)
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(db_mod.tls, "apply", spy_apply)
-    monkeypatch.setattr(db_mod.ssl, "create_default_context", spy_context)
+    monkeypatch.setattr(httpx, "HTTPTransport", spy_transport)
     monkeypatch.setattr(httpx, "Client", spy_client)
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
 
     client = db_mod._get_http_client()
     try:
-        assert order == ["apply", "context"]
-        assert built["verify"] is contexts[-1]
+        assert order[0] == "apply"
+        assert "client" in order
+        assert "verify" not in built
     finally:
         client.close()
 
@@ -7660,7 +7663,7 @@ def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
         "http": "http://registry-proxy:8080",
         "https": "http://registry-proxy:8080",
     }
-    transport = db_mod._system_proxy_transport(httpx, proxies, object(), httpx.Limits())
+    transport = db_mod._system_proxy_transport(httpx, proxies, httpx.Limits())
     try:
         transport.handle_request(httpx.Request("GET", "https://workspace.example/api"))
         transport.handle_request(httpx.Request("GET", "https://bypassed.example/api"))

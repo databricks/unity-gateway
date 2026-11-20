@@ -16,7 +16,6 @@ import random
 import re
 import shlex
 import shutil
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -421,14 +420,14 @@ def _urllib_proxy_for_request(scheme: str, host: str, proxies: dict[str, str]) -
     return proxies.get(scheme) or proxies.get("all")
 
 
-def _system_proxy_transport(httpx, proxies, verify, limits):
+def _system_proxy_transport(httpx, proxies, limits):
     class SystemProxyTransport(httpx.BaseTransport):
         def __init__(self):
-            self.direct = httpx.HTTPTransport(verify=verify, trust_env=False, limits=limits)
+            # trust_env covers SSL_CERT_FILE/SSL_CERT_DIR only; HTTPTransport never mounts
+            # proxies from the environment, so the bypass-aware routing below stays in charge.
+            self.direct = httpx.HTTPTransport(trust_env=True, limits=limits)
             self.proxied = {
-                proxy: httpx.HTTPTransport(
-                    proxy=proxy, verify=verify, trust_env=False, limits=limits
-                )
+                proxy: httpx.HTTPTransport(proxy=proxy, trust_env=True, limits=limits)
                 for proxy in set(proxies.values())
             }
 
@@ -470,19 +469,16 @@ def _get_http_client() -> httpx.Client:
         return _HTTP_CLIENT
     with _HTTP_CLIENT_LOCK:
         if _HTTP_CLIENT is None or _HTTP_CLIENT_PID != pid:
-            # Before building the SSL context, so the pooled client verifies against the same
-            # trust store (os or python) as the urllib path did.
+            # Before any SSL context is built — the client's and the transports' — so httpx's
+            # default contexts verify against the trust store tls.apply() selected for the
+            # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
             tls.apply()
-            verify = ssl.create_default_context()
             limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
             system_proxies = _system_proxies()
             transport = (
-                _system_proxy_transport(httpx, system_proxies, verify, limits)
-                if system_proxies
-                else None
+                _system_proxy_transport(httpx, system_proxies, limits) if system_proxies else None
             )
             client = httpx.Client(
-                verify=verify,
                 trust_env=transport is None,
                 follow_redirects=True,
                 limits=limits,
