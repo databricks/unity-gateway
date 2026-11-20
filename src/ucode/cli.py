@@ -66,7 +66,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-from ucode.codex_config import is_codex_app_server_launch
+from ucode.codex_config import is_codex_app_server_launch, is_codex_interactive_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -4040,7 +4040,7 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     if not tool_args or explicit_prompt:
         return True
     if tool == AGENT_CODEX:
-        return is_codex_app_server_launch(tool_args)
+        return is_codex_interactive_launch(tool_args) or is_codex_app_server_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 
@@ -4800,7 +4800,11 @@ def _has_explicit_prompt(ctx: typer.Context) -> bool:
     if not isinstance(suffix, tuple):
         return False
     suffix_args = list(suffix)
-    return ctx.args == suffix_args and len(suffix_args) <= 1
+    return (
+        ctx.args == suffix_args
+        and len(suffix_args) <= 1
+        and (not suffix_args or not suffix_args[0].startswith("-"))
+    )
 
 
 @app.callback(invoke_without_command=True)

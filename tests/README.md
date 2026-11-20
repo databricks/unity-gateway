@@ -1090,13 +1090,31 @@ label and link indicator, trailing blank line, URL color, and intact long URLs. 
 checks do not establish native Windows console behavior or live dashboard navigation.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
-gateway provider on Windows while Unix launch arguments stay unchanged and routing
+gateway provider on Windows, injects a default model only when no native model argument
+is supplied, and preserves split, equals and short model options on both platforms. Routing
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
+`test_cli.py` covers forwarded model arguments under explicit enable/disable, managed
+defaults and routing presets for Claude and Codex, including pinned-root bypass of
+first-prompt routing and Isaac's config-only Codex launch arguments.
+The model-forwarding cases fix Codex's reported version at 0.165.0 so managed routing
+does not depend on an agent installed on the test runner.
+`test_smart_router.py` also runs each agent's orchestrator hook in a fresh Python
+process and requires enabled workflow context, covering hook-startup import cycles.
+`test_codex_config.py` distinguishes native options and their
+values from positional prompts and utility subcommands. It reuses UG's model/config
+syntax instead of mirroring all native options. Other options with separate values
+and existing remote attachments retain their unrouted behavior.
+Help/version flags and both remote-attachment spellings bypass routing, including
+when forwarded after UG's `--`; option-only suffixes are not mistaken for prompts.
+The launch-policy matrix uses one native model spelling per tool; shared parser,
+classifier and routed-launch tests retain the split, equals and short-form checks.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
+The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;
+explicit variants enable routing through the CLI and override the saved root model.
 The audit's SHA-256 digest and character count identify that exact assignment without
 persisting its text. Native hook and child assertions still compare the full text.
 The production launcher supplies the native configuration, and user settings and
