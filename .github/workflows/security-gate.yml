@@ -40,7 +40,9 @@ jobs:
         # Live verification blocks rollout; see tests/README.md#security-scan-rollout.
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
         env:
-          GH_TOKEN: ${{ github.event_name == 'issue_comment' && github.token || '' }}
+          # Anonymous calls share the runner IP's 60 requests/hour and fail CI under load.
+          # The job token can only read Actions data, which is already public here.
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
@@ -92,9 +94,10 @@ jobs:
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
           request = None
-          for attempt in range(11):
+          # The scan usually finishes within 90 s, so poll often; the deadline stays 20 minutes.
+          for attempt in range(121):
               if attempt:
-                  time.sleep(120)
+                  time.sleep(10)
               if request is None:
                   requests = [run for run in workflow_runs(request_endpoint)
                               if run["event"] == "pull_request"

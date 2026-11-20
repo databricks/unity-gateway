@@ -891,13 +891,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 11),
-        ([[{"status": "queued", "conclusion": None}]], False, 11),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 11),
-        ([[{"display_title": "Security Scan #8"}]], False, 11),
-        ([[{"event": "pull_request"}]], False, 11),
-        ([[{"event": "workflow_dispatch"}]], False, 11),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 11),
+        ([[]], False, 121),
+        ([[{"status": "queued", "conclusion": None}]], False, 121),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 121),
+        ([[{"display_title": "Security Scan #8"}]], False, 121),
+        ([[{"event": "pull_request"}]], False, 121),
+        ([[{"event": "workflow_dispatch"}]], False, 121),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 121),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -996,10 +996,13 @@ def _run_security_gate(
             calls[which] += 1
         return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
 
+    slept = []
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
-    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("time.sleep", slept.append)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
+    # Polling cadence may change; the 20-minute deadline may not grow.
+    assert sum(slept) <= 20 * 60
     return result.value.code, max(calls.values())
 
 
@@ -1015,7 +1018,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 11
+    assert code != 0 and calls == 121
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -1026,7 +1029,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 11)
+    assert calls == (1 if matches_commit else 121)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
@@ -1119,7 +1122,7 @@ def test_security_gate_runner_and_token_respect_event_trust(event_name, head_rep
         if hosted
         else {"group": "databricks-protected-runner-group", "labels": "linux-ubuntu-latest"}
     )
-    assert evaluate(token) == ("" if hosted else "test-token")
+    assert evaluate(token) == "test-token"
     assert evaluate(condition) == waits
 
 
