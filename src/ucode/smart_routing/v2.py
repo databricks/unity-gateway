@@ -736,7 +736,7 @@ class _ClaudeModelSettingGuard:
         self._deferred_until: float | None = None
         self._cancelled = False
         self._manual_model: str | None = None
-        self._manual_confirmed = False
+        self._manual_confirmed: bool | None = None
         self._manual_registered = False
         self._begin_error_warned = False
         self._token = uuid.uuid4().hex
@@ -874,7 +874,7 @@ class _ClaudeModelSettingGuard:
         self._deferred_until = None
         self._cancelled = False
         self._manual_model = None
-        self._manual_confirmed = False
+        self._manual_confirmed = None
         self._manual_registered = False
         self._release_settings_lock()
         self._release_owner_lock()
@@ -956,7 +956,7 @@ class _ClaudeModelSettingGuard:
     def abandon(self, manual_model: str | None = None) -> bool:
         self._cancelled = True
         self._manual_model = manual_model
-        self._manual_confirmed = False
+        self._manual_confirmed = None
         self._manual_registered = False
         return self._try_abandon()
 
@@ -1025,10 +1025,16 @@ class _ClaudeModelSettingGuard:
         self._manual_confirmed = True
         return self._finish_manual_choice(confirmed=True)
 
+    def cancel_manual_choice(self) -> bool:
+        if not self._cancelled or self._manual_model is None:
+            return True
+        self._manual_confirmed = False
+        return self._finish_manual_choice(confirmed=False)
+
     def restore(self) -> bool:
         if self._cancelled:
-            if self._manual_confirmed:
-                return self._finish_manual_choice(confirmed=True)
+            if self._manual_confirmed is not None:
+                return self._finish_manual_choice(confirmed=self._manual_confirmed)
             return self._try_abandon()
         if self._before is None:
             return True
@@ -1053,7 +1059,10 @@ class _ClaudeModelSettingGuard:
                     else:
                         target = self.settings_path.resolve()
                         config_io.atomic_write_json(
-                            target, current, mode=stat.S_IMODE(target.stat().st_mode)
+                            target,
+                            current,
+                            mode=stat.S_IMODE(target.stat().st_mode),
+                            preserve_permissions=os.name == "posix",
                         )
                 del recovery["pending"][self._token]
                 self._write_recovery(recovery)
@@ -1070,7 +1079,7 @@ class _ClaudeModelSettingGuard:
             while True:
                 try:
                     if self._cancelled and self._manual_model is not None:
-                        if self._finish_manual_choice(confirmed=self._manual_confirmed):
+                        if self._finish_manual_choice(confirmed=self._manual_confirmed is True):
                             return True
                     elif self.restore():
                         return True
@@ -1382,6 +1391,7 @@ def launch_claude(
                     defer_model_setting=model_setting.defer,
                     abandon_model_setting=model_setting.abandon,
                     confirm_manual_model_setting=model_setting.confirm_manual_choice,
+                    cancel_manual_model_setting=model_setting.cancel_manual_choice,
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:

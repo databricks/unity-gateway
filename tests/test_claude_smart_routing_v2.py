@@ -1354,6 +1354,39 @@ class TestSubagentRouting:
 
 
 class TestModelSettingRecovery:
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux POSIX ACL representation")
+    def test_restore_preserves_access_control(self, guard_sessions):
+        import struct
+
+        settings, start = guard_sessions
+        guard = start()
+        assert guard("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        group = next((gid for gid in os.getgroups() if gid != os.getgid()), os.getgid())
+        os.chown(settings, -1, group)
+        # Named-user access with no group access catches chmod-only restoration.
+        entries = [
+            (1, 6, 0xFFFFFFFF),
+            (2, 4, 65534),
+            (4, 0, 0xFFFFFFFF),
+            (16, 4, 0xFFFFFFFF),
+            (32, 0, 0xFFFFFFFF),
+        ]
+        acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+        os.setxattr(settings, "system.posix_acl_access", acl)
+        before = settings.stat()
+
+        assert guard("restore")
+
+        after = settings.stat()
+        assert (after.st_uid, after.st_gid, after.st_mode) == (
+            before.st_uid,
+            before.st_gid,
+            before.st_mode,
+        )
+        assert os.getxattr(settings, "system.posix_acl_access") == acl
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
     @pytest.fixture
     def guard_sessions(self, tmp_path):
         settings = tmp_path / "settings" / "settings.json"
@@ -1649,27 +1682,31 @@ finally:
         os.name != "posix" or os.geteuid() == 0,
         reason="requires unprivileged POSIX directory permissions",
     )
-    @pytest.mark.parametrize("failure_phase", ["register", "confirm"])
+    @pytest.mark.parametrize("failure_phase", ["register", "confirm", "cancel"])
     def test_manual_target_survives_a_failed_handoff(self, guard_sessions, tmp_path, failure_phase):
         settings, start = guard_sessions
         pending, chooser = start(), start()
         assert pending("begin", routed_model="sonnet")
         recovery_dir = tmp_path / ".ucode"
-        if failure_phase == "confirm":
+        if failure_phase in {"confirm", "cancel"}:
             assert chooser("abandon", manual_model="opus") is False
         try:
             recovery_dir.chmod(0o500)
             if failure_phase == "register":
                 chooser("abandon", manual_model="opus", error="PermissionError")
-            else:
+            elif failure_phase == "confirm":
                 chooser("confirm_manual_choice", error="PermissionError")
+            else:
+                chooser("cancel_manual_choice", error="PermissionError")
         finally:
             recovery_dir.chmod(0o700)
-        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        model = "sonnet" if failure_phase == "cancel" else "opus"
+        settings.write_text(json.dumps({"model": model, "theme": "light"}))
         assert chooser("restore")
         settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
         assert pending("restore")
-        assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+        expected = "haiku" if failure_phase == "cancel" else "opus"
+        assert json.loads(settings.read_text()) == {"model": expected, "theme": "light"}
 
     @pytest.mark.skipif(
         os.name != "posix" or os.geteuid() == 0,

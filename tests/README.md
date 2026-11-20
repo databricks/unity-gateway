@@ -1214,9 +1214,9 @@ do not cover plugin-write/process-start failures, native plugin refresh, or daem
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
-`test_claude_pty_replay.py` uses fake TUIs to check delayed model-switch replay,
-input cancellation and default restoration. `test_claude_smart_routing_v2.py`
-covers concurrent recovery and filesystem failures. These are component checks;
+`test_claude_pty_replay.py` uses fake TUIs to check delayed replay, manual cancellation,
+unrelated slash commands and default restoration. `test_claude_smart_routing_v2.py`
+covers concurrent recovery, file access controls and failures. These are component checks;
 native picker/history choices and live concurrent recovery remain unverified.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported

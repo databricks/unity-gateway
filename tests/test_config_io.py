@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 import tomlkit
@@ -204,6 +205,23 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 1})
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX file permissions",
+    )
+    def test_atomic_write_preserves_the_original_when_permissions_cannot_be_copied(self, tmp_path):
+        path = tmp_path / "out.json"
+        path.write_text('{"original": true}')
+        path.chmod(0)
+        try:
+            with pytest.raises(RuntimeError, match="Failed to write file"):
+                config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+        finally:
+            path.chmod(0o600)
+
+        assert json.loads(path.read_text()) == {"original": True}
         assert not list(tmp_path.glob(".out.json.*"))
 
 
