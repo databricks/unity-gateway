@@ -606,7 +606,7 @@ def disable_copilot_app_tracing() -> bool:
         return False
     try:
         return copilot_app_tracing.disable()
-    except (copilot_app_plugin.SettingsError, OSError) as exc:
+    except (copilot_app_plugin.SettingsError, OSError, RuntimeError) as exc:
         print_warning(f"Could not remove the GitHub Copilot app's tracing setup: {exc}")
         return False
 
@@ -771,7 +771,9 @@ def copilot_app_status(
         )
     row = f"plugin {plugin_label}, models {_COPILOT_REGISTRATION_LABELS.get(registration, registration)}"
     if state.get("copilot_otel_tracing"):
-        tracing = copilot_app_tracing.status()
+        tracing = copilot_app_tracing.status(
+            windows_opt_in=state.get(COPILOT_APP_WINDOWS_TRACING_KEY) is True
+        )
         row += f", tracing {_COPILOT_TRACING_LABELS[tracing]}"
         if tracing == "not_set_up":
             blocker = copilot_app_tracing_blocker()
