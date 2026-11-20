@@ -69,10 +69,6 @@ def _key(**kwargs) -> str:
     return lc.cache_key(_identity(**kwargs))
 
 
-def _key_custom(**overrides) -> str:
-    return lc.cache_key({**_identity(), **overrides})
-
-
 def _store(key: str, payload: dict, *, checked_at: float | None = None, identity=None) -> None:
     entry = {
         **payload,
@@ -105,10 +101,10 @@ class TestKey:
 
     def test_credentials_change_rotates(self, tmp_path, monkeypatch):
         cfg = tmp_path / "databrickscfg"
-        cfg.write_text("[p]\nhost = x\n")
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
-        before = lc.cache_key(_identity(config_fingerprint={"sha256": "a"}))
-        after = lc.cache_key(_identity(config_fingerprint={"sha256": "b"}))
+        before = lc.cache_key(lc.entry_identity({"workspace": WORKSPACE}))
+        cfg.write_text("[p]\nhost = x\n")
+        after = lc.cache_key(lc.entry_identity({"workspace": WORKSPACE}))
         assert after != before
 
     def test_ug_version_rotates(self, monkeypatch):
@@ -118,8 +114,8 @@ class TestKey:
     def test_auth_mode_and_oauth_isolate(self):
         keys = {
             _key(),
-            _key_custom(use_pat=True),
-            _key_custom(custom_oauth={"client_id": "c"}),
+            _key(use_pat=True),
+            _key(custom_oauth={"client_id": "c"}),
         }
         assert len(keys) == 3
 
@@ -193,6 +189,7 @@ class TestEntry:
         assert lc.load_entry(_key()) is None
         assert not _entries()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
     def test_cache_dir_and_entries_are_private(self):
         key = _key()
         lc.merge_entry(key, _identity(), {})
@@ -230,16 +227,36 @@ class TestPrime:
 
 class TestConfigureIsolation:
     @staticmethod
-    def _run(monkeypatch, *, use_launch_cache):
+    def _run(monkeypatch, *, use_launch_cache, hit=False):
         monkeypatch.setenv("DATABRICKS_BEARER", "bearer")
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a, **_k: "token")
-        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE)
+        if hit:
+            # A hit must serve the probe and the discovery from the primed in-process
+            # caches; any workspace request means the cache failed to serve.
+            def no_network(*_args, **_kwargs):
+                raise AssertionError("launch cache hit must not make workspace requests")
 
-        def discover(workspace, _token):
-            db_mod.prime_model_services_cache(workspace, SERVICES)
-            return {"sonnet": "system.ai.claude-sonnet-5"}, [], [], [], None
+            monkeypatch.setattr(db_mod, "_http_get_json", no_network)
+            monkeypatch.setattr(
+                cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+            )
+            monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+            # The UC listing only buckets claude models, so configure falls back to the
+            # gateway listing for codex; that fallback is outside the cache's scope.
+            monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *_a, **_k: ([], None))
+        else:
+            monkeypatch.setattr(
+                cli_mod, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE
+            )
 
-        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+            def discover(workspace, _token):
+                # The listing runs in the background: outlast the probe so the cold save can
+                # only happen after the join.
+                time.sleep(0.1)
+                db_mod.prime_model_services_cache(workspace, SERVICES)
+                return {"sonnet": "system.ai.claude-sonnet-5"}, [], [], [], None
+
+            monkeypatch.setattr(cli_mod, "discover_model_services", discover)
         reads: list[str] = []
         real_load = lc.load_entry
 
@@ -278,7 +295,7 @@ class TestConfigureIsolation:
         assert lc.entry_probe(entry) == PROBE
         assert lc.entry_model_services(entry) == SERVICES
 
-    def test_hit_does_not_rewrite_a_served_probe(self, monkeypatch):
+    def test_hit_serves_probe_and_discovery_without_a_request(self, monkeypatch):
         # configure_shared_state resolves the key from its state, where the URL carries no
         # workspace id; its identity also reflects the isolated credentials file.
         key = _key(workspace_id="")
@@ -288,8 +305,24 @@ class TestConfigureIsolation:
             checked_at=time.time(),
             identity=_identity(workspace_id=""),
         )
+        db_mod.clear_gateway_probe_cache()
         db_mod.clear_model_services_cache()
-        _state, reads, writes = self._run(monkeypatch, use_launch_cache=True)
+        state, reads, writes = self._run(monkeypatch, use_launch_cache=True, hit=True)
+        assert reads == [key]
+        assert writes == []
+        assert state["claude_models"] == {"sonnet": "system.ai.claude-sonnet-5"}
+
+    def test_hit_does_not_rewrite_a_served_probe(self, monkeypatch):
+        key = _key(workspace_id="")
+        _store(
+            key,
+            {"probe": lc.probe_payload(PROBE), "model_services": lc.services_payload(SERVICES)},
+            checked_at=time.time(),
+            identity=_identity(workspace_id=""),
+        )
+        db_mod.clear_gateway_probe_cache()
+        db_mod.clear_model_services_cache()
+        _state, reads, writes = self._run(monkeypatch, use_launch_cache=True, hit=True)
         assert reads == [key]
         assert writes == []
 
@@ -330,7 +363,11 @@ class TestRefresher:
 
         monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", failing_probe)
         key = _key()
-        _store(key, {"catalog": lc.catalog_payload(CATALOG)}, checked_at=time.time() - 400)
+        _store(
+            key,
+            {"catalog": lc.catalog_payload(CATALOG)},
+            checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1,
+        )
         assert lc.main(refresh_args()) == 1
         assert lc.load_entry(key) is None
 
@@ -371,7 +408,7 @@ class TestRefresher:
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", failing)
         key = _key()
-        _store(key, {}, checked_at=time.time() - 400)
+        _store(key, {}, checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1)
         assert lc.main(refresh_args()) == 1
         assert lc.load_entry(key) is None
 
@@ -417,8 +454,8 @@ class TestRefresher:
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", boom)
         custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
-        key = _key_custom(custom_oauth=custom_oauth)
-        _store(key, {}, checked_at=time.time() - 400)
+        key = _key(custom_oauth=custom_oauth)
+        _store(key, {}, checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1)
         assert lc.main(refresh_args(identity=_identity(custom_oauth=custom_oauth))) == 1
         assert lc.load_entry(key) is None
 
@@ -484,7 +521,10 @@ class TestRefresher:
         assert spawned["kwargs"]["stdin"] is subprocess.DEVNULL
         assert spawned["kwargs"]["stdout"] is subprocess.DEVNULL
         assert spawned["kwargs"]["stderr"] is subprocess.DEVNULL
-        assert spawned["kwargs"]["start_new_session"] is True
+        if sys.platform == "win32":
+            assert spawned["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+        else:
+            assert spawned["kwargs"]["start_new_session"] is True
         assert spawned["argv"][:4] == [sys.executable, "-P", "-m", "ucode.launch_cache"]
         assert spawned["argv"][4:6] == ["--refresh", "--identity"]
         assert json.loads(base64.urlsafe_b64decode(spawned["argv"][6].encode())) == identity
@@ -573,6 +613,18 @@ class TestInvalidation:
             result = runner.invoke(cli_mod.app, ["configure"])
         assert result.exit_code == 0, result.output
         assert lc.load_entry(key) is None
+
+    def test_configure_dry_run_keeps_the_cache(self):
+        key = _key()
+        _store(key, {}, checked_at=time.time())
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command"),
+        ):
+            result = runner.invoke(cli_mod.app, ["configure", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert lc.load_entry(key) is not None
 
     def test_login_invalidates(self, monkeypatch):
         key = _key()

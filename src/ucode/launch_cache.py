@@ -90,12 +90,6 @@ def cache_key(identity: dict) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def entry_key_for_state(state: dict) -> str | None:
-    if not state.get("workspace"):
-        return None
-    return cache_key(entry_identity(state))
-
-
 def _cache_dir() -> Path:
     directory = config_io.APP_DIR / CACHE_DIR_NAME
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)

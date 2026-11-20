@@ -815,22 +815,6 @@ def configure_shared_state(
         print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
-    if (
-        model_service_probe.resource_available
-        and launch_cache_identity is not None
-        and (launch_cache_entry is None or entry_probe(launch_cache_entry) is None)
-        and (services := cached_model_service_entries(workspace)) is not None
-    ):
-        # Cold lookup with the cache on: record the results for the next launch. Only a
-        # verified-available probe and a non-empty listing are ever persisted.
-        merge_entry(
-            cache_key(launch_cache_identity),
-            launch_cache_identity,
-            {
-                "probe": probe_payload(model_service_probe),
-                "model_services": services_payload(services),
-            },
-        )
 
     want_claude = (
         fetch_all
@@ -888,6 +872,23 @@ def configure_shared_state(
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
+            if (
+                model_service_probe.resource_available
+                and launch_cache_identity is not None
+                and (launch_cache_entry is None or entry_probe(launch_cache_entry) is None)
+                and (services := cached_model_service_entries(workspace)) is not None
+            ):
+                # Cold lookup with the cache on, written only once the discovery has been
+                # joined: record the results for the next launch. Only a verified-available
+                # probe and a non-empty listing are ever persisted.
+                merge_entry(
+                    cache_key(launch_cache_identity),
+                    launch_cache_identity,
+                    {
+                        "probe": probe_payload(model_service_probe),
+                        "model_services": services_payload(services),
+                    },
+                )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
@@ -4892,8 +4893,9 @@ def _launch_tool(
             # This launch may have served lookups from the launch cache. The process execs
             # Claude, so the cache is refreshed by a detached refresher, throttled to one
             # run per key per few minutes, that must not hold the agent's stdio.
-            if refresh_due(cache_key(entry_identity(state))):
-                spawn_refresher(entry_identity(state))
+            refresh_identity = entry_identity(state)
+            if refresh_due(cache_key(refresh_identity)):
+                spawn_refresher(refresh_identity)
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -5737,8 +5739,9 @@ def configure(
     set_dry_run(dry_run)
     set_verbosity(verbose)
     # Configure always fetches fresh and never reads the launch cache; drop it so the next
-    # launch's first run re-fetches too.
-    clear_cache()
+    # launch's first run re-fetches too. A dry run changes no state, so it keeps the cache.
+    if not dry_run:
+        clear_cache()
     if tls_trust_store is not None:
         _configure_tls_trust_store(tls_trust_store)
     if from_file is not None and not (global_scope and dry_run):
