@@ -117,6 +117,21 @@ from ucode.databricks import (
     ug_binary,
 )
 from ucode.env import env_bool
+from ucode.launch_cache import (
+    catalog_payload,
+    clear_cache,
+    entry_catalog,
+    entry_key_for_state,
+    entry_probe,
+    launch_cache_enabled,
+    load_entry,
+    merge_entry,
+    prime_from_entry,
+    probe_payload,
+    refresh_due,
+    services_payload,
+    spawn_refresher,
+)
 from ucode.managed_budget import (
     budget_usage_percent,
     recommendation_line,
@@ -606,6 +621,7 @@ def configure_shared_state(
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
     claude_server_side_web_search: bool | None = None,
+    use_launch_cache: bool = False,
 ) -> dict:
     """Log into Databricks, verify Unity Gateway, fetch model lists, persist state.
 
@@ -773,9 +789,15 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
+    launch_cache_key = entry_key_for_state(state) if use_launch_cache else None
+    launch_cache_entry = load_entry(launch_cache_key) if launch_cache_key else None
     with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
+        if launch_cache_entry is not None:
+            # Serve the launch's probe and discovery from the last results; a background
+            # refresher started by the launch rewrites the cache for the next one.
+            prime_from_entry(workspace, token, launch_cache_entry)
         # The listing is independent of the probe, so overlap the two round trips. The probe still
         # gates the launch; its failure abandons the listing rather than waiting for it.
         model_services_discovery = (
@@ -788,6 +810,21 @@ def configure_shared_state(
         print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
+    if (
+        model_service_probe.resource_available
+        and launch_cache_key is not None
+        and (launch_cache_entry is None or entry_probe(launch_cache_entry) is None)
+        and (services := cached_model_service_entries(workspace)) is not None
+    ):
+        # Cold lookup with the cache on: record the results for the next launch. Only a
+        # verified-available probe and a non-empty listing are ever persisted.
+        merge_entry(
+            launch_cache_key,
+            {
+                "probe": probe_payload(model_service_probe),
+                "model_services": services_payload(services),
+            },
+        )
 
     want_claude = (
         fetch_all
@@ -4388,7 +4425,17 @@ def _launch_tool(
             and not provider
             and bool(managed_parent_schema or (managed is None and bool(parent_schema)))
         )
-        if unmanaged_picker_catalog or scoped_picker_catalog:
+        cached_picker_catalog: AnthropicModelCatalog | None = None
+        if unmanaged_picker_catalog and launch_cache_enabled():
+            # Serve the picker catalog from the last results instead of the speculative
+            # request; the launch's detached refresher rewrites the cache for the next one.
+            launch_cache_entry_key = entry_key_for_state(state)
+            launch_cache_entry = (
+                load_entry(launch_cache_entry_key) if launch_cache_entry_key else None
+            )
+            if launch_cache_entry is not None:
+                cached_picker_catalog = entry_catalog(launch_cache_entry)
+        if (unmanaged_picker_catalog or scoped_picker_catalog) and cached_picker_catalog is None:
             picker_catalog_started_profile = _get_catalog_profile(state)
             speculation_kwargs = (
                 {} if unmanaged_picker_catalog else {"parent_schema": parent_schema}
@@ -4465,6 +4512,7 @@ def _launch_tool(
                 family_defaults=family_defaults,
             ),
             skip_preflight=skip_preflight,
+            use_launch_cache=tool == "claude" and launch_cache_enabled(),
             **configure_kwargs,
         )
         # An admin-published managed config wins over the developer's own settings. Layered on after
@@ -4705,7 +4753,11 @@ def _launch_tool(
         # Claude Code's own discovery lists them without it, so they would run at 200K.
         # launch_only_auto_picker was settled above, where the speculative catalog started.
         if unmanaged_picker_catalog:
-            discovered = _speculative_picker_catalog()
+            discovered = None
+            if cached_picker_catalog is not None:
+                discovered = cached_picker_catalog
+            else:
+                discovered = _speculative_picker_catalog()
             if discovered is None:
                 discovered = list_anthropic_model_catalog(
                     state["workspace"],
@@ -4717,6 +4769,11 @@ def _launch_tool(
                     launch_model=model or forwarded_model,
                     discovered_catalog=discovered,
                 )
+                if cached_picker_catalog is None and launch_cache_enabled():
+                    # The catalog came from the network: record it for the next launch.
+                    catalog_key = entry_key_for_state(state)
+                    if catalog_key:
+                        merge_entry(catalog_key, {"catalog": catalog_payload(discovered)})
         if (
             coding_agent_config_defaults
             and not claude_inputs_from_configure
@@ -4820,6 +4877,13 @@ def _launch_tool(
             launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
+        if tool == "claude" and launch_cache_enabled():
+            # This launch may have served lookups from the launch cache. The process execs
+            # Claude, so the cache is refreshed by a detached refresher, throttled to one
+            # run per key per few minutes, that must not hold the agent's stdio.
+            refresh_key = entry_key_for_state(state)
+            if refresh_key and refresh_due(refresh_key):
+                spawn_refresher(state["workspace"], state.get("profile"), state.get("workspace_id"))
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -5662,6 +5726,9 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    # Configure always fetches fresh and never reads the launch cache; drop it so the next
+    # launch's first run re-fetches too.
+    clear_cache()
     if tls_trust_store is not None:
         _configure_tls_trust_store(tls_trust_store)
     if from_file is not None and not (global_scope and dry_run):

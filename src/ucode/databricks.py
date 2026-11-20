@@ -1791,6 +1791,9 @@ def run_databricks_login(
     finally:
         # Even a failed login may have replaced the profile's tokens.
         clear_databricks_token_cache()
+        from ucode.launch_cache import clear_cache
+
+        clear_cache()
     print_success("Databricks authentication complete")
 
 
@@ -2764,6 +2767,11 @@ def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | No
     """The model services this process already listed for ``workspace``, without a request."""
     cached = _MODEL_SERVICES_CACHE.get(workspace)
     return list(cached) if cached is not None else None
+
+
+def prime_model_services_cache(workspace: str, entries: list[ModelServiceEntry]) -> None:
+    """Seed the listing cache from persisted launch-cache state, so discovery needs no network."""
+    _MODEL_SERVICES_CACHE.setdefault(workspace, list(entries))
 
 
 def clear_model_services_cache() -> None:
@@ -4731,6 +4739,11 @@ _GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
 def clear_gateway_probe_cache() -> None:
     """Forget successful gateway probes (used by tests)."""
     _GATEWAY_PROBE_CACHE.clear()
+
+
+def prime_gateway_probe_cache(workspace: str, token: str, probe: GatewayProbe) -> None:
+    """Seed the probe cache from persisted launch-cache state, so the probe needs no network."""
+    _GATEWAY_PROBE_CACHE.setdefault((workspace, token), probe)
 
 
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
