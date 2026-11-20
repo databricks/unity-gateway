@@ -47,9 +47,14 @@ _SCREEN = """() => {
   )].filter(e => visible(e)
     && !e.matches('.chat-confirmation-widget-collapsible')
     && !e.querySelector('.chat-confirmation-widget-collapsible')).pop();
-  const response = [...document.querySelectorAll(
-    '.interactive-item-container.interactive-response'
-  )].pop();
+  // The chat list renders only rows in view, so earlier turns can leave the DOM and can't be
+  // counted. The current turn is the last request and the response after it.
+  const items = [...document.querySelectorAll(
+    '.interactive-item-container.interactive-request, .interactive-item-container.interactive-response'
+  )];
+  const last = items.findLastIndex(e => e.classList.contains('interactive-request'));
+  const request = last < 0 ? null : items[last];
+  const response = items.slice(last + 1).find(e => e.classList.contains('interactive-response'));
   const welcome = [...document.querySelectorAll('.tabs-container .tab')].find(
     e => text(e).startsWith('Welcome')
   );
@@ -70,10 +75,10 @@ _SCREEN = """() => {
     sessionTarget: target ? text(target) : null,
     tour: tour ? text(tour) : null,
     confirmation: confirmation ? text(confirmation) : null,
+    request: request ? text(request) : null,
     response: response
       ? {busy: response.classList.contains('chat-response-loading'), text: text(response)}
       : null,
-    responses: document.querySelectorAll('.interactive-item-container.interactive-response').length,
     welcome: !!welcome && visible(welcome),
     signedOutNotice: visible(document.evaluate(
       "//*[normalize-space(text())='Choose how you want to use Copilot.']", document, null,
@@ -623,22 +628,22 @@ class VSCode:
             return "picker: no match" if screen["pickerQuery"] == label else "picker: searching"
         return "picker: models"
 
-    def send(self, prompt: str) -> int:
-        """Type ``prompt`` into the chat input and send it; returns the number of earlier turns."""
-        before = self.screen()["responses"]
+    def send(self, prompt: str) -> str:
+        """Type ``prompt`` into the chat input and send it; returns the prompt to wait on."""
         editor = self.page.locator(".interactive-input-part .interactive-input-editor").first
         self._click("chat input: focus", editor)
         self._act("chat input: type prompt", lambda: self.page.keyboard.type(prompt))
         self.shot("prompt")
         self._act("chat input: Enter", lambda: self.page.keyboard.press("Enter"))
-        return before
+        return prompt
 
-    def wait_for_answer(self, before: int) -> str:
-        """Wait until the turn after ``before`` finishes and return its response text.
+    def wait_for_answer(self, prompt: str) -> str:
+        """Wait until the turn for ``prompt`` finishes and return its response text.
 
         Any tool confirmation or dialog fails the turn."""
         deadline = time.monotonic() + TURN_TIMEOUT_S
         idle_since = None
+        prompt = " ".join(prompt.split())
         while time.monotonic() < deadline:
             screen = self.screen()
             if screen["dialog"] is not None:
@@ -648,7 +653,8 @@ class VSCode:
                 self.shot("confirmation")
                 raise UnknownScreen(f"Unexpected tool confirmation: {confirmation[:500]}")
             response = screen["response"]
-            if screen["responses"] > before and response and not response["busy"]:
+            request = screen["request"] or ""
+            if prompt in request and response and not response["busy"]:
                 # Busy drops only when the whole turn, every tool round included, is over.
                 idle_since = idle_since or time.monotonic()
                 if time.monotonic() - idle_since >= SETTLE_S:
