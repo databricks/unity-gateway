@@ -49,10 +49,9 @@ export function readEndpoint(home) {
 export class AppError extends Error {}
 
 class AppConnection {
-  constructor(ws, timeoutMs, onMessage) {
+  constructor(ws, timeoutMs) {
     this._ws = ws;
     this._timeoutMs = timeoutMs;
-    this._onMessage = onMessage;
     this._backlog = [];
     this._waiter = null;
     this.closed = false;
@@ -76,10 +75,6 @@ class AppConnection {
       const waiter = this._waiter;
       this._waiter = null;
       waiter.resolve(message);
-    } else if (this._onMessage) {
-      try {
-        this._onMessage(message);
-      } catch {}
     } else {
       this._backlog.push(message);
     }
@@ -132,15 +127,13 @@ class AppConnection {
   }
 }
 
-// With ``onMessage``, the connection turns session channels on and passes it every message no
-// request is waiting for. The app then sends every session's events, including its window's chats.
-export async function connectApp(endpoint, { WebSocketImpl, timeoutMs = REQUEST_TIMEOUT_MS, onMessage } = {}) {
+export async function connectApp(endpoint, { WebSocketImpl, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const Impl = WebSocketImpl ?? globalThis.WebSocket;
   if (!Impl) throw new AppError("This Copilot runtime has no WebSocket client.");
-  const url = `ws://127.0.0.1:${endpoint.port}/?token=${encodeURIComponent(endpoint.token)}&requester_id=ug&session_channels=${Boolean(onMessage)}`;
+  const url = `ws://127.0.0.1:${endpoint.port}/?token=${encodeURIComponent(endpoint.token)}&requester_id=ug&session_channels=false`;
   // No Origin: the app refuses any origin but its own window. Node's WebSocket sends none.
   const ws = new Impl(url);
-  const app = new AppConnection(ws, timeoutMs, onMessage);
+  const app = new AppConnection(ws, timeoutMs);
   try {
     await app.wait((message) => message.type === "server_hello");
   } catch (error) {

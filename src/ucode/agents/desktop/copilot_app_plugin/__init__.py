@@ -47,7 +47,6 @@ _SOURCE_FILES = (
     "app-rows.mjs",
     "app-remove.mjs",
     "app-restart.mjs",
-    "restart-helper.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -218,6 +217,7 @@ def extension_config(config: PluginConfig) -> dict:
             for model in provider.models
         ],
         "tokenCommand": _token_command(config),
+        "ugPath": config.ug_path,
         "pathDirs": list(config.path_dirs),
         "databricksPath": config.databricks_path,
         "loginHint": _login_hint(config),

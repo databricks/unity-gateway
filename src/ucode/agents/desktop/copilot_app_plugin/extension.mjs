@@ -30,7 +30,7 @@ if (config.remove) {
   if (retry(await firstRemove)) await removeInBackground(config, syncOptions, logSyncFailure);
 } else {
   const firstSync = syncInBackground(config, syncOptions, logSyncFailure);
-  const restartFor = (synced) => (synced === "changed" ? launchRestart(syncOptions) : null);
+  const restartFor = (synced) => (synced === "changed" ? launchRestart({ ...syncOptions, ugPath: config.ugPath }) : null);
   const firstRestart = firstSync.then(restartFor);
   let session;
   const tokenSource = createTokenSource(config);

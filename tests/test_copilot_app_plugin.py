@@ -160,6 +160,7 @@ class TestExtensionConfig:
         config = plugin.extension_config(_config(use_pat=True))
         assert config["tokenCommand"][-1] == "--use-pat"
         assert config["tokenCommand"][0] == "/opt/ug/bin/ug"
+        assert config["ugPath"] == "/opt/ug/bin/ug"
         assert "`token = <PAT>` entry under [dev]" in config["loginHint"]
 
     def test_a_custom_oauth_token_command_and_hint(self):
@@ -237,7 +238,6 @@ class TestWritePlugin:
             "app-rows.mjs",
             "app-remove.mjs",
             "app-restart.mjs",
-            "restart-helper.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (
@@ -580,7 +580,6 @@ class TestExtensionSource:
             "app-rows.mjs",
             "app-remove.mjs",
             "app-restart.mjs",
-            "restart-helper.mjs",
         ],
     )
     def test_syntax(self, name):
