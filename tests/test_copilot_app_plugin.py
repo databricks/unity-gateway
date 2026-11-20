@@ -1,0 +1,276 @@
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from ucode import copilot_app_plugin as plugin
+
+NODE = shutil.which("node")
+PLUGIN_SOURCE = Path(plugin.__file__).parent
+
+
+def _config(**overrides) -> plugin.PluginConfig:
+    values = {
+        "workspace": "https://example.cloud.databricks.com",
+        "ug_path": "/opt/ug/bin/ug",
+        "profile": "dev",
+        "headers": {
+            "User-Agent": "ucode/1.0 copilot/1.4.2",
+            "x-databricks-use-coding-agent-mode": "true",
+        },
+        "path_dirs": ("/opt/ug/bin",),
+        "providers": (
+            plugin.PluginProvider(
+                id="11111111-1111-5111-8111-111111111111",
+                wire="anthropic",
+                base_path="/ai-gateway/anthropic",
+                models=(
+                    plugin.PluginModel(
+                        "claude-sonnet-5", "system.ai.claude-sonnet-5", "Claude Sonnet 5"
+                    ),
+                ),
+            ),
+            plugin.PluginProvider(
+                id="22222222-2222-5222-8222-222222222222",
+                wire="responses",
+                base_path="/ai-gateway/mlflow/v1",
+                models=(plugin.PluginModel("gpt-6", "system.ai.gpt-6", "GPT-6"),),
+            ),
+            plugin.PluginProvider(
+                id="33333333-3333-5333-8333-333333333333",
+                wire="completions",
+                base_path="/ai-gateway/mlflow/v1",
+                models=(plugin.PluginModel("glm-5", "system.ai.glm-5", "GLM 5"),),
+            ),
+        ),
+    }
+    values.update(overrides)
+    return plugin.PluginConfig(**values)
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return tmp_path
+
+
+def _settings(home: Path) -> Path:
+    return home / ".copilot" / "settings.json"
+
+
+class TestExtensionConfig:
+    def test_providers_keep_ids_wires_and_headers(self):
+        config = plugin.extension_config(_config())
+        claude, gpt, open_models = config["providers"]
+        assert claude == {
+            "name": "11111111-1111-5111-8111-111111111111",
+            "type": "anthropic",
+            "baseUrl": "https://example.cloud.databricks.com/ai-gateway/anthropic",
+            "headers": {
+                "User-Agent": "ucode/1.0 copilot/1.4.2",
+                "x-databricks-use-coding-agent-mode": "true",
+            },
+        }
+        assert (gpt["type"], gpt["wireApi"], gpt["baseUrl"]) == (
+            "openai",
+            "responses",
+            "https://example.cloud.databricks.com/ai-gateway/mlflow/v1",
+        )
+        assert (open_models["type"], open_models["wireApi"]) == ("openai", "completions")
+
+    def test_models_match_the_picker_rows(self):
+        models = plugin.extension_config(_config())["models"]
+        assert models[0] == {
+            "id": "claude-sonnet-5",
+            "modelId": "claude-sonnet-5",
+            "provider": "11111111-1111-5111-8111-111111111111",
+            "wireModel": "system.ai.claude-sonnet-5",
+            "name": "Claude Sonnet 5",
+        }
+        assert [m["provider"][0] for m in models] == ["1", "2", "3"]
+
+    def test_token_command_and_hint_name_the_workspace_and_profile(self):
+        config = plugin.extension_config(_config())
+        assert config["tokenCommand"] == [
+            "/opt/ug/bin/ug",
+            "auth-token",
+            "--host",
+            "https://example.cloud.databricks.com",
+            "--profile",
+            "dev",
+        ]
+        assert (
+            "databricks auth login --host https://example.cloud.databricks.com --profile dev"
+            in (config["loginHint"])
+        )
+        assert config["pathDirs"] == ["/opt/ug/bin"]
+
+    def test_without_profile(self):
+        config = plugin.extension_config(_config(profile=None))
+        assert "--profile" not in config["tokenCommand"]
+        assert "--profile" not in config["loginHint"]
+
+    def test_trailing_slash_on_workspace(self):
+        config = plugin.extension_config(_config(workspace="https://example.cloud.databricks.com/"))
+        assert (
+            config["providers"][0]["baseUrl"]
+            == "https://example.cloud.databricks.com/ai-gateway/anthropic"
+        )
+
+
+class TestWritePlugin:
+    def test_layout(self, home):
+        root = plugin.write_plugin(_config())
+        assert root == home / ".ucode" / "copilot-app-plugin"
+        marketplace = json.loads((root / ".github" / "plugin" / "marketplace.json").read_text())
+        assert marketplace["name"] == "unity-gateway"
+        assert marketplace["plugins"][0]["source"] == "./plugins/databricks"
+        manifest = json.loads(
+            (root / "plugins" / "databricks" / ".plugin" / "plugin.json").read_text()
+        )
+        assert manifest["name"] == "databricks"
+        extension = root / "plugins" / "databricks" / "extensions" / "databricks"
+        assert {p.name for p in extension.iterdir()} == {
+            "extension.mjs",
+            "ug-plugin.mjs",
+            "config.json",
+        }
+        assert (extension / "extension.mjs").read_text() == (
+            PLUGIN_SOURCE / "extension.mjs"
+        ).read_text()
+        assert json.loads((extension / "config.json").read_text()) == plugin.extension_config(
+            _config()
+        )
+
+    def test_rewrite_replaces_config(self, home):
+        plugin.write_plugin(_config())
+        root = plugin.write_plugin(_config(profile="other"))
+        config = json.loads(
+            (
+                root / "plugins" / "databricks" / "extensions" / "databricks" / "config.json"
+            ).read_text()
+        )
+        assert config["tokenCommand"][-1] == "other"
+
+
+class TestSettings:
+    def test_install_merges_only_ug_keys(self, home):
+        path = _settings(home)
+        path.parent.mkdir()
+        existing = {
+            "model": "gpt-5",
+            "extraKnownMarketplaces": {"other": {"source": {"source": "github", "repo": "o/r"}}},
+            "enabledPlugins": {"x@other": False},
+        }
+        path.write_text(json.dumps(existing))
+        root = plugin.install(_config())
+        settings = json.loads(path.read_text())
+        assert settings["model"] == "gpt-5"
+        assert settings["extraKnownMarketplaces"] == {
+            "other": {"source": {"source": "github", "repo": "o/r"}},
+            "unity-gateway": {"source": {"source": "directory", "path": str(root)}},
+        }
+        assert settings["enabledPlugins"] == {"x@other": False, "databricks@unity-gateway": True}
+        assert "telemetry" not in settings
+
+    def test_install_creates_settings(self, home):
+        plugin.install(_config())
+        settings = json.loads(_settings(home).read_text())
+        assert set(settings) == {"extraKnownMarketplaces", "enabledPlugins"}
+
+    def test_install_is_idempotent(self, home):
+        plugin.install(_config())
+        first = _settings(home).read_text()
+        plugin.install(_config())
+        assert _settings(home).read_text() == first
+
+    @pytest.mark.parametrize("content", ["{not json", "// comment\n{}", "[]"])
+    def test_invalid_settings_are_left_alone(self, home, content):
+        path = _settings(home)
+        path.parent.mkdir()
+        path.write_text(content)
+        with pytest.raises(plugin.SettingsError):
+            plugin.install(_config())
+        assert path.read_text() == content
+        assert not (home / ".ucode" / "copilot-app-plugin").exists()
+        assert plugin.settings_valid() is False
+        assert plugin.status() == "invalid_settings"
+
+    def test_non_object_plugin_keys_are_left_alone(self, home):
+        path = _settings(home)
+        path.parent.mkdir()
+        path.write_text(json.dumps({"enabledPlugins": ["x"]}))
+        with pytest.raises(plugin.SettingsError):
+            plugin.enable()
+        assert json.loads(path.read_text()) == {"enabledPlugins": ["x"]}
+
+    def test_copilot_home(self, home, monkeypatch):
+        custom = home / "custom-copilot"
+        monkeypatch.setenv("COPILOT_HOME", str(custom))
+        plugin.install(_config())
+        assert (custom / "settings.json").exists()
+        assert not _settings(home).exists()
+
+    def test_remove_leaves_no_ug_state(self, home):
+        path = _settings(home)
+        path.parent.mkdir()
+        path.write_text(json.dumps({"model": "gpt-5", "enabledPlugins": {"x@other": True}}))
+        root = plugin.install(_config())
+        assert plugin.remove() is True
+        assert json.loads(path.read_text()) == {
+            "model": "gpt-5",
+            "enabledPlugins": {"x@other": True},
+        }
+        assert not root.exists()
+        assert plugin.remove() is False
+
+    def test_remove_drops_empty_keys(self, home):
+        plugin.install(_config())
+        plugin.remove()
+        assert json.loads(_settings(home).read_text()) == {}
+
+    def test_remove_with_invalid_settings_changes_nothing(self, home):
+        root = plugin.install(_config())
+        _settings(home).write_text("{oops")
+        with pytest.raises(plugin.SettingsError):
+            plugin.remove()
+        assert root.exists()
+
+
+class TestStatus:
+    def test_not_installed(self, home):
+        assert plugin.status() == "not_installed"
+
+    def test_installed(self, home):
+        plugin.install(_config())
+        assert plugin.status() == "installed"
+
+    def test_disabled(self, home):
+        plugin.install(_config())
+        path = _settings(home)
+        settings = json.loads(path.read_text())
+        settings["enabledPlugins"]["databricks@unity-gateway"] = False
+        path.write_text(json.dumps(settings))
+        assert plugin.status() == "disabled"
+
+    def test_missing_directory_is_not_installed(self, home):
+        root = plugin.install(_config())
+        shutil.rmtree(root)
+        assert plugin.status() == "not_installed"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+class TestExtensionSource:
+    @pytest.mark.parametrize("name", ["extension.mjs", "ug-plugin.mjs"])
+    def test_syntax(self, name):
+        subprocess.run([NODE, "--check", str(PLUGIN_SOURCE / name)], check=True)
+
+    def test_node_unit_tests(self):
+        result = subprocess.run(
+            [NODE, "--test", str(Path(__file__).with_name("copilot_app_plugin.test.mjs"))],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
