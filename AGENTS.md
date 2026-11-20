@@ -82,6 +82,8 @@ Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
   on a flush signal, or after EOF when the CLI exits or execs an agent. Recording and shutdown
   must never wait for locks, process startup, pipe capacity, or networking. A bounded startup
   backlog handles helper startup; contention and backpressure may still drop telemetry.
+- The exporter reads the local instance region cache first, then the region from a recognized
+  metric proxy environment. It omits the optional `client_region` attribute if neither supplies a region.
 - Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
   tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
   recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.
