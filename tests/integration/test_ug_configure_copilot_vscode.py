@@ -73,6 +73,21 @@ def _assert_saved_turns(session, turns):
         assert task.value in turn["text"], turn
 
 
+def _tool_outputs(payload):
+    """The tool results Copilot Chat sent the model, on the Messages or Responses wire."""
+    items = [
+        block
+        for message in payload.get("messages") or []
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+    ] + list(payload.get("input") or [])
+    return [
+        str(item.get("content") if item.get("type") == "tool_result" else item.get("output"))[:500]
+        for item in items
+        if isinstance(item, dict) and item.get("type") in ("tool_result", "function_call_output")
+    ]
+
+
 def _assert_turn(session, recorder, checkpoint, task, answer, model, route, headers=None):
     """The chat answer carries the file's value, and every request of the turn asked the gateway
     for ``model`` on ``route`` with ``headers``, from the bundled Copilot Chat, and got a non-empty
@@ -89,6 +104,16 @@ def _assert_turn(session, recorder, checkpoint, task, answer, model, route, head
             for r in requests
         ],
     )
+    if task.value not in answer and requests:
+        # Shows whether a wrong answer followed a good read, a failed read, or none.
+        last = requests[-1]
+        session.record(
+            f"missed-answer-{model}.json",
+            {
+                "toolOutputs": _tool_outputs(last.payload),
+                "lastResponse": recorder.response_for(last).body.decode("utf-8", "replace")[:4000],
+            },
+        )
     assert task.value in answer, answer
     assert requests, "The chat turn reached no gateway route"
     agent = f"githubcopilotchat/{copilot_chat_version(session)}"

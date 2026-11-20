@@ -844,7 +844,10 @@ Copilot Chat with the picker's "Add Models..." or ug's "Turn On Copilot Chat" no
 is on screen first (both open the Language Models editor, which it closes), and picks a model by
 its label in the picker. The picked model has to hold for a few seconds, since ug's extension
 switches the chat to its default model once Copilot Chat is on. Each window records its actions
-and every change of the recognized screen (`<name>-states.json`).
+and every change of the recognized screen (`<name>-states.json`). Playwright connects once the
+window's DevTools page target exists, and connects again if that connection misses the workbench.
+An answer without the file's value also keeps the tool results and the last response of its turn
+(`missed-answer-<model>.json`).
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window
