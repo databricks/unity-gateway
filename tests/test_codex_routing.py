@@ -202,6 +202,40 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     assert hook["permissionDecisionReason"] == expected_message
 
 
+def test_spawn_rewrite_can_hide_notice_without_changing_routed_model(monkeypatch):
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (
+            codex_routing.RoutingDecision(model="system.ai.gpt-5-6-luna"),
+            None,
+        ),
+    )
+
+    output = codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaboration.spawn_agent",
+            "tool_input": {"task_name": "reviewer", "message": "Review this change."},
+        },
+        workspace=WS,
+        token="token",
+        available_models=["system.ai.gpt-5-6-luna"],
+        show_notice=False,
+    )
+
+    assert output == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+                "task_name": "reviewer",
+                "message": "Review this change.",
+                "model": "gpt-5.6-luna",
+            },
+        }
+    }
+
+
 def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path):
     session_file = tmp_path / "env.json"
     session_file.write_text("{}")

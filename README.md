@@ -784,7 +784,7 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
 use identical mappings for both agents. The Claude-only versions disable routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker | Subagent model details in Claude |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker | Subagent model details |
 | --- | --- | --- | --- | --- | --- | --- |
 | `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off | Shown |
 | `subagent_only_v0` | Claude, Codex | On | Off | Off | Off | Shown |
@@ -807,9 +807,10 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 `subagent_orch_v0_blind_subagent_model` routes exactly like `subagent_orch_v0` but sets
-`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` for both agents, hiding Claude's subagent model
-details. `subagent_orch_v0_blind_subagent_model_claude_only` combines that hidden display
-with `subagent_orch_v0_claude_only`'s Codex opt-out.
+`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` for both agents, hiding Claude's routing cards and
+Codex's routed-subagent model notice and verification message. Routing and the selected
+subagent models are unchanged. `subagent_orch_v0_blind_subagent_model_claude_only` combines
+that hidden display with `subagent_orch_v0_claude_only`'s Codex opt-out.
 
 Managed smart routing offers an upgrade when Codex is too old. If the upgrade is declined,
 fails, or leaves Codex too old, the same launch warns and continues without smart routing.
@@ -835,8 +836,9 @@ UG expands its mapping into
 `ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI` for the launched session. The display flag is `0`
 for Claude Auto, the blind orch v0 versions (both agents for the shared one), and `1`
 for every other version/agent mapping. Without a known version,
-setting it to `0` hides routing selections, reasons, timers and cards; unset or `1` shows them.
-It does not change routing or the model a subagent uses. When the version is
+setting it to `0` hides Claude's routed-subagent selections, reasons, timers and cards, and
+Codex's routed-subagent notice and verification message; unset or `1` preserves the visible
+behavior. It does not change routing or the model a subagent uses. When the version is
 unset or empty, the routing and orchestrator flags retain their existing behavior,
 including first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. The Auto flag is
 derived only from its config version and cannot enable Auto independently. Unknown versions are ignored:

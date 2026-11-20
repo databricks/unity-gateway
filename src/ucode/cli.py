@@ -74,6 +74,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3447,6 +3448,7 @@ def codex_router_hook_cmd(
     except (OSError, UnicodeError, ValueError):
         return
     enabled = smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CODEX)
+    show_subagent_model = environment.get(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR) != "0"
 
     from ucode.smart_routing.codex_routing import (
         is_spawn_agent_tool,
@@ -3469,7 +3471,7 @@ def codex_router_hook_cmd(
     if event == "record-subagent":
         record = record_subagent_start(payload)
         matched = record.get("matches_router_decision")
-        if matched is True:
+        if matched is True and show_subagent_model:
             sys.stdout.write(
                 json.dumps(
                     {
@@ -3505,6 +3507,7 @@ def codex_router_hook_cmd(
                 token=token,
                 available_models=model or [],
                 audit_decision=True,
+                show_notice=show_subagent_model,
                 **({"provider": provider} if provider else {}),
             )
     output = stamp_spawn(payload, enabled=enabled, output=output)

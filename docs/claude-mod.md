@@ -85,6 +85,8 @@ timers and parallel cards. It preserves native rows, animal names and routing be
 Claude Auto's and the blind orch v0 config versions set it to `0`; other mappings set it
 to `1`.
 Without a version selector, an unset flag preserves the visible routing details.
+The same flag suppresses Codex's routed-subagent model card and post-launch model
+verification message, without changing the model injected into the spawn request.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 

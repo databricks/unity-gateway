@@ -1292,11 +1292,9 @@ commands, substitutions, other variables, and different conditions remain reject
 and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
-`test_smart_routing_config.py` includes a 189-case Cartesian component oracle: all three legacy
-routing flags take unset, `0`, and `1`, while the selector takes unset or one of the six
-supported presets, including the customer first-prompt-and-subagent mode and the blind
-subagent-model orch v0 preset (its normal and Claude-only variants also have focused
-flag, routing, describe, and display-flag cases). It uses the named
+`test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
+routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
+supported presets, including the customer first-prompt-and-subagent mode. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
