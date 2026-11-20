@@ -20,6 +20,7 @@ from ucode.managed_files import OS
 from ucode.os_compatibility import windows_user_env
 
 WS = "https://example.cloud.databricks.com"
+_REAL_CACHE_DIR = tracing._cache_dir
 ENV = tracing.app_env(WS)
 PROVIDER = tracing.headers_provider("/opt/ug/bin/ug", ["otel-headers", "--host", WS])
 
@@ -457,3 +458,36 @@ def test_the_record_lives_under_ugs_app_dir(monkeypatch, home):
     record = json.loads(tracing._record_path().read_text())
     assert record == {"profiles": [str(home / ".zshenv")], "created": [str(home / ".zshenv")]}
     assert os.fspath(tracing._record_path()).startswith(os.fspath(home.parent))
+
+
+class TestAppRuntimeVersion:
+    @pytest.mark.parametrize("system", [OS.LINUX, OS.MACOS, OS.WINDOWS])
+    def test_the_newest_downloaded_runtime(self, monkeypatch, tmp_path, system):
+        monkeypatch.setattr(tracing, "_cache_dir", _REAL_CACHE_DIR)
+        monkeypatch.setattr(tracing, "current_os", lambda: system)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        cache = {
+            OS.LINUX: tmp_path / ".cache",
+            OS.MACOS: tmp_path / "Library" / "Caches",
+            OS.WINDOWS: tmp_path / "local",
+        }[system]
+        cli = cache / "github-copilot-sdk" / "cli"
+        for name in ("copilot-sdk-runtime-1.0.98", "copilot-sdk-runtime-1.0.106-8", "notes"):
+            (cli / name).mkdir(parents=True)
+
+        assert tracing.app_runtime_version() == (1, 0, 106)
+
+    def test_none_before_the_app_downloaded_one(self):
+        assert tracing.app_runtime_version() is None
+
+
+def test_disable_leaves_no_empty_record_directory(monkeypatch):
+    monkeypatch.setattr(tracing, "current_os", lambda: OS.LINUX)
+    monkeypatch.setattr(shell_profile_env, "login_shells", lambda: ["zsh"])
+    tracing.enable(WS, PROVIDER, windows_opt_in=False)
+
+    tracing.disable()
+
+    assert not tracing._record_path().parent.exists()
