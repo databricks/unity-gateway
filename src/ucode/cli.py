@@ -2175,11 +2175,6 @@ def revert() -> int:
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
     print_kv("GitHub Copilot app", copilot_app_result)
-    if copilot_app_result.startswith("removed"):
-        print_note(
-            "Chats already open in the GitHub Copilot app keep the Databricks models until you "
-            "start a new chat or restart the app."
-        )
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",

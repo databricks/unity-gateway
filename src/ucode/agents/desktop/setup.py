@@ -482,7 +482,7 @@ def revert_copilot_app() -> str:
     except copilot_app_plugin.SettingsError as exc:
         if not had_plugin:
             return "removed" if unregistered else "not set up"
-        return f"failed: {exc}; remove ug's unity-gateway entries from it yourself"
+        return f"failed: {exc}; remove ug's databricks-unity-gateway entries from it yourself"
     return "removed" if unregistered or plugin_removed else "not set up"
 
 
@@ -491,7 +491,7 @@ def _defer_copilot_app_removal() -> str:
         if copilot_app_plugin.defer_remove():
             return COPILOT_APP_REMOVAL_PENDING
     except copilot_app_plugin.SettingsError as exc:
-        return f"failed: {exc}; remove ug's unity-gateway entries from it yourself"
+        return f"failed: {exc}; remove ug's databricks-unity-gateway entries from it yourself"
     # Without an installed plugin nothing can remove the rows later.
     copilot_app_plugin.remove()
     return (

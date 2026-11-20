@@ -4853,10 +4853,8 @@ class TestRevert:
         assert restore_file.called
         clear_state.assert_called_once()
 
-    @pytest.mark.parametrize(
-        ("result", "note"), [("removed", True), ("not set up", False), ("failed: x", False)]
-    )
-    def test_reports_the_copilot_app(self, result, note):
+    @pytest.mark.parametrize("result", ["removed", "not set up", "failed: x"])
+    def test_reports_the_copilot_app(self, result):
         with (
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
             patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
@@ -4874,7 +4872,7 @@ class TestRevert:
         output = " ".join(outcome.output.split())
         assert outcome.exit_code == 0, outcome.output
         assert f"GitHub Copilot app: {result}" in output
-        assert ("keep the Databricks models until you start a new chat" in output) is note
+        assert "keep the Databricks models" not in output
 
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
