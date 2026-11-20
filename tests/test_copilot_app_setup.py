@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -528,3 +529,90 @@ class TestManagedModelSources:
         assert seen == []
         assert "main.allowed.* isn't expanded yet" in _out(capsys)
         assert plugin.status() == "not_installed"
+
+
+class TestQuiescedRevert:
+    def _extension(self) -> Path:
+        return plugin.plugin_root() / "plugins" / plugin.PLUGIN / "extensions" / plugin.EXTENSION
+
+    def test_marks_the_plugin_for_removal_and_holds_the_sync_lock_while_unregistering(
+        self, app, monkeypatch
+    ):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        _register(app)
+        real = copilot_app.unregister
+        seen = {}
+
+        def unregister():
+            seen["remove"] = _extension_config().get("remove")
+            seen["lock"] = (self._extension() / "app-sync.lock").read_text()
+            return real()
+
+        monkeypatch.setattr(copilot_app, "unregister", unregister)
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+
+        assert seen["remove"] is True
+        assert seen["lock"].startswith("ug-")
+        assert app.providers == {}
+        assert not plugin.plugin_root().exists()
+
+    @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+    def test_a_sync_racing_the_revert_cant_write_the_rows_back(self, app, monkeypatch, tmp_path):
+        import subprocess
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        _register(app)
+        real = copilot_app.unregister
+        results = []
+        rows = (self._extension() / "app-rows.mjs").as_uri()
+        script = (
+            "import { readFileSync } from 'node:fs';"
+            f"import {{ syncOnce }} from {json.dumps(rows)};"
+            "const [config, home, stateDir] = process.argv.slice(1);"
+            "console.log(await syncOnce(JSON.parse(readFileSync(config, 'utf8')), { home, stateDir }));"
+        )
+
+        def sync():
+            # The extension's own sync, started by a chat while the revert is under way.
+            done = subprocess.run(
+                [
+                    shutil.which("node"),
+                    "--input-type=module",
+                    "-e",
+                    script,
+                    str(self._extension() / "config.json"),
+                    str(tmp_path / ".copilot"),
+                    str(self._extension()),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            results.append(done.stdout.strip())
+
+        def unregister():
+            sync()
+            removed = real()
+            sync()
+            return removed
+
+        monkeypatch.setattr(copilot_app, "unregister", unregister)
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+
+        assert set(results) <= {"busy", "removing"}
+        assert app.providers == {}
+        assert app.models == {}
+
+
+def test_a_failed_plugin_write_only_warns(monkeypatch, capsys):
+    def fail(config):
+        raise RuntimeError("Failed to write file: config.json")
+
+    monkeypatch.setattr(plugin, "install", fail)
+
+    desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+    assert "Could not install ug's plugin in the GitHub Copilot app" in _out(capsys)

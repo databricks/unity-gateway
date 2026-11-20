@@ -12,6 +12,7 @@ import re
 import shutil
 import sys
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -462,7 +463,8 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
             "can't read. Fix it, then run `ug configure --agents copilot` again."
         )
         return
-    except OSError as exc:
+    # ug's file writers raise RuntimeError for a failed write.
+    except (OSError, RuntimeError) as exc:
         print_warning(f"Could not install ug's plugin in the GitHub Copilot app: {exc}")
         return
     from ucode.databricks import databricks_cli_path
@@ -497,12 +499,28 @@ def revert_copilot_app() -> str:
     had_plugin = copilot_app_plugin.plugin_root().exists()
     if not had_plugin and not copilot_app_installed():
         return "not set up"
+    # Marked first, so no extension writes the rows back while ug deletes them. With the app
+    # closed, the same mark has the plugin delete them on the app's next start.
+    marked = False
+    if had_plugin:
+        try:
+            marked = copilot_app_plugin.defer_remove()
+        except copilot_app_plugin.SettingsError as exc:
+            return f"failed: {exc}; remove ug's databricks-unity-gateway entries from it yourself"
     try:
-        unregistered = copilot_app.unregister()
+        with copilot_app_plugin.sync_lock() if marked else nullcontext():
+            unregistered = copilot_app.unregister()
     except copilot_app.CopilotAppNotRunning:
         if not had_plugin:
             return "not set up"
-        return _defer_copilot_app_removal()
+        if marked:
+            return COPILOT_APP_REMOVAL_PENDING
+        # Without an installed plugin nothing can remove the rows later.
+        copilot_app_plugin.remove()
+        return (
+            "removed ug's plugin; open the GitHub Copilot app and run `ug revert` again to remove "
+            "the Databricks models from it"
+        )
     except copilot_app.CopilotAppError as exc:
         return f"failed: {exc}"
     try:
@@ -512,20 +530,6 @@ def revert_copilot_app() -> str:
             return "removed" if unregistered else "not set up"
         return f"failed: {exc}; remove ug's databricks-unity-gateway entries from it yourself"
     return "removed" if unregistered or plugin_removed else "not set up"
-
-
-def _defer_copilot_app_removal() -> str:
-    try:
-        if copilot_app_plugin.defer_remove():
-            return COPILOT_APP_REMOVAL_PENDING
-    except copilot_app_plugin.SettingsError as exc:
-        return f"failed: {exc}; remove ug's databricks-unity-gateway entries from it yourself"
-    # Without an installed plugin nothing can remove the rows later.
-    copilot_app_plugin.remove()
-    return (
-        "removed ug's plugin; open the GitHub Copilot app and run `ug revert` again to remove "
-        "the Databricks models from it"
-    )
 
 
 def _cleanup_copilot_app_leftover() -> None:
