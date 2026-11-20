@@ -1117,7 +1117,7 @@ def launch_codex(
         custom_oauth = state.get("custom_oauth")
         overlay = render_overlay(
             workspace,
-            None if app_server_launch else start_model,
+            state.get("codex_default_model") if app_server_launch else start_model,
             state.get("profile"),
             use_pat=bool(state.get("use_pat")),
             custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),

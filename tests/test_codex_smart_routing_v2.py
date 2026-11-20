@@ -418,7 +418,10 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
 
-    def test_app_server_launch_runs_the_given_command_with_routing_settings(self, monkeypatch):
+    @pytest.mark.parametrize("managed_model", [None, "admin-model"])
+    def test_app_server_launch_runs_the_given_command_with_routing_settings(
+        self, monkeypatch, managed_model
+    ):
         launches = []
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -439,10 +442,13 @@ class TestLaunchCodex:
             "--listen",
             "ws://127.0.0.1:4310",
         ]
+        state = {"workspace": WS, "profile": "myprof", "codex_models": ["system.ai.gpt-5-6-sol"]}
+        if managed_model:
+            state["codex_default_model"] = managed_model
 
         with pytest.raises(SystemExit):
             v2.launch_codex(
-                {"workspace": WS, "profile": "myprof", "codex_models": ["system.ai.gpt-5-6-sol"]},
+                state,
                 app_server_args,
                 binary="codex",
                 start_model="gpt-start",
@@ -455,7 +461,8 @@ class TestLaunchCodex:
         routing_args = argv[1 : -len(app_server_args)]
         assert set(routing_args[0::2]) == {"--config"}
         config = tomllib.loads("\n".join(routing_args[1::2]))
-        assert "model" not in config
+        # Only the managed default, which the caller's later `-c model` overrides; never ug's pick.
+        assert config.get("model") == managed_model
         assert config["model_provider"] == "Databricks"
         assert config["features"]["hooks"] is True
         [spawn_hook] = config["hooks"]["PreToolUse"]
@@ -468,6 +475,36 @@ class TestLaunchCodex:
             "UCODE_SMART_ROUTER_PYTHON": os.environ["UCODE_SMART_ROUTER_PYTHON"],
         }
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+
+    @pytest.mark.parametrize("source_model", [None, "mps-primary"])
+    def test_app_server_launch_keeps_the_source_launch_model(self, monkeypatch, source_model):
+        launches = []
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+
+        def hand_off(argv):
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "exec_or_spawn", hand_off)
+        launch_config = {"model_provider": "Databricks"}
+        if source_model:
+            launch_config["model"] = source_model
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS},
+                ["app-server"],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=lambda *_args, **_kw: pytest.fail("rendered the default overlay"),
+                launch_config=launch_config,
+                available_models=["mps-primary"],
+            )
+
+        [argv] = launches
+        assert argv[-1] == "app-server"
+        config = tomllib.loads("\n".join(argv[1:-1][1::2]))
+        assert config.get("model") == source_model
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that

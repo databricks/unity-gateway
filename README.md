@@ -712,8 +712,10 @@ files are unchanged, as are native delegation-mode controls. Requests use the
 configured Databricks provider directly. Routed Codex terminal launches use the app-server
 interposer, including subagent-only presets. First-prompt model selection still follows
 the selected preset. A routed `ug codex app-server` instead runs that command with UG's
-routing settings and no model: its caller picks the model and connects its own clients,
-so subagents are routed but no interposer or first-prompt routing runs.
+routing settings. Of models, UG passes only the workspace's managed default, or the model
+a Model Provider Service or Unity Catalog location launch pins, and a model the caller
+passes with `-c` takes precedence. The caller connects its own clients, so
+subagents are routed but no interposer or first-prompt routing runs.
 
 Smart Router toggles keep every conversation loaded and do not interrupt any turn.
 The toggle turn finishes normally with its original routing attribution; the next
