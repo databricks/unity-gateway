@@ -10857,22 +10857,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert cli_mod.list_anthropic_model_catalog.call_count == 1
 
     def test_auto_picker_starts_no_unmanaged_catalog(self, monkeypatch):
-        state = dict(MINIMAL_STATE)
-        configure = MagicMock(side_effect=lambda _tool, configured, *_a, **_k: configured)
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod,
-            "list_anthropic_model_catalog",
-            MagicMock(side_effect=AssertionError("auto picker must not fetch the catalog")),
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod.smart_routing_config, "auto_mode_enabled", lambda: True)
+        monkeypatch.setattr(cli_mod, "_routes_launch", lambda *a, **k: True)
 
         calls = self._invoke_with_overlapped_catalog(
             monkeypatch, managed=None, auto_picker=True, expect_catalog_start=False
