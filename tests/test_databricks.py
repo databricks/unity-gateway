@@ -7792,9 +7792,10 @@ class TestPooledRedirectErrors:
 
 
 class TestPooledRedirectPolicies:
-    """Redirects are followed exactly where urllib's opener would have followed them: GET/HEAD
-    re-request the target; every other method sees the 3xx as an HTTPError instead of having
-    its body replayed."""
+    """Redirects are followed exactly where urllib's redirect_request follows them: GET/HEAD
+    re-request the target, a POST answered 301/302/303 is re-issued as a bodiless GET, and
+    every other method or 307/308 raises the 3xx as an HTTPError instead of having its body
+    replayed."""
 
     @staticmethod
     def _mock_client(monkeypatch, handler):
@@ -7825,6 +7826,49 @@ class TestPooledRedirectPolicies:
 
         assert raised.value.code == 307
         assert raised.value.headers.get("Location") == "https://example.test/moved"
+        assert len(sent) == 1
+
+    def test_post_302_is_followed_as_a_bodiless_get(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append((request.method, request.content))
+            if len(sent) == 1:
+                return httpx.Response(302, headers={"Location": "https://example.test/final"})
+            return httpx.Response(200, content=b"{}")
+
+        self._mock_client(monkeypatch, handler)
+
+        with db_mod._http_open(
+            db_mod.urllib_request.Request("https://example.test/api", data=b"{}", method="POST"),
+            timeout=5,
+        ) as response:
+            assert response.read() == b"{}"
+
+        assert sent == [("POST", b"{}"), ("GET", b"")]
+
+    def test_patch_redirect_is_raised_not_followed(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append(request)
+            return httpx.Response(302, headers={"Location": "https://example.test/moved"})
+
+        self._mock_client(monkeypatch, handler)
+
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(
+                db_mod.urllib_request.Request(
+                    "https://example.test/api", data=b"{}", method="PATCH"
+                ),
+                timeout=5,
+            )
+
+        assert raised.value.code == 302
         assert len(sent) == 1
 
     def test_get_redirect_is_followed(self, monkeypatch):

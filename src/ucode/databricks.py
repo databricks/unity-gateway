@@ -533,11 +533,16 @@ def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledRes
         extensions={"timeout": httpx.Timeout(timeout).as_dict()},
     )
     try:
-        # Like urllib, only GET/HEAD follow redirects; any other method gets the 3xx as an
-        # HTTPError below rather than resending its body.
-        response = _get_http_client().send(
-            httpx_request, follow_redirects=httpx_request.method in ("GET", "HEAD")
-        )
+        # urllib's redirect_request re-issues GET/HEAD on any redirect, re-issues a POST
+        # answered 301/302/303 as a bodiless GET, and raises HTTPError for every other
+        # method or 307/308. Mirror that instead of letting httpx replay request bodies.
+        method = httpx_request.method
+        client = _get_http_client()
+        response = client.send(httpx_request, follow_redirects=method in ("GET", "HEAD"))
+        if method == "POST" and response.status_code in (301, 302, 303) and response.next_request:
+            # httpx's next_request for a POST 301/302/303 is already that bodiless GET, with
+            # cross-origin Authorization stripped.
+            response = client.send(response.next_request, follow_redirects=True)
     except httpx.TooManyRedirects as exc:
         # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
         # callers see a status-shaped failure, not a network one. httpx drops the last response,
