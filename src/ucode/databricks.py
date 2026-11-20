@@ -2253,7 +2253,7 @@ def _fetch_databricks_token_for_profile(
     return token
 
 
-def _get_databricks_token(
+def fetch_databricks_token_untimed(
     workspace: str,
     profile: str | None = None,
     *,
@@ -2319,10 +2319,10 @@ def get_databricks_token(
     """Fetch the workspace's Databricks token, timing and reporting the fetch.
 
     Best-effort callers that handle their own failures call
-    :func:`_get_databricks_token` instead, so a recovered speculation is not
+    :func:`fetch_databricks_token_untimed` instead, so a recovered speculation is not
     counted as a hard token-fetch failure and adds no second duration
     observation."""
-    return _get_databricks_token(
+    return fetch_databricks_token_untimed(
         workspace,
         profile,
         force_refresh=force_refresh,

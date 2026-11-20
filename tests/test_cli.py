@@ -10601,7 +10601,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
     ):
         state = dict(MINIMAL_STATE)
         catalog_started = threading.Event()
-        catalog_calls: list[tuple[threading.Thread, dict]] = []
+        catalog_calls: list[tuple[threading.Thread, tuple, dict]] = []
         picker_catalog = db_mod.AnthropicModelCatalog(
             model_ids=["main.default.claude-sonnet-5"],
             model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
@@ -10609,8 +10609,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         catalog_fetches = {"n": 0}
 
-        def fake_catalog(*_args, **kwargs):
-            catalog_calls.append((threading.current_thread(), kwargs))
+        def fake_catalog(*args, **kwargs):
+            catalog_calls.append((threading.current_thread(), args, kwargs))
             catalog_started.set()
             n = catalog_fetches["n"]
             catalog_fetches["n"] += 1
@@ -10646,7 +10646,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
                 raise token_error
             return "token"
 
-        monkeypatch.setattr(cli_mod, "_get_databricks_token", fake_token)
+        monkeypatch.setattr(cli_mod, "fetch_databricks_token_untimed", fake_token)
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
         monkeypatch.setattr(
             cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, relayed)
@@ -10705,7 +10705,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         assert calls["result"].exit_code == 0, calls["result"].output
         assert len(calls["catalog_calls"]) == 1
-        assert calls["catalog_calls"][0][1] == {"parent_schema": "main.default"}
+        assert calls["catalog_calls"][0][2] == {"parent_schema": "main.default"}
 
     @pytest.mark.parametrize(
         "configure_returns",
@@ -10725,6 +10725,14 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         assert calls["result"].exit_code == 0, calls["result"].output
         assert len(calls["catalog_calls"]) == 2
+        # The speculation tokenized for and queried the launch's original workspace even though
+        # configure resolved a different one; its result is dropped, not reused.
+        speculative_workspace = calls["catalog_calls"][0][1][0]
+        assert speculative_workspace == MINIMAL_STATE["workspace"]
+        assert calls["token_calls"][0][0] == (speculative_workspace, None)
+        assert calls["catalog_calls"][1][1][0] == configure_returns.get(
+            "workspace", MINIMAL_STATE["workspace"]
+        )
 
     def test_speculative_catalog_error_refetches_with_live_token(
         self, monkeypatch, metrics_recorder
@@ -10763,7 +10771,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         # The raised exception is the background token fetch, reported under its operation.
         [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
         assert count == 1
-        assert labels["operation"] == "databricks_token_fetch"
+        assert labels["operation"] == metrics_mod.DATABRICKS_TOKEN_FETCH_OPERATION
         assert labels["continued_with_fallback"] is True
         assert "main.default.claude-sonnet-5" in (
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids

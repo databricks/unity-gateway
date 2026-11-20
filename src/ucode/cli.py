@@ -85,7 +85,6 @@ from ucode.custom_oauth import (
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     AnthropicModelCatalog,
-    _get_databricks_token,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -97,6 +96,7 @@ from ucode.databricks import (
     ensure_databricks_auth,
     ensure_pat_bearer,
     external_bearer_configured,
+    fetch_databricks_token_untimed,
     find_profile_name_for_host,
     find_profile_name_for_workspace,
     get_databricks_token,
@@ -4393,6 +4393,10 @@ def _launch_tool(
             speculation_kwargs = (
                 {} if unmanaged_picker_catalog else {"parent_schema": parent_schema}
             )
+            # Snapshot the launch identity: `state` is rebound by `configure_shared_state` below,
+            # and the thread must fetch the token for and query the same workspace.
+            speculation_workspace = state["workspace"]
+            speculation_workspace_id = state.get("workspace_id")
 
             def _speculative_catalog() -> AnthropicModelCatalog:
                 """Fetch the picker catalog in the background, non-interactively.
@@ -4404,15 +4408,17 @@ def _launch_tool(
                 # The undecorated fetch: a failure here is reported by the join's fallback
                 # handler, not double-counted as a hard token-fetch failure, and a success
                 # adds no second databricks_token_fetch duration observation.
-                token = _get_databricks_token(
-                    state["workspace"], picker_catalog_started_profile, allow_reauth=False
+                token = fetch_databricks_token_untimed(
+                    speculation_workspace, picker_catalog_started_profile, allow_reauth=False
                 )
-                return list_anthropic_model_catalog(state["workspace"], token, **speculation_kwargs)
+                return list_anthropic_model_catalog(
+                    speculation_workspace, token, **speculation_kwargs
+                )
 
             picker_catalog_future = _start_in_background(_speculative_catalog)
             picker_catalog_started_identity = (
-                state["workspace"],
-                state.get("workspace_id"),
+                speculation_workspace,
+                speculation_workspace_id,
                 picker_catalog_started_profile,
             )
 
