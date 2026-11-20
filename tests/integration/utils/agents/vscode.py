@@ -11,7 +11,7 @@ SAVE_TIMEOUT_S = 60
 
 def _turns(records: list[dict]) -> dict[str, dict]:
     """Each prompt of one session: the model it ran on, its tools, error and answer text."""
-    turns, turn, model = {}, None, None
+    turns, turn, model, final = {}, None, None, False
     for record in records:
         kind, data = record.get("type"), record.get("data") or {}
         if kind == "session.start":
@@ -28,6 +28,7 @@ def _turns(records: list[dict]) -> dict[str, dict]:
                 "text": "",
                 "done": False,
             }
+            final = False
         elif turn is None:
             continue
         elif kind == "tool.execution_start":
@@ -36,8 +37,10 @@ def _turns(records: list[dict]) -> dict[str, dict]:
             turn["error"], turn["done"] = data, True
         elif kind == "assistant.message":
             turn["text"] += data.get("content") or ""
-            # The answer is the message that asks for no more tools.
-            turn["done"] = not data.get("toolRequests")
+            final = not data.get("toolRequests")
+        elif kind == "assistant.turn_end":
+            # Every tool round ends a turn too; only the round that asks for no tools ends the prompt.
+            turn["done"] = turn["done"] or final
     return turns
 
 

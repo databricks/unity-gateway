@@ -24,7 +24,6 @@ CLICK_TIMEOUT_MS = 2000
 POLL_S = 0.25
 # How long a screen gets to react to an action before the same screen is read as new.
 SETTLE_S = 3
-SIGNED_OUT_NOTICE_GRACE_S = 6
 
 # ug's extension asks for this on a profile where Copilot Chat never finished its setup. The toast
 # stays up after Copilot Chat is turned on another way, over the chat's model picker.
@@ -40,6 +39,7 @@ _SCREEN = """() => {
   const picker = [...document.querySelectorAll('.chat-model-picker-widget')].find(visible);
   const button = document.querySelector('.interactive-input-part .model-picker-split');
   const target = document.querySelector('.interactive-input-part .chat-session-target-picker-item');
+  const tour = [...document.querySelectorAll('.spotlight-overlay .spotlight-callout')].find(visible);
   // A finished tool call renders in a collapsible confirmation widget with nothing to approve.
   const confirmation = [...document.querySelectorAll(
     '.chat-confirmation-widget-container, .chat-confirmation-widget, .chat-confirmation-widget2'
@@ -67,6 +67,7 @@ _SCREEN = """() => {
     pickerQuery: picker && picker.querySelector('input') ? picker.querySelector('input').value : null,
     modelButton: button ? button.getAttribute('aria-label') : null,
     sessionTarget: target ? text(target) : null,
+    tour: tour ? text(tour) : null,
     confirmation: confirmation ? text(confirmation) : null,
     response: response
       ? {busy: response.classList.contains('chat-response-loading'), text: text(response)}
@@ -306,6 +307,7 @@ class VSCode:
                 and screen["picker"] is None
                 and not screen["modelsEditor"]
                 and not screen["copilotChatOffNotice"]
+                and screen["tour"] is None
             ):
                 # ug's extension can switch the model and a second Language Models editor can open
                 # just after the providers are added, so the picked screen has to hold.
@@ -357,7 +359,14 @@ class VSCode:
         picker = page.locator(".chat-model-picker-widget:visible")
         model_button = page.locator(".interactive-input-part .model-picker-split").first
         row = picker.locator(f'.monaco-list-row[aria-label^="{label},"]').first
-        if state == "dialog: trust folder":
+        if state == "tour":
+            # An experiment shows this tour to some new profiles only; it blocks every other click.
+            self.shot("tour")
+            self._click(
+                "tour: End Tour",
+                page.locator(".spotlight-callout:visible").get_by_role("button", name="End Tour"),
+            )
+        elif state == "dialog: trust folder":
             self._click(
                 "trust dialog: Trust Folder & Continue",
                 page.locator(".monaco-dialog-box:visible").get_by_role(
@@ -421,24 +430,20 @@ class VSCode:
             raise UnknownScreen(f"Unknown screen while picking {label}: {screen}")
 
     def _wait_for_copilot_session(self) -> None:
-        """Require the chat to be a Copilot session that can run on the added models.
-
-        The Copilot session shows nothing when it can, only a sign-in notice when it can't, and
-        that notice can come a few seconds after the models change."""
+        """Require the chat to be a Copilot session that doesn't ask for a GitHub sign-in."""
         if self.copilot_session_ready:
             return
-        target = self._wait(
-            lambda: self.screen()["sessionTarget"], STEP_TIMEOUT_S, "the chat's session type"
+        screen = self._wait(
+            lambda: (screen := self.screen())["sessionTarget"] and screen,
+            STEP_TIMEOUT_S,
+            "the chat's session type",
         )
+        target = screen["sessionTarget"]
         assert target == "Copilot", f"The chat opened a {target!r} session, not a Copilot session"
-        quiet_until = time.monotonic() + SIGNED_OUT_NOTICE_GRACE_S
-        while time.monotonic() < quiet_until:
-            if self.screen()["signedOutNotice"]:
-                self.shot("copilot-session-signed-out")
-                raise AssertionError("The Copilot session asks for a sign-in on Databricks models")
-            time.sleep(POLL_S)
+        if screen["signedOutNotice"]:
+            self.shot("copilot-session-signed-out")
+            raise AssertionError("The Copilot session asks for a sign-in on Databricks models")
         self.copilot_session_ready = True
-        self.shot("copilot-session-ready")
 
     def assert_not_in_picker(self, label: str) -> None:
         """Search Copilot Chat's model picker for ``label``, require no match, and close it."""
@@ -477,6 +482,7 @@ class VSCode:
                     "dialog: trust folder",
                     "notice: Copilot Chat off",
                     "language models editor",
+                    "tour",
                 ):
                     # Reopening a profile can show the signed-out picker until Copilot Chat starts.
                     self._picker_action(state, screen, label)
@@ -505,6 +511,8 @@ class VSCode:
             if "Do you trust the authors" in screen["dialog"]:
                 return "dialog: trust folder"
             return f"dialog: {screen['dialog'][:200]}"
+        if screen["tour"] is not None:
+            return "tour"
         if screen["copilotChatOffNotice"] and not screen["dropdown"]:
             return "notice: Copilot Chat off"
         if screen["modelsEditor"]:
