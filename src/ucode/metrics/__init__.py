@@ -415,13 +415,18 @@ def annotate(**labels: Any) -> None:
 
 
 @_best_effort
-def record_awaited_duration(duration_ms: float) -> None:
-    """Attribute the current measurement to the awaited operation's own duration instead
-    of the wall time around the call — an untimed fetch's duration, reported once by the
-    first timed caller that reuses it. The value rides the measure scope outside the
-    label set, so it is never exported as a sample attribute."""
-    if current := _scope.get():
-        current[AWAITED_DURATION_MS] = duration_ms
+def record_awaited_duration(name: str, duration_ms: float) -> None:
+    """Attribute the measurement named `name` to the awaited operation's own duration
+    instead of the wall time around the call — an untimed fetch's duration, reported once
+    by the first timed caller that reuses it. The value rides the measure scope outside
+    the label set, so it is never exported as a sample attribute; the innermost scope
+    named `name` wins when measurements nest."""
+    current = _scope.get()
+    while current is not None:
+        if current["name"] == name:
+            current[AWAITED_DURATION_MS] = duration_ms
+            return
+        current = current["parent"]
 
 
 def error_code(error: BaseException | str) -> str:

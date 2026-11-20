@@ -10889,10 +10889,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert calls["result"].exit_code == 0, calls["result"].output
         assert calls["catalog_thread"] is not None and calls["catalog_thread"].daemon
         assert len(calls["catalog_calls"]) == 1
-        # The speculative token fetch must be non-interactive: no re-auth fallback.
-        assert calls["token_calls"] == [
-            ((MINIMAL_STATE["workspace"], None), {"allow_reauth": False})
-        ]
+        # The untimed speculative fetch takes no re-auth kwargs at all.
+        assert calls["token_calls"] == [((MINIMAL_STATE["workspace"], None), {})]
         assert "main.default.claude-sonnet-5" in (
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
