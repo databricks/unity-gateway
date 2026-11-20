@@ -2137,7 +2137,7 @@ def _annotate_fetched_token(memo_key: tuple[str, str | None], memoized: _Memoize
     if duration_ms is None:
         metrics.annotate(in_process_cache_hit=True)
     else:
-        metrics.annotate(awaited_duration_ms=round(duration_ms))
+        metrics.record_awaited_duration(round(duration_ms))
 
 
 def _fetch_databricks_token_for_profile(

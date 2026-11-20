@@ -66,12 +66,12 @@ Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
   For a smaller block, use `metrics.measure(metrics.DEPENDENCY_INSTALL_DURATION_MS,
   operation=metrics.DEPENDENCY_INSTALL_OPERATION, dependency=tool, action="install")`.
   `metrics.annotate(...)` adds labels discovered during that measurement; `metrics.record(...)`
-  handles counters, byte sizes, or durations measured across callbacks. One label is
-  annotate-only: `metrics.AWAITED_DURATION_MS` makes `measure` record the awaited operation's
-  own duration instead of the wall time around the call — a timed caller that reuses a token
+  handles counters, byte sizes, or durations measured across callbacks. To attribute a
+  measurement to an awaited operation's own duration — a timed caller that reuses a token
   another thread fetched untimed (the launch's speculative Databricks token fetch) reports
-  that fetch once as the launch's cache miss this way. `measure` pops the label before
-  recording, so it never appears on a sample; keep it registered in `INT_LABELS`.
+  that fetch once as the launch's cache miss — call `metrics.record_awaited_duration(ms)`
+  inside the `measure` block. The value rides the measure scope outside the label set, so
+  `record` can never export it as a sample attribute.
 - Report handled errors with `metrics.failure(operation, error, ...)`; set
   `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
   (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
