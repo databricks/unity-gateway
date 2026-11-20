@@ -327,7 +327,36 @@ class TestSettings:
         assert not root.exists()
         assert plugin.remove() is False
 
+    def test_remove_deletes_a_settings_file_ug_created(self, home):
+        plugin.install(_config())
+        assert plugin.remove() is True
+        assert not _settings(home).exists()
+
+    def test_remove_keeps_a_created_settings_file_the_user_added_to(self, home):
+        plugin.install(_config())
+        settings = json.loads(_settings(home).read_text())
+        settings["model"] = "gpt-5"
+        _settings(home).write_text(json.dumps(settings))
+        assert plugin.remove() is True
+        assert json.loads(_settings(home).read_text()) == {"model": "gpt-5"}
+
+    def test_remove_keeps_an_empty_settings_file_ug_didnt_create(self, home):
+        _settings(home).parent.mkdir()
+        _settings(home).write_text("{}")
+        plugin.install(_config())
+        assert plugin.remove() is True
+        assert json.loads(_settings(home).read_text()) == {}
+
+    def test_a_finished_deferred_remove_deletes_a_settings_file_ug_created(self, home):
+        plugin.install(_config())
+        plugin.defer_remove()
+        _settings(home).write_text("{}")
+        assert plugin.cleanup_leftover() is True
+        assert not _settings(home).exists()
+
     def test_remove_drops_the_keys_before_the_directory(self, home):
+        _settings(home).parent.mkdir()
+        _settings(home).write_text(json.dumps({"model": "x"}))
         root = plugin.install(_config())
         seen = []
 
@@ -336,7 +365,7 @@ class TestSettings:
             seen.append((seconds, settings, root.exists()))
 
         assert plugin.remove(wait=wait) is True
-        assert seen == [(plugin.UNLOAD_WAIT_S, {}, True)]
+        assert seen == [(plugin.UNLOAD_WAIT_S, {"model": "x"}, True)]
         assert not root.exists()
 
     def test_remove_without_keys_deletes_the_directory_at_once(self, home):
@@ -380,9 +409,11 @@ class TestSettings:
         assert path.stat().st_mode & 0o777 == 0o644
 
     def test_remove_drops_empty_keys(self, home):
+        _settings(home).parent.mkdir()
+        _settings(home).write_text(json.dumps({"model": "x"}))
         plugin.install(_config())
         plugin.remove()
-        assert json.loads(_settings(home).read_text()) == {}
+        assert json.loads(_settings(home).read_text()) == {"model": "x"}
 
     def test_remove_with_invalid_settings_changes_nothing(self, home):
         root = plugin.install(_config())
@@ -504,7 +535,7 @@ class TestDeferredRemove:
         waits = []
         assert plugin.remove(wait=waits.append) is True
         assert waits == [plugin.UNLOAD_WAIT_S]
-        assert json.loads(_settings(home).read_text()) == {}
+        assert not _settings(home).exists()
         assert not root.exists()
 
 

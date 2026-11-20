@@ -344,13 +344,36 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     _write_settings(path, settings)
 
 
+def _created_settings_marker(root: Path) -> Path:
+    return root / "created-settings"
+
+
+def _created_settings(root: Path, path: Path) -> bool:
+    """Whether ug created ``path`` when it installed the plugin under ``root``."""
+    try:
+        return _created_settings_marker(root).read_text(encoding="utf-8") == str(path)
+    except OSError:
+        return False
+
+
+def _drop_settings(root: Path, path: Path, settings: dict) -> bool:
+    """Delete ``path`` when ug created it and nothing else is left in it."""
+    if settings or not _created_settings(root, path):
+        return False
+    path.unlink(missing_ok=True)
+    return True
+
+
 def install(
     config: PluginConfig, root: Path | None = None, settings_path: Path | None = None
 ) -> Path:
     path = settings_path or copilot_settings_path()
     read_settings(path)
     _check_writable(path)
+    created = not path.exists()
     root = write_plugin(config, root)
+    if created:
+        _created_settings_marker(root).write_text(str(path), encoding="utf-8")
     enable(root, path)
     return root
 
@@ -380,7 +403,7 @@ def remove(
             if not value:
                 del settings[key]
             changed = True
-    if changed:
+    if changed and not _drop_settings(root, path, settings):
         _write_settings(path, settings)
     if root.exists():
         if changed:
@@ -422,6 +445,7 @@ def cleanup_leftover(root: Path | None = None, settings_path: Path | None = None
         return False
     if _has_ug_keys(settings, root):
         return False
+    _drop_settings(root, settings_path or copilot_settings_path(), settings)
     shutil.rmtree(root)
     return True
 
