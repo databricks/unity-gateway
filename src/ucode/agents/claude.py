@@ -2441,7 +2441,7 @@ def header_mod_active(*, require_current: bool = False) -> bool:
     """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own mod, or another installer's copy enabled in the managed settings.
-    ``require_current`` requires ug's current files for its language-context hooks.
+    ``require_current`` requires ug's current source and files for its language and cache hooks.
     """
     root = claude_header_mod_root()
     path = _managed_settings_path()
@@ -2460,6 +2460,18 @@ def header_mod_active(*, require_current: bool = False) -> bool:
             return True
         if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
             return False
+        if require_current:
+            marketplaces = settings.get("extraKnownMarketplaces")
+            marketplace = (
+                marketplaces.get(CLAUDE_HEADER_MOD_MARKETPLACE)
+                if isinstance(marketplaces, dict)
+                else None
+            )
+            if not isinstance(marketplace, dict) or marketplace.get("source") != {
+                "source": "directory",
+                "path": str(root),
+            }:
+                return False
         for file, content in _header_mod_files(root).items():
             if not file.is_file() or file.read_text(encoding="utf-8") != content:
                 return False
@@ -3261,6 +3273,38 @@ def _warn_if_launch_headers_dropped() -> None:
     )
 
 
+def _configure_gpt_cache_boundary(state: dict, *, routed: bool) -> None:
+    os.environ.pop("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", None)
+    if (
+        not routed
+        or state.get("claude_relayed")
+        or os.environ.get("UG_CLAUDE_GPT_CACHE_BOUNDARY") != "1"
+        or not state.get("workspace")
+    ):
+        return
+    if os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"):
+        print_warning(
+            "GPT cache-boundary preservation is inactive: Claude's nonessential-traffic policy "
+            "blocks edited authenticated requests. Keeping the network policy unchanged."
+        )
+        return
+    version = _parse_version(agent_version(SPEC["binary"]))
+    if version is None or version < (2, 1, 321):
+        print_warning(
+            "GPT cache-boundary preservation is inactive: it requires Claude Code 2.1.321 or newer."
+        )
+        return
+    if not header_mod_active(require_current=True):
+        print_warning(
+            "GPT cache-boundary preservation is inactive: it requires the current UG managed mod. "
+            "Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS."
+        )
+        return
+    os.environ["UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"] = build_tool_base_url(
+        AGENT_CLAUDE, state["workspace"]
+    )
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -3272,6 +3316,7 @@ def launch(
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     _warn_if_launch_headers_dropped()
+    _configure_gpt_cache_boundary(state, routed=options.launch_smart_routing)
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
@@ -3366,6 +3411,7 @@ def launch(
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            os.environ.pop("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", None)
             routing_setup_failed = True
         else:
             return

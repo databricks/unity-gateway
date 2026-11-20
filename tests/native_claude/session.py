@@ -40,6 +40,7 @@ class Session:
         user_settings=None,
         launch_settings=None,
         model="claude-sonnet-4-6",
+        managed_settings=None,
     ):
         assert not {"env", "pluginConfigs"}.intersection(launch_settings or {}), (
             "Use env and auto_picker to configure the native session fixture"
@@ -66,16 +67,35 @@ class Session:
         options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
         if auto_picker is not None:
             options["autoPicker"] = json.dumps(auto_picker)
+        session_env = resolve_environment(env, agent=AGENT_CLAUDE)
+        session_env.setdefault("CLAUDE_CODE_EXTRA_BODY", '{"caller_field":"keep"}')
         settings = {
             **(launch_settings or {}),
-            "env": {
-                **resolve_environment(env, agent=AGENT_CLAUDE),
-                "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
-            },
+            "env": session_env,
             "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
         header_root = install_header_mod(root / "managed-mod")
         _enable_header_mod(settings, header_root)
+        command_prefix = []
+        if managed_settings is not None:
+            settings.pop("prependPlugins", None)
+            # Give only this process a managed policy; never write the host's /etc settings.
+            policy = root / "managed-settings"
+            policy.mkdir()
+            (policy / "managed-settings.json").write_text(json.dumps(managed_settings))
+            command_prefix = [
+                "bwrap",
+                "--die-with-parent",
+                "--unshare-user",
+                "--unshare-pid",
+                "--bind",
+                "/",
+                "/",
+                "--ro-bind",
+                str(policy),
+                "/etc/claude-code",
+                "--",
+            ]
         process_env = {
             **{
                 key: os.environ[key]
@@ -86,13 +106,18 @@ class Session:
             "CLAUDE_CONFIG_DIR": str(root / "config"),
             "ANTHROPIC_BASE_URL": api,
             "ANTHROPIC_API_KEY": "fixture-dummy-key",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "CLAUDE_CODE_MAX_RETRIES": "0",
             "CLAUDE_CODE_ELEGANT_MEADOW": "1",
             "DISABLE_AUTOUPDATER": "1",
         }
+        nonessential = env.get(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1" if managed_settings is None else ""
+        )
+        if nonessential:
+            process_env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = nonessential
         self.proc = subprocess.Popen(
             [
+                *command_prefix,
                 binary,
                 "-p",
                 "--input-format",

@@ -432,6 +432,19 @@ A missing, outdated or unverified third-party mod produces a routing-launch warn
 continues unchanged.
 These controlled-provider checks establish instruction delivery, not generated-language compliance.
 
+The same managed mod supports opt-in GPT cache-boundary preservation on routed launches with
+`UG_CLAUDE_GPT_CACHE_BOUNDARY=1` and Claude Code 2.1.321 or newer. It moves one eligible Terra/Sol
+Messages cache marker to the request root through native `http.fetch`, without a local proxy.
+Launch tests cover version, installed-source, relay and routing-fallback guards. Native tests use
+an explicit eligible request fixture and controlled provider responses to exercise parent and routed
+child requests, disabled/untrusted mods, other models, origin guards and existing root controls.
+The managed-mod test uses Linux bubblewrap to isolate `/etc/claude-code`; the host policy is untouched.
+It skips before 2.1.321, where the launcher unit tests cover the unsupported-version guard.
+Claude 2.1.325 rejects rewritten authenticated requests when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+is nonempty (including `0`); the optimization passes through in that mode, retaining the policy.
+These checks establish payload transformation and native activation, not gateway cache hits,
+benchmark quality or dollar savings. Requests ending in a system message remain unchanged.
+
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
 category selection, empty and inline feedback, native retries, the off form's

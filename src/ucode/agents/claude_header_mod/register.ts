@@ -74,9 +74,58 @@ async function responseLanguage($: EngineInterface): Promise<string> {
   return instruction + ' Use the requested target language for translations. Preserve technical terms, code identifiers and quoted source text. Source files and tool output in other languages do not change this language preference. Use natural grammar in the response language even when progress-summary examples use English verb endings.';
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function preserveGptCacheBoundary(path: string, body: string): string {
+  if (!['/messages', '/v1/messages', '/ai-gateway/anthropic/v1/messages'].includes(path.split('?', 1)[0])) return body;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body, (_key, value) => {
+      // Leave unusual numbers untouched rather than round a tool argument during serialization.
+      if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0) ||
+          (Number.isInteger(value) && !Number.isSafeInteger(value)))) throw new Error('Unsafe number');
+      return value;
+    });
+  } catch {
+    return body;
+  }
+  if (!isRecord(payload) || 'cache_control' in payload || typeof payload.model !== 'string') return body;
+  const model = payload.model.replace(/\[1m\]$/, '');
+  if (model !== 'system.ai.gpt-6-1-terra' && model !== 'system.ai.gpt-6-1-sol') return body;
+  if (!Array.isArray(payload.messages) || !payload.messages.length) return body;
+  const latest = payload.messages[payload.messages.length - 1];
+  if (!isRecord(latest) || latest.role !== 'user' || !Array.isArray(latest.content) || !latest.content.length) return body;
+  const content = latest.content;
+  if (!content.every(isRecord)) return body;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const control = content[i].cache_control;
+    if (isRecord(control) && control.type === 'ephemeral' &&
+        (control.ttl === undefined || control.ttl === '5m' || control.ttl === '1h')) {
+      // Move, rather than add, a marker so parallel tool-result sorting cannot split its prefix.
+      payload.cache_control = control;
+      delete content[i].cache_control;
+      return JSON.stringify(payload);
+    }
+  }
+  return body;
+}
+
 export function register(on: On): void {
   let submittedLanguage: string | undefined;
   let routingActive: boolean | undefined;
+  on('http.fetch', async ($, e, next) => {
+    if (next.origin.plugin !== 'engine' || e.init?.method?.toUpperCase() !== 'POST' ||
+        typeof e.init.body !== 'string' || await $.env.get('UG_CLAUDE_GPT_CACHE_BOUNDARY') !== '1') return next(e);
+    // Claude 2.1.325 refuses edited authenticated requests in this network-policy mode.
+    const nonessentialDisabled = await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
+    if (nonessentialDisabled) return next(e);
+    const base = await $.env.get('UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL');
+    if (!base || e.url.split('?', 1)[0] !== base.replace(/\/+$/, '') + '/v1/messages') return next(e);
+    const body = preserveGptCacheBoundary('/v1/messages', e.init.body);
+    return next(body === e.init.body ? e : { ...e, init: { ...e.init, body } });
+  });
   on('session.start', async ($, e, next) => {
     submittedLanguage = undefined;
     routingActive = await routingEnabled($);

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -785,6 +786,363 @@ def test_native_language_reload_updates_parent_context_once(native_binary, tmp_p
                 )
                 == 1
             )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_managed_cache_boundary_uses_native_fetch_for_parent_and_child(native_binary, tmp_path):
+    """Exercise native fetch with the eligible out-of-order tool-result wire shape.
+
+    The live native prompt adds cache controls to a trailing system Environment/hookcontext
+    message, which is intentionally ineligible. This fixture supplies a representative eligible
+    user tool-result message through CLAUDE_CODE_EXTRA_BODY; the controlled server still drives the
+    actual parent request and routed-child request.
+    """
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("Managed-mod proof needs Linux bubblewrap to isolate OS-managed settings")
+    supported = tuple(int(part) for part in os.environ["UCODE_TEST_CLAUDE_VERSION"].split(".")) >= (
+        2,
+        1,
+        321,
+    )
+    if not supported:
+        pytest.skip(
+            "Engine HTTP hooks require 2.1.321; older-version launch refusal has unit coverage"
+        )
+    parent_model = "system.ai.gpt-6-1-terra"
+    child_model = "system.ai.gpt-6-1-sol"
+    explicit_root_control = {"type": "ephemeral", "ttl": "1h"}
+    eligible_control = {"type": "ephemeral", "ttl": "1h"}
+    eligible_messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_eligible",
+                    "name": "Agent",
+                    "input": {"description": "Compute arithmetic"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_eligible",
+                    "content": [{"type": "text", "text": "10"}],
+                    "is_error": False,
+                    "cache_control": eligible_control,
+                },
+                {"type": "text", "text": "Continue with this result."},
+            ],
+        },
+    ]
+    moved_messages = json.loads(json.dumps(eligible_messages))
+    del moved_messages[-1]["content"][0]["cache_control"]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def send_json(self, value):
+            data = json.dumps(value).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def send_message(self, request, *, tool_call=False):
+            count = self.server.message_count
+            self.server.message_count += 1
+            if tool_call:
+                block = {
+                    "type": "tool_use",
+                    "id": f"toolu_cache_{count}",
+                    "name": "Agent",
+                    "input": {},
+                }
+                delta = {
+                    "type": "input_json_delta",
+                    "partial_json": json.dumps(
+                        {
+                            "description": "Compute arithmetic",
+                            "prompt": "Return 10. Use no tools.",
+                            "subagent_type": "general-purpose",
+                            "model": "sonnet",
+                            "name": "CacheProof",
+                            "run_in_background": False,
+                        }
+                    ),
+                }
+                stop_reason = "tool_use"
+            else:
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "10"}
+                stop_reason = "end_turn"
+            events = [
+                (
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": f"msg_cache_{count}",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": request["model"],
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 100, "output_tokens": 0},
+                        },
+                    },
+                ),
+                (
+                    "content_block_start",
+                    {"type": "content_block_start", "index": 0, "content_block": block},
+                ),
+                (
+                    "content_block_delta",
+                    {"type": "content_block_delta", "index": 0, "delta": delta},
+                ),
+                ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                (
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                        "usage": {"output_tokens": 10},
+                    },
+                ),
+                ("message_stop", {"type": "message_stop"}),
+            ]
+            data = "".join(
+                f"event: {name}\ndata: {json.dumps(value)}\n\n" for name, value in events
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            path = self.path.split("?", 1)[0]
+            raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            headers = {name.lower(): value for name, value in self.headers.items()}
+            content_encoding = headers.get("content-encoding", "").lower()
+            if content_encoding == "gzip":
+                raw = gzip.decompress(raw)
+            else:
+                assert not content_encoding, f"Unsupported Content-Encoding: {content_encoding}"
+            if path.endswith("/count_tokens"):
+                self.send_json({"input_tokens": 100})
+                return
+            if path != "/v1/messages":
+                self.send_json({})
+                return
+            request = json.loads(raw)
+            self.server.requests.append(
+                {"body": request, "headers": headers, "content_encoding": content_encoding or None}
+            )
+            tool_call = (
+                self.server.spawn_agent
+                and not self.server.spawned
+                and headers.get("x-claude-code-request-class") != "subagent"
+            )
+            if tool_call:
+                self.server.spawned = True
+            self.send_message(request, tool_call=tool_call)
+
+        do_GET = do_POST
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    route_script = """import json, sys
+event = json.load(sys.stdin)
+updated = {key: value for key, value in event["tool_input"].items() if key != "model"}
+updated["subagent_type"] = "general-purpose"
+print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
+                  "updatedInput": updated}))
+"""
+    route_command = [sys.executable, "-c", route_script, child_model]
+
+    def run_case(label, env, model=parent_model, *, routed=False, managed_header_mod=True):
+        server.requests = []
+        server.message_count = 0
+        server.spawn_agent = routed
+        server.spawned = False
+        env = {
+            "ENABLE_PROMPT_CACHING_1H": "1",
+            "CLAUDE_CODE_USE_GATEWAY": "1",
+            "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
+            "DISABLE_TELEMETRY": "1",
+            "DISABLE_ERROR_REPORTING": "1",
+            **env,
+        }
+        if routed:
+            env = {
+                **env,
+                "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+                "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
+            }
+        with Session(
+            native_binary,
+            tmp_path / label,
+            env,
+            api=base_url,
+            route_command=route_command if routed else (),
+            model=model,
+            managed_settings=(
+                _enable_header_mod({}, tmp_path / label / "managed-mod")
+                if managed_header_mod
+                else {"prependPlugins": ["sec-default@builtin"]}
+            ),
+        ) as session:
+            result = session.send(
+                "Use a subagent to return 10, with no tools." if routed else "Reply with OK."
+            )
+            assert not result["is_error"], result
+            if routed:
+                assert "10" in result["result"], result
+        (tmp_path / label / "requests.json").write_text(json.dumps(server.requests, indent=2))
+        return list(server.requests)
+
+    def latest_user_controls(request):
+        body = request["body"]
+        user = next(message for message in reversed(body["messages"]) if message["role"] == "user")
+        assert isinstance(user["content"], list), user
+        return [
+            block["cache_control"]
+            for block in user["content"]
+            if isinstance(block, dict)
+            and isinstance(block.get("cache_control"), dict)
+            and block["cache_control"].get("type") == "ephemeral"
+            and block["cache_control"].get("ttl", "5m") in {"5m", "1h"}
+        ]
+
+    def request_for_model(requests, model):
+        return next(request for request in requests if request["body"].get("model") == model)
+
+    preserved_header_names = (
+        "accept",
+        "anthropic-version",
+        "content-encoding",
+        "content-type",
+        "user-agent",
+        "x-api-key",
+        "x-claude-code-request-class",
+    )
+
+    def assert_preserved(before, after):
+        assert before["body"].get("caller_field") == "keep", before["body"]
+        assert after["body"].get("caller_field") == "keep", after["body"]
+        assert before["headers"].get("x-api-key") == "fixture-dummy-key"
+        assert {name: before["headers"].get(name) for name in preserved_header_names} == {
+            name: after["headers"].get(name) for name in preserved_header_names
+        }
+        assert before["content_encoding"] == after["content_encoding"]
+
+    def assert_unmoved(request, root_control=None):
+        assert request["body"].get("cache_control") == root_control, request["body"]
+        assert latest_user_controls(request), request["body"]
+        assert request["body"].get("caller_field") == "keep", request["body"]
+
+    try:
+        extra_body = json.dumps({"caller_field": "keep", "messages": eligible_messages})
+        routed_env = {
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+            "CLAUDE_CODE_EXTRA_BODY": extra_body,
+        }
+        baseline = run_case("cache-boundary-unset", routed_env, routed=True)
+        active_env = {
+            "CLAUDE_CODE_EXTRA_BODY": extra_body,
+            "UG_CLAUDE_GPT_CACHE_BOUNDARY": "1",
+            "UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL": base_url,
+        }
+        active = run_case(
+            "cache-boundary-parent-child",
+            {**active_env, "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},
+            routed=True,
+        )
+
+        for model in (parent_model, child_model):
+            before = request_for_model(baseline, model)
+            after = request_for_model(active, model)
+            before_controls = latest_user_controls(before)
+            assert before_controls == [eligible_control], before["body"]
+            assert before["body"]["messages"] == eligible_messages
+            assert "cache_control" not in before["body"], before["body"]
+            assert_preserved(before, after)
+            assert after["body"].get("cache_control") == before_controls[-1], after["body"]
+            assert after["body"]["messages"] == moved_messages, after["body"]
+            assert latest_user_controls(after) == [], after["body"]
+
+        assert any(
+            request["body"].get("model") == child_model
+            and request["headers"].get("x-claude-code-request-class") == "subagent"
+            for request in active
+        ), active
+
+        gate_cases = [
+            (
+                "cache-boundary-zero",
+                {**active_env, "UG_CLAUDE_GPT_CACHE_BOUNDARY": "0"},
+                parent_model,
+            ),
+            (
+                "cache-boundary-network-policy",
+                {**active_env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+                parent_model,
+            ),
+            (
+                "cache-boundary-network-policy-zero",
+                {**active_env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"},
+                parent_model,
+            ),
+            (
+                "cache-boundary-wrong-origin",
+                {**active_env, "UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL": "http://127.0.0.1:1"},
+                parent_model,
+            ),
+            ("cache-boundary-sonnet", active_env, "claude-sonnet-4-6"),
+        ]
+        for label, env, model in gate_cases:
+            requests = run_case(label, env, model)
+            assert_unmoved(request_for_model(requests, model))
+
+        user_plugin_only = run_case(
+            "cache-boundary-user-plugin-only",
+            active_env,
+            parent_model,
+            routed=True,
+            managed_header_mod=False,
+        )
+        for model in (parent_model, child_model):
+            assert_unmoved(request_for_model(user_plugin_only, model))
+
+        root_env = {
+            **active_env,
+            "CLAUDE_CODE_EXTRA_BODY": json.dumps(
+                {
+                    "caller_field": "keep",
+                    "cache_control": explicit_root_control,
+                    "messages": eligible_messages,
+                }
+            ),
+        }
+        existing_root = run_case("cache-boundary-existing-root", root_env)
+        root_request = request_for_model(existing_root, parent_model)
+        assert root_request["body"].get("cache_control") == explicit_root_control
+        assert root_request["body"].get("caller_field") == "keep"
+        assert latest_user_controls(root_request) == [eligible_control], root_request["body"]
+        assert root_request["body"]["messages"] == eligible_messages
+        assert_preserved(request_for_model(baseline, parent_model), root_request)
     finally:
         server.shutdown()
         server.server_close()
