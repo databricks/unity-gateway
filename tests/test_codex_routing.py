@@ -335,7 +335,7 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
     )
     assert captured["task"] == assignment
     assert (
-        "Prompt preview : Review the parser's café/日本語 error handling...."
+        "Prompt preview : Review the parser's café/日本語 error handling."
         in output["systemMessage"]
     )
     assert output["hookSpecificOutput"]["updatedInput"]["message"] == assignment
@@ -626,7 +626,7 @@ def test_codex_session_log_record_matches_claude_record_shape(tmp_path, monkeypa
     (codex,) = session_log.read_decisions("codex", "s1")
     (claude,) = session_log.read_decisions("claude", "s1")
     assert codex.keys() == claude.keys()
-    assert codex["prompt"]["preview"] == "y" * 160 + "…"
+    assert codex["prompt"]["preview"] == "y" * 237 + "..."
     assert codex["prompt"] == claude["prompt"]
     assert codex["prompt"]["length"] == len(assignment)
     assert len(codex["prompt"]["sha256"]) == 64

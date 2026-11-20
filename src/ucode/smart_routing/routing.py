@@ -40,6 +40,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
 ROUTING_BOX_WIDTH = 73
+PROMPT_PREVIEW_CHARS = 240
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
@@ -55,6 +56,19 @@ def format_switch_message(model: str, reason: str | None) -> str:
     return _format_box(lines)
 
 
+def format_prompt_preview(prompt: str | None) -> str | None:
+    """Keep notices and retained logs within the same first-line disclosure bound."""
+    if prompt is None:
+        return None
+    line = next((line for line in prompt.splitlines() if line.strip()), "")
+    preview = " ".join(line.split())
+    if not preview:
+        return None
+    if len(preview) > PROMPT_PREVIEW_CHARS:
+        return preview[: PROMPT_PREVIEW_CHARS - 3] + "..."
+    return preview
+
+
 def format_subagent_message(
     model: str,
     reason: str | None,
@@ -63,14 +77,11 @@ def format_subagent_message(
     prompt: str | None = None,
 ) -> str:
     """Format a routed-subagent notice without the first-prompt disclaimer."""
+    preview = format_prompt_preview(prompt)
     lines = [
         "Using Unity Gateway Smart Router - Subagent",
         *([f"Subagent : {subagent_name}"] if subagent_name else []),
-        *(
-            [f"Prompt preview : {textwrap.shorten(prompt, width=240, placeholder='...')}"]
-            if prompt
-            else []
-        ),
+        *([f"Prompt preview : {preview}"] if preview else []),
         f"Selected Model : {model}",
         *([f"Reason : {reason}"] if reason else []),
     ]

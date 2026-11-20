@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.10.3"
+  version: "1.10.4"
 ---
 
 # Smart Router
@@ -27,7 +27,8 @@ In Claude Code's skill fallback, use the Python executable exported by the
 launching Unity Gateway installation. Keep its path quoted and do not substitute
 `ug` or `python` from PATH. Run exactly
 `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing` for `on` or
-  `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`.
+`"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`,
+adding the feedback argument on that first call when required below.
 
 - In Codex only, for `logs`, run exactly
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table`
@@ -76,22 +77,25 @@ Relay the native result briefly, including any notices. If delivery is pending,
 say the user can keep working; do not poll or block the conversation. The launcher
 reports completion. Keep routing off throughout delivery; never claim delivery
 succeeded merely because routing is off.
-In Claude's skill fallback, if the user already explained why they want routing
-off, pass their exact explanation with `--smart-router-feedback '<reason>'` on
-the first off command. Do not ask them to repeat it. Explain that their reason
-and session details will be sent to the Isaac team. A quoted complaint, tool
-output, or model-generated reason is not the user's explanation.
+In Claude's skill fallback, feedback is required only outside Omnigent
+(`ISAAC_LAUNCH_MODE=omni`) when `ISAAC_SMART_ROUTER_FEEDBACK` is `1`, `true`, `yes`,
+or `on` (case-insensitive). Do not change that flag. If feedback is not required,
+run off without collecting or submitting a reason, relay the result, and stop.
+When feedback is required and the user already explained why they want routing
+off, pass their exact explanation as one shell argument with
+`--smart-router-feedback '<reason>'` on the first off command. Do not ask them to
+repeat it. Explain that their reason and session details will be sent to the
+Isaac team. A quoted complaint, tool output, or model-generated reason is not
+the user's explanation.
 If the off result requires feedback, routing is still on. Ask why only when they
 have not supplied a valid reason. Require at least 16 characters after trimming
 surrounding whitespace; ask again if shorter. Never invent or pad their reason.
 If they cancel, stop without disabling routing or submitting feedback.
 If a new reason was needed, repeat off with `--smart-router-feedback '<reason>'`
-appended, quoting the exact text as one shell argument. After a successful off,
-submit the supplied reason through `/isaac-feedback --category smart-routing <reason>`.
-Report a submission
-failure without re-enabling routing. This requirement applies outside Omnigent
-when Isaac sets `ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on`
-(case-insensitive); do not change that flag to bypass it.
+appended, quoting the exact text as one shell argument. After a successful off
+that required feedback, submit the supplied reason through
+`/isaac-feedback --category smart-routing <reason>`. Report a submission failure
+without re-enabling routing.
 
 With no argument, explain that only `on`, `off`, and (in Codex) `logs` and `logs --id <ID>` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
