@@ -7606,6 +7606,22 @@ class TestPooledClientDispatch:
         )
         return opened
 
+    def test_no_pooled_http_env_switch_uses_urlopen(self, monkeypatch):
+        """UG_NO_POOLED_HTTP is the revert switch: every call goes back to main's urlopen."""
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
+        opened = self._urlopen_sentinel(monkeypatch)
+        request = db_mod.urllib_request.Request("https://x/y")
+
+        for value in ("1", "true"):
+            monkeypatch.setenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR, value)
+            assert db_mod._use_pooled_client() is False
+            db_mod._http_open(request, timeout=5)
+
+        monkeypatch.delenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR)
+        assert db_mod._use_pooled_client() is True
+        assert opened == [(request, 5), (request, 5)]
+
     def test_python_trust_store_uses_urlopen(self, monkeypatch):
         monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "python")
         opened = self._urlopen_sentinel(monkeypatch)

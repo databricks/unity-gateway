@@ -52,6 +52,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.string_utils import unqualified_model_name
@@ -386,11 +387,16 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
         return False
 
 
+POOLED_HTTP_DISABLE_ENV_VAR = "UG_NO_POOLED_HTTP"
+
+
 def _use_pooled_client() -> bool:
     """Whether `_http_open` may use the pooled client: only the default setup, the OS trust
     store with no http/https proxy configured (env or the macOS/Windows system settings).
     Everything else keeps urllib's own path, byte for byte with main. ``all_proxy`` doesn't
-    count — urllib ignores it."""
+    count — urllib ignores it. ``UG_NO_POOLED_HTTP`` falls back to urllib everywhere."""
+    if env_bool(POOLED_HTTP_DISABLE_ENV_VAR):
+        return False
     if tls.effective_trust_store() != tls.TRUST_STORE_OS:
         return False
     proxies = urllib_request.getproxies()
