@@ -10928,10 +10928,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(db_mod, "run", fake_cli_run)
         monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
         monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda _workspace: None)
-        monkeypatch.setattr(
-            "os.environ",
-            {k: v for k, v in os.environ.items() if not k.startswith("DATABRICKS_BEARER")},
-        )
+        for key in [k for k in os.environ if k.startswith("DATABRICKS_BEARER")]:
+            monkeypatch.delenv(key, raising=False)
         # Run the real timed wrapper and the real memo/single-flight machinery; only the CLI
         # subprocess is faked. configure's own fetch below is the production one at
         # `configure_shared_state`'s gateway probe, which overlaps the speculation.

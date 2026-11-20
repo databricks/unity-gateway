@@ -46,6 +46,15 @@ def test_concurrent_observations_keep_individual_labels(metrics_recorder):
     assert sum(attrs["in_process_cache_hit"] for attrs in labels) == 25
 
 
+def test_awaited_duration_override_replaces_the_measured_duration(metrics_recorder):
+    with metrics.measure("databricks_token_fetch_duration_ms", token_source="cli"):
+        metrics.annotate(awaited_duration_ms=4321)
+    [(value, attrs)] = observations(metrics_recorder, "databricks_token_fetch_duration_ms")
+    assert value == 4321
+    assert attrs["token_source"] == "cli"
+    assert "awaited_duration_ms" not in attrs
+
+
 def test_workspace_handoffs_do_not_mix_tokens_or_selected_ids(metrics_recorder, monkeypatch):
     shared = "https://shared.cloud.databricks.com"
     workspace.activate(shared, "111")

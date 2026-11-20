@@ -2131,7 +2131,7 @@ def _get_databricks_token_for_profile(
             browser_login=browser_login,
             allow_reauth=allow_reauth,
             token_epoch=token_epoch,
-            time_fetch=untimed,
+            record_unreported_duration=untimed,
         )
 
 
@@ -2154,7 +2154,7 @@ def _fetch_databricks_token_for_profile(
     browser_login: bool,
     allow_reauth: bool = True,
     token_epoch: int,
-    time_fetch: bool = False,
+    record_unreported_duration: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -2182,7 +2182,7 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
-    fetch_started = time.perf_counter() if time_fetch else None
+    fetch_started = time.perf_counter() if record_unreported_duration else None
 
     def _fetch() -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
@@ -2385,7 +2385,6 @@ def get_databricks_token(
     *,
     force_refresh: bool = False,
     browser_login: bool = False,
-    allow_reauth: bool = True,
 ) -> str:
     """Fetch the workspace's Databricks token, timing and reporting the fetch.
 
@@ -2393,13 +2392,13 @@ def get_databricks_token(
     :func:`fetch_databricks_token_untimed` instead, so a recovered speculation is not
     counted as a hard token-fetch failure and reports no duration observation of its
     own; the timed caller that reuses its token reports the fetch's duration as the
-    launch's cache miss."""
+    launch's cache miss. Only the untimed path skips the non-interactive re-auth."""
     return _fetch_databricks_token(
         workspace,
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
-        allow_reauth=allow_reauth,
+        allow_reauth=True,
         untimed=False,
     )
 
