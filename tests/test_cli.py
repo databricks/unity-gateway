@@ -10591,6 +10591,9 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         persisted_provider=None,
         auto_picker=False,
         expect_catalog_start=True,
+        relayed=False,
+        catalog_error_msg: str | None = None,
+        configure_returns: dict | None = None,
     ):
         state = dict(MINIMAL_STATE)
         catalog_started = threading.Event()
@@ -10603,6 +10606,12 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         def fake_catalog(*_args, **kwargs):
             catalog_calls.append((threading.current_thread(), kwargs))
             catalog_started.set()
+            if catalog_error_msg:
+                return db_mod.AnthropicModelCatalog(
+                    model_ids=[],
+                    model_id_to_display_name={},
+                    error_msg=catalog_error_msg,
+                )
             return picker_catalog
 
         def fake_configure_shared_state(*_args, **_kwargs):
@@ -10612,7 +10621,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
                 assert catalog_started.wait(
                     TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS
                 ), "picker catalog did not start during configure"
-            return state
+            return {**state, **(configure_returns or {})}
 
         configure = MagicMock(side_effect=lambda _tool, configured, *_args, **_kwargs: configured)
         monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
@@ -10630,7 +10639,9 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
 
         monkeypatch.setattr(cli_mod, "get_databricks_token", fake_token)
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, relayed)
+        )
         monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
         monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
@@ -10639,7 +10650,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             monkeypatch.setattr(cli_mod, "_routes_launch", lambda *a, **k: True)
 
         result = runner.invoke(app, list(argv))
-        for thread in {entry[0] for entry in catalog_calls}:
+        current = threading.current_thread()
+        for thread in {entry[0] for entry in catalog_calls} - {current}:
             thread.join(TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS)
 
         return {
@@ -10678,42 +10690,24 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert len(calls["catalog_calls"]) == 1
         assert calls["catalog_calls"][0][1] == {"parent_schema": "main.default"}
 
-    def test_profile_mismatch_refetches_serially(self, monkeypatch):
-        state = dict(MINIMAL_STATE)
-        catalog_started = threading.Event()
-        picker_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=["main.default.claude-sonnet-5"],
-            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
+    @pytest.mark.parametrize(
+        "configure_returns",
+        [
+            {"profile": "resolved-profile"},
+            {"workspace": "https://other.example.com"},
+            {"workspace_id": "111"},
+        ],
+        ids=["profile", "workspace", "workspace_id"],
+    )
+    def test_changed_state_refetches_serially(self, monkeypatch, configure_returns):
+        """configure_shared_state can resolve a different profile, workspace or workspace id
+        than the one the speculation tokenized for; the result must not be reused then."""
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, configure_returns=configure_returns
         )
 
-        def fake_catalog(*_args, **kwargs):
-            catalog_started.set()
-            return picker_catalog
-
-        def fake_configure_shared_state(*_args, **_kwargs):
-            # Configure resolves a profile the speculation didn't know about.
-            assert catalog_started.wait(self.WAIT_SECONDS)
-            return {**state, "profile": "resolved-profile"}
-
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod, "list_anthropic_model_catalog", MagicMock(side_effect=fake_catalog)
-        )
-        monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
-
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        # The speculative result was discarded, so the catalog was fetched twice.
-        assert cli_mod.list_anthropic_model_catalog.call_count == 2
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 2
 
     def test_speculative_catalog_error_refetches_with_live_token(self, monkeypatch):
         error_catalog = db_mod.AnthropicModelCatalog(
@@ -10918,50 +10912,31 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert calls["catalog_calls"] == []
 
     def test_relayed_provider_launch_starts_no_catalog(self, monkeypatch):
-        state = {**MINIMAL_STATE, "provider_services": {"claude": "main.default.relay"}}
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
-        monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: "main.default.relay")
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, True))
-        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", MagicMock())
-        monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            persisted_provider="main.default.relay",
+            relayed=True,
+            expect_catalog_start=False,
+        )
 
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 0, result.output
-        assert cli_mod.list_anthropic_model_catalog.call_count == 0
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["catalog_calls"] == []
 
     def test_catalog_error_still_fails_the_launch(self, monkeypatch):
-        state = dict(MINIMAL_STATE)
-        error_catalog = db_mod.AnthropicModelCatalog(
-            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 403 Forbidden"
-        )
-        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
-        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
-        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         managed = {
             "enabled_agents": {
                 "claude": {"model_config": {"unity_catalog_location": "main.default"}}
             }
         }
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
-        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
-        monkeypatch.setattr(
-            cli_mod, "list_anthropic_model_catalog", MagicMock(return_value=error_catalog)
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=managed,
+            catalog_error_msg="HTTP 403 Forbidden",
         )
-        monkeypatch.setattr(cli_mod, "configure_tool", MagicMock())
-        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
 
-        result = runner.invoke(app, ["claude"])
-
-        assert result.exit_code == 1
+        assert calls["result"].exit_code == 1
         assert "Could not discover Claude models for Unity Catalog location main.default" in (
-            result.output
+            calls["result"].output
         )
+        assert len(calls["catalog_calls"]) == 1
