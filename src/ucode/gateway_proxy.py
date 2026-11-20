@@ -829,6 +829,40 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         return True
 
 
+_BROWSER_REQUEST_HEADERS = frozenset({"origin", "cookie"})
+_BROWSER_REQUEST_HEADER_PREFIX = "sec-fetch-"
+
+
+class _OtelProxyHandler(_ProxyHandler):
+    """Forwards only OTLP POSTs under ``/v1/`` from a local, non-browser client."""
+
+    def _is_local_non_browser_client(self) -> bool:
+        port = cast(ThreadingHTTPServer, self.server).server_port
+        if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            return False
+        return not any(
+            name.lower() in _BROWSER_REQUEST_HEADERS
+            or name.lower().startswith(_BROWSER_REQUEST_HEADER_PREFIX)
+            for name in self.headers.keys()
+        )
+
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._safe_send_error(status, message)
+
+    def _handle(self) -> None:
+        if not _is_allowed_gateway_path(self.path, ("/v1/",)):
+            self._reject(404, "Not found")
+        elif self.command != "POST":
+            self._reject(405, "Method not allowed")
+        elif not self._is_local_non_browser_client():
+            self._reject(403, "Forbidden")
+        else:
+            super()._handle()
+
+
 class _LoopbackHTTPServer(ThreadingHTTPServer):
     # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -960,7 +994,7 @@ def start_otel_proxy(
         upstream_path="ai-gateway/otel/",
         metrics_proxy_mode="otel",
         token_header=AUTHORIZATION_HEADER,
-        handler_type=_ProxyHandler,
+        handler_type=_OtelProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
     )
