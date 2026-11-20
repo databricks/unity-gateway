@@ -2098,7 +2098,7 @@ def _get_databricks_token_for_profile(
                     _annotate_fetched_token(memo_key, memoized)
                 return memoized.token
             if not browser_login:
-                raise RuntimeError(memoized.error)
+                raise DatabricksLoginRequiredError(memoized.error)
 
     # The second memo check is required after waiting for another caller's
     # fetch. The lock is per workspace/profile, so unrelated profiles proceed.
@@ -2116,7 +2116,7 @@ def _get_databricks_token_for_profile(
                         _annotate_fetched_token(memo_key, memoized)
                     return memoized.token
                 if not browser_login:
-                    raise RuntimeError(memoized.error)
+                    raise DatabricksLoginRequiredError(memoized.error)
         token_epoch = _token_cache_epoch()
         return _fetch_databricks_token_for_profile(
             workspace,
@@ -2137,7 +2137,9 @@ def _annotate_fetched_token(memo_key: tuple[str, str | None], memoized: _Memoize
     if duration_ms is None:
         metrics.annotate(in_process_cache_hit=True)
     else:
-        metrics.record_awaited_duration(round(duration_ms))
+        metrics.record_awaited_duration(
+            metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, round(duration_ms)
+        )
 
 
 def _fetch_databricks_token_for_profile(
@@ -2306,17 +2308,12 @@ def _fetch_databricks_token_for_profile(
 def fetch_databricks_token_untimed(
     workspace: str,
     profile: str | None = None,
-    *,
-    allow_reauth: bool = False,
 ) -> str:
     """The undecorated token fetch: the same implementation
     :func:`get_databricks_token` times and reports, for callers that must stay out of the
     token-fetch metrics (a failed best-effort fetch is reported by its own handler, not as
     a hard failure here). It never re-auths or opens a browser, and a credential failure
-    raises :class:`DatabricksLoginRequiredError`. ``allow_reauth`` is accepted for call
-    compatibility and must stay False."""
-    if allow_reauth:
-        raise ValueError("fetch_databricks_token_untimed never re-authenticates")
+    raises :class:`DatabricksLoginRequiredError`."""
     return _fetch_databricks_token(
         workspace,
         profile,

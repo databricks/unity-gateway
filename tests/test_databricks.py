@@ -3618,12 +3618,28 @@ class TestGetDatabricksToken:
         monkeypatch.setattr(db_mod, "run", cli_run("no cached credentials"))
         monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
         with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
-            fetch_databricks_token_untimed(WS, "spec", allow_reauth=False)
+            fetch_databricks_token_untimed(WS, "spec")
 
         monkeypatch.setattr(db_mod, "run", cli_run("connection reset by peer"))
         with pytest.raises(RuntimeError, match="network connectivity") as excinfo:
-            fetch_databricks_token_untimed(WS, "spec", allow_reauth=False)
+            fetch_databricks_token_untimed(WS, "spec")
         assert not isinstance(excinfo.value, db_mod.DatabricksLoginRequiredError)
+
+    def test_memoized_failure_raises_login_required_for_the_speculation(self, monkeypatch):
+        """An untimed fetch reuse of an earlier fetch's memoized credential failure raises
+        the login-required error, so the speculation's join treats it as an expected miss
+        instead of reporting a hard token-fetch failure."""
+
+        def failing_cli_run(cmd, **_kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "no cached credentials")
+
+        monkeypatch.setattr(db_mod, "run", failing_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            get_databricks_token(WS, "spec")
+
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            fetch_databricks_token_untimed(WS, "spec")
 
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
@@ -3895,7 +3911,7 @@ class TestGetDatabricksToken:
         assert calls.count("auth login --help") == 1
 
     def test_skipped_reauth_failure_is_not_memoized(self, tmp_path, monkeypatch):
-        """The speculative allow_reauth=False fetch must not poison configure's own fetch: a
+        """The speculative non-reauth fetch must not poison configure's own fetch: a
         non-transient failure it memoizes would skip configure's auth login --no-browser."""
         flag = tmp_path / "reauthed"
         env, log = self._logging_fake(
@@ -3912,7 +3928,7 @@ class TestGetDatabricksToken:
         monkeypatch.setattr("os.environ", env)
 
         with pytest.raises(RuntimeError, match="no access token"):
-            fetch_databricks_token_untimed(WS, allow_reauth=False)
+            fetch_databricks_token_untimed(WS)
 
         # The skipped re-auth made no `auth login` call at all — not even the --help probe.
         calls_after_first_fetch = log.read_text().splitlines()

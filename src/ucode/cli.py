@@ -4177,7 +4177,7 @@ class _SpeculativePickerCatalog:
             # that can prompt — so the main thread never waits on it and a failure never
             # doubles configure's own fetch. Its exception rides the future; the join site
             # falls back to the serial fetch on the live token.
-            token = fetch_databricks_token_untimed(workspace, profile, allow_reauth=False)
+            token = fetch_databricks_token_untimed(workspace, profile)
             return list_anthropic_model_catalog(workspace, token, **catalog_kwargs)
 
         return cls(
@@ -4226,6 +4226,25 @@ class _SpeculativePickerCatalog:
         # Any other error (a plain 403, a transient error) would fail a live-token fetch the
         # same way, so use the speculative result instead of doubling the request.
         return speculative
+
+
+def _picker_catalog(
+    speculation: _SpeculativePickerCatalog | None,
+    state: dict,
+    profile: str | None,
+    scope: dict[str, str | None],
+) -> AnthropicModelCatalog:
+    """The speculative picker catalog when its identity and scope still match, else the
+    serial fetch on the live token — one join-then-fallback for every reader."""
+    picker_catalog = speculation.result(state, profile, **scope) if speculation else None
+    if picker_catalog is None:
+        token = get_databricks_token(state["workspace"], profile)
+        picker_catalog = list_anthropic_model_catalog(
+            state["workspace"],
+            token,
+            **scope,
+        )
+    return picker_catalog
 
 
 @smart_routing_config.version_scope()
@@ -4469,8 +4488,9 @@ def _launch_tool(
         # The catalog scope of the launch's source — empty for an unmanaged launch — is one
         # dict for the speculation's start and join checks and the serial fallbacks, so the
         # check is meaningful and the fetches cannot drift.
+        picker_catalog_scope: dict[str, str | None]
         if provider:
-            picker_catalog_scope: dict[str, str | None] = {"provider": provider}
+            picker_catalog_scope = {"provider": provider}
         elif parent_schema:
             picker_catalog_scope = {"parent_schema": parent_schema}
         else:
@@ -4619,18 +4639,9 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            picker_catalog = (
-                picker_catalog_speculation.result(state, catalog_profile, **picker_catalog_scope)
-                if picker_catalog_speculation
-                else None
+            picker_catalog = _picker_catalog(
+                picker_catalog_speculation, state, catalog_profile, picker_catalog_scope
             )
-            if picker_catalog is None:
-                token = get_databricks_token(state["workspace"], catalog_profile)
-                picker_catalog = list_anthropic_model_catalog(
-                    state["workspace"],
-                    token,
-                    **picker_catalog_scope,
-                )
             error = picker_catalog.error_msg
             if error:
                 if provider:
@@ -4737,17 +4748,9 @@ def _launch_tool(
         # Claude Code's own discovery lists them without it, so they would run at 200K.
         # launch_only_auto_picker was settled above, where the speculative catalog started.
         if unmanaged_picker_catalog:
-            discovered = (
-                picker_catalog_speculation.result(state, catalog_profile, **picker_catalog_scope)
-                if picker_catalog_speculation
-                else None
+            discovered = _picker_catalog(
+                picker_catalog_speculation, state, catalog_profile, picker_catalog_scope
             )
-            if discovered is None:
-                discovered = list_anthropic_model_catalog(
-                    state["workspace"],
-                    get_databricks_token(state["workspace"], catalog_profile),
-                    **picker_catalog_scope,
-                )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
                     state.get("claude_models") or {},
