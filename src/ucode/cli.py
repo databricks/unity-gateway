@@ -782,8 +782,20 @@ def configure_shared_state(
             if skip_model_discovery
             else _start_in_background(discover_model_services, workspace, token)
         )
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
-    if model_service_probe.resource_available:
+        # First-use setup may already have discovered models before the launch preserves a picker.
+        cached_discovery = (
+            discover_model_services(workspace, token)
+            if skip_model_discovery
+            and previous_key == key
+            and cached_model_service_entries(workspace)
+            else None
+        )
+        model_service_probe = (
+            None
+            if cached_discovery is not None and any(cached_discovery[:4])
+            else probe_unity_gateway_capabilities(workspace, token)
+        )
+    if model_service_probe is None or model_service_probe.resource_available:
         print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
@@ -832,7 +844,9 @@ def configure_shared_state(
         # just that with a single call.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
+                ws_models = cached_discovery[1] if cached_discovery else []
+                if not ws_models:
+                    ws_models, _ = discover_codex_models(workspace, token)
             if ws_models:
                 web_search_model = ws_models[0]
     else:

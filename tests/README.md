@@ -1869,3 +1869,10 @@ to refresh labels and the failed CI jobs. Later pushes need a new waiver; the ol
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
+
+
+`TestConfigureSharedStateCachedDiscovery` verifies that a first-use setup followed by
+a launch preserving another writer's picker reuses successful in-process UC discovery
+for access and web search. It retains the normal initial probe, preserves picker
+defaults, and falls back when GPT is missing, discovery fails or is empty, or the
+workspace/selector changes. These HTTP-boundary checks do not measure live latency.
