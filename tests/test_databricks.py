@@ -7506,7 +7506,7 @@ def test_http_transport_passes_headers_and_timeout(monkeypatch):
     assert "accept" not in headers
 
 
-def test_macos_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
+def test_system_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
     monkeypatch.setattr(db_mod.sys, "platform", "darwin")
     for name in (
         "HTTP_PROXY",
@@ -7526,7 +7526,7 @@ def test_macos_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
         db_mod.urllib_request, "proxy_bypass", lambda host: host == "internal.example"
     )
 
-    proxies = db_mod._macos_system_proxies()
+    proxies = db_mod._system_proxies()
     assert proxies == {
         "http": "http://system-proxy:8080",
         "https": "http://system-proxy:8080",
@@ -7596,7 +7596,7 @@ def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
         child_client.close()
 
 
-def test_macos_schemeless_system_proxy_is_normalized(monkeypatch):
+def test_schemeless_system_proxy_is_normalized(monkeypatch):
     monkeypatch.setattr(db_mod.sys, "platform", "darwin")
     for name in (
         "HTTP_PROXY",
@@ -7611,9 +7611,69 @@ def test_macos_schemeless_system_proxy_is_normalized(monkeypatch):
         db_mod.urllib_request, "getproxies", lambda: {"https": "system-proxy:3128", "all": ""}
     )
 
-    proxies = db_mod._macos_system_proxies()
+    proxies = db_mod._system_proxies()
 
     assert proxies == {"https": "http://system-proxy:3128"}
+
+
+def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
+    monkeypatch.setattr(db_mod.sys, "platform", "win32")
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        db_mod.urllib_request,
+        "getproxies",
+        lambda: {"http": "registry-proxy:8080", "https": "registry-proxy:8080"},
+    )
+    monkeypatch.setattr(
+        db_mod.urllib_request, "proxy_bypass", lambda host: host == "bypassed.example"
+    )
+
+    import httpx
+
+    handled = []
+
+    class StubTransport(httpx.BaseTransport):
+        def __init__(self, name):
+            self.name = name
+
+        def handle_request(self, request):
+            handled.append((self.name, request.url.host))
+            return httpx.Response(200)
+
+        def close(self):
+            pass
+
+    def stub_transport(**kwargs):
+        return StubTransport("proxied" if kwargs.get("proxy") else "direct")
+
+    monkeypatch.setattr(httpx, "HTTPTransport", stub_transport)
+    proxies = db_mod._system_proxies()
+    assert proxies == {
+        "http": "http://registry-proxy:8080",
+        "https": "http://registry-proxy:8080",
+    }
+    transport = db_mod._system_proxy_transport(httpx, proxies, object(), httpx.Limits())
+    try:
+        transport.handle_request(httpx.Request("GET", "https://workspace.example/api"))
+        transport.handle_request(httpx.Request("GET", "https://bypassed.example/api"))
+    finally:
+        transport.close()
+    assert handled == [("proxied", "workspace.example"), ("direct", "bypassed.example")]
+
+
+def test_env_proxies_win_over_system_proxies(monkeypatch):
+    monkeypatch.setattr(db_mod.sys, "platform", "win32")
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
+
+    assert db_mod._system_proxies() is None
 
 
 class TestPooledRedirectErrors:
@@ -7652,3 +7712,87 @@ class TestPooledRedirectErrors:
 
         assert body is None
         assert reason == "HTTP 310 Too Many Redirects"
+
+
+class TestPooledRedirectPolicies:
+    """Redirects are followed exactly where urllib's opener would have followed them: GET/HEAD
+    re-request the target; every other method sees the 3xx as an HTTPError instead of having
+    its body replayed."""
+
+    @staticmethod
+    def _mock_client(monkeypatch, handler):
+        import httpx
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+        return client
+
+    def test_post_redirect_is_raised_not_followed(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append(request)
+            return httpx.Response(307, headers={"Location": "https://example.test/moved"})
+
+        self._mock_client(monkeypatch, handler)
+
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(
+                db_mod.urllib_request.Request(
+                    "https://example.test/api", data=b"{}", method="POST"
+                ),
+                timeout=5,
+            )
+
+        assert raised.value.code == 307
+        assert raised.value.headers.get("Location") == "https://example.test/moved"
+        assert len(sent) == 1
+
+    def test_get_redirect_is_followed(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append(str(request.url))
+            if len(sent) == 1:
+                return httpx.Response(302, headers={"Location": "https://example.test/final"})
+            return httpx.Response(200, content=b"{}")
+
+        self._mock_client(monkeypatch, handler)
+
+        with db_mod._http_open(
+            db_mod.urllib_request.Request("https://example.test/start"), timeout=5
+        ) as response:
+            assert response.read() == b"{}"
+
+        assert sent == ["https://example.test/start", "https://example.test/final"]
+
+
+def test_status_errors_from_the_real_transport(monkeypatch):
+    """A real httpx client (MockTransport) exercises _http_open's status→HTTPError mapping and
+    _http_get_bytes' handling, not a mock of the helper itself."""
+    import httpx
+
+    for status, body in ((404, b"nope"), (503, b"later")):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request, status=status, body=body: httpx.Response(status, content=body)
+            )
+        )
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
+
+        _, reason = db_mod._http_get_bytes(
+            f"https://example.test/api/{status}", "token", max_retries=0
+        )
+        assert reason is not None
+        assert reason.startswith(f"HTTP {status}")
+
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(
+                db_mod.urllib_request.Request(f"https://example.test/api/{status}"), timeout=5
+            )
+        assert raised.value.code == status
+        assert raised.value.read() == body

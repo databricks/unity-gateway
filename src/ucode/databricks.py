@@ -387,8 +387,8 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
         return False
 
 
-def _macos_system_proxies() -> dict[str, str] | None:
-    if sys.platform != "darwin" or any(
+def _system_proxies() -> dict[str, str] | None:
+    if sys.platform not in ("darwin", "win32") or any(
         os.environ.get(name)
         for name in (
             "HTTP_PROXY",
@@ -407,8 +407,9 @@ def _macos_system_proxies() -> dict[str, str] | None:
         if not proxy:
             continue
         if "://" not in proxy:
-            # macOS can report scheme-less values ("host:port"); urllib's proxy handler
-            # treats those as HTTP proxies, so make that explicit for httpx.
+            # macOS and the Windows registry can report scheme-less values ("host:port");
+            # urllib's proxy handler treats those as HTTP proxies, so make that explicit
+            # for httpx.
             proxy = f"http://{proxy}"
         system_proxies[scheme] = proxy
     return system_proxies or None
@@ -420,7 +421,7 @@ def _urllib_proxy_for_request(scheme: str, host: str, proxies: dict[str, str]) -
     return proxies.get(scheme) or proxies.get("all")
 
 
-def _macos_proxy_transport(httpx, proxies, verify, limits):
+def _system_proxy_transport(httpx, proxies, verify, limits):
     class SystemProxyTransport(httpx.BaseTransport):
         def __init__(self):
             self.direct = httpx.HTTPTransport(verify=verify, trust_env=False, limits=limits)
@@ -474,9 +475,9 @@ def _get_http_client() -> httpx.Client:
             tls.apply()
             verify = ssl.create_default_context()
             limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
-            system_proxies = _macos_system_proxies()
+            system_proxies = _system_proxies()
             transport = (
-                _macos_proxy_transport(httpx, system_proxies, verify, limits)
+                _system_proxy_transport(httpx, system_proxies, verify, limits)
                 if system_proxies
                 else None
             )
@@ -536,7 +537,11 @@ def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledRes
         extensions={"timeout": httpx.Timeout(timeout).as_dict()},
     )
     try:
-        response = _get_http_client().send(httpx_request, follow_redirects=True)
+        # Like urllib, only GET/HEAD follow redirects; any other method gets the 3xx as an
+        # HTTPError below rather than resending its body.
+        response = _get_http_client().send(
+            httpx_request, follow_redirects=httpx_request.method in ("GET", "HEAD")
+        )
     except httpx.TooManyRedirects as exc:
         # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
         # callers see a status-shaped failure, not a network one. httpx drops the last response,
