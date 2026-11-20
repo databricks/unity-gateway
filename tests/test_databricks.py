@@ -7352,7 +7352,7 @@ def test_model_service_backing_model_reads_the_first_live_foundation_model():
     assert model_service_backing_model({"config": {}}) is None
 
 
-def test_http_get_reuses_keep_alive_connection(monkeypatch):
+def test_http_get_reuses_keep_alive_connection(fresh_pooled_client):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class CountingServer(ThreadingHTTPServer):
@@ -7382,15 +7382,6 @@ def test_http_get_reuses_keep_alive_connection(monkeypatch):
         def log_message(self, *args):
             pass
 
-    for name in (
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
     server = CountingServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -7407,7 +7398,7 @@ def test_http_get_reuses_keep_alive_connection(monkeypatch):
         thread.join()
 
 
-def test_http_transport_preserves_status_errors(monkeypatch):
+def test_http_transport_preserves_status_errors(fresh_pooled_client):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -7428,15 +7419,6 @@ def test_http_transport_preserves_status_errors(monkeypatch):
         def log_message(self, *args):
             pass
 
-    for name in (
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -7454,18 +7436,9 @@ def test_http_transport_preserves_status_errors(monkeypatch):
         thread.join()
 
 
-def test_http_transport_maps_refused_connections_to_network_errors(monkeypatch):
+def test_http_transport_maps_refused_connections_to_network_errors(fresh_pooled_client):
     import socket
 
-    for name in (
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -7474,6 +7447,56 @@ def test_http_transport_maps_refused_connections_to_network_errors(monkeypatch):
     assert reason.startswith("network error:")
     # Windows words it "[WinError 10061] ... actively refused it".
     assert "refused" in reason.lower()
+
+
+def test_loopback_reaches_the_server_even_after_a_proxied_client_was_cached(
+    monkeypatch, fresh_pooled_client
+):
+    """Test-order check for fresh_pooled_client: a pooled client keeps the proxy map it was
+    built with, so one an earlier test (or CI) built under HTTP(S)_PROXY would send loopback
+    requests to that proxy; the fixture's reset must send them direct instead."""
+    import socket
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        dead_port = listener.getsockname()[1]
+    # What an earlier test or CI's HTTP(S)_PROXY does: build the cached client under a proxy.
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{dead_port}")
+    poisoned = db_mod._get_http_client()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/api"
+        with pytest.raises(httpx.ConnectError):
+            poisoned.get(url, timeout=5)
+        # fresh_pooled_client's reset: proxy env cleared and cache dropped, so the request
+        # rebuilds direct and reaches the loopback server.
+        _clear_proxy_env(monkeypatch)
+        _reset_pooled_client(monkeypatch)
+        body, reason = db_mod._http_get_bytes(url, "token")
+        assert (body, reason) == (b"{}", None)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        poisoned.close()
 
 
 def test_http_transport_passes_headers_and_timeout(monkeypatch):
@@ -7518,6 +7541,27 @@ def _clear_proxy_env(monkeypatch):
         "no_proxy",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def _reset_pooled_client(monkeypatch):
+    """Drop the cached process-wide client so the next request builds a fresh one."""
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", os.getpid())
+
+
+@pytest.fixture
+def fresh_pooled_client(monkeypatch):
+    """A loopback test must not reuse the cached pooled client: the client captures its proxy
+    map when first built, so one an earlier test left cached — or one built under CI's
+    HTTP(S)_PROXY — would route these requests through that proxy. Clear the proxy env and
+    rebuild direct, and close the client the test built so its connections don't outlive it
+    (monkeypatch restores the previously cached one)."""
+    _clear_proxy_env(monkeypatch)
+    _reset_pooled_client(monkeypatch)
+    yield
+    client = db_mod._HTTP_CLIENT
+    if client is not None:
+        client.close()
 
 
 def test_system_proxies_use_urllib_system_proxy_and_bypass(monkeypatch):
