@@ -110,8 +110,11 @@ Smart-routed Codex launches expose native collaboration tools through code mode 
 session-owned catalog, retaining native protocols and the original user catalog.
 The native v2 assignment journey starts with code-mode tools disabled in that catalog
 and requires the full assignment at the hook and child, its audited digest, and actual
-completion on the selected model. Its managed-fixture variant uses the static catalog
-created by `ug configure`, asserts that it defers code-mode exposure to the launch,
+completion on the selected model. A request recorder pairs every routing request with
+its HTTP 200 response and decision, including native retries. Saved and split-option
+launches cover the native journey; launcher tests cover alternative option syntax.
+Its managed-fixture variant uses the static catalog
+created by `ug configure`, asserts that its native metadata permits code-mode exposure,
 and verifies that native routing completes without rewriting the managed catalog.
 Missing or encrypted assignments cannot produce a label-based routing decision. Toggle
 evidence accepts the exact guard rejection of a duplicate off call only after a
@@ -1347,13 +1350,13 @@ Explicit-model selection, command forwarding, app-server initialization, and cat
 retain their original legacy flags and on/off coverage; preset-specific behavior there is not
 covered.
 `test_ug_codex_v2_routing.py` also launches the real Codex TUI with
-`--enable-smart-routing -- --model VALUE` and `--enable-smart-routing -- --model=VALUE`.
-Both variants must override the saved root model, complete the delegated file task
-with a correlated router decision, and preserve user-owned configuration and catalog.
-The existing saved-model variant remains. Component tests cover short `-m`, launch
-policy for both agents, Isaac's config-only Codex arguments, and native
-utility-subcommand and remote-attachment exclusion;
-these are not live coverage.
+`--enable-smart-routing -- --model VALUE`. The live journey correlates every
+`routes:select` request with its HTTP 200 response and routing decision; the request for
+the delegated assignment carries the complete text and selected model before the routed
+child task completes.
+The saved-model variant remains. Component tests cover equals and short `-m` syntax,
+launch policy for both agents, Isaac's config-only Codex arguments, and native
+utility-subcommand and remote-attachment exclusion; these are not live coverage.
 Those component model-forwarding cases use a supported Codex version independent
 of the test runner's installed binaries.
 `../test_smart_router.py` checks orchestrator hook activation in fresh Python

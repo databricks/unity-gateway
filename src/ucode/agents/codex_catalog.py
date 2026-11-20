@@ -194,8 +194,7 @@ def build_codex_catalog(
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
-    slug/visibility/order, custom-service labels, and the launch-controlled collaboration mode.
-    Custom services and models without native
+    slug/visibility/order and custom-service labels. Custom services and models without native
     metadata use their unqualified name, or the full id when labels collide. Only requested slugs are visible.
     Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
@@ -229,8 +228,6 @@ def build_codex_catalog(
             supported_in_api=True,
             priority=len(models),
         )
-        # Let the launch's native collaboration setting control tool exposure.
-        model.pop("multi_agent_tools_in_code_mode", None)
         models.append(model)
     labels = [model["display_name"] for model in models]
     for model in models:
@@ -334,12 +331,14 @@ def prepare_codex_catalog(
     *,
     workspace: str | None = None,
     get_token: Callable[[], str] | None = None,
+    include_bundled: bool = False,
 ) -> dict:
     """Resolve custom services' destinations, then extract and validate native metadata.
 
     --bundled bypasses discovery. Validation reads an explicit local catalog.
     Both commands run outside user/project config in a disposable CODEX_HOME.
     Failure blocks configuration rather than falling back to remote Codex discovery.
+    Routing without a scoped catalog retains the native menu and adds missing router models.
     """
     model_ids = _model_service_model_ids(names, workspace, get_token)
     try:
@@ -356,16 +355,24 @@ def prepare_codex_catalog(
                 )
             ):
                 raise ValueError("invalid bundled model catalog")
+            if include_bundled:
+                native_keys = {_model_key(model["slug"]) for model in bundled}
+                names = [name for name in names if _model_key(name) not in native_keys]
             fallback_warnings: list[str] = []
             catalog = build_codex_catalog(
                 bundled, names, warn=fallback_warnings.append, model_ids=model_ids
             )
+            if include_bundled:
+                priority = max(model.get("priority", 0) for model in bundled) + 1
+                for offset, model in enumerate(catalog["models"]):
+                    model["priority"] = priority + offset
+                catalog["models"] = [*bundled, *catalog["models"]]
             _validate_codex_catalog_in_home(binary, catalog, home)
     except (OSError, TypeError, ValueError, subprocess.SubprocessError):
         raise RuntimeError(
-            "Could not build the managed Codex model catalog locally. "
+            "Could not build the Codex model catalog locally. "
             "Upgrade the active Codex installation and verify "
-            "`codex debug models --bundled` works, then retry configuration. "
+            "`codex debug models --bundled` works, then retry. "
             "Gateway discovery was not used."
         ) from None
     for message in fallback_warnings:

@@ -14,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from ucode import custom_oauth, gateway_proxy, managed_files
-from ucode.agents import LaunchOptions, codex
+from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
 from ucode.telemetry import client_platform
@@ -2440,7 +2440,9 @@ class TestCodexManagedConfig:
                 }
             ]
         }
-        prepared = {"models": [{"slug": "gpt-5", "visibility": "list"}]}
+        prepared = codex_catalog.build_codex_catalog(
+            [{"slug": "gpt-5", "display_name": "GPT 5", "visibility": "list"}], ["gpt-5"]
+        )
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         catalog_path.write_text(json.dumps(previous), encoding="utf-8")
         managed_path.write_text(

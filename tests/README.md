@@ -17,8 +17,9 @@ assignment reaches the router and child. Encrypted or missing assignments must n
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
 Component checks also cover catalog precedence, authenticated model-service metadata,
 and a warning with continued launch if the optional session catalog cannot be built or written.
-UG-generated catalogs leave the native collaboration override unset, so the launch setting
-controls code mode. Existing UG-managed catalogs refresh through `ug configure --agents codex`.
+Catalog construction preserves native collaboration settings for ordinary launches. Without
+a scoped catalog, smart routing keeps the native menu and adds only missing router models.
+Existing UG-managed catalogs refresh current native metadata through `ug configure --agents codex`.
 For a published agent configuration, an administrator must instead run
 `sudo ug configure --global`; ordinary configure leaves its machine-wide files unchanged.
 Launches never rewrite managed catalogs; an old catalog that disables code mode produces
@@ -1140,10 +1141,12 @@ Its pre-existing user-owned catalog disables code mode; the production launcher 
 in a session copy while preserving the original catalog. This exposes plaintext assignments:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
-The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;
-explicit variants enable routing through the CLI and override the saved root model.
+The saved-model and `--model VALUE` variants cover native TUI launch;
+the explicit variant enables routing through the CLI and overrides the saved root model.
+Launcher tests retain split, equals, and short option syntax coverage.
 The audit's SHA-256 digest and character count identify that exact assignment without
-persisting its text. Native hook and child assertions still compare the full text.
+persisting its text. The request recorder correlates each routing request with its
+HTTP response and selected model; native hook and child assertions compare the full text.
 The production launcher supplies the native configuration, and user settings and
 the Databricks provider are preserved. `test_agent_codex.py` covers the routing
 minimum version separately from ordinary launches.

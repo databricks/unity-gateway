@@ -18,14 +18,16 @@ WS = "https://example.databricks.com"
 
 @pytest.fixture(autouse=True)
 def native_catalog(monkeypatch, tmp_path):
+    prepare = codex_catalog.prepare_codex_catalog
     monkeypatch.setattr(v2, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
     monkeypatch.setattr(
         codex_catalog,
         "prepare_codex_catalog",
-        lambda binary, names, *, workspace, get_token: {
+        lambda binary, names, *, workspace, get_token, include_bundled: {
             "models": [{"slug": name, "multi_agent_version": "v2"} for name in names]
         },
     )
+    return prepare
 
 
 def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
@@ -63,8 +65,8 @@ def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path
         token_calls.append(True)
         return "launch-token"
 
-    def prepare(binary, names, *, workspace, get_token):
-        calls.append((binary, names, workspace, get_token, get_token()))
+    def prepare(binary, names, *, workspace, get_token, include_bundled):
+        calls.append((binary, names, workspace, get_token, get_token(), include_bundled))
         return {"models": [{"slug": names[0], "multi_agent_version": "v2"}]}
 
     monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", prepare)
@@ -72,7 +74,7 @@ def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path
     v2._codex_routing_catalog(
         "/native/codex", None, ["model-a"], output, workspace=WS, get_token=get_token
     )
-    assert calls == [("/native/codex", ["model-a"], WS, get_token, "launch-token")]
+    assert calls == [("/native/codex", ["model-a"], WS, get_token, "launch-token", True)]
     assert token_calls == [True]
     assert json.loads(output.read_text())["models"][0] == {
         "slug": "model-a",
@@ -691,9 +693,24 @@ class TestLaunchCodex:
         launch_source,
         failure,
         rendered_overlay,
+        native_catalog,
     ):
         launches = []
         token_calls = []
+        empty_discovery = source_model is None and catalog_source is None and failure is None
+        if empty_discovery:
+            monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", native_catalog)
+            monkeypatch.setattr(
+                codex_catalog,
+                "_run_catalog_command",
+                lambda *_args: subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        {"models": [{"slug": name} for name in ("gpt-start", "gpt-alternative")]}
+                    ),
+                ),
+            )
 
         def get_token(*_args, **_kwargs):
             token_calls.append(True)
@@ -720,7 +737,7 @@ class TestLaunchCodex:
         builder_calls = []
         if failure == "builder":
 
-            def fail_builder(binary, names, *, workspace, get_token):
+            def fail_builder(binary, names, *, workspace, get_token, include_bundled):
                 builder_calls.append((workspace, get_token()))
                 raise RuntimeError("catalog builder failed")
 
@@ -755,7 +772,7 @@ class TestLaunchCodex:
                     else pytest.fail("rendered the default overlay")
                 ),
                 launch_config=None if rendered_overlay else launch_config,
-                available_models=["mps-primary"],
+                available_models=[] if empty_discovery else ["mps-primary"],
             )
 
         assert exc.value.code == 0
@@ -765,7 +782,15 @@ class TestLaunchCodex:
         assert config.get("model") == source_model
 
         output = session_env_path.with_suffix(".models.json")
-        if failure == "builder":
+        if empty_discovery:
+            assert Path(config["model_catalog_json"]) == output
+            assert json.loads(output.read_text(encoding="utf-8")) == {
+                "models": [
+                    {"slug": name, "multi_agent_tools_in_code_mode": True}
+                    for name in ("gpt-start", "gpt-alternative")
+                ]
+            }
+        elif failure == "builder":
             assert "model_catalog_json" not in config
             assert not output.exists()
             assert token_calls == [True]
@@ -797,6 +822,9 @@ class TestLaunchCodex:
             assert len(warnings) == 1
             assert "Could not enable plaintext Codex task routing" in warnings[0]
             assert f"catalog {failure} failed" in warnings[0]
+        elif empty_discovery:
+            assert len(warnings) == 1
+            assert "model metadata is unavailable" in warnings[0]
         else:
             assert warnings == []
 

@@ -1109,7 +1109,9 @@ def _codex_routing_catalog(
     catalog = (
         read_json_safe(Path(catalog_path))
         if catalog_path
-        else prepare_codex_catalog(binary, models, workspace=workspace, get_token=get_token)
+        else prepare_codex_catalog(
+            binary, models, workspace=workspace, get_token=get_token, include_bundled=True
+        )
     )
     entries = catalog.get("models") if isinstance(catalog, dict) else None
     if (
