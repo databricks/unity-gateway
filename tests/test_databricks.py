@@ -7315,6 +7315,47 @@ class TestModelServicesNeedSubscriptionRelay:
             "main.default.sonnet[1m]",
             "main.default.oss",
         ]
+        assert db_mod.subscription_relay_candidates(models) == [
+            "main.default.sonnet[1m]",
+            "main.default.mps.claude-sonnet-5-5",
+            "main.default.oss",
+        ]
+
+    @pytest.mark.parametrize(
+        "relayed,provider_type,expected",
+        [
+            (True, "anthropic", db_mod.RelayLookup.RELAYED),
+            (False, "anthropic", db_mod.RelayLookup.NOT_RELAYED),
+            (True, "openai", db_mod.RelayLookup.NOT_RELAYED),
+        ],
+    )
+    def test_provider_qualified_target_uses_provider_auth(
+        self, monkeypatch, relayed, provider_type, expected
+    ):
+        calls = self._patch(
+            monkeypatch,
+            {},
+            {"main.default.mps"} if relayed else set(),
+            openai=frozenset({"main.default.mps"}) if provider_type == "openai" else frozenset(),
+        )
+        assert (
+            db_mod.model_service_relay_lookup(
+                "https://ws", "tok", "main.default.mps.claude-sonnet-4.6[1m]"
+            )
+            is expected
+        )
+        assert not calls, "Provider-qualified models must not be fetched as model services"
+
+    def test_provider_qualified_target_preserves_failed_lookup(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "get_model_provider_service", lambda *_a, timeout: (None, "timeout")
+        )
+        assert (
+            db_mod.model_service_relay_lookup(
+                "https://ws", "tok", "main.default.mps.claude-haiku-4-5"
+            )
+            is db_mod.RelayLookup.UNKNOWN
+        )
 
 
 def test_model_service_backing_model_reads_the_first_live_foundation_model():

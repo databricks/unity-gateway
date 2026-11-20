@@ -16,7 +16,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -60,11 +60,11 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
-    custom_model_services,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
     model_service_relay_lookup,
     model_services_need_subscription_relay,
+    subscription_relay_candidates,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -1700,7 +1700,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
     models = state.get("claude_static_models")
-    candidates = custom_model_services(models if isinstance(models, list) else [])
+    candidates = subscription_relay_candidates(models if isinstance(models, list) else [])
     if not candidates:
         state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
         return False
@@ -3016,6 +3016,12 @@ def _relayed_credential_override() -> dict:
     }
 
 
+def relayed_launch_args(tool_args: list[str], *, settings: dict) -> list[str]:
+    """Protect subscription auth in launch settings and restore excluded user MCP servers."""
+    settings.update(_merge_claude_settings(settings, _relayed_credential_override()))
+    return ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -3046,22 +3052,16 @@ def _build_claude_argv(
     servers, so they are handed back separately via ``--mcp-config`` (see
     :func:`_relayed_mcp_config_args`).
     """
-    source_args = (
-        ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
-        if relayed
-        else []
-    )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    credential_override = _relayed_credential_override() if relayed else None
     if (
         not caller_values
         and settings_override is None
         and not server_side_web_search
-        and credential_override is None
+        and not relayed
     ):
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
-        return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
+        return [binary, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
     caller_settings: dict = {}
     for value in caller_values:
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
@@ -3072,8 +3072,7 @@ def _build_claude_argv(
         merged = _merge_claude_settings(merged, settings_override)
     if server_side_web_search:
         _enable_server_side_web_search(merged)
-    if credential_override is not None:
-        merged = _merge_claude_settings(merged, credential_override)
+    source_args = relayed_launch_args(remaining, settings=merged) if relayed else []
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -3184,10 +3183,9 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
-    """Relayed launch: sign into the Claude subscription, start the loopback
-    refresh proxy, then run Claude Code alongside it (the proxy must outlive the
-    exec, so we spawn-and-wait rather than replacing the process)."""
+@contextmanager
+def _relayed_proxy(state: dict) -> Iterator[None]:
+    """Keep the subscription refresh proxy alive for the whole Claude session."""
     _ensure_subscription_login()
     workspace = state["workspace"]
     port = state.get("relayed_proxy_port")
@@ -3219,18 +3217,28 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread.start()
 
     try:
-        with _claude_launch_argv(binary, tool_args, relayed=True) as argv:
-            metrics.agent_handoff()
-            proc = subprocess_cross_os.popen(argv)
-            try:
-                returncode = proc.wait()
-            except KeyboardInterrupt:
-                proc.send_signal(signal.SIGINT)
-                returncode = proc.wait()
+        yield
     finally:
         cache.stop()
         server.shutdown()
+        server.server_close()
         client.close()
+
+
+def _launch_relayed(
+    state: dict, binary: str, tool_args: list[str], *, settings_override: dict | None = None
+) -> None:
+    """Spawn and wait so the relay proxy survives until Claude exits."""
+    with _claude_launch_argv(
+        binary, tool_args, relayed=True, settings_override=settings_override
+    ) as argv:
+        metrics.agent_handoff()
+        proc = subprocess_cross_os.popen(argv)
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     raise SystemExit(returncode)
 
 
@@ -3256,7 +3264,6 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     tool_args = _external_web_search_args(state, tool_args)
-    binary = SPEC["binary"]
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     _warn_if_launch_headers_dropped()
@@ -3264,7 +3271,15 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    if state.get("claude_relayed"):
+    with _relayed_proxy(state) if state.get("claude_relayed") else nullcontext():
+        _launch_configured_claude(state, tool_args, options=options)
+
+
+def _launch_configured_claude(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
+    binary = SPEC["binary"]
+    workspace = state.get("workspace")
+    relayed = bool(state.get("claude_relayed"))
+    if relayed and not options.launch_smart_routing:
         # The relayed settings don't pin a picked or launch-only model, so pass it the way the
         # gateway path does: Claude Code's own `--model`, unless the caller forwarded one.
         relayed_start_model = options.user_pinned_model or options.launch_model
@@ -3351,6 +3366,7 @@ def launch(
                     else lambda args, model: _launch_model_args(args, model or session_model)
                 ),
                 model_name=_maybe_add_1m_suffix,
+                relayed=relayed,
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
@@ -3396,6 +3412,9 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    if relayed:
+        _launch_relayed(state, binary, launch_args, settings_override=settings_override)
+        return
     with _claude_launch_argv(
         binary,
         launch_args,

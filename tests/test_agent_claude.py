@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, Mock
@@ -781,7 +782,7 @@ class TestStaticModelsNeedSubscriptionRelay:
             looked_up.append(model)
             if model in unknown:
                 return RelayLookup.UNKNOWN
-            if model == "main.default.relayed":
+            if model == "main.default.relayed" or model.startswith("main.default.relayed."):
                 return RelayLookup.RELAYED
             return RelayLookup.NOT_RELAYED
 
@@ -797,10 +798,14 @@ class TestStaticModelsNeedSubscriptionRelay:
         assert not claude.static_models_need_subscription_relay(state)
         assert not claude.static_models_need_subscription_relay({"workspace": WS})
 
-    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        "relay_model", ["main.default.relayed", "main.default.relayed.claude-haiku-4-5"]
+    )
+    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys, relay_model):
         looked_up = self._relay_backed(monkeypatch)
-        assert claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
-        assert looked_up == ["main.default.relayed", "main.default.oss"]
+        state = {**self._STATE, "claude_static_models": [relay_model, "main.default.oss"]}
+        assert claude.static_models_need_subscription_relay(state, configuring=True)
+        assert looked_up == [relay_model, "main.default.oss"]
         assert "claude auth login" not in capsys.readouterr().out
 
     def test_user_without_a_subscription_login_keeps_gateway_auth(self, monkeypatch, capsys):
@@ -3826,6 +3831,7 @@ class TestClaudeLaunch:
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(claude, "_relayed_proxy", lambda state: nullcontext())
         monkeypatch.setattr(
             claude,
             "_launch_relayed",
@@ -3871,6 +3877,9 @@ class TestClaudeLaunch:
 
             def shutdown(self):
                 calls.append(("shutdown",))
+
+            def server_close(self):
+                calls.append(("server_close",))
 
         class Cache:
             def stop(self):
@@ -3926,7 +3935,7 @@ class TestClaudeLaunch:
         assert len(model_flags) == (1 if model_args or "--model" in tool_args else 0)
         if model_args:
             assert argv[argv.index("--model") : argv.index("--model") + 2] == model_args
-        assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
+        assert calls[-4:] == [("stop",), ("shutdown",), ("server_close",), ("close",)]
 
     def test_smart_routing_on_windows_uses_native_binary(self, monkeypatch, tmp_path):
         npm_dir = tmp_path / "npm prefix with spaces"
@@ -4420,6 +4429,7 @@ class TestClaudeLaunch:
             compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
+            relayed=False,
         )
         compose = launch_v2.call_args.kwargs["compose_settings"]
         assert compose.func is claude._compose_v2_settings
@@ -5867,6 +5877,7 @@ class TestEnsureHooksModulesGate:
         )
         monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         monkeypatch.setattr(claude, "_launch_relayed", lambda *args: None)
+        monkeypatch.setattr(claude, "_relayed_proxy", lambda state: nullcontext())
 
         claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
 

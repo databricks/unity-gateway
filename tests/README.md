@@ -1,5 +1,28 @@
 # Test suites and user journeys
 
+`test_claude_smart_routing_v2.py` covers relayed Claude first-prompt, print-mode,
+and subagent routing with provider catalogs and managed static lists. Component checks
+verify subscription credential precedence, user-scope exclusion, MCP forwarding,
+provider-scoped selection, proxy lifetime, and cleanup/fallback after routing errors.
+These use controlled transport and process boundaries; they do not establish live inference.
+Executable lookup is stubbed in these launcher cases so Windows unit runs need no installed
+Claude binary; native Windows executable resolution is covered in `test_agent_claude.py`.
+The setup-fallback regression retains real loopback listeners while injecting a routing setup
+error. It verifies one login/proxy, a stable fallback URL, and port release on exit; native
+process creation is stubbed and no upstream inference is sent.
+
+`integration/test_ug_claude_relayed.py::test_ug_claude_relayed_picker_and_smart_routing`
+adds the live mixed-catalog journey with the existing subscription-relay MPS and
+`system.ai.glm-5-3-flash`. Its checked-in managed input enables routing; the real `/model`
+picker must show both entries, every router request/response must preserve that catalog,
+and native parent and routed child must return a hidden file value. Recorded inference
+responses must be nonempty HTTP 200s, with proxy evidence of subscription-relay auth.
+The `claude_relay` marker keeps this case in the live workspace's required Full journeys
+jobs on Linux and Windows, alongside the existing relay/hybrid headless case.
+Relay-auth component checks cover provider-qualified targets (including dotted model versions),
+API-key and OpenAI providers retaining their existing auth, failed metadata lookup, and preserved
+OAuth/swap headers. Three-part model services retain their existing primary-destination checks.
+
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
 Checks resolve external and pay-per-token destinations using selected credentials;
@@ -1389,6 +1412,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_preserves_preexisting_managed_family_defaults` | Launch fresh Claude with pre-existing OS-managed family defaults and select the Sonnet family | Every default survives unchanged; the selected family completes a file task through the preconfigured Sonnet service |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` before and after ug's separator with smart routing enabled, without workspace policy | Real file task completes; JSON `modelUsage` reports the requested model with output tokens; no routing wrapper |
+| `test_ug_claude_relayed_picker_and_smart_routing` | Configure the relay MPS plus GLM from a checked-in managed fixture, open `/model`, and delegate a hidden-file task | Both models appear in native picker rows; every real router request offers the mixed catalog and selects one of its models; parent and child return the hidden value; inference receives nonempty HTTP 200 responses with subscription-relay auth evidence; normal TUI exit |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` before ug's separator and within Codex `exec`, with smart routing enabled | Real file task completes; completed-turn model matches the selection; no routing wrapper |
 | `test_ug_claude_preserves_caller_settings_and_hook` | Pass a settings path containing spaces | Real SessionStart hook executes; caller file unchanged; file task completes |
 | `test_ug_claude_reports_unsupported_short_model_option` | Pass Claude's unsupported `-m` | Actual agent error and exit status preserved |

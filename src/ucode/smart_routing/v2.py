@@ -138,7 +138,7 @@ def remove_smart_router_session_skills(agent: str) -> None:
             print_warning(f"Could not remove the {skill} skill: {exc}")
 
 
-def _model_picker_catalog() -> AnthropicModelCatalog | None:
+def _model_picker_catalog(*, include_user: bool = True) -> AnthropicModelCatalog | None:
     """Read model-picker rows using the managed-settings then ucode-settings waterfall.
 
     A managed picker is authoritative for smart routing: its rows are the models the
@@ -155,7 +155,9 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
 
         # Hierarchy: managed settings, CLI-supplied settings (ucode-settings.json), local user
         # settings, based on the modelPicker scope documented at https://code.claude.com/docs/en/settings-reference#modelpicker.
-        paths = [_managed_settings_path(), CLAUDE_SETTINGS_PATH, CLAUDE_USER_SETTINGS_PATH]
+        paths = [_managed_settings_path(), CLAUDE_SETTINGS_PATH]
+        if include_user:
+            paths.append(CLAUDE_USER_SETTINGS_PATH)
     except (ImportError, OSError):
         return None
     policy: dict = {}
@@ -771,10 +773,11 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
     default_model: str | None = None,
+    relayed: bool = False,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, relayed_launch_args
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
 
     if os.name != "nt":
@@ -788,11 +791,14 @@ def launch_claude(
     token = launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
-    picker_catalog = _model_picker_catalog()
+    picker_catalog = _model_picker_catalog(include_user=not relayed)
     if picker_catalog is None:
         os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-        catalog = list_anthropic_model_catalog(workspace, token)
+        provider = state.get("_claude_launch_provider")
+        catalog = list_anthropic_model_catalog(
+            workspace, token, **({"provider": provider} if provider else {})
+        )
     else:
         catalog = picker_catalog
     if not catalog.model_ids:
@@ -803,6 +809,7 @@ def launch_claude(
 
     route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     settings, remaining = compose_settings(tool_args)
+    source_args = relayed_launch_args(remaining, settings=settings) if relayed else []
     # Auto's native model selection collects Isaac feedback before disabling routing.
     # Explicit first-prompt presets retain their own launch behavior.
     auto_picker = (
@@ -1022,6 +1029,7 @@ def launch_claude(
             model_args = launch_model_args(remaining, start_model)
             argv = [
                 binary,
+                *source_args,
                 "--settings",
                 str(settings_path),
                 *_claude_mod_launch_args(mod_options),

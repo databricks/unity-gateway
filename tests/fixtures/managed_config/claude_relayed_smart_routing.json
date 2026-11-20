@@ -1,0 +1,23 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CLAUDE_CODE",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CLAUDE_CODE",
+      "config": {
+        "models": {
+          "sources": [
+            "main.ucode.ci_e2e_anthropic_relay_mps.claude-haiku-4-5-20251001",
+            "system.ai.glm-5-3-flash"
+          ]
+        },
+        "default_models": {
+          "default_model": "main.ucode.ci_e2e_anthropic_relay_mps.claude-haiku-4-5-20251001"
+        },
+        "smart_routing": {
+          "enabled": true
+        }
+      }
+    }
+  ]
+}

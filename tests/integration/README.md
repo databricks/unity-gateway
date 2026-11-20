@@ -1,5 +1,21 @@
 # Integration tests
 
+Relayed Claude smart-routing launcher coverage is currently component-level in
+`../test_claude_smart_routing_v2.py`: first-prompt, print-mode, and subagent routing,
+provider/static catalogs, subscription credentials, and proxy cleanup/fallback.
+These component cases stub executable lookup and process creation; they do not require an
+installed Claude binary on Windows. Native executable resolution has separate component coverage.
+The setup-fallback regression uses a real local listener to verify reuse and port release,
+with a stubbed native child and no upstream inference.
+`test_ug_claude_relayed.py` also covers a managed static catalog containing the existing
+subscription-relay MPS and `system.ai.glm-5-3-flash`: both must appear in the real `/model`
+picker before a routed child and its parent complete a hidden-file task. Recorded router
+requests must offer both models, every selection must belong to that catalog, and inference
+must receive nonempty HTTP 200 responses. Proxy evidence verifies subscription-relay auth.
+This `managed_fixture` case carries `claude_relay` and runs in the existing blocking Full
+journeys lane on the live CI workspace, where the relay MPS and OAuth credential already exist;
+it is excluded from the other workspace's Managed config lane.
+
 CUJ7's `test_ug_claude_saved_provider_smart_routing` and
 `test_ug_codex_saved_provider_smart_routing` configure a saved provider in the unmanaged
 workspace and launch the native TUI with `--enable-smart-routing`. They require a completed
@@ -1350,8 +1366,9 @@ The relayed CUJ launches Claude from fresh state through a relayed (subscription
 MPS, with no `ug configure` step, and completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
 re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
-It needs a subscription OAuth token (see below). Interactive model-picker selection
-remains uncovered.
+It needs a subscription OAuth token (see below). The adjacent mixed-catalog smart-routing
+case checks both the relay MPS and GLM in `/model`, then completes a delegated file task.
+It opens and dismisses the picker; manually switching the parent model remains uncovered.
 
 The Codex relay check (`test_ug_codex_relayed.py`) uses a fresh home to run
 `codex login --with-access-token`, passing the credential on stdin. It then launches
@@ -1906,7 +1923,7 @@ Tests use each runner's existing credentials and installed Claude/Codex CLIs.
 
 ### Managed-workspace journeys
 
-The managed lanes run `managed_fixture` journeys (and `workspace_switch`) on the single managed
+The managed lanes run `managed_fixture` journeys (and `workspace_switch`), except `claude_relay`, on the single managed
 workspace (`E2E_ADMIN_WORKSPACE`), in per-agent **Managed config** jobs. Every managed config comes
 from a JSON file in `tests/fixtures/managed_config/` in the GET shape of one CodingAgentConfig; a
 fixture whose content is JSON `null` stands for a workspace with no managed config. Tests select a
@@ -1914,6 +1931,11 @@ fixture with `use_managed_config_fixture(session, name)`, which points `UCODE_MA
 at the file.
 `ug configure --file` (#866) will replace the environment stub; because the inputs are already
 checked-in files, that switch is mechanical.
+
+`claude_relayed_smart_routing.json` is the exception: its `claude_relay` test runs in the
+live workspace's Full journeys jobs, alongside the existing relay-auth CUJ and with the
+same OAuth credential. Its static list contains the existing relay MPS and GLM; the shared
+workspace's published config is never changed.
 
 `test_ug_configure_managed.py` uses `managed_workspace_default.json`. `ug configure` applies the
 config with no agent selector, and each agent's generated config exposes exactly its static
