@@ -26,9 +26,13 @@ from ucode.config_io import atomic_write_json
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_token_argv
 from ucode.databricks import build_auth_token_argv
 
-MARKETPLACE = "unity-gateway"
-PLUGIN = "databricks"
+MARKETPLACE = "databricks-unity-gateway"
+PLUGIN = "unity-gateway"
 PLUGIN_KEY = f"{PLUGIN}@{MARKETPLACE}"
+# Earlier builds' ids. Configure moves them to the current ones, and removal takes out both.
+_LEGACY_MARKETPLACE = "unity-gateway"
+_LEGACY_PLUGIN = "databricks"
+_IDS = ((MARKETPLACE, PLUGIN), (_LEGACY_MARKETPLACE, _LEGACY_PLUGIN))
 EXTENSION = "databricks"
 VERSION = "0.1.0"
 
@@ -122,12 +126,12 @@ def plugin_root() -> Path:
     return Path.home() / ".ucode" / "copilot-app-plugin"
 
 
-def _plugin_dir(root: Path) -> Path:
-    return root / "plugins" / PLUGIN
+def _plugin_dir(root: Path, plugin: str = PLUGIN) -> Path:
+    return root / "plugins" / plugin
 
 
-def _extension_dir(root: Path) -> Path:
-    return _plugin_dir(root) / "extensions" / EXTENSION
+def _extension_dir(root: Path, plugin: str = PLUGIN) -> Path:
+    return _plugin_dir(root, plugin) / "extensions" / EXTENSION
 
 
 def _token_command(config: PluginConfig) -> list[str]:
@@ -307,25 +311,57 @@ def _write_settings(path: Path, settings: dict) -> None:
         path.chmod(mode)
 
 
-def _owns_marketplace(settings: dict, root: Path) -> bool:
+def _owns_marketplace(settings: dict, root: Path, marketplace: str = MARKETPLACE) -> bool:
     marketplaces = settings.get(_MARKETPLACES_KEY)
-    marketplace = marketplaces.get(MARKETPLACE) if isinstance(marketplaces, dict) else None
-    source = marketplace.get("source") if isinstance(marketplace, dict) else None
+    entry = marketplaces.get(marketplace) if isinstance(marketplaces, dict) else None
+    source = entry.get("source") if isinstance(entry, dict) else None
     return isinstance(source, dict) and source.get("path") == str(root)
 
 
+def _installed_id(settings: dict, root: Path) -> tuple[str, str] | None:
+    """The marketplace and plugin of ug's installed plugin, under its current or an earlier id."""
+    for marketplace, plugin in _IDS:
+        if (
+            _owns_marketplace(settings, root, marketplace)
+            and (_extension_dir(root, plugin) / "extension.mjs").exists()
+        ):
+            return marketplace, plugin
+    return None
+
+
 def _installed(settings: dict, root: Path) -> bool:
-    return _owns_marketplace(settings, root) and (_extension_dir(root) / "extension.mjs").exists()
+    return _installed_id(settings, root) is not None
+
+
+def _ug_entries(settings: dict, root: Path, ids=_IDS) -> list[tuple[str, str]]:
+    """ug's entries in ``settings`` under ``ids``. A marketplace of that name at another path isn't
+    ug's, so it and its plugin key are left alone."""
+    entries = []
+    for marketplace, plugin in ids:
+        plugin_key = f"{plugin}@{marketplace}"
+        marketplaces = settings.get(_MARKETPLACES_KEY)
+        if (
+            isinstance(marketplaces, dict)
+            and marketplace in marketplaces
+            and not _owns_marketplace(settings, root, marketplace)
+        ):
+            continue
+        for key, entry in ((_MARKETPLACES_KEY, marketplace), (_ENABLED_KEY, plugin_key)):
+            value = settings.get(key)
+            if isinstance(value, dict) and entry in value:
+                entries.append((key, entry))
+    return entries
+
+
+def _drop_entries(settings: dict, entries: list[tuple[str, str]]) -> None:
+    for key, entry in entries:
+        del settings[key][entry]
+        if not settings[key]:
+            del settings[key]
 
 
 def _has_ug_keys(settings: dict, root: Path) -> bool:
-    if _owns_marketplace(settings, root):
-        return True
-    marketplaces = settings.get(_MARKETPLACES_KEY)
-    if isinstance(marketplaces, dict) and MARKETPLACE in marketplaces:
-        return False
-    enabled = settings.get(_ENABLED_KEY)
-    return isinstance(enabled, dict) and PLUGIN_KEY in enabled
+    return bool(_ug_entries(settings, root))
 
 
 def _read_extension_config(root: Path) -> dict | None:
@@ -346,6 +382,7 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     root = root or plugin_root()
     path = settings_path or copilot_settings_path()
     settings = read_settings(path)
+    _drop_entries(settings, _ug_entries(settings, root, _IDS[1:]))
     _object(settings, _MARKETPLACES_KEY, path)[MARKETPLACE] = {
         "source": {"source": "directory", "path": str(root)}
     }
@@ -384,6 +421,8 @@ def install(
     if created:
         _created_settings_marker(root).write_text(str(path), encoding="utf-8")
     enable(root, path)
+    # An earlier build's copy, which the settings no longer name.
+    shutil.rmtree(_plugin_dir(root, _LEGACY_PLUGIN), ignore_errors=True)
     return root
 
 
@@ -393,25 +432,14 @@ def remove(
     wait: Callable[[float], None] | None = None,
 ) -> bool:
     """Remove ug's settings keys, give the app time to unload the extension, then remove the
-    plugin directory. A ``unity-gateway`` marketplace at another path isn't ug's, so it and its
-    plugin key stay. Returns whether anything was removed."""
+    plugin directory, under the current and earlier ids. A marketplace of ug's name at another
+    path isn't ug's, so it and its plugin key stay. Returns whether anything was removed."""
     root = root or plugin_root()
     path = settings_path or copilot_settings_path()
     settings = read_settings(path)
-    changed = False
-    marketplaces = settings.get(_MARKETPLACES_KEY)
-    foreign = (
-        isinstance(marketplaces, dict)
-        and MARKETPLACE in marketplaces
-        and not _owns_marketplace(settings, root)
-    )
-    for key, entry in ((_MARKETPLACES_KEY, MARKETPLACE), (_ENABLED_KEY, PLUGIN_KEY)):
-        value = settings.get(key)
-        if not foreign and isinstance(value, dict) and entry in value:
-            del value[entry]
-            if not value:
-                del settings[key]
-            changed = True
+    entries = _ug_entries(settings, root)
+    _drop_entries(settings, entries)
+    changed = bool(entries)
     if changed and not _drop_settings(root, path, settings):
         _write_settings(path, settings)
     if root.exists():
@@ -465,9 +493,11 @@ def status(root: Path | None = None, settings_path: Path | None = None) -> Statu
         settings = read_settings(settings_path)
     except SettingsError:
         return "invalid_settings"
-    if not _installed(settings, root):
+    installed = _installed_id(settings, root)
+    if installed is None:
         return "not_installed"
+    marketplace, plugin = installed
     enabled = settings.get(_ENABLED_KEY)
-    if isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is True:
+    if isinstance(enabled, dict) and enabled.get(f"{plugin}@{marketplace}") is True:
         return "removal_pending" if _removal_requested(root) else "installed"
     return "disabled"

@@ -224,13 +224,13 @@ class TestWritePlugin:
         root = plugin.write_plugin(_config())
         assert root == home / ".ucode" / "copilot-app-plugin"
         marketplace = json.loads((root / ".github" / "plugin" / "marketplace.json").read_text())
-        assert marketplace["name"] == "unity-gateway"
-        assert marketplace["plugins"][0]["source"] == "./plugins/databricks"
+        assert marketplace["name"] == "databricks-unity-gateway"
+        assert marketplace["plugins"][0]["source"] == "./plugins/unity-gateway"
         manifest = json.loads(
-            (root / "plugins" / "databricks" / ".plugin" / "plugin.json").read_text()
+            (root / "plugins" / "unity-gateway" / ".plugin" / "plugin.json").read_text()
         )
-        assert manifest["name"] == "databricks"
-        extension = root / "plugins" / "databricks" / "extensions" / "databricks"
+        assert manifest["name"] == "unity-gateway"
+        extension = root / "plugins" / "unity-gateway" / "extensions" / "databricks"
         assert {p.name for p in extension.iterdir()} == {
             "extension.mjs",
             "ug-plugin.mjs",
@@ -252,7 +252,7 @@ class TestWritePlugin:
         root = plugin.write_plugin(_config(profile="other"))
         config = json.loads(
             (
-                root / "plugins" / "databricks" / "extensions" / "databricks" / "config.json"
+                root / "plugins" / "unity-gateway" / "extensions" / "databricks" / "config.json"
             ).read_text()
         )
         assert config["tokenCommand"][-1] == "other"
@@ -273,9 +273,12 @@ class TestSettings:
         assert settings["model"] == "gpt-5"
         assert settings["extraKnownMarketplaces"] == {
             "other": {"source": {"source": "github", "repo": "o/r"}},
-            "unity-gateway": {"source": {"source": "directory", "path": str(root)}},
+            "databricks-unity-gateway": {"source": {"source": "directory", "path": str(root)}},
         }
-        assert settings["enabledPlugins"] == {"x@other": False, "databricks@unity-gateway": True}
+        assert settings["enabledPlugins"] == {
+            "x@other": False,
+            "unity-gateway@databricks-unity-gateway": True,
+        }
         assert "telemetry" not in settings
 
     def test_install_creates_settings(self, home):
@@ -382,9 +385,11 @@ class TestSettings:
         path.parent.mkdir()
         foreign = {
             "extraKnownMarketplaces": {
-                "unity-gateway": {"source": {"source": "directory", "path": "/elsewhere"}}
+                "databricks-unity-gateway": {
+                    "source": {"source": "directory", "path": "/elsewhere"}
+                }
             },
-            "enabledPlugins": {"databricks@unity-gateway": True},
+            "enabledPlugins": {"unity-gateway@databricks-unity-gateway": True},
         }
         path.write_text(json.dumps(foreign))
         assert plugin.remove(wait=lambda seconds: None) is False
@@ -427,14 +432,16 @@ class TestSettings:
 
 def _extension_config(root: Path) -> dict:
     return json.loads(
-        (root / "plugins" / "databricks" / "extensions" / "databricks" / "config.json").read_text()
+        (
+            root / "plugins" / "unity-gateway" / "extensions" / "databricks" / "config.json"
+        ).read_text()
     )
 
 
 def _remove_keys_as_the_extension_does(home: Path) -> None:
     settings = json.loads(_settings(home).read_text())
-    del settings["extraKnownMarketplaces"]["unity-gateway"]
-    del settings["enabledPlugins"]["databricks@unity-gateway"]
+    del settings["extraKnownMarketplaces"]["databricks-unity-gateway"]
+    del settings["enabledPlugins"]["unity-gateway@databricks-unity-gateway"]
     _settings(home).write_text(json.dumps({k: v for k, v in settings.items() if v}))
 
 
@@ -485,7 +492,7 @@ class TestDeferredRemove:
         plugin.install(_config())
         plugin.defer_remove()
         settings = json.loads(_settings(home).read_text())
-        settings["enabledPlugins"]["databricks@unity-gateway"] = False
+        settings["enabledPlugins"]["unity-gateway@databricks-unity-gateway"] = False
         _settings(home).write_text(json.dumps(settings))
         assert plugin.status() == "disabled"
 
@@ -553,7 +560,7 @@ class TestStatus:
         plugin.install(_config())
         path = _settings(home)
         settings = json.loads(path.read_text())
-        settings["enabledPlugins"]["databricks@unity-gateway"] = False
+        settings["enabledPlugins"]["unity-gateway@databricks-unity-gateway"] = False
         path.write_text(json.dumps(settings))
         assert plugin.status() == "disabled"
 
@@ -582,7 +589,7 @@ class TestExtensionSource:
     def test_the_extension_finishes_a_deferred_remove_for_ug(self, home, tmp_path):
         root = plugin.install(_config())
         plugin.defer_remove()
-        extension = root / "plugins" / "databricks" / "extensions" / "databricks"
+        extension = root / "plugins" / "unity-gateway" / "extensions" / "databricks"
         script = (
             "import { readFileSync } from 'node:fs';"
             f"import {{ removeOnce }} from {json.dumps((extension / 'app-remove.mjs').as_uri())};"
@@ -607,3 +614,62 @@ class TestExtensionSource:
         assert json.loads(_settings(home).read_text()) == {}
         assert plugin.cleanup_leftover() is True
         assert not root.exists()
+
+
+class TestEarlierIds:
+    LEGACY_MARKETPLACE = "unity-gateway"
+    LEGACY_KEY = "databricks@unity-gateway"
+
+    def _legacy_install(self, root: Path, path: str | None = None) -> None:
+        extension = root / "plugins" / "databricks" / "extensions" / "databricks"
+        extension.mkdir(parents=True)
+        (extension / "extension.mjs").write_text("")
+        settings = {
+            "model": "m",
+            "extraKnownMarketplaces": {
+                self.LEGACY_MARKETPLACE: {
+                    "source": {"source": "directory", "path": path or str(root)}
+                }
+            },
+            "enabledPlugins": {self.LEGACY_KEY: True},
+        }
+        plugin.copilot_settings_path().parent.mkdir(parents=True, exist_ok=True)
+        plugin.copilot_settings_path().write_text(json.dumps(settings))
+
+    def test_an_earlier_install_counts_as_installed(self, home):
+        self._legacy_install(plugin.plugin_root())
+
+        assert plugin.status() == "installed"
+
+    def test_install_moves_an_earlier_install_to_the_current_id(self, home):
+        root = plugin.plugin_root()
+        self._legacy_install(root)
+
+        plugin.install(_config())
+
+        settings = json.loads(plugin.copilot_settings_path().read_text())
+        assert settings["model"] == "m"
+        assert list(settings["extraKnownMarketplaces"]) == [plugin.MARKETPLACE]
+        assert settings["enabledPlugins"] == {plugin.PLUGIN_KEY: True}
+        assert not (root / "plugins" / "databricks").exists()
+        assert plugin.status() == "installed"
+
+    def test_remove_takes_out_an_earlier_install(self, home):
+        self._legacy_install(plugin.plugin_root())
+
+        assert plugin.remove(wait=lambda _: None)
+
+        assert json.loads(plugin.copilot_settings_path().read_text()) == {"model": "m"}
+        assert not plugin.plugin_root().exists()
+
+    def test_an_earlier_id_at_another_path_isnt_ugs(self, home):
+        self._legacy_install(plugin.plugin_root(), path="/elsewhere")
+
+        plugin.install(_config())
+        plugin.remove(wait=lambda _: None)
+
+        settings = json.loads(plugin.copilot_settings_path().read_text())
+        assert settings["enabledPlugins"] == {self.LEGACY_KEY: True}
+        assert settings["extraKnownMarketplaces"][self.LEGACY_MARKETPLACE]["source"]["path"] == (
+            "/elsewhere"
+        )

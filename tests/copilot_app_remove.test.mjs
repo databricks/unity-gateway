@@ -28,6 +28,10 @@ const ROOT = "/home/me/.ucode/copilot-app-plugin";
 const CLAUDE = "11111111-1111-5111-8111-111111111111";
 const GPT = "22222222-2222-5222-8222-222222222222";
 const UG_KEYS = {
+  extraKnownMarketplaces: { "databricks-unity-gateway": { source: { source: "directory", path: ROOT } } },
+  enabledPlugins: { "unity-gateway@databricks-unity-gateway": true },
+};
+const LEGACY_KEYS = {
   extraKnownMarketplaces: { "unity-gateway": { source: { source: "directory", path: ROOT } } },
   enabledPlugins: { "databricks@unity-gateway": true },
 };
@@ -140,10 +144,22 @@ test("a symlinked settings file is refused", async (t) => {
   assert.throws(() => removeSettingsKeys(path, ROOT), /symlink/);
 });
 
-test("a foreign unity-gateway marketplace and its plugin key stay", async (t) => {
+test("an earlier build's keys go too", async (t) => {
+  const both = {
+    model: "m",
+    extraKnownMarketplaces: { ...UG_KEYS.extraKnownMarketplaces, ...LEGACY_KEYS.extraKnownMarketplaces },
+    enabledPlugins: { ...UG_KEYS.enabledPlugins, ...LEGACY_KEYS.enabledPlugins },
+  };
+  const { path } = await setup(t, both);
+  assert.equal(removeSettingsKeys(path, ROOT), true);
+  assert.deepEqual(read(path), { model: "m" });
+});
+
+test("a foreign marketplace of ug's name and its plugin key stay", async (t) => {
+  const elsewhere = { source: { source: "directory", path: "/elsewhere" } };
   const foreign = {
-    extraKnownMarketplaces: { "unity-gateway": { source: { source: "directory", path: "/elsewhere" } } },
-    enabledPlugins: { "databricks@unity-gateway": true },
+    extraKnownMarketplaces: { "databricks-unity-gateway": elsewhere, "unity-gateway": elsewhere },
+    enabledPlugins: { "unity-gateway@databricks-unity-gateway": true, "databricks@unity-gateway": true },
   };
   const { app, path, options } = await setup(t, foreign);
   assert.equal(await removeOnce(CONFIG, options), "done");

@@ -13,8 +13,13 @@ import {
   tryLock,
 } from "./app-rows.mjs";
 
-export const MARKETPLACE = "unity-gateway";
-export const PLUGIN_KEY = "databricks@unity-gateway";
+export const MARKETPLACE = "databricks-unity-gateway";
+export const PLUGIN_KEY = "unity-gateway@databricks-unity-gateway";
+// Earlier builds' ids, which a removal takes out too.
+const IDS = [
+  [MARKETPLACE, PLUGIN_KEY],
+  ["unity-gateway", "databricks@unity-gateway"],
+];
 const MARKETPLACES_KEY = "extraKnownMarketplaces";
 const ENABLED_KEY = "enabledPlugins";
 
@@ -48,17 +53,19 @@ export function readSettings(path) {
   return { settings, mode: stat.mode & 0o777 };
 }
 
-// A unity-gateway marketplace at another path isn't ug's, so it and its plugin key stay.
+// A marketplace of ug's name at another path isn't ug's, so it and its plugin key stay.
 function ugKeys(settings, pluginRoot) {
   const marketplaces = settings[MARKETPLACES_KEY];
-  if (isObject(marketplaces) && Object.hasOwn(marketplaces, MARKETPLACE)) {
-    const source = marketplaces[MARKETPLACE]?.source;
-    if (!isObject(source) || source.path !== pluginRoot) return [];
-  }
-  return [
-    [MARKETPLACES_KEY, MARKETPLACE],
-    [ENABLED_KEY, PLUGIN_KEY],
-  ].filter(([key, entry]) => isObject(settings[key]) && Object.hasOwn(settings[key], entry));
+  return IDS.flatMap(([marketplace, pluginKey]) => {
+    if (isObject(marketplaces) && Object.hasOwn(marketplaces, marketplace)) {
+      const source = marketplaces[marketplace]?.source;
+      if (!isObject(source) || source.path !== pluginRoot) return [];
+    }
+    return [
+      [MARKETPLACES_KEY, marketplace],
+      [ENABLED_KEY, pluginKey],
+    ].filter(([key, entry]) => isObject(settings[key]) && Object.hasOwn(settings[key], entry));
+  });
 }
 
 export function hasUgKeys(settings, pluginRoot) {
