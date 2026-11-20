@@ -3608,6 +3608,23 @@ class TestGetDatabricksToken:
         assert "awaited_duration_ms" not in miss_labels
         assert "awaited_duration_ms" not in hit_labels
 
+    def test_credential_failure_raises_login_required_and_transient_does_not(self, monkeypatch):
+        """A CLI-identified credential failure raises the login-required error best-effort
+        callers treat as an expected miss; unrecognized failures stay plain RuntimeErrors."""
+
+        def cli_run(stderr):
+            return lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, "", stderr)
+
+        monkeypatch.setattr(db_mod, "run", cli_run("no cached credentials"))
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            fetch_databricks_token_untimed(WS, "spec", allow_reauth=False)
+
+        monkeypatch.setattr(db_mod, "run", cli_run("connection reset by peer"))
+        with pytest.raises(RuntimeError, match="network connectivity") as excinfo:
+            fetch_databricks_token_untimed(WS, "spec", allow_reauth=False)
+        assert not isinstance(excinfo.value, db_mod.DatabricksLoginRequiredError)
+
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
         release_fetch = threading.Event()
