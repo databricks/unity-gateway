@@ -818,10 +818,13 @@ In", closes the Welcome editor, trusts the folder from the model picker, turns o
 Copilot Chat with the picker's "Add Models..." or ug's "Turn On Copilot Chat" notice, whichever
 is on screen first (both open the Language Models editor, which it closes), and picks a model by
 its label in the picker. The picked model has to hold for a few seconds, since ug's extension
-switches the chat to its default model once Copilot Chat is on. Each window records its actions
+switches the chat to its default model once Copilot Chat is on. The chat must be a Copilot
+session (Copilot Chat's agent host, which the pinned VS Code opens by default, also signed out).
+That session shows nothing when it can run on the added models, only a sign-in notice when it
+can't, so the pick also waits a few seconds with no such notice. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`).
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
-confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
+confirmation that asks for approval fails (a finished tool call's collapsed row asks for none). The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window
 closes. The provider journey
 configures `--provider` with the OpenAI MPS below and requires the provider service header and
@@ -833,11 +836,11 @@ requires the picker's search to find no workspace Claude model. Configure points
 recording forwarder, so each turn's requests must reach the expected route
 (`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/mlflow/v1/responses`) for the picked model, with
 ug's User-Agent naming the Copilot Chat version bundled in that VS Code, and get a non-empty HTTP
-200. The answer must contain the file's value, and VS Code's saved chat
-(`utils/agents/vscode.py`; VS Code saves it about a minute after launch) must record the
+200. The answer must contain the file's value, and the Copilot session's saved events
+(`~/.copilot/session-state/*/events.jsonl`, read by `utils/agents/vscode.py`) must record the
 Databricks model, a tool call, the value in the assistant's own text and no error, matched to each
 turn by its prompt (every chat journey). Not
-covered: GitHub sign-in or a Copilot seat, Copilot Chat's other agent harnesses, what the chat
+covered: GitHub sign-in or a Copilot seat, Copilot Chat's Local agent and other harnesses, what the chat
 shows for a model that went away after a reconfigure, MCP, skills, OTel, and macOS.
 
 The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
@@ -928,7 +931,7 @@ records its URL and SHA-512 in
 `versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
 sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
 ([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).
-VS Code is not on npm either: pass `--vscode-version` (for example `1.144.0`) together with
+VS Code is not on npm either: pass `--vscode-version` (for example `1.147.0`) together with
 `--copilot-version`, since ug sets VS Code up as part of the Copilot setup and would otherwise
 install an unpinned Copilot CLI. The runner downloads the Linux x64 or Windows x64 archive from
 VS Code's update service, checks it against the SHA-256 pinned in `VSCODE_SHA256` (or

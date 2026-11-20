@@ -73,11 +73,11 @@ VSCODE_ARCHIVES = {("linux", "x86_64"): "linux-x64", ("win32", "amd64"): "win32-
 # Expected SHA-256 of each pinned archive: `sha256hash` from the update service's
 # `/api/versions/<version>/<platform>/stable`. A version without an entry needs --vscode-sha256.
 VSCODE_SHA256 = {
-    ("1.144.0", "linux-x64"): "17b72a7e6f40a5b5dce9850f10eea13ce734a63052b67fa021cc01e715ad4cf1",
+    ("1.147.0", "linux-x64"): "6fd8b14600f2a8ddb8b4833d8bf288f3dc4c34b2878d2c6c3fec7e16c81023bc",
     (
-        "1.144.0",
+        "1.147.0",
         "win32-x64-archive",
-    ): "055722269e3c9531af0c50a8b757c14e8062a0d02fc973b038863d9732c567ea",
+    ): "42d65f18009959964d7cff8ca6f33149a195d52c08622821c8c681a08469c26e",
 }
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
