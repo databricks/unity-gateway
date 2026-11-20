@@ -98,44 +98,52 @@ class TestValidateWorkspaceId:
 
 
 class TestHostType:
-    def _response(self, payload: dict):
-        return io.BytesIO(json.dumps(payload).encode())
+    def _open(self, payload: dict):
+        import ucode.databricks as db_mod
+
+        class _Response:
+            headers = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode()
+
+        return patch.object(db_mod, "_http_open", return_value=_Response())
 
     def test_reads_host_type_without_a_selector(self):
-        with patch.object(
-            workspace_mod.urllib_request,
-            "urlopen",
-            return_value=self._response({"host_type": "UNIFIED"}),
-        ) as urlopen:
+        with self._open({"host_type": "UNIFIED"}) as http_open:
             assert host_type(SHARED) == "unified"
-        request = urlopen.call_args.args[0]
+        request = http_open.call_args.args[0]
         assert request.full_url == f"{SHARED}/.well-known/databricks-config"
         assert not any(name.lower().startswith("x-databricks") for name in request.headers)
 
     def test_cached_per_host(self):
-        with patch.object(
-            workspace_mod.urllib_request,
-            "urlopen",
-            return_value=self._response({"host_type": "workspace"}),
-        ) as urlopen:
+        with self._open({"host_type": "workspace"}) as http_open:
             host_type(CLASSIC)
             host_type(CLASSIC)
-        assert urlopen.call_count == 1
+        assert http_open.call_count == 1
 
     def test_unreachable_host_raises_and_is_not_cached(self):
-        with patch.object(
-            workspace_mod.urllib_request, "urlopen", side_effect=urllib_error.URLError("down")
-        ):
+        import ucode.databricks as db_mod
+
+        with patch.object(db_mod, "_http_open", side_effect=urllib_error.URLError("down")):
             with pytest.raises(workspace_mod.HostUnreachableError, match="down"):
                 host_type(CLASSIC)
             assert not workspace_mod.is_unified_host(CLASSIC)
         assert CLASSIC not in workspace_mod._host_types
 
     def test_bad_response_is_unreachable(self):
+        import ucode.databricks as db_mod
+
         with (
             patch.object(
-                workspace_mod.urllib_request,
-                "urlopen",
+                db_mod,
+                "_http_open",
                 side_effect=workspace_mod.http.client.IncompleteRead(b""),
             ),
             pytest.raises(workspace_mod.HostUnreachableError),
@@ -143,16 +151,20 @@ class TestHostType:
             host_type(CLASSIC)
 
     def test_server_error_is_unreachable(self):
+        import ucode.databricks as db_mod
+
         error = urllib_error.HTTPError(f"{SHARED}/x", 503, "Unavailable", None, None)  # type: ignore[arg-type]
         with (
-            patch.object(workspace_mod.urllib_request, "urlopen", side_effect=error),
+            patch.object(db_mod, "_http_open", side_effect=error),
             pytest.raises(workspace_mod.HostUnreachableError, match="503"),
         ):
             host_type(SHARED)
 
     def test_host_without_the_document_is_a_single_workspace_host(self):
+        import ucode.databricks as db_mod
+
         error = urllib_error.HTTPError(f"{CLASSIC}/x", 404, "Not Found", None, None)  # type: ignore[arg-type]
-        with patch.object(workspace_mod.urllib_request, "urlopen", side_effect=error):
+        with patch.object(db_mod, "_http_open", side_effect=error):
             assert host_type(CLASSIC) is None
 
 
