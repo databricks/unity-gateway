@@ -33,10 +33,14 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from ucode import metrics
+from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    AGENT_COPILOT,
+    AGENT_VSCODE,
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
@@ -297,6 +301,19 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
+def _network_error_reason(error: object) -> str:
+    """``network error: ...``, with what to do when it is a failed certificate verification."""
+    if not tls.is_certificate_failure(error):
+        return f"network error: {error}"
+    # The OS store's verifier raises with a bare message, which prints as a tuple.
+    args = getattr(error, "args", ())
+    detail = str(args[0] if len(args) == 1 else error).rstrip(".")
+    return (
+        f"network error: certificate verification failed: {detail}. "
+        f"{tls.certificate_failure_hint()}"
+    )
+
+
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -359,6 +376,7 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+@metrics.http_result
 def _http_get_bytes(
     url: str,
     token: str,
@@ -381,9 +399,15 @@ def _http_get_bytes(
     request_headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
+    operation = metrics.api_operation(url)
     for attempt in range(max_retries + 1):
+        request_started = time.perf_counter()
+        status = None
+        if attempt:
+            metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
+                status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
                 if failure is None:
@@ -394,6 +418,7 @@ def _http_get_bytes(
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             return body, None
         except urllib_error.HTTPError as exc:
+            status = exc.code
             body = ""
             try:
                 body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -414,7 +439,7 @@ def _http_get_bytes(
             retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
         except urllib_error.URLError as exc:
             _debug(f"GET {url}", f"URLError: {exc.reason}")
-            reason = f"network error: {exc.reason}"
+            reason = _network_error_reason(exc.reason)
             if attempt == max_retries:
                 return None, reason
             retry_after = None
@@ -426,6 +451,17 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
+
+        finally:
+            metrics.record(
+                metrics.HTTP_REQUEST_DURATION_MS,
+                (time.perf_counter() - request_started) * 1000,
+                api_operation=operation,
+                http_method="GET",
+                attempt=metrics.attempt_number(attempt + 1),
+                http_status_code=status,
+            )
+            metrics.annotate(http_status_code=status)
 
         delay = _http_get_retry_delay(retry_after, attempt)
         _debug(
@@ -467,6 +503,7 @@ def _http_get_json(
         return None, f"response was not valid JSON ({exc.msg})"
 
 
+@metrics.http_result
 def _http_send_json(
     method: str,
     url: str,
@@ -497,8 +534,11 @@ def _http_send_json(
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
+    request_started = time.perf_counter()
+    status = None
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
+            status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
         if failure is not None:
@@ -514,6 +554,7 @@ def _http_send_json(
         except json.JSONDecodeError as exc:
             return None, f"response was not valid JSON ({exc.msg})"
     except urllib_error.HTTPError as exc:
+        status = exc.code
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -530,12 +571,22 @@ def _http_send_json(
         return None, reason
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
+        return None, _network_error_reason(exc.reason)
     except OSError as exc:
         # See `_http_get_json`: a bare socket timeout is an OSError, not a
         # URLError, and would otherwise escape the caller's error handling.
         _debug(f"{method} {url}", f"OSError: {exc}")
         return None, f"network error: {exc}"
+    finally:
+        metrics.record(
+            metrics.HTTP_REQUEST_DURATION_MS,
+            (time.perf_counter() - request_started) * 1000,
+            api_operation=metrics.api_operation(url),
+            http_method=method,
+            attempt=1,
+            http_status_code=status,
+        )
+        metrics.annotate(http_status_code=status)
 
 
 def _http_post_json(
@@ -808,7 +859,7 @@ def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
 
 
 def _iter_databricks_executables() -> list[str]:
-    """Scan every directory on PATH for a `databricks` executable, in PATH order.
+    """Scan PATH, falling back to standard macOS installs when no CLI is found.
 
     A machine can have more than one `databricks` on PATH (e.g. a stale
     ``~/.local/bin/databricks`` shadowing a newer Homebrew install); this is the
@@ -818,6 +869,7 @@ def _iter_databricks_executables() -> list[str]:
     (e.g. a symlink), and deduping by realpath is `_discover_databricks_clis`'s
     job. On POSIX a candidate must have the execute bit; on Windows PATHEXT is
     honored (a matching filename is runnable — there's no execute bit to test).
+    macOS GUI apps inherit a PATH without Homebrew or user-local install directories.
     """
     if os.name == "nt":
         exts = tuple(e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e) or (
@@ -834,16 +886,25 @@ def _iter_databricks_executables() -> list[str]:
         def perms_ok(path: str) -> bool:
             return os.access(path, os.X_OK)
 
+    search_groups = [os.environ.get("PATH", "").split(os.pathsep)]
+    if sys.platform == "darwin":
+        search_groups.append(
+            ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
+        )
+
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if directory in seen_dirs:
-            continue
-        seen_dirs.add(directory)
-        for ext in exts:
-            candidate = os.path.join(directory, f"databricks{ext}")
-            if os.path.isfile(candidate) and perms_ok(candidate):
-                found.append(os.path.abspath(candidate))
+    for directories in search_groups:
+        for directory in directories:
+            if directory in seen_dirs:
+                continue
+            seen_dirs.add(directory)
+            for ext in exts:
+                candidate = os.path.join(directory, f"databricks{ext}")
+                if os.path.isfile(candidate) and perms_ok(candidate):
+                    found.append(os.path.abspath(candidate))
+        if found:
+            return found
     return found
 
 
@@ -872,7 +933,7 @@ _DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None
 def _discover_databricks_clis(
     *, use_cache: bool = True
 ) -> list[tuple[str, tuple[int, int, int] | None]]:
-    """Find every distinct `databricks` binary on PATH, ordered best-first.
+    """Find distinct `databricks` binaries in the search locations, ordered best-first.
 
     Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
     same binary reachable via more than one PATH entry is only probed once.
@@ -923,9 +984,10 @@ def databricks_cli_path() -> str:
     ``~/.local/bin/databricks`` shadowing a newer Homebrew install), and
     `shutil.which` only ever returns the first match — which may be the wrong
     one. Discovery instead orders every binary newest-first, so the front entry
-    is the one to run; its absolute path means a shadowing install or a
-    minimal-PATH launcher (e.g. a desktop GUI) can't cause the wrong binary to
-    run. Falls back to the bare name only when nothing is discovered at all —
+    is the one to run. If PATH has no CLI on macOS, discovery checks standard
+    Homebrew and user-local install directories for desktop GUI helpers.
+    Its absolute path prevents later PATH changes from selecting another binary.
+    Falls back to the bare name only when nothing is discovered at all —
     running it then raises FileNotFoundError, which callers surface as "CLI not
     installed". Cached via discovery — call ``clear_databricks_cli_cache()`` to
     force re-resolution (e.g. after installing/upgrading the CLI).
@@ -943,7 +1005,7 @@ def clear_databricks_cli_cache() -> None:
 
 
 def databricks_cli_installed() -> bool:
-    """Whether any `databricks` binary was found on PATH."""
+    """Whether any `databricks` binary was discovered."""
     return bool(_discover_databricks_clis())
 
 
@@ -1491,6 +1553,7 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
+@metrics.timed(metrics.DATABRICKS_LOGIN_DURATION_MS, login_method="cli")
 def run_databricks_login(
     workspace: str, profile: str | None = None, *, workspace_id: str | None = None
 ) -> None:
@@ -1503,6 +1566,7 @@ def run_databricks_login(
     ``workspace_id`` selects the workspace on a host that serves several. With no profile on that
     host yet, the login names a new one: without a name the CLI saves none outside a terminal, and
     its own default is shared by every workspace of the account."""
+    metrics.mark_login()
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
     print_note("A browser may open for `databricks auth login`.")
@@ -1758,21 +1822,35 @@ def _browser_login(
             return "", None
         try:
             # Keep login output off the helper's token-only stdout.
-            subprocess_cross_os.run(
-                [
-                    databricks_cli_path(),
-                    "auth",
-                    "login",
-                    "--host",
-                    workspace,
-                    *_profile_args(profile),
-                ],
-                timeout=remaining,
-                stdin=subprocess.DEVNULL,
-                stdout=sys.stderr,
-                stderr=sys.stderr,
-                env=env,
-            )
+            metrics.mark_login()
+            with metrics.measure(
+                metrics.DATABRICKS_LOGIN_DURATION_MS,
+                workspace=workspace,
+                operation=metrics.DATABRICKS_LOGIN_OPERATION,
+                login_method="cli",
+            ):
+                result = subprocess_cross_os.run(
+                    [
+                        databricks_cli_path(),
+                        "auth",
+                        "login",
+                        "--host",
+                        workspace,
+                        *_profile_args(profile),
+                    ],
+                    timeout=remaining,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stderr,
+                    stderr=sys.stderr,
+                    env=env,
+                )
+                metrics.annotate(process_exit_code=result.returncode)
+                if result.returncode:
+                    metrics.failure(
+                        metrics.DATABRICKS_LOGIN_OPERATION,
+                        subprocess.CalledProcessError(result.returncode, result.args),
+                        login_method="cli",
+                    )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         return fetch()
@@ -1795,6 +1873,7 @@ def _get_databricks_token_for_profile(
                 f"profile={profile or '<none>'}",
             )
             if memoized.token:
+                metrics.annotate(in_process_cache_hit=True)
                 return memoized.token
             if not browser_login:
                 raise RuntimeError(memoized.error)
@@ -1811,6 +1890,7 @@ def _get_databricks_token_for_profile(
                     f"profile={profile or '<none>'}",
                 )
                 if memoized.token:
+                    metrics.annotate(in_process_cache_hit=True)
                     return memoized.token
                 if not browser_login:
                     raise RuntimeError(memoized.error)
@@ -1969,6 +2049,9 @@ def _fetch_databricks_token_for_profile(
     return token
 
 
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
 def get_databricks_token(
     workspace: str,
     profile: str | None = None,
@@ -1984,6 +2067,7 @@ def get_databricks_token(
     # same short-circuit baked into ``build_auth_shell_command``.
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     if bearer:
+        metrics.annotate(token_source="environment")
         metrics.bind(workspace, bearer)
         _debug("get_databricks_token", "using DATABRICKS_BEARER env var")
         return bearer
@@ -1994,6 +2078,7 @@ def get_databricks_token(
     # running process, so the command is re-run on every fetch instead.
     command = os.environ.get("DATABRICKS_BEARER_COMMAND", "").strip()
     if command:
+        metrics.annotate(token_source="command")
         token = _bearer_from_command(command)
         metrics.bind(workspace, token)
         return token
@@ -2336,6 +2421,7 @@ _MODEL_SERVICES_PAGE_RETRIES = 4
 _NOT_FOUND_REASON_MARKERS = ("http 404", "not_found")
 
 
+@metrics.http_result
 def _get_model_services_page(
     url: str, token: str, *, retries: int = _MODEL_SERVICES_PAGE_RETRIES
 ) -> tuple[dict | list | None, str | None]:
@@ -2347,7 +2433,12 @@ def _get_model_services_page(
     payload: dict | list | None = None
     reason: str | None = None
     for attempt in range(retries):
-        payload, reason = _http_get_json(url, token, timeout=30)
+        if attempt:
+            metrics.record(
+                metrics.HTTP_RETRY_COUNT, 1, api_operation="model_services_list", http_method="GET"
+            )
+        with metrics.http_attempt(attempt + 1):
+            payload, reason = _http_get_json(url, token, timeout=30)
         if payload is not None:
             return payload, None
         _debug("model-services page", f"attempt {attempt + 1}/{retries} failed: {reason}")
@@ -2379,6 +2470,8 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
+    _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
+    _RELAY_LOOKUP_FAILED_AT.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -2564,6 +2657,9 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
+@metrics.timed(
+    metrics.MODEL_SERVICE_DISCOVERY_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def discover_model_services(
     workspace: str, token: str
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
@@ -2582,6 +2678,7 @@ def discover_model_services(
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
     """
+    metrics.annotate(cache_hit=workspace in _MODEL_SERVICES_CACHE)
     ids, reason = list_model_services(workspace, token)
     if not ids:
         return {}, [], [], [], reason
@@ -2643,6 +2740,9 @@ def _managed_config_user_agent() -> str:
     return ucode_user_agent(ug_version(), *tokens)
 
 
+@metrics.timed(
+    metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the Unity Gateway."""
     url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}"
@@ -3045,6 +3145,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "openai",
         "azure_openai",
         "microsoft_foundry",
+        "github_copilot",
     ),
 }
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
@@ -3056,8 +3157,32 @@ _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
+ANTHROPIC_PROVIDER_TYPE = "anthropic"
+OPENAI_PROVIDER_TYPE = "openai"
+GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
 # Provider types the gateway serves on its Anthropic Messages route.
-ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
+ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
+
+
+def is_copilot_seat_relay(service: dict) -> bool:
+    """True for a GitHub Copilot service that relays each developer's own Copilot seat."""
+    return (
+        bool(service.get("relayed"))
+        and service.get("provider_type") == GITHUB_COPILOT_PROVIDER_TYPE
+    )
+
+
+# Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
+# agent named in the refusal. The fallback for an unknown relayed type keeps the Claude entry.
+_SUBSCRIPTION_RELAYS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    ANTHROPIC_PROVIDER_TYPE: ((AGENT_CLAUDE,), "Claude", "Claude Code"),
+    OPENAI_PROVIDER_TYPE: ((AGENT_CODEX,), "ChatGPT", "Codex"),
+    GITHUB_COPILOT_PROVIDER_TYPE: (
+        (AGENT_COPILOT, AGENT_VSCODE),
+        "GitHub Copilot",
+        "GitHub Copilot",
+    ),
+}
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -3091,8 +3216,9 @@ def list_model_provider_services(
     "allow_all_targets": bool, "relayed": bool}``.
     ``targets`` is the provider-side model ids the service exposes (used to pin
     Bedrock model names); ``target_api_types`` holds the APIs each target declares
-    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less Anthropic
-    service (Claude Max/Team/Enterprise subscription relay). A non-None
+    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less
+    Anthropic, OpenAI or GitHub Copilot service (a Claude, ChatGPT or GitHub Copilot subscription
+    relay). A non-None
     ``reason`` means the listing call itself failed.
 
     Pages through the endpoint: a metastore with more services than fit on one page used to have the
@@ -3183,12 +3309,12 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
-    # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
-    # server-side, so both launch identically.
+    # Relayed = credential-less Anthropic, OpenAI or GitHub Copilot (subscription relay). Only
+    # whether it's relayed matters here; the tier (Max vs Team/Enterprise, or the Copilot plan) is
+    # governed server-side, so they launch identically.
     relayed = any(
         isinstance(cfg, dict) and "relayed" in cfg
-        for cfg in (config.get("anthropic"), config.get("openai"))
+        for cfg in (config.get("anthropic"), config.get("openai"), config.get("github_copilot"))
     )
     raw_type = config.get("provider_type")
     return {
@@ -3202,7 +3328,7 @@ def _provider_service_entry(raw_service: object) -> dict | None:
 
 
 def get_model_provider_service(
-    service_name: str, workspace: str, token: str
+    service_name: str, workspace: str, token: str, *, timeout: float = 30
 ) -> tuple[dict | None, str | None]:
     """Fetch one provider service by its full `catalog.schema.name`, bypassing the listing.
 
@@ -3212,13 +3338,211 @@ def get_model_provider_service(
     """
     origin = workspace_origin(workspace)
     url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
-    payload, reason = _http_get_json(url, token, timeout=30)
+    payload, reason = _http_get_json(url, token, timeout=timeout)
     if payload is None:
         return None, reason
     entry = _provider_service_entry(payload)
     if entry is None:
         return None, "model-provider-service response had an unexpected shape"
     return entry, None
+
+
+def get_model_service(
+    service_name: str, workspace: str, token: str, *, timeout: float = 30
+) -> tuple[dict | None, str | None]:
+    """Fetch one model service, with its routing config, by full ``catalog.schema.name``."""
+    origin = workspace_origin(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-services/{quote(service_name, safe='.')}"
+    payload, reason = _http_get_json(url, token, timeout=timeout)
+    if not isinstance(payload, dict):
+        return None, reason or "model-service response had an unexpected shape"
+    return payload, None
+
+
+def model_service_backing_model(service: dict) -> str | None:
+    """The foundation model behind ``service``'s first live primary destination, if it has one."""
+    routing = (service.get("config") or {}).get("routing") or {}
+    destinations = routing.get("destinations")
+    for destination in destinations if isinstance(destinations, list) else []:
+        if (
+            not isinstance(destination, dict)
+            or destination.get("is_deleted")
+            or not (destination.get("traffic_percentage") or 0) > 0
+        ):
+            continue
+        model = (destination.get("pay_per_token_config") or {}).get("model")
+        if isinstance(model, str) and model:
+            return model.removeprefix("models/")
+    return None
+
+
+def model_service_primary_providers(service: dict) -> list[str]:
+    """The Model Provider Services behind ``service``'s live primary destinations."""
+    providers: list[str] = []
+    for destination in _model_service_primary_destinations(service, strict=False) or []:
+        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
+        if isinstance(provider, str) and provider:
+            providers.append(provider.removeprefix("model-provider-services/"))
+    return providers
+
+
+def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
+        return None
+    primary = routing.get("destinations")
+    if not isinstance(primary, list) or not primary:
+        return None
+    destinations = []
+    for destination in primary:
+        if not isinstance(destination, dict):
+            if strict:
+                return None
+            continue
+        if destination.get("is_deleted"):
+            continue
+        traffic = destination.get("traffic_percentage")
+        if traffic is None:
+            traffic = 100 if len(primary) == 1 else 0
+        if not isinstance(traffic, (int, float)):
+            if strict:
+                return None
+            continue
+        if traffic > 0:
+            destinations.append(destination)
+    return destinations
+
+
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    destinations = _model_service_primary_destinations(service)
+    if destinations is None:
+        return None
+    routing = service["config"]["routing"]
+    fallback = routing.get("fallback") or {}
+    if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
+        return None
+    destinations.extend(fallback.get("destinations", []))
+    budget_fallbacks = routing.get("budget_fallbacks") or []
+    if not isinstance(budget_fallbacks, list):
+        return None
+    for entry in budget_fallbacks:
+        if not isinstance(entry, dict):
+            return None
+        destinations.append(entry.get("destination"))
+    models = []
+    for destination in destinations:
+        if not isinstance(destination, dict):
+            return None
+        if destination.get("is_deleted"):
+            continue
+        configs = [
+            destination[key]
+            for key in (
+                "external_model_config",
+                "pay_per_token_config",
+            )
+            if key in destination
+        ]
+        if len(configs) != 1 or not isinstance(configs[0], dict):
+            return None
+        target = configs[0]
+        if "external_model_config" in destination:
+            target = target.get("target")
+        model = target.get("model") if isinstance(target, dict) else None
+        if not isinstance(model, str) or not model:
+            return None
+        models.append(model.removeprefix("models/"))
+    return list(dict.fromkeys(models)) or None
+
+
+class RelayLookup(Enum):
+    """Whether a model service routes to a Claude subscription relay."""
+
+    RELAYED = "relayed"
+    NOT_RELAYED = "not_relayed"
+    UNKNOWN = "unknown"  # a lookup failed, so the answer isn't known yet
+
+
+# The relay proxy asks per request, so a slow or failing workspace mustn't stall each one.
+_RELAY_LOOKUP_TIMEOUT_S = 5
+_RELAY_LOOKUP_RETRY_AFTER_S = 60
+
+# Per-process memos keyed by (workspace, service): confirmed answers, and when a lookup last failed.
+_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
+_RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
+
+
+def custom_model_services(models: list[str]) -> list[str]:
+    """The entries of ``models`` that name a customer model service (``catalog.schema.name``,
+    not ``system.*``). Preserve context suffixes used by the caller."""
+    candidates: list[str] = []
+    for model in models:
+        if not isinstance(model, str):
+            continue
+        parts = model.removesuffix("[1m]").split(".")
+        if len(parts) == 3 and parts[0] != "system":
+            candidates.append(model)
+    return candidates
+
+
+def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayLookup:
+    """Whether ``model`` routes to a Claude subscription relay: a live primary destination on an
+    Anthropic MPS with relayed auth.
+
+    Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
+    the Databricks token in the swap header). A relayed OpenAI (ChatGPT) MPS needs a different
+    credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
+    lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
+    """
+    if not custom_model_services([model]):
+        return RelayLookup.NOT_RELAYED
+    name = model.removesuffix("[1m]")
+    key = (workspace, name)
+    if key in _RELAY_BACKED_MODEL_SERVICES_CACHE:
+        return (
+            RelayLookup.RELAYED
+            if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]
+            else RelayLookup.NOT_RELAYED
+        )
+    failed_at = _RELAY_LOOKUP_FAILED_AT.get(key)
+    if failed_at is not None and time.monotonic() - failed_at < _RELAY_LOOKUP_RETRY_AFTER_S:
+        return RelayLookup.UNKNOWN
+    lookup = _fetch_model_service_relay_lookup(name, workspace, token)
+    if lookup is RelayLookup.UNKNOWN:
+        _RELAY_LOOKUP_FAILED_AT[key] = time.monotonic()
+    else:
+        _RELAY_LOOKUP_FAILED_AT.pop(key, None)
+        _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = lookup is RelayLookup.RELAYED
+    return lookup
+
+
+def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
+    """True when any model in ``models`` routes to a Claude subscription relay. An unknown answer
+    counts as not relayed, which keeps the gateway-auth behavior."""
+    return any(
+        model_service_relay_lookup(workspace, token, model) is RelayLookup.RELAYED
+        for model in models
+    )
+
+
+def _fetch_model_service_relay_lookup(name: str, workspace: str, token: str) -> RelayLookup:
+    service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
+    if service is None:
+        _debug("relay detection", f"{name}: {reason}")
+        return RelayLookup.UNKNOWN
+    lookup = RelayLookup.NOT_RELAYED
+    for provider in model_service_primary_providers(service):
+        entry, reason = get_model_provider_service(
+            provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
+        )
+        if entry is None:
+            _debug("relay detection", f"{provider}: {reason}")
+            lookup = RelayLookup.UNKNOWN
+        elif entry.get("relayed") and entry.get("provider_type") == "anthropic":
+            return RelayLookup.RELAYED
+    return lookup
 
 
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from
@@ -3274,34 +3598,62 @@ def list_tool_provider_services(
 
     Returns ``(names, reason)``; ``reason`` is non-None when the listing failed.
     """
+    choices, reason = tool_provider_service_choices(tool, workspace, token)
+    return [name for name, _label in choices], reason
+
+
+def tool_provider_service_choices(
+    tool: str, workspace: str, token: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Like :func:`list_tool_provider_services`, as ``(name, picker label)`` pairs."""
     services, reason = list_model_provider_services(workspace, token)
     if reason is not None:
         return [], reason
-    names = [s["name"] for s in services if service_usable_for_tool(tool, s)]
-    return names, None
+    choices = [
+        (s["name"], provider_service_label(s)) for s in services if service_usable_for_tool(tool, s)
+    ]
+    return choices, None
+
+
+def provider_service_label(service: dict) -> str:
+    """A service's name, marked when it relays a GitHub Copilot subscription: Copilot lists those
+    beside API-key services, and each developer signs in to them with their own seat."""
+    name = service.get("name", "")
+    if is_copilot_seat_relay(service):
+        return f"{name} (GitHub Copilot subscription)"
+    return name
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
     """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
-        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
+        # A GitHub Copilot service only works as a subscription relay, not as a provider to route to.
+        routable = [
+            name
+            for name in _TOOL_PROVIDER_TYPES.get(tool, ())
+            if name != GITHUB_COPILOT_PROVIDER_TYPE
+        ]
+        supported = ", ".join(routable) or "none"
         return (
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
     if service.get("relayed"):
-        relay_tool, subscription, display = (
-            ("codex", "ChatGPT", "Codex")
-            if provider_type == "openai"
-            else ("claude", "Claude", "Claude Code")
+        relay_tools, subscription, display = _SUBSCRIPTION_RELAYS.get(
+            provider_type, _SUBSCRIPTION_RELAYS[ANTHROPIC_PROVIDER_TYPE]
         )
-        if tool != relay_tool:
+        if tool not in relay_tools:
             return (
                 f"Model provider service '{service_name}' relays a {subscription} subscription, "
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
+    elif provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
+        return (
+            f"Model provider service '{service_name}' is a GitHub Copilot provider that doesn't "
+            "relay a subscription, which ug can't route to."
+        )
     if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
             f"Model provider service '{service_name}' exposes no compatible models for {tool} — "
@@ -4020,6 +4372,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 )
 
 
+@metrics.timed(metrics.MODEL_SERVICE_ACCESS_CHECK_DURATION_MS)
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
     base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
@@ -4232,6 +4585,34 @@ def _fetch_codex_model_catalog(
     return payload
 
 
+def list_anthropic_provider_models(
+    workspace: str, token: str, service_name: str
+) -> tuple[list[str], str | None]:
+    """The Anthropic-catalog models the gateway lists for ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+    """
+    listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+    reason = listing.error_msg
+    return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+
+
+def list_codex_provider_models(
+    workspace: str, token: str, service_name: str
+) -> tuple[list[str], str | None]:
+    """The Codex-catalog models the gateway lists for ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+    """
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+        )
+    except CodexModelCatalogEmpty:
+        return [], None
+    except RuntimeError as exc:
+        return [], str(exc)
+    return catalog_slugs(catalog), None
+
+
 def list_provider_service_models(
     workspace: str, token: str, service_name: str, provider_type: str
 ) -> tuple[list[str], str | None]:
@@ -4242,18 +4623,8 @@ def list_provider_service_models(
     """
 
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
-        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
-    try:
-        catalog = _fetch_codex_model_catalog(
-            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
-        )
-    except CodexModelCatalogEmpty:
-        return [], None
-    except RuntimeError as exc:
-        return [], str(exc)
-    return catalog_slugs(catalog), None
+        return list_anthropic_provider_models(workspace, token, service_name)
+    return list_codex_provider_models(workspace, token, service_name)
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

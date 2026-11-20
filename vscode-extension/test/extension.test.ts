@@ -130,6 +130,11 @@ describe("provider", () => {
   it("ships the icon it names", () => {
     assert.ok(packageJson.contributes.languageModelChatProviders.every((provider) => existsSync(`../src/ucode/vscode/extension/${provider.icon}`)));
   });
+
+  // VS Code's Agents window runs an extension with code only when its manifest says it supports it.
+  it("runs in the Agents window", () => {
+    assert.deepEqual(packageJson.capabilities, { agentsWindow: { supported: true } });
+  });
 });
 
 describe("userAgent", () => {

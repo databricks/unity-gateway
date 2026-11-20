@@ -27,6 +27,23 @@ SKILLS_REFRESH_OPERATION = "skills_refresh"
 SKILLS_REFRESH_DURATION_MS = f"{SKILLS_REFRESH_OPERATION}_duration_ms"
 COMMAND_OPERATION = "command"
 UG_CLI_ERROR = "ug_cli_error"
+DATABRICKS_TOKEN_FETCH_OPERATION = "databricks_token_fetch"
+DATABRICKS_TOKEN_FETCH_DURATION_MS = f"{DATABRICKS_TOKEN_FETCH_OPERATION}_duration_ms"
+DATABRICKS_LOGIN_OPERATION = "databricks_login"
+DATABRICKS_LOGIN_DURATION_MS = f"{DATABRICKS_LOGIN_OPERATION}_duration_ms"
+CODING_AGENT_CONFIG_FETCH_DURATION_MS = "coding_agent_config_fetch_duration_ms"
+MODEL_SERVICE_ACCESS_CHECK_DURATION_MS = "model_service_access_check_duration_ms"
+MODEL_SERVICE_DISCOVERY_DURATION_MS = "model_service_discovery_duration_ms"
+HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
+HTTP_RETRY_COUNT = "http_retry_count"
+UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
+ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
+PROXY_REQUEST_OPERATION = "proxy_request"
+PROXY_REQUEST_DURATION_MS = f"{PROXY_REQUEST_OPERATION}_duration_ms"
+PROXY_UPSTREAM_HEADERS_DURATION_MS = "proxy_upstream_headers_duration_ms"
+PROXY_FIRST_BYTE_DURATION_MS = "proxy_first_byte_duration_ms"
+PROXY_AUTH_RETRY_COUNT = "proxy_auth_retry_count"
+PROXY_RESPONSE_BYTES = "proxy_response_bytes"
 
 MAX_OBSERVATIONS = 1000
 MAX_HANDOFF_BYTES = 2 * 1024 * 1024
@@ -37,23 +54,23 @@ DURATION_METRICS = frozenset(
         CLI_IMPORT_DURATION_MS,
         DEPENDENCY_SETUP_DURATION_MS,
         DEPENDENCY_INSTALL_DURATION_MS,
-        "databricks_token_fetch_duration_ms",
-        "databricks_login_duration_ms",
-        "coding_agent_config_fetch_duration_ms",
-        "model_service_access_check_duration_ms",
-        "model_service_discovery_duration_ms",
+        DATABRICKS_TOKEN_FETCH_DURATION_MS,
+        DATABRICKS_LOGIN_DURATION_MS,
+        CODING_AGENT_CONFIG_FETCH_DURATION_MS,
+        MODEL_SERVICE_ACCESS_CHECK_DURATION_MS,
+        MODEL_SERVICE_DISCOVERY_DURATION_MS,
         AGENT_CONFIGURATION_DURATION_MS,
         SKILLS_REFRESH_DURATION_MS,
-        "routing_decision_duration_ms",
-        "ug_usage_duration_ms",
-        "http_request_duration_ms",
-        "proxy_upstream_headers_duration_ms",
-        "proxy_first_byte_duration_ms",
-        "proxy_request_duration_ms",
+        ROUTING_DECISION_DURATION_MS,
+        UG_USAGE_DURATION_MS,
+        HTTP_REQUEST_DURATION_MS,
+        PROXY_UPSTREAM_HEADERS_DURATION_MS,
+        PROXY_FIRST_BYTE_DURATION_MS,
+        PROXY_REQUEST_DURATION_MS,
     }
 )
-COUNTER_METRICS = frozenset({"http_retry_count", "proxy_auth_retry_count", UG_CLI_ERROR})
-METRICS = DURATION_METRICS | COUNTER_METRICS | {"proxy_response_bytes"}
+COUNTER_METRICS = frozenset({HTTP_RETRY_COUNT, PROXY_AUTH_RETRY_COUNT, UG_CLI_ERROR})
+METRICS = DURATION_METRICS | COUNTER_METRICS | {PROXY_RESPONSE_BYTES}
 STRING_LABELS = frozenset(
     {
         "command",
@@ -100,6 +117,7 @@ _AGENT_SESSION_COMMANDS = frozenset(
         "claude-router-hook",
         "codex-router-hook",
         "cowork-hook",
+        "copilot-seat-runtime",
         "claude-desktop-auth",
         "smart-router-describe",
         "smart-router-logs",
@@ -308,8 +326,10 @@ class Recorder:
                 self.wake.clear()
                 with suppress(Exception):
                     if self.reporter is None or self.reporter.poll() is not None:
-                        if self.reporter is not None:
-                            self.reporter.stdin.close()
+                        with self.lock:
+                            if self.reporter is not None:
+                                self.reporter.stdin.close()
+                                self.reporter = None
                         reporter = start_exporter()
                         with self.lock:
                             self.reporter = reporter
@@ -334,7 +354,7 @@ def begin(command: str, started: float | None = None) -> None:
     global _runtime
     from ucode.env import env_bool
 
-    if not env_bool("UG_ENABLE_METRICS_EXPORT"):
+    if "UG_ENABLE_METRICS_EXPORT" in os.environ and not env_bool("UG_ENABLE_METRICS_EXPORT"):
         return
     runtime = Recorder(command, time.perf_counter() if started is None else started)
     if command in _AGENT_SESSION_COMMANDS:
@@ -377,7 +397,11 @@ def record(name: str, value: float | int, *, workspace: str | None = None, **lab
 
 @_best_effort
 def annotate(**labels: Any) -> None:
+    """Update the current measurement's labels; None clears an earlier value."""
     if current := _scope.get():
+        for key, value in labels.items():
+            if value is None:
+                current["labels"].pop(key, None)
         current["labels"].update(_labels(labels))
 
 

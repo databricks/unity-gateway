@@ -11,12 +11,15 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import parse_qs
 
 import pytest
 
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
+from tests.conftest import metric_observations
+from ucode import metrics
 from ucode.databricks import (
     _format_subprocess_result,
     _parse_databricks_cli_version,
@@ -938,6 +941,21 @@ class TestListModelProviderServices:
         assert entry["relayed"] is True
         assert entry["provider_type"] == "openai"
 
+    def test_flags_relayed_github_copilot(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.copilot-seats",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_GITHUB_COPILOT",
+                    "github_copilot": {"relayed": {}},
+                    "targets": [{"model": "claude-sonnet-5.5"}],
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "github_copilot"
+        assert entry["targets"] == ["claude-sonnet-5.5"]
+
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
@@ -1320,6 +1338,13 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilots_supported_list_leaves_out_github_copilot(self):
+        error = db_mod._provider_service_unusable_reason(
+            "copilot", {"provider_type": "gemini_enterprise"}, "main.a.gemini"
+        )
+        assert error is not None and "(supported: anthropic," in error
+        assert "github_copilot" not in error
+
     def test_copilot_accepts_openai(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1554,6 +1579,7 @@ class TestListProviderServiceModels:
             ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
             ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
             ("openai", ({"models": []}, None), ([], None)),
+            ("microsoft_foundry", ({"models": []}, None), ([], None)),
         ],
     )
     def test_reports_failures_but_not_empty_listings(
@@ -1825,6 +1851,69 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("copilot", service)
         assert db_mod.service_usable_for_tool("claude", service)
+
+    _COPILOT_RELAY = {
+        "name": "main.s.copilot-seats",
+        "provider_type": "github_copilot",
+        "targets": ["claude-sonnet-5.5"],
+        "relayed": True,
+    }
+
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_for_copilot_and_vscode(self, tool):
+        assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
+        assert not db_mod.service_usable_for_tool("claude", self._COPILOT_RELAY)
+
+    def test_choices_label_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        choices, reason = db_mod.tool_provider_service_choices("copilot", WS, "tok")
+
+        assert reason is None
+        assert choices == [
+            ("main.s.anthropic", "main.s.anthropic"),
+            ("main.s.copilot-seats", "main.s.copilot-seats (GitHub Copilot subscription)"),
+        ]
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
+    def test_other_agents_refuse_a_github_copilot_relay(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "'github_copilot' provider" in reason
+
+    def test_github_copilot_without_a_relay_is_refused(self):
+        service = {**self._COPILOT_RELAY, "relayed": False}
+        reason = db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        assert reason is not None
+        assert "doesn't relay a subscription" in reason
+
+    def test_provider_flag_resolves_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
+        )
+
+        service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
+
+        assert error is None
+        assert service is not None and db_mod.is_copilot_seat_relay(service)
+
+    def test_picker_lists_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
+            ["main.s.anthropic", "main.s.copilot-seats"],
+            None,
+        )
 
 
 class TestModelProviderFeatureUnavailable:
@@ -3168,6 +3257,28 @@ class TestGetDatabricksToken:
         )
         assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
 
+    def test_browser_login_failure_records_exit_without_skipping_refetch(
+        self, tmp_path, monkeypatch, metrics_recorder, capfd
+    ):
+        env = self._fake_databricks(tmp_path, "sys.exit(7)")
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        fetches = iter([("", None), ("recovered-token", 3600)])
+
+        assert db_mod._browser_login(WS, None, env, lambda: next(fetches)) == (
+            "recovered-token",
+            3600,
+        )
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["process_exit_code"] == 7
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["operation"] == metrics.DATABRICKS_LOGIN_OPERATION
+        assert error_labels["process_exit_code"] == 7
+        assert capfd.readouterr() == ("", "")
+
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
         # cache fail with "cache update: exit status 45". That's transient (the
@@ -3419,7 +3530,7 @@ class TestGetDatabricksToken:
         assert not any("--no-browser" in call for call in calls)
 
     def test_successful_token_is_memoized_and_force_refresh_bypasses_it(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, metrics_recorder
     ):
         counter = tmp_path / "count"
         counter.write_text("0")
@@ -3443,6 +3554,21 @@ class TestGetDatabricksToken:
         calls = log.read_text().splitlines()
         assert len(calls) == 3
         assert "--force-refresh" in calls[1]
+
+        labels = [
+            attrs
+            for _, attrs in metric_observations(
+                metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+            )
+        ]
+        assert [attrs["in_process_cache_hit"] for attrs in labels] == [
+            False,
+            True,
+            False,
+            True,
+            False,
+        ]
+        assert {attrs["token_source"] for attrs in labels} == {"cli"}
 
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
@@ -3920,7 +4046,7 @@ class TestGetDatabricksToken:
         db_mod.run_databricks_login(WS, "p")
         assert get_databricks_token(WS, "p") == "after-login"
 
-    def test_custom_oauth_cli_login_clears_shared_token_memo(self, monkeypatch):
+    def test_custom_oauth_cli_login_clears_shared_token_memo(self, monkeypatch, metrics_recorder):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
         config = {
@@ -3955,6 +4081,16 @@ class TestGetDatabricksToken:
         assert custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config) == "fresh"
         assert len(login_calls) == 1
         assert len(token_calls) == 1
+
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["login_method"] == "cli"
+        [(_, token_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert token_labels["token_source"] == "cli"
+        assert token_labels["in_process_cache_hit"] is False
 
     @pytest.mark.parametrize(("workspace_id", "login_host"), [("111", f"{WS}?w=111"), (None, WS)])
     def test_custom_oauth_cli_login_selects_the_workspace(
@@ -4804,7 +4940,9 @@ class TestHttpGetJsonRetries:
         assert sleeps == [1.25]
 
     @pytest.mark.parametrize("code", [499, 502, 503, 504])
-    def test_retries_transient_gateway_status_then_succeeds(self, monkeypatch, code):
+    def test_retries_transient_gateway_status_then_succeeds(
+        self, monkeypatch, code, metrics_recorder
+    ):
         outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
         sleeps = []
 
@@ -4823,6 +4961,17 @@ class TestHttpGetJsonRetries:
         assert payload == {"ok": True}
         assert reason is None
         assert sleeps == [1.25]
+
+        attempts = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert [attrs["http_status_code"] for _, attrs in attempts] == [code, 200]
+        assert [attrs["attempt"] for _, attrs in attempts] == [1, 2]
+        assert (
+            sum(
+                value
+                for value, _ in metric_observations(metrics_recorder, metrics.HTTP_RETRY_COUNT)
+            )
+            == 1
+        )
 
     @pytest.mark.parametrize("code", [400, 404, 500, 501])
     def test_does_not_retry_other_statuses(self, monkeypatch, code):
@@ -4957,7 +5106,8 @@ class TestDatabricksCliResolution:
     the version-read subprocess directly — no real Databricks CLI is needed."""
 
     @pytest.fixture(autouse=True)
-    def _fresh_databricks_cli_cache(self):
+    def _fresh_databricks_cli_cache(self, monkeypatch):
+        monkeypatch.setattr(db_mod.sys, "platform", "win32" if os.name == "nt" else "linux")
         clear_databricks_cli_cache()
         yield
         clear_databricks_cli_cache()
@@ -5020,6 +5170,50 @@ class TestDatabricksCliResolution:
         exe = tmp_path / "databricks.exe"
         exe.write_text("matches PATHEXT's .exe")
         assert db_mod._iter_databricks_executables() == [str(exe)]
+
+    @pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"])
+    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("HOME", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        gui_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", gui_path)
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        candidate = os.path.join(os.path.expanduser(directory), name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value == candidate)
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda value: (1, 20, 0))
+
+        assert databricks_cli_path() == os.path.abspath(candidate)
+        assert os.environ.get("PATH") == gui_path
+
+    def test_macos_preserves_cli_found_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        configured = str(tmp_path / name)
+        homebrew = os.path.join("/opt/homebrew/bin", name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value in {configured, homebrew})
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        probes = Mock(side_effect=lambda value: (1, 0, 0) if value == configured else (1, 20, 0))
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probes)
+
+        assert databricks_cli_path() == configured
+        probes.assert_called_once_with(configured)
+
+    @pytest.mark.parametrize("platform", ["linux", "win32"])
+    def test_standard_macos_locations_are_not_searched_on_other_platforms(
+        self, monkeypatch, platform
+    ):
+        monkeypatch.setattr(db_mod.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        files = Mock(return_value=True)
+        monkeypatch.setattr(db_mod.os.path, "isfile", files)
+
+        assert db_mod._iter_databricks_executables() == []
+        files.assert_not_called()
 
     # -- _discover_databricks_clis -------------------------------------------
 
@@ -5975,7 +6169,7 @@ class TestHttpDelete:
         response.status = 200
         return response
 
-    def test_empty_body_is_success_not_a_decode_error(self, monkeypatch):
+    def test_empty_body_is_success_not_a_decode_error(self, monkeypatch, metrics_recorder):
         # Without `allow_empty_body` this would fail with "response was not valid JSON".
         monkeypatch.setattr(
             db_mod.urllib_request, "urlopen", lambda request, timeout=None: self._empty_response()
@@ -5983,6 +6177,12 @@ class TestHttpDelete:
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is None
         assert payload is None
+
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "DELETE"
+        assert labels["http_status_code"] == 200
+        assert labels["attempt"] == 1
+        assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []
 
     def test_empty_json_object_is_also_success(self, monkeypatch):
         monkeypatch.setattr(
@@ -6007,7 +6207,7 @@ class TestHttpDelete:
         assert seen["method"] == "DELETE"
         assert seen["data"] is None
 
-    def test_http_error_surfaces_the_body(self, monkeypatch):
+    def test_http_error_surfaces_the_body(self, monkeypatch, metrics_recorder):
         import io
         from unittest.mock import MagicMock
         from urllib.error import HTTPError
@@ -6025,9 +6225,17 @@ class TestHttpDelete:
         assert "403" in reason
         assert "PERMISSION_DENIED" in reason
 
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "DELETE"
+        assert labels["http_status_code"] == 403
+        assert labels["attempt"] == 1
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["error_code"] == "http_403"
+
 
 class TestHttpPatchJson:
-    def test_uses_the_patch_verb_and_sends_the_body(self, monkeypatch):
+    def test_uses_the_patch_verb_and_sends_the_body(self, monkeypatch, metrics_recorder):
         from unittest.mock import MagicMock
 
         seen = {}
@@ -6050,6 +6258,10 @@ class TestHttpPatchJson:
         assert seen["method"] == "PATCH"
         assert json.loads(seen["data"]) == {"k": "v"}
         assert seen["content_type"] == "application/json"
+
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "PATCH"
+        assert labels["http_status_code"] == 200
 
 
 class TestHttpPostJson:
@@ -6461,12 +6673,20 @@ class TestBearerCommand:
         path = _write_fake_executable(tmp_path, "broker", body)
         return f'"{path}"' if " " in path else path
 
-    def test_serves_the_command_output_without_touching_the_cli(self, tmp_path, monkeypatch):
+    def test_serves_the_command_output_without_touching_the_cli(
+        self, tmp_path, monkeypatch, metrics_recorder
+    ):
         broker = self._broker(tmp_path, 'print("brokered-token")')
         marker = self._env(tmp_path, monkeypatch, broker)
 
         assert get_databricks_token(WS) == "brokered-token"
         assert not marker.exists()
+
+        [(_, labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert labels["token_source"] == "command"
+        assert labels["in_process_cache_hit"] is False
 
     def test_reruns_the_command_on_every_fetch(self, tmp_path, monkeypatch):
         # The whole point: a static env var cannot be rewritten in a running
@@ -6807,3 +7027,326 @@ class TestSharedHostProfiles:
         assert calls == [
             ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
         ]
+
+
+class TestModelServiceDestinationModels:
+    def test_malformed_primary_keeps_known_relay_providers_but_not_catalog_identity(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        None,
+                        {
+                            "traffic_percentage": 100,
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            },
+                        },
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) is None
+
+    def test_single_primary_without_traffic_is_live_for_both_consumers(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
+
+    @pytest.mark.parametrize(
+        "destination,expected",
+        [
+            ({"external_model_config": {"target": {"model": "gpt-6-luna"}}}, "gpt-6-luna"),
+            (
+                {"pay_per_token_config": {"model": "models/system.ai.gpt-6-luna"}},
+                "system.ai.gpt-6-luna",
+            ),
+        ],
+    )
+    def test_reads_model_identity_from_each_destination_type(self, destination, expected):
+        service = {"config": {"routing": {"destinations": [destination]}}}
+        assert db_mod.model_service_destination_models(service) == [expected]
+
+    def test_includes_error_and_budget_fallbacks_but_ignores_idle_and_deleted(self):
+        def external(model, **kwargs):
+            return {"external_model_config": {"target": {"model": model}}, **kwargs}
+
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        external("gpt-6-luna", traffic_percentage=100),
+                        external("gpt-4o", traffic_percentage=0),
+                        external("gpt-4o", traffic_percentage=100, is_deleted=True),
+                    ],
+                    "fallback": {
+                        "destinations": [
+                            external("gpt-6-astra"),
+                            external("gpt-4o", is_deleted=True),
+                        ]
+                    },
+                    "budget_fallbacks": [{"destination": external("gpt-6-sol")}],
+                }
+            }
+        }
+
+        assert db_mod.model_service_destination_models(service) == [
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+        ]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {},
+            {"config": None},
+            {"config": {"routing": {"destinations": []}}},
+            {"config": {"routing": {"destinations": [{"external_model_config": {"target": {}}}]}}},
+            {"config": {"routing": {"destinations": [{"pay_per_token_config": {"model": 123}}]}}},
+            {"config": {"routing": {"destinations": [{"traffic_percentage": "100"}]}}},
+            {
+                "config": {
+                    "routing": {
+                        "destinations": [
+                            {
+                                "provisioned_throughput_config": {
+                                    "model_serving_endpoint": "serving-endpoints/custom"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        ],
+    )
+    def test_incomplete_identity_is_not_inferred(self, service):
+        assert db_mod.model_service_destination_models(service) is None
+
+
+class TestModelServicesNeedSubscriptionRelay:
+    """A static model-service list launches relayed when a service routes to a relayed MPS."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        db_mod.clear_model_services_cache()
+        yield
+        db_mod.clear_model_services_cache()
+
+    @staticmethod
+    def _service(name: str, *destinations: dict) -> dict:
+        return {
+            "name": f"model-services/{name}",
+            "config": {"routing": {"destinations": list(destinations)}},
+        }
+
+    @staticmethod
+    def _external(mps: str, traffic: int = 100) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_EXTERNAL_FOUNDATION_MODEL",
+            "traffic_percentage": traffic,
+            "external_model_config": {"model_provider_service": f"model-provider-services/{mps}"},
+        }
+
+    @staticmethod
+    def _hosted(model: str) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL",
+            "traffic_percentage": 100,
+            "pay_per_token_config": {"model": f"models/{model}"},
+        }
+
+    @staticmethod
+    def _mps(name: str, *, relayed: bool, provider_type: str = "anthropic") -> dict:
+        return {"name": name, "provider_type": provider_type, "relayed": relayed}
+
+    def _patch(
+        self,
+        monkeypatch,
+        services: dict,
+        relayed: set[str],
+        *,
+        openai: frozenset[str] = frozenset(),
+    ) -> list[tuple[str, float]]:
+        calls: list[tuple[str, float]] = []
+
+        def get_service(name, _ws, _token, *, timeout):
+            calls.append((name, timeout))
+            return (services.get(name), None if name in services else "404")
+
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, _ws, _token, *, timeout: (
+                self._mps(
+                    name,
+                    relayed=name in relayed,
+                    provider_type="openai" if name in openai else "anthropic",
+                ),
+                None,
+            ),
+        )
+        return calls
+
+    def test_service_on_a_relayed_provider_needs_the_relay(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.oss": self._service(
+                    "main.default.oss", self._hosted("system.ai.kimi")
+                ),
+                "main.default.sonnet": self._service(
+                    "main.default.sonnet", self._external("main.default.anthropic")
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.oss", "main.default.sonnet[1m]"]
+        )
+        # Lookups use the short relay timeout, not the 30s default.
+        assert {timeout for _name, timeout in calls} == {db_mod._RELAY_LOOKUP_TIMEOUT_S}
+
+    def test_hosted_api_key_and_missing_services_are_not_relayed(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.keyed": self._service(
+                    "main.default.keyed",
+                    self._external("main.default.keyed-mps"),
+                    # Idle or deleted destinations on a relayed provider don't count.
+                    self._external("main.default.anthropic", traffic=0),
+                    {**self._external("main.default.anthropic"), "is_deleted": True},
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert (
+            lookup("https://ws", "tok", "system.ai.claude-sonnet-5-5")
+            is db_mod.RelayLookup.NOT_RELAYED
+        )
+        assert lookup("https://ws", "tok", "main.default.keyed") is db_mod.RelayLookup.NOT_RELAYED
+        assert lookup("https://ws", "tok", "main.default.gone") is db_mod.RelayLookup.UNKNOWN
+        # system.* ids are never looked up, and a confirmed answer is cached.
+        lookup("https://ws", "tok", "main.default.keyed")
+        assert [name for name, _timeout in calls] == ["main.default.keyed", "main.default.gone"]
+
+    def test_relayed_openai_provider_does_not_need_the_claude_relay(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "main.default.gpt": self._service(
+                    "main.default.gpt", self._external("main.default.chatgpt")
+                )
+            },
+            {"main.default.chatgpt"},
+            openai=frozenset({"main.default.chatgpt"}),
+        )
+        assert not db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"]
+        )
+
+    def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        outcomes = iter([(None, "503"), (service, None)])
+        calls: list[str] = []
+
+        def get_service(name, *_a, timeout):
+            calls.append(name)
+            return next(outcomes)
+
+        now = [1000.0]
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, *_a, timeout: (self._mps(name, relayed=True), None),
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        # Within the retry window the failure is reused, so a per-request caller isn't stalled.
+        now[0] += db_mod._RELAY_LOOKUP_RETRY_AFTER_S - 1
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        assert calls == ["main.default.sonnet"]
+        now[0] += 2
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.RELAYED
+        assert calls == ["main.default.sonnet", "main.default.sonnet"]
+
+    def test_failed_provider_lookup_is_unknown(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        monkeypatch.setattr(db_mod, "get_model_service", lambda *_a, timeout: (service, None))
+        monkeypatch.setattr(
+            db_mod, "get_model_provider_service", lambda *_a, timeout: (None, "timeout")
+        )
+        assert (
+            db_mod.model_service_relay_lookup("https://ws", "tok", "main.default.sonnet")
+            is db_mod.RelayLookup.UNKNOWN
+        )
+
+    def test_relay_candidates_are_custom_three_part_names(self):
+        models = [
+            "system.ai.kimi",
+            "main.default.sonnet[1m]",
+            "main.default.mps.claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "main.default.oss",
+        ]
+        assert db_mod.custom_model_services(models) == [
+            "main.default.sonnet[1m]",
+            "main.default.oss",
+        ]
+
+
+def test_model_service_backing_model_reads_the_first_live_foundation_model():
+    from ucode.databricks import model_service_backing_model
+
+    service = {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {
+                        "is_deleted": True,
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {"model": "models/system.ai.old"},
+                    },
+                    {
+                        "traffic_percentage": 0,
+                        "pay_per_token_config": {"model": "models/system.ai.idle"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "external_model_config": {"model_provider_service": "main.x.mps"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {
+                            "model": "models/system.ai.databricks-claude-sonnet-4-6"
+                        },
+                    },
+                ]
+            }
+        }
+    }
+
+    assert model_service_backing_model(service) == "system.ai.databricks-claude-sonnet-4-6"
+    assert model_service_backing_model({"config": {}}) is None

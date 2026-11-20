@@ -41,6 +41,7 @@ _RUNTIME_ENV_KEYS = {
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    "UG_TLS_TRUST_STORE",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
@@ -159,7 +160,8 @@ def connect_backend(directory: Path) -> socket.socket:
             with os.fdopen(log_fd, "ab") as log:
                 options = (
                     {
-                        "creationflags": subprocess.DETACHED_PROCESS
+                        # Auth subprocesses inherit this hidden console instead of opening windows.
+                        "creationflags": subprocess.CREATE_NO_WINDOW
                         | subprocess.CREATE_NEW_PROCESS_GROUP
                     }
                     if os.name == "nt"

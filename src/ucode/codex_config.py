@@ -15,6 +15,7 @@ from ucode.managed_files import OS, current_os, windows_codex_managed_settings_p
 from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
+_CONFIG_OPTIONS = {"-c", "--config"}
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
 # Codex keeps its hook-trust bookkeeping (each hook source's approved
 # ``trusted_hash``) under ``hooks.state`` in the user's ``config.toml`` and
@@ -22,6 +23,7 @@ DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.conf
 # neither carry nor forward it: a forwarded snapshot outranks ``config.toml``,
 # so a stale hash would make Codex re-ask for hook approval on every launch.
 HOOK_TRUST_STATE_KEY = "state"
+CODEX_MODEL_PROVIDER_NAME = "Databricks"
 
 
 class ModelVisibility(StrEnum):
@@ -78,6 +80,33 @@ def custom_catalog_path() -> Path | None:
             continue
         return Path(catalog_ref).expanduser()
     return None
+
+
+def provider_http_headers() -> dict[str, str]:
+    """The Databricks provider's request headers, merged across Codex's config layers."""
+    try:
+        paths = codex_config_precedence_paths(
+            codex_managed_config_path(), DEFAULT_CODEX_CONFIG_PATH
+        )
+    except OSError:
+        return {}
+    headers: dict[str, tuple[str, str]] = {}
+    for path in reversed(paths):
+        providers = read_toml_safe(path).get("model_providers")
+        provider = (
+            providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, Mapping) else None
+        )
+        if not isinstance(provider, Mapping):
+            continue
+        static = provider.get("http_headers")
+        from_env = provider.get("env_http_headers")
+        pairs = list(static.items()) if isinstance(static, Mapping) else []
+        if isinstance(from_env, Mapping):
+            pairs += [(name, os.environ.get(str(var), "")) for name, var in from_env.items()]
+        for name, value in pairs:
+            if isinstance(value, str) and value:
+                headers[str(name).casefold()] = (str(name), str(value))
+    return dict(headers.values())
 
 
 def custom_catalog_models() -> list[str] | None:
@@ -173,3 +202,41 @@ def codex_config_args(config: dict) -> list[str]:
         else:
             args.extend(["--config", f"{key}={_toml_value(value)}"])
     return args
+
+
+def is_codex_interactive_launch(tool_args: list[str]) -> bool:
+    """Whether arguments leave no positionals after UG's model/config options."""
+    from ucode.agents.args import has_explicit_model_arg
+
+    index = 0
+    while index < len(tool_args):
+        arg = tool_args[index]
+        if arg == "--":
+            return index == len(tool_args) - 1
+        if arg.partition("=")[0] in {"-h", "--help", "-V", "--version", "--remote"}:
+            return False
+        if not arg.startswith("-") or arg == "-":
+            return False
+        takes_model_value = has_explicit_model_arg([arg]) and "=" not in arg
+        if arg in _CONFIG_OPTIONS or takes_model_value:
+            if index + 1 == len(tool_args):
+                return False
+            index += 2
+        else:
+            index += 1
+    return True
+
+
+def is_codex_app_server_launch(tool_args: list[str]) -> bool:
+    """Whether the arguments run Codex's app-server, after any leading ``-c`` settings."""
+    index = 0
+    while index < len(tool_args):
+        if tool_args[index] in _CONFIG_OPTIONS and index + 1 < len(tool_args):
+            index += 2
+        elif tool_args[index].startswith("--config="):
+            index += 1
+        else:
+            break
+    command = tool_args[index:]
+    # `app-server` followed by a word is one of its subcommands, such as `generate-ts`.
+    return command[:1] == ["app-server"] and (len(command) == 1 or command[1].startswith("-"))

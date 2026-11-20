@@ -9,6 +9,8 @@ from ucode.databricks import (
     _fetch_codex_model_catalog,
     get_model_provider_service,
     list_anthropic_model_catalog,
+    list_anthropic_provider_models,
+    list_codex_provider_models,
     list_model_service_entries,
     list_provider_service_models,
 )
@@ -39,6 +41,14 @@ SCHEMA_MODEL_CATALOGS: dict[str, Callable[[str, str, str], tuple[list[str], str 
 }
 
 
+# Provider wildcards pick the catalog by tool, not provider type: Claude models come from the
+# Anthropic catalog and Codex models from the Codex catalog whatever the service speaks.
+PROVIDER_MODEL_CATALOGS: dict[str, Callable[[str, str, str], tuple[list[str], str | None]]] = {
+    "claude": list_anthropic_provider_models,
+    "codex": list_codex_provider_models,
+}
+
+
 def is_model_source_wildcard(source: str) -> bool:
     parts = source.split(".")
     return len(parts) in (3, 4) and parts[-1] == "*" and all(p and "*" not in p for p in parts[:-1])
@@ -53,9 +63,14 @@ def _expand_wildcard_source(
     service, reason = get_model_provider_service(source_name, workspace, token)
     if service is None:
         return [], reason
-    targets, reason = list_provider_service_models(
-        workspace, token, source_name, service.get("provider_type", "")
-    )
+    # For Claude and Codex, use the specific Claude and Codex discovery endpoints.
+    # Otherwise, for other agents, fall back to the previous discovery methods.
+    if tool in PROVIDER_MODEL_CATALOGS:
+        targets, reason = PROVIDER_MODEL_CATALOGS[tool](workspace, token, source_name)
+    else:
+        targets, reason = list_provider_service_models(
+            workspace, token, source_name, service.get("provider_type", "")
+        )
     return [
         target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
         for target in targets
