@@ -243,7 +243,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
         ? excluded_models.length > 0 || cooldownDenial
         : [...rateLimitedUntil.values()].some(until => until > current)
       if (coolingDown) {
-        denial ??= 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
+        // Native model aliases cannot establish eligibility when routing fails.
+        denial ??= 'Smart Router could not select an available model; retry after cooldown.'
       } else {
         denial = undefined
         if (routingFailed) {
@@ -271,7 +272,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const timestamp = route ? await now($) : undefined
     if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
-      // A failure notice may arrive while the routing request is in flight.
+      // A failure notice may arrive in flight; never launch that now-limited selection.
       records.delete(e.tool_use_id)
       $.ui.invalidate('ui.render')
       return { deny: 'The selected model is now rate-limited. Retry to select another available model.' }

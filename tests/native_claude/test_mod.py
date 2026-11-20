@@ -713,3 +713,175 @@ def test_native_language_reload_updates_parent_context_once(native_binary, tmp_p
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
+    """Scenario: a routed background child receives an HTTP 429 from a local fixture.
+
+    Expected: Claude creates the failure notice itself. The next native Agent call
+    excludes that model and starts the replacement. This is offline contract coverage,
+    not evidence of live provider quotas or an end-to-end gateway recording.
+    """
+    failed_model = "claude-opus-4-6"
+    replacement_model = "claude-haiku-4-5"
+    router = tmp_path / "router.py"
+    requests = tmp_path / "routing.jsonl"
+    router.write_text(
+        "import json,sys\n"
+        "request=json.load(sys.stdin)\n"
+        "with open(sys.argv[1], 'a') as output: output.write(json.dumps(request)+'\\n')\n"
+        "excluded=request.get('excluded_models', [])\n"
+        "model=sys.argv[3] if sys.argv[2] in excluded else sys.argv[2]\n"
+        "print(json.dumps({'model':model,'rationale':'Offline route fixture'}))\n"
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, body, *, status=200, content_type="application/json"):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("request-id", "native-cooldown-fixture")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def stream(self, model, tool_id=None):
+            self.server.message_count += 1
+            message_id = f"msg_fixture_{self.server.message_count}"
+            tool_input = {
+                "description": "Read the fixture result",
+                "prompt": "Return a short result. Use no tools and start no agents.",
+                "subagent_type": "general-purpose",
+                "run_in_background": True,
+            }
+            block = (
+                {"type": "tool_use", "id": tool_id, "name": "Agent", "input": {}}
+                if tool_id
+                else {"type": "text", "text": ""}
+            )
+            delta = (
+                {"type": "input_json_delta", "partial_json": json.dumps(tool_input)}
+                if tool_id
+                else {"type": "text_delta", "text": "Fixture response."}
+            )
+            events = [
+                (
+                    "message_start",
+                    {
+                        "message": {
+                            "id": message_id,
+                            "type": "message",
+                            "role": "assistant",
+                            "model": model,
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        }
+                    },
+                ),
+                ("content_block_start", {"index": 0, "content_block": block}),
+                ("content_block_delta", {"index": 0, "delta": delta}),
+                ("content_block_stop", {"index": 0}),
+                (
+                    "message_delta",
+                    {
+                        "delta": {
+                            "stop_reason": "tool_use" if tool_id else "end_turn",
+                            "stop_sequence": None,
+                        },
+                        "usage": {"output_tokens": 1},
+                    },
+                ),
+                ("message_stop", {}),
+            ]
+            body = "".join(
+                f"event: {kind}\ndata: {json.dumps({'type': kind, **value})}\n\n"
+                for kind, value in events
+            ).encode()
+            self.respond(body, content_type="text/event-stream")
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if "count_tokens" in self.path:
+                self.respond(b'{"input_tokens": 1}')
+                return
+            self.server.requests.append(request)
+            model = request["model"]
+            if model == failed_model:
+                self.server.failed_requests += 1
+                self.respond(
+                    b'{"type":"error","error":{"type":"rate_limit_error",'
+                    b'"message":"Offline fixture rate limit"}}',
+                    status=429,
+                )
+                return
+            if model == replacement_model:
+                self.stream(model)
+                self.server.replacement_received.set()
+                return
+            text = json.dumps(request.get("messages", []))
+            if not self.server.first_issued:
+                self.server.first_issued = True
+                self.stream(model, "toolu_first_background")
+            elif "<status>failed</status>" in text and not self.server.replacement_issued:
+                self.server.failure_notice_request = request
+                self.server.replacement_issued = True
+                self.stream(model, "toolu_replacement_background")
+            else:
+                self.stream(model)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.requests = []
+    server.message_count = 0
+    server.failed_requests = 0
+    server.first_issued = False
+    server.replacement_issued = False
+    server.failure_notice_request = None
+    server.replacement_received = threading.Event()
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with Session(
+            native_binary,
+            tmp_path / "native",
+            {
+                "ENABLE_SMART_ROUTING_V2": "0",
+                "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+            },
+            api=f"http://127.0.0.1:{server.server_port}",
+            # Keep the scenario independent of native Auto Mode's classifier protocol.
+            user_settings={"permissions": {"defaultMode": "manual"}},
+            route_command=[
+                sys.executable,
+                str(router),
+                str(requests),
+                failed_model,
+                replacement_model,
+            ],
+        ) as session:
+            session.send("Start the background fixture task, then another task after its result.")
+            assert server.replacement_received.wait(timeout=30), {
+                "stderr": session.errors,
+                "requests": server.requests,
+            }
+
+            routed = [json.loads(line) for line in requests.read_text().splitlines()]
+            assert len(routed) == 2, routed
+            assert "excluded_models" not in routed[0]
+            assert routed[1]["excluded_models"] == [failed_model], routed
+            assert server.failed_requests == 1
+            assert all(request.get("stream") for request in server.requests)
+            notice = json.dumps(server.failure_notice_request["messages"])
+            (tmp_path / "native-notification.json").write_text(notice)
+            assert "<task-notification>" in notice
+            assert "HTTP 429" in notice
+            assert f"model sent to the API: {failed_model}" in notice
+            assert any(request["model"] == replacement_model for request in server.requests)
+    finally:
+        (tmp_path / "provider-requests.json").write_text(json.dumps(server.requests))
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)

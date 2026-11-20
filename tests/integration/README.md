@@ -463,8 +463,9 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-native hook and Python component tests cover rate-limit cooldown using fixtures;
-they do not establish live gateway quota recovery. The
+native hook and Python component tests cover rate-limit cooldown using fixtures.
+`../native_claude/test_mod.py` checks native failure-notice serialization and
+replacement routing after a loopback HTTP 429; it does not establish live gateway quota recovery. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
