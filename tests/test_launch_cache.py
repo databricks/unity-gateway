@@ -380,8 +380,8 @@ class TestRefresher:
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         fetched: list = []
 
-        def token(_workspace, profile, **_kwargs):
-            fetched.append(profile)
+        def token(_workspace, profile, **kwargs):
+            fetched.append((profile, kwargs.get("allow_reauth")))
             return "token"
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
@@ -389,15 +389,15 @@ class TestRefresher:
         custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
         identity = _identity(custom_oauth={**custom_oauth, "profile": "ug-oauth-p"})
         assert lc.main(refresh_args(identity=identity)) == 0
-        assert fetched == ["ug-oauth-p"]
+        assert fetched == [("ug-oauth-p", False)]
 
     def test_custom_oauth_refresh_falls_back_to_the_derived_profile(self, monkeypatch):
         self._patch_lookups(monkeypatch)
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         fetched: list = []
 
-        def token(_workspace, profile, **_kwargs):
-            fetched.append(profile)
+        def token(_workspace, profile, **kwargs):
+            fetched.append((profile, kwargs.get("allow_reauth")))
             return "token"
 
         monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
@@ -405,7 +405,7 @@ class TestRefresher:
         custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
         identity = _identity(custom_oauth=custom_oauth)
         assert lc.main(refresh_args(identity=identity)) == 0
-        assert fetched == ["ug-oauth-example.databricks.com-cid"]
+        assert fetched == [("ug-oauth-example.databricks.com-cid", False)]
 
     def test_custom_oauth_refresh_without_a_saved_login_gives_up(self, monkeypatch):
         self._patch_lookups(monkeypatch)
