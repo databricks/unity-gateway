@@ -709,10 +709,13 @@ class TestLaunchMerge:
         with lock_path.open("a+b") as lock_file:
             acquire_exclusive_file_lock(lock_file)
             # A mid-flight refresher holds the key: the launch skips the write instead of
-            # bumping `checked_at` under its read-fetch-invalidate.
+            # bumping `checked_at` under its read-fetch-invalidate. The skip is immediate —
+            # the launch path never waits on the refresher.
+            started = time.monotonic()
             assert not lc.try_merge_entry(
                 key, _identity(), {"catalog": lc.catalog_payload(CATALOG)}
             )
+            assert time.monotonic() - started < 1
         assert lc._read_entry(key) == before
         # Once the key is free, the same merge goes through.
         assert lc.try_merge_entry(key, _identity(), {"catalog": lc.catalog_payload(CATALOG)})

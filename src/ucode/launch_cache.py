@@ -50,8 +50,6 @@ MAX_AGE_SECONDS = 24 * 60 * 60
 REFRESH_THROTTLE_SECONDS = 180
 # How long a second refresher waits for the first's key lock before giving up on it.
 REFRESH_LOCK_TIMEOUT_SECONDS = 30
-# How long a launch's merge waits for a refresher's key lock before skipping the write.
-MERGE_LOCK_TIMEOUT_SECONDS = 1
 
 
 def launch_cache_enabled() -> bool:
@@ -164,12 +162,13 @@ def merge_entry(key: str, identity: dict, payload: dict) -> None:
 
 
 def try_merge_entry(key: str, identity: dict, payload: dict) -> bool:
-    """Merge under the key's lock, without stalling the launch on a mid-flight refresher.
+    """Merge under the key's lock, without ever blocking the launch on a refresher.
 
     A refresher holds the key's lock across its whole fetch, so a merge that fits inside
     the lock never interleaves with its read-fetch-invalidate, and the ``checked_at`` it
     bumps cannot make that refresher skip dropping a failed result. When the key is held,
-    the write is skipped — the next launch fetches and records again."""
+    the write is skipped — the holder is a refresher writing fresh results anyway, and
+    the next launch fetches and records again."""
     from ucode.os_compatibility.file_lock_cross_os import (
         acquire_exclusive_file_lock,
         release_file_lock,
@@ -177,7 +176,7 @@ def try_merge_entry(key: str, identity: dict, payload: dict) -> bool:
 
     with (_cache_dir() / f"{key}.lock").open("a+b") as lock_file:
         try:
-            acquire_exclusive_file_lock(lock_file, timeout=MERGE_LOCK_TIMEOUT_SECONDS)
+            acquire_exclusive_file_lock(lock_file, timeout=0)
         except TimeoutError:
             return False
         try:
