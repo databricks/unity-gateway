@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
+from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, PROVIDER_HEADER
 from tests.e2e_cuj.helpers.evidence import (
     BaseCujHelper,
     ClaudeCujHelper,
@@ -25,8 +25,47 @@ from tests.e2e_cuj.test_cuj4_smart_routing import (
     _smart_router_hint_shown,
     _task_inference_request,
 )
+from tests.e2e_cuj.test_cuj7_model_discovery import _assert_saved_provider_routing
 from tests.integration.utils.evidence import FileTask, read_jsonl
+from tests.integration.utils.harness import UserSession
 from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
+
+
+def test_failed_saved_provider_route_retains_metadata_without_prompt_or_credentials(tmp_path):
+    session = UserSession(tmp_path, tmp_path, "ug", tmp_path / "artifacts")
+    session.env["DATABRICKS_BEARER"] = "private-bearer"
+    task = SimpleNamespace(filename="task.txt")
+    route = RecordedRequest(
+        7,
+        "POST",
+        "/ai-gateway/routing/v1/routes:select",
+        {PROVIDER_HEADER: "provider"},
+        json.dumps(
+            {
+                "task": {"prompt": "private prompt: task.txt"},
+                "route_selector": {"router_name": "recipe", "extra": "private-selector"},
+                "route_options": [{"model": "model", "harness": "codex", "extra": "private"}],
+            }
+        ).encode(),
+    )
+    response = RecordedResponse(
+        400,
+        {"x-request-id": "request-id", "authorization": "private-bearer"},
+        b'{"error_code":"BAD_REQUEST","message":"private-error"}',
+    )
+    recorder = SimpleNamespace(requests_after=lambda _: [route], response_for=lambda _: response)
+
+    with pytest.raises(AssertionError, match="BAD_REQUEST"):
+        _assert_saved_provider_routing(session, recorder, 0, "codex", "provider", "model", task)
+
+    evidence = json.loads((session.artifacts / "routing-request-7.json").read_text())
+    assert evidence == {
+        "router_name": "recipe",
+        "route_options": [{"model": "model", "harness": "codex"}],
+        "status_code": 400,
+        "request_id": "request-id",
+    }
+    assert "private" not in json.dumps(evidence)
 
 
 @pytest.mark.parametrize("enabled, first_prompt", [(True, True), (True, False), (False, False)])
