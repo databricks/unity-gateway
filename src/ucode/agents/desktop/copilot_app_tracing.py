@@ -10,6 +10,8 @@ sets it there only when asked to.
 
 from __future__ import annotations
 
+import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,31 @@ Status = Literal["on", "windows_opt_in", "not_set_up"]
 
 def _record_path() -> Path:
     return config_io.APP_DIR / "copilot-app" / "tracing.json"
+
+
+def _cache_dir() -> Path:
+    home = Path.home()
+    system = current_os()
+    if system == OS.WINDOWS:
+        return Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+    if system == OS.MACOS:
+        return home / "Library" / "Caches"
+    return Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")
+
+
+def app_runtime_version() -> tuple[int, int, int] | None:
+    """The newest Copilot runtime the app has downloaded, which reads Copilot's settings for it,
+    or None before the app has downloaded one."""
+    try:
+        names = [entry.name for entry in (_cache_dir() / "github-copilot-sdk" / "cli").iterdir()]
+    except OSError:
+        return None
+    versions = [
+        (int(match[1]), int(match[2]), int(match[3]))
+        for name in names
+        if (match := re.search(r"(\d+)\.(\d+)\.(\d+)", name))
+    ]
+    return max(versions, default=None)
 
 
 def app_env(workspace: str) -> dict[str, str]:
@@ -205,6 +232,10 @@ def disable(*, keep_headers_provider: bool = False) -> bool:
     changed = _profiles_disable(record)
     changed = _windows_disable(record) or changed
     _record_path().unlink(missing_ok=True)
+    try:
+        _record_path().parent.rmdir()
+    except OSError:
+        pass
     if not keep_headers_provider:
         changed = copilot_app_plugin.remove_headers_provider() or changed
     return changed

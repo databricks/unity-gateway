@@ -67,6 +67,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import copilot_app as copilot_app_mod
     from ucode.agents.desktop import copilot_app_plugin as copilot_app_plugin_mod
+    from ucode.agents.desktop import copilot_app_tracing as copilot_app_tracing_mod
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
     from ucode.agents.desktop import setup as desktop_setup_mod
@@ -95,6 +96,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     # Nor may any test write the developer's shell profiles.
     monkeypatch.setattr(shell_profile_env_mod, "_home", lambda: tmp_path / "home")
     monkeypatch.setattr(shell_profile_env_mod, "_system_zdotdir", lambda: None)
+    monkeypatch.setattr(copilot_app_tracing_mod, "_cache_dir", lambda: tmp_path / "cache")
     monkeypatch.setattr(
         shell_profile_env_mod, "_config_home", lambda: tmp_path / "home" / ".config"
     )
