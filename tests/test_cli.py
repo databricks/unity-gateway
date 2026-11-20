@@ -2332,7 +2332,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
         resolve_provider = MagicMock(return_value=(None, None, relayed))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
@@ -2761,7 +2761,7 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda s: (None, False))
         monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda s, m: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(
             cli_mod,
             "list_anthropic_model_catalog",
@@ -10818,7 +10818,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(
             cli_mod, "get_provider_service", lambda _state, _tool: persisted_provider
         )
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
@@ -10889,7 +10889,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(
@@ -10919,7 +10919,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: None)
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(
@@ -10945,7 +10945,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (None, False))
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda _s, _t: "main.default.relay")
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, True))
         monkeypatch.setattr(
@@ -10974,7 +10974,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             }
         }
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
-        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(cli_mod, "configure_shared_state", MagicMock(return_value=state))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(
