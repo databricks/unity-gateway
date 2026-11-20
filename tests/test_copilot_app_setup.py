@@ -714,3 +714,213 @@ def test_a_failed_plugin_write_only_warns(monkeypatch, capsys):
     desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
     assert "Could not install ug's plugin in the GitHub Copilot app" in _out(capsys)
+
+
+class TestTracing:
+    TRACED = {**STATE, "copilot_otel_tracing": True}
+
+    @pytest.fixture(autouse=True)
+    def _linux_zsh(self, monkeypatch):
+        from ucode.agents.desktop import copilot_app_tracing, shell_profile_env
+        from ucode.managed_files import OS
+
+        monkeypatch.setattr(copilot_app_tracing, "current_os", lambda: OS.LINUX)
+        monkeypatch.setattr(shell_profile_env, "login_shells", lambda: ["zsh"])
+        monkeypatch.setattr("ucode.agents.copilot.installed_version", lambda: (1, 0, 106))
+        self.zshenv = shell_profile_env._home() / ".zshenv"
+
+    def _provider(self) -> dict:
+        return _settings()["telemetry"]["headersProvider"]
+
+    def test_configure_turns_on_the_apps_export_with_ugs_headers_helper(self, capsys):
+        desktop_setup.configure_copilot_app(
+            {**self.TRACED, "workspace_id": "1234567890"}, provider=None, location=None
+        )
+
+        text = self.zshenv.read_text()
+        assert f"export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT={WS}/ai-gateway/otel/v1/traces" in text
+        assert "export COPILOT_OTEL_ENABLED=true" in text
+        assert self._provider() == {
+            "path": "/opt/ug/bin/ug",
+            "args": [
+                "otel-headers",
+                "--host",
+                WS,
+                "--profile",
+                "dev",
+                "--workspace-id",
+                "1234567890",
+            ],
+            "refreshIntervalMs": 1_500_000,
+        }
+        assert set(_settings()["telemetry"]) == {"headersProvider"}
+        assert "Restart the GitHub Copilot app to pick up the change to its tracing" in _out(capsys)
+
+    def test_configure_again_doesnt_ask_for_a_restart(self, capsys):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        capsys.readouterr()
+
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+
+        assert "pick up the change to its tracing" not in _out(capsys)
+
+    def test_the_pat_choice_reaches_the_helper(self):
+        desktop_setup.configure_copilot_app(
+            {**self.TRACED, "use_pat": True}, provider=None, location=None
+        )
+
+        assert self._provider()["args"][-1] == "--use-pat"
+
+    def test_without_workspace_tracing_nothing_is_written(self):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert not self.zshenv.exists()
+        assert "telemetry" not in _settings()
+
+    def test_tracing_turning_off_removes_it(self, capsys):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        capsys.readouterr()
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert not self.zshenv.exists()
+        assert "telemetry" not in _settings()
+        assert plugin.status() == "installed"
+        assert "pick up the change to its tracing" in _out(capsys)
+
+    def test_an_older_copilot_cli_keeps_it_off(self, monkeypatch, capsys):
+        monkeypatch.setattr("ucode.agents.copilot.installed_version", lambda: (1, 0, 98))
+
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+
+        assert "GitHub Copilot CLI 1.0.98 ignores the whole settings file" in _out(capsys)
+        assert "telemetry" not in _settings()
+        assert not self.zshenv.exists()
+
+    def test_revert_removes_it_with_the_plugin(self, app):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        _register(app)
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+
+        assert not self.zshenv.exists()
+        assert not _settings_path().exists()
+
+    def test_revert_with_the_app_closed_removes_it_at_once(self):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+
+        assert desktop_setup.revert_copilot_app() == desktop_setup.COPILOT_APP_REMOVAL_PENDING
+
+        assert not self.zshenv.exists()
+        assert "telemetry" not in _settings()
+
+    def test_revert_of_tracing_alone_reports_it(self):
+        from ucode.agents.desktop import copilot_app_tracing
+
+        copilot_app_tracing.enable(
+            WS, copilot_app_tracing.headers_provider("/u", ["otel-headers"]), windows_opt_in=False
+        )
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+        assert not self.zshenv.exists()
+
+    def test_the_managed_off_switch_removes_it(self, app):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+
+        agents_mod.configure_copilot_app(
+            {**self.TRACED, "copilot_app_integration": False}, provider=None, parent_schema=None
+        )
+
+        assert not self.zshenv.exists()
+
+    def test_an_uninstalled_app_loses_it(self, monkeypatch):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
+
+        agents_mod.configure_copilot_app(self.TRACED, provider=None, parent_schema=None)
+
+        assert not self.zshenv.exists()
+
+    def test_status_shows_it(self, app):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        _register(app, self.TRACED)
+
+        status = desktop_setup.copilot_app_status(self.TRACED, provider=None, location=None)
+
+        assert status is not None
+        assert status.row == "plugin installed, models registered, tracing on"
+
+    def test_status_flags_tracing_that_isnt_set_up(self, app):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        _register(app, self.TRACED)
+
+        status = desktop_setup.copilot_app_status(self.TRACED, provider=None, location=None)
+
+        assert status is not None
+        assert status.row.endswith("tracing not set up")
+        assert any("tracing isn't set up" in warning for warning in status.warnings)
+
+    def test_status_without_workspace_tracing_says_nothing_about_it(self, app):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        _register(app)
+
+        status = desktop_setup.copilot_app_status(STATE, provider=None, location=None)
+
+        assert status is not None
+        assert "tracing" not in status.row
+
+    def test_a_dry_run_changes_nothing(self, monkeypatch):
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        before = (self.zshenv.read_text(), _settings_path().read_text())
+        monkeypatch.setattr("ucode.config_io._dry_run", True)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        agents_mod.configure_copilot_app(
+            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
+        )
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
+        agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
+        desktop_setup.revert_copilot_app()
+
+        assert (self.zshenv.read_text(), _settings_path().read_text()) == before
+
+    def test_the_windows_opt_in_is_saved_for_later_runs(self, monkeypatch):
+        from ucode.agents.desktop import copilot_app_tracing
+        from ucode.managed_files import OS
+
+        monkeypatch.setattr(copilot_app_tracing, "current_os", lambda: OS.WINDOWS)
+        calls = []
+        monkeypatch.setattr(
+            copilot_app_tracing.windows_user_env,
+            "set_values",
+            lambda env: calls.append(env) or (True, []),
+        )
+        app_state = dict(self.TRACED)
+
+        agents_mod.configure_copilot_app(app_state, provider=None, parent_schema=None)
+        assert calls == []
+        agents_mod.request_copilot_app_windows_tracing(True)
+        agents_mod.configure_copilot_app(app_state, provider=None, parent_schema=None)
+        agents_mod.request_copilot_app_windows_tracing(None)
+        agents_mod.configure_copilot_app(app_state, provider=None, parent_schema=None)
+
+        assert app_state[desktop_setup.COPILOT_APP_WINDOWS_TRACING_KEY] is True
+        assert len(calls) == 2
+
+
+def test_configure_copilot_app_windows_tracing_flag(monkeypatch):
+    from typer.testing import CliRunner
+
+    from ucode.cli import app
+
+    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
+    monkeypatch.setattr("ucode.cli.configure_workspace_command", lambda **kwargs: 0)
+    runner = CliRunner()
+
+    for flag, expected in (
+        ("--copilot-app-windows-tracing", True),
+        ("--no-copilot-app-windows-tracing", False),
+    ):
+        result = runner.invoke(app, ["configure", "--agents", "copilot", "--workspace", WS, flag])
+        assert result.exit_code == 0, result.output
+        assert agents_mod._copilot_app_windows_tracing is expected

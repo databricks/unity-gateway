@@ -47,6 +47,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_copilot_app_windows_tracing,
     request_copilot_app_with_copilot,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
@@ -5685,6 +5686,16 @@ def configure(
             "configuring copilot also sets up the app when it is installed.",
         ),
     ] = False,
+    copilot_app_windows_tracing: Annotated[
+        bool | None,
+        typer.Option(
+            "--copilot-app-windows-tracing/--no-copilot-app-windows-tracing",
+            hidden=True,
+            help="On Windows, export the GitHub Copilot app's traces when the workspace traces "
+            "Copilot. This sets user-wide environment variables, which every program you run "
+            "sees, so it's off by default. Saved for later runs.",
+        ),
+    ] = None,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5807,6 +5818,7 @@ def configure(
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
         request_copilot_app_with_copilot(not no_copilot_app)
+        request_copilot_app_windows_tracing(copilot_app_windows_tracing)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
