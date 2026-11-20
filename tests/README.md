@@ -148,20 +148,16 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
-Native routing components check model-written joke titles against one routed selection,
-card and row model labels, retained task-request context, unchanged reviewed arguments,
-and preserved native task descriptions, agent addresses and permissions. Malformed
-display inputs pass through unchanged. Native
-auto-mode cases retain their approval/denial and zero fallback-classification assertions.
+Native routing components check the streamed parent reply: parallel Agent calls are routed
+once, before they are recorded, and only their `description` becomes
+`<animal> · <model> · <task>` while other arguments, chunk order and non-Agent calls are
+unchanged. Spawn receipts are compared with that heading; cards, lone rows, the agent list
+and completed-task notices show the launched model and flag a mismatch, a missing launch model
+is not persisted, and saved receipts are restored per child on resume. The agent-list
+assertions run only where Claude has that row (2.1.328 and later). Native auto-mode cases
+retain their approval/denial and zero fallback-classification assertions.
 The native status command checks old animal-only mappings, model labels with unchanged
 live progress and counters, and identical activity labels without duplication.
-Completed-notification render tests cover child-ID joins, actual launch-model mismatches,
-unchanged task metadata, retained native summaries, malformed records, session isolation, zero
-storage reads on notification redraws, per-agent restore failures,
-empty descriptions, clear/resume lifecycle and persisted status mappings restored at session start.
-The collapsed parallel-agent header and native
-task-list titles have no matching mod render event in Claude Code 2.1.325 or
-2.1.328 and are not covered as corrected surfaces.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates

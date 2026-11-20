@@ -71,12 +71,9 @@ test('animal names stay distinct and stable without changing routed calls or row
       const displayed = displayInputs[displayInputs.length - 1];
       const name = displayed.tool;
       expect(name).toMatch(/^[A-Z][a-z]+(?: 2)?$/);
-      expect(displayed).toEqual({ ...event.props, tool: name,
-        input: { ...input, description: 'claude-haiku-5-5' },
-      });
+      expect(displayed).toEqual({ ...event.props, tool: name });
       expect(event.props.input).toEqual(input);
       expect(await mounted.find({ type: 'Text', text: /Backgrounded agent/ })).toBeDefined();
-      expect(await mounted.find({ type: 'Text', text: 'claude-haiku-5-5' })).toBeDefined();
       expect(await mounted.find({ type: 'Text', text: /ucode-route-|ug-smart-router:/ })).toBeUndefined();
       if (render === 0) names.push(name);
       else expect(name).toBe(names[index]);
@@ -142,8 +139,8 @@ test('routing changes the matching spawn model while preserving the task and its
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
   const launched = await $.ui.mount(row('call-a'));
-  expect(await launched.find({ type: 'Text', text: 'Launched Model: claude-sonnet-5' })).toBeDefined();
-  expect(displayInputs[displayInputs.length - 1].description).toBe('claude-sonnet-5');
+  expect(await launched.find({ type: 'Text', text: '⚠ Launched Model: claude-sonnet-5 (differs from the selected model)' })).toBeDefined();
+  expect(displayInputs[displayInputs.length - 1].description).toBe('claude-sonnet-5 ⚠ heading said gpt-5-6-sol');
   await launched.unmount();
   const denied = await $.ui.mount(row('denied'));
   expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
@@ -157,8 +154,9 @@ test('routing changes the matching spawn model while preserving the task and its
     expect(visibleWrites[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
     expect(persistentWrites[index].text).toBe(visibleWrites[index].text);
     expect(JSON.parse(visibleWrites[index].text)).toEqual({
-      session_id: 'session-1', agent_id: `child-${id}`, name: `${shown.get(id)} — claude-sonnet-5`,
-      description: originalInput.description,
+      session_id: 'session-1', agent_id: `child-${id}`, name: `${shown.get(id)} — claude-sonnet-5 ⚠ heading said gpt-5-6-sol`,
+      description: originalInput.description, animal: shown.get(id), title: 'inspect the parser',
+      selected: routedModel, launched: 'claude-sonnet-5',
     });
   }
   const resumed = { ...forwarded[0], description: originalInput.description,
@@ -775,14 +773,13 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   expect(forwarded).toEqual(calls);
   const cards = await $.ui.mount(reply('jokes'));
   expect(await cards.findAll({ type: 'Text', text: '↳ Selected Model: ' })).toHaveLength(3);
-  expect(await cards.findAll({ type: 'Text', text: ' — routed-model' })).toHaveLength(3);
+  expect(await cards.findAll({ type: 'Text', text: / — routed-model \(selected, launch pending\)$/ })).toHaveLength(3);
   for (const call of calls) {
     expect(await cards.find({ type: 'Text', text: `Task request: ${call.description}` })).toBeDefined();
     const event = row(call.tool_use_id);
-    const ui = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
-    expect(await ui.find({ type: 'Text', text: 'routed-model' })).toBeDefined();
-    expect(JSON.stringify(await ui.drawn())).not.toContain('Joke from');
-    expect(displayed.get(call.tool_use_id).input).toEqual({ ...call, description: 'routed-model' });
+    const pendingRow = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
+    expect(displayed.get(call.tool_use_id).input).toEqual(call);
+    await pendingRow.unmount();
     const spawn = {
       tool_use_id: call.tool_use_id, prompt: call.prompt, description: call.description,
       subagentType: call.subagent_type, parentModel: 'parent-model',
@@ -790,6 +787,10 @@ test('routed joke titles use the selected model without rewriting reviewed argum
       name: call.name, permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
     };
     await $.agent.spawn(spawn);
+    const ui = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
+    expect(await ui.find({ type: 'Text', text: 'routed-model' })).toBeDefined();
+    expect(JSON.stringify(await ui.drawn())).not.toContain('Joke from');
+    expect(displayed.get(call.tool_use_id).input).toEqual({ ...call, description: 'routed-model' });
     const label = `${displayed.get(call.tool_use_id).tool} — routed-model`;
     expect(spawned[spawned.length - 1]).toEqual({
       ...spawn, model: 'catalog.schema.routed-model',
@@ -861,7 +862,7 @@ test('completed notification labels restore per child and render without storage
   const saved = JSON.parse(files.get(key)!);
   expect(writes.length).toBe(2);
   expect(writes[0].text).toBe(writes[1].text);
-  expect(saved.name.endsWith(' — launched-model')).toBe(true);
+  expect(saved.name).toMatch(/ — launched-model ⚠ heading said selected-model$/);
   expect(saved.description).toBe(input.description);
   expect(saved.agent_id).toBe('child-1');
   const notice = {
@@ -873,10 +874,8 @@ test('completed notification labels restore per child and render without storage
   const counts = [idReads, fileReads, environmentReads];
   for (let index = 0; index < 3; index++) {
     const ui = await $.ui.mount(notice);
-    expect(await ui.find({ type: 'Text', text: `Agent "${saved.name}" finished · Task request: ${input.description}` })).toBeDefined();
-    expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props,
-      text: `Agent "${saved.name}" finished · Task request: ${input.description}`,
-    } });
+    expect(await ui.find({ type: 'Text', text: `${notice.props.text}\n⚠ Launched on launched-model, not the selected-model in the heading` })).toBeDefined();
+    expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props, text: `${notice.props.text}\n⚠ Launched on launched-model, not the selected-model in the heading` } });
     await ui.unmount();
   }
   expect([idReads, fileReads, environmentReads]).toEqual(counts);
@@ -884,7 +883,7 @@ test('completed notification labels restore per child and render without storage
   for (const isExpanded of [false, true]) {
     const ui = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded,
       text: 'Original task summary\nFull child output stays visible.' } });
-    expect(await ui.find({ type: 'Text', text: `Launched agent: ${saved.name}\nTask request: ${input.description}\nOriginal task summary\nFull child output stays visible.` })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'Original task summary\nFull child output stays visible.\n⚠ Launched on launched-model, not the selected-model in the heading' })).toBeDefined();
     await ui.unmount();
   }
   files.clear();
@@ -900,7 +899,7 @@ test('completed notification labels restore per child and render without storage
   expect(writes.length).toBe(before + 1);
   expect(writes[writes.length - 1].path.endsWith('/agent-names/agent-child-1.json')).toBe(true);
   expect(warnings).toEqual(['Could not restore a subagent display label; native labels remain where unavailable.']);
-  expect(await resumed.find({ type: 'Text', text: saved.name })).toBeDefined();
+  expect(await resumed.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
   await resumed.unmount();
   failRestore = false;
   for (const value of [null, [], {}, { ...saved, session_id: 'another-session' },
@@ -916,7 +915,7 @@ test('completed notification labels restore per child and render without storage
     await $.tool.call({ tool: 'Agent', tool_use_id: id, ...input, description });
     await $.agent.spawn({ ...spawn, tool_use_id: id, description });
     const actual = JSON.parse(files.get(`${directory}/agent-${id}.json`)!);
-    expect(actual.description).toBe(index ? 'Subagent task' : 'Explore');
+    expect(actual.description).toMatch(/ · selected-model · inspect the parser$/);
     expect(forwarded[forwarded.length - 1].description).toBe(description);
   }
   for (const props of [
@@ -936,12 +935,123 @@ test('completed notification labels restore per child and render without storage
   const cleared = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear' },
   } });
-  expect(await cleared.find({ type: 'Text', text: fresh.name })).toBeDefined();
+  expect(await cleared.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
   await cleared.unmount();
   await $.session.end({ reason: 'resume' });
   const retained = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear' },
   } });
-  expect(await retained.find({ type: 'Text', text: fresh.name })).toBeDefined();
+  expect(await retained.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
   await retained.unmount();
+});
+
+test('parallel calls are headed with the routed model before they are recorded, then verified against the launch', async ($, on) => {
+  const routerCalls: any[] = [];
+  const spawned: any[] = [];
+  const rows = new Map<string, any>();
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
+  on('fs.write', () => ({ value: undefined }));
+  on('process.run', ($, event) => {
+    const request = JSON.parse(event.init.stdin);
+    routerCalls.push(request);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: request.tool_use_id === 'head-1' ? 'system.ai.model-b' : 'system.ai.glm-5-3-flash', rationale: 'Selected.',
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'launched' }));
+  on('agent.spawn', ($, e) => {
+    spawned.push(e);
+    // The second child launches elsewhere than its heading says.
+    return { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'head-1' ? 'system.ai.model-c' : e.model };
+  });
+  on('ui.render', ($, e) => {
+    rows.set(e.requestId, e.props);
+    return { type: 'Text', props: {}, children: [e.props.label ?? 'native row'] };
+  });
+  const calls = ['Sonnet', 'Haiku'].map((model, index) => ({
+    prompt: 'Tell me a short joke. Make it dry.', description: `Joke from ${model}`,
+    subagent_type: 'general-purpose', run_in_background: true, tag: index,
+  }));
+  const read = { file_path: 'README.md' };
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'text', index: 0, text: 'Starting.' };
+    yield { kind: 'tool', index: 1, id: 'head-0', name: 'Agent' };
+    yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(0, 20) };
+    yield { kind: 'tool', index: 2, id: 'read-0', name: 'Read' };
+    yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(20) };
+    yield { kind: 'input', index: 2, json: JSON.stringify(read) };
+    yield { kind: 'tool', index: 3, id: 'head-1', name: 'Agent' };
+    yield { kind: 'input', index: 3, json: JSON.stringify(calls[1]) };
+    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
+    return { turnId: e.turnId, index: e.index, answer: 'Starting.', toolUses: [], stopReason: 'tool_use', usage: null };
+  });
+  const turn = await collectParentTurn($, 'headed', 0);
+  expect(turn.chunks.map(chunk => chunk.kind)).toEqual(['text', 'tool', 'input', 'tool', 'input', 'tool', 'input', 'stop']);
+  const agentInputs = turn.chunks.filter(chunk => chunk.kind === 'input' && chunk.index !== 2);
+  expect(agentInputs).toHaveLength(2);
+  const headings = agentInputs.map(chunk => JSON.parse(chunk.json));
+  expect(headings[0].description).toMatch(/^[A-Z][a-z]+ · glm-5-3-flash · Tell me a short joke$/);
+  expect(headings[1].description).toMatch(/^[A-Z][a-z]+ · model-b · Tell me a short joke$/);
+  for (const [index, heading] of headings.entries()) expect(heading).toEqual({ ...calls[index], description: heading.description });
+  expect(JSON.parse(turn.chunks.find(chunk => chunk.index === 2 && chunk.kind === 'input').json)).toEqual(read);
+  // The router heard the parent's own description and prompt, and is not asked again at tool.call.
+  expect(routerCalls.map(call => call.tool_input.description)).toEqual(['Joke from Sonnet', 'Joke from Haiku']);
+  for (const [index, heading] of headings.entries()) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: `head-${index}`, ...heading });
+  }
+  expect(routerCalls).toHaveLength(2);
+  for (const [index, heading] of headings.entries()) {
+    await $.agent.spawn({
+      tool_use_id: `head-${index}`, prompt: calls[index].prompt, description: heading.description,
+      subagentType: 'general-purpose', parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' as const },
+      background: true, fork: false, permissionMode: 'default', cwd: '/workspace',
+    });
+  }
+  // Claude before 2.1.328 has no agent-list row to render.
+  const agentRow = async (id: string) => {
+    try {
+      return await $.ui.mount({ ...panel, component: 'AgentRow' as const, requestId: id, props: { id } });
+    } catch (error) {
+      if (String(error).includes('is not a component')) return undefined;
+      throw error;
+    }
+  };
+  const match = await agentRow('child-head-0');
+  if (match) {
+    expect(rows.get('child-head-0').label).toBe(headings[0].description);
+    await match.unmount();
+    const mismatch = await agentRow('child-head-1');
+    expect(rows.get('child-head-1').label).toMatch(/ · model-c · Tell me a short joke ⚠ heading said model-b$/);
+    await mismatch!.unmount();
+  }
+  // The notice for the child that launched elsewhere says so; the matching one is left alone.
+  const notice = (id: string) => ({
+    ...panel, component: 'UserMessage' as const, requestId: `notice-${id}`,
+    props: { text: 'Agent finished', origin: { kind: 'task-notification' as const },
+      task: { id, status: 'completed', toolUseId: id, durationMs: 1 }, isExpanded: false },
+  });
+  const flagged = await $.ui.mount(notice('child-head-1'));
+  expect(rows.get('notice-child-head-1').text).toBe('Agent finished\n⚠ Launched on model-c, not the model-b in the heading');
+  await flagged.unmount();
+  const clean = await $.ui.mount(notice('child-head-0'));
+  expect(rows.get('notice-child-head-0').text).toBe('Agent finished');
+  await clean.unmount();
+});
+
+test('a server-side auto-mode review keeps the reply as the model wrote it', async ($, on) => {
+  const routerCalls: any[] = [];
+  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', ($, e) => ({ value: e.name === 'CLAUDE_CODE_AUTO_MODE_SERVER' ? '1' : undefined }));
+  on('process.run', ($, event) => { routerCalls.push(event); return { value: { exitCode: 0, stderr: '', stdout: '' } }; });
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'tool', index: 0, id: 'server-0', name: 'Agent' };
+    yield { kind: 'input', index: 0, json: JSON.stringify(call) };
+    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
+  });
+  const turn = await collectParentTurn($, 'server-review', 0);
+  expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
+  expect(routerCalls).toHaveLength(0);
 });

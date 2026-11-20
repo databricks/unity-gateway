@@ -29,28 +29,26 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
-`agent.spawn` hook applies the selected model and an animal-and-model task label,
-preserving the agent's type, prompt, name and permissions. The routing response contains
-only `model` and `rationale`;
+`agent.spawn` hook applies the selected model, preserving the agent's type, prompt,
+name and permissions. The routing response contains only `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
-Routing-card titles and individual tool rows identify the launched model, or the router
-selection before launch, rather than a model-written title such as `Joke from Sonnet`.
-Cards and lone rows retain the original description as explicit task-request context.
-Native task descriptions, reviewed inputs, full prompts, agent addresses and parent prose
-are unchanged. Completed task-notification rows use the child ID to display its launch
-identity and original task request; expanded rows retain the full original content.
-Session-scoped display files preserve those mappings across session resume, and the
-status command keeps live activity and counters without repeating the task description.
-Notification redraws use an in-memory cache; startup reads only the current session directory.
-A failed label restore does not block other agents. Older animal-only mappings continue to render.
-Claude's collapsed parallel-agent header and native task-list titles still render the
-stored request description outside these display sites in Claude Code 2.1.325 and 2.1.328.
-Those surfaces require a native renderer change. Rewriting the tool input or its response
-stream invalidates the server's auto-mode review and is not used to change these labels.
-On resume, historical notification rows already written to terminal scrollback can retain
-their native titles until the transcript is reopened; UI invalidation refreshes mounted rows.
+
+Claude draws the collapsed parallel-agent header and the task list from the Agent call's
+`description`, which it records when the parent's reply ends. A native `turn.step` hook holds
+a reply that contains Agent calls until the router has answered for each one, then replaces
+only that `description` with `<animal> · <model> · <task>` before the call is recorded, so
+auto-mode review and execution see the same text. The task title comes from the first
+sentence of the call's prompt. The router still receives the parent's original call, and
+`tool.call` routes only a call that did not arrive through a streamed reply.
+The model in that heading is the router's selection, a prediction until the child starts.
+At spawn the host's receipt is compared with it. Routing cards, the agent list and
+completed-task notices read the receipt: they show the launched model and, when it differs
+from the heading, a `⚠ heading said <model>` flag. A host that reports no launch model is
+logged and its labels are not saved. Session-scoped display files keep the receipts across
+resume; the resumed transcript already carries the rewritten description.
+Native task descriptions, full prompts, agent addresses and permissions are unchanged.
 In subagent-only mode, the native tool description explains that a requested model
 outside the built-in choices does not prevent a general-purpose launch; the router
 selects an available execution model.
