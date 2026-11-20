@@ -7588,8 +7588,10 @@ def test_pooled_client_built_on_tls_trust_store(monkeypatch):
 
 
 def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
-    parent_pid = os.getpid()
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
     parent_client = db_mod._get_http_client()
+    parent_pid = os.getpid()
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT", parent_client)
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", parent_pid)
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT_LOCK", db_mod._HTTP_CLIENT_LOCK)
@@ -7601,6 +7603,7 @@ def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
         assert child_client is not parent_client
         assert db_mod._HTTP_CLIENT_PID == parent_pid + 1
     finally:
+        parent_client.close()
         child_client.close()
 
 
