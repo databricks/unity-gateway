@@ -87,6 +87,7 @@ from ucode.custom_oauth import (
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     AnthropicModelCatalog,
+    _looks_like_definitive_auth_failure,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -4464,14 +4465,16 @@ def _launch_tool(
                 # falls back to the serial fetch on the live token, never fails the launch.
                 return None
             error = speculative.error_msg
-            if error and "401" not in error and "unauthorized" not in error.lower():
-                # A non-auth failure (a 403, say) would fail a live-token fetch the same way,
-                # so use the speculative result instead of doubling the request.
-                return speculative
-            if error:
-                # An auth-shaped failure may be stale pre-auth credentials that configure's
-                # auth step repaired; refetch with the live token.
+            if error and _looks_like_definitive_auth_failure(error):
+                # The token the speculation rode is definitively rejected (a 401, an
+                # invalid-token 400, an invalid-access-token 403) and configure's auth step may
+                # have repaired it; refetch with the live token.
                 return None
+            if error:
+                # Any other failure (a plain 403, a transient error) would fail a live-token
+                # fetch the same way, so use the speculative result instead of doubling the
+                # request.
+                return speculative
             return speculative
 
         state = configure_shared_state(
