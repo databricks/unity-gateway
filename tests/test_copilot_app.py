@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import http
 import json
+import os
 import threading
 from urllib.parse import parse_qs, urlparse
 
@@ -50,8 +51,8 @@ class FakeApp:
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         run = home / "run"
         run.mkdir(parents=True)
-        (run / "ws.port").write_text(f"{port}\n4242\n")
-        (run / "ws.token").write_text(f"{self.token}\n4242\n")
+        (run / "ws.port").write_text(f"{port}\n{os.getpid()}\n")
+        (run / "ws.token").write_text(f"{self.token}\n{os.getpid()}\n")
 
     def _check(self, connection, request):
         self.handshakes.append(dict(request.headers.raw_items()))
@@ -232,6 +233,46 @@ class TestDesiredProviders:
             ("claude-sonnet-5.5", "system.ai.claude-sonnet-5-5")
         ]
 
+    def test_a_claude_service_gets_the_id_of_the_model_behind_it(self, capsys):
+        (claude,) = copilot_app.desired_providers(
+            WORKSPACE,
+            [
+                CopilotModel(
+                    "main.team.team-coder",
+                    WIRE_ANTHROPIC,
+                    served_model="system.ai.claude-sonnet-4-6",
+                )
+            ],
+        ).plugin
+
+        assert [(m.model_id, m.wire_model) for m in claude.models] == [
+            ("claude-sonnet-4.6", "main.team.team-coder")
+        ]
+        assert capsys.readouterr().out == ""
+
+    def test_a_claude_route_model_without_a_claude_id_is_skipped_with_a_warning(self, capsys):
+        desired = copilot_app.desired_providers(
+            WORKSPACE, [CopilotModel("main.team.mystery", WIRE_ANTHROPIC), *CATALOG[1:]]
+        )
+
+        assert [p.wire for p in desired.plugin] == ["responses", "completions"]
+        assert "Skipping main.team.mystery" in " ".join(capsys.readouterr().out.split())
+
+    def test_a_duplicate_is_skipped_with_a_warning(self, capsys):
+        (claude,) = copilot_app.desired_providers(
+            WORKSPACE,
+            [
+                CopilotModel("us.anthropic.claude-sonnet-4-6", WIRE_ANTHROPIC),
+                CopilotModel("eu.anthropic.claude-sonnet-4-6", WIRE_ANTHROPIC),
+            ],
+            provider_service="my-mps",
+        ).plugin
+
+        assert [m.wire_model for m in claude.models] == ["us.anthropic.claude-sonnet-4-6"]
+        out = " ".join(capsys.readouterr().out.split())
+        assert "Skipping eu.anthropic.claude-sonnet-4-6" in out
+        assert "us.anthropic.claude-sonnet-4-6" in out
+
     def test_state_providers_use_the_vscode_catalog(self, monkeypatch):
         from ucode.agents import vscode
 
@@ -350,6 +391,27 @@ class TestStatus:
 
         copilot_app.unregister()
         assert copilot_app.status(providers) == "not_registered"
+
+    def test_another_workspace_or_changed_rows_are_outdated(self, app):
+        providers = _app_providers()
+        seed(app, providers)
+
+        assert copilot_app.status(
+            _app_providers(workspace="https://other.cloud.databricks.com")
+        ) == ("outdated")
+        renamed = [
+            copilot_app.AppProvider(
+                p.key,
+                p.name,
+                p.kind,
+                p.settings,
+                p.secret,
+                tuple({**row, "displayName": "Renamed"} for row in p.models),
+            )
+            for p in providers
+        ]
+        assert copilot_app.status(renamed) == "outdated"
+        assert copilot_app.status(providers) == "registered"
 
     def test_a_row_the_user_added_counts_as_outdated(self, app):
         providers = _app_providers()
@@ -473,6 +535,22 @@ def test_a_closed_app_is_not_running(tmp_path, monkeypatch):
     (home / "run" / "ws.token").write_text("stale\n4242\n")
     with pytest.raises(copilot_app.CopilotAppNotRunning):
         copilot_app.unregister()
+
+
+def test_a_port_file_of_an_exited_app_is_not_running(app, monkeypatch):
+    monkeypatch.setattr(copilot_app, "process_running", lambda pid: False)
+
+    assert copilot_app.status(_app_providers()) == "not_running"
+    with pytest.raises(copilot_app.CopilotAppNotRunning):
+        copilot_app.unregister()
+    assert app.handshakes == []
+
+
+def test_the_token_is_url_encoded(app):
+    app.token = "a+b&c=d"
+    (copilot_app.copilot_home() / "run" / "ws.token").write_text(f"{app.token}\n4242\n")
+
+    assert copilot_app.unregister() is False
 
 
 def test_a_rejected_token_is_an_app_error(app):

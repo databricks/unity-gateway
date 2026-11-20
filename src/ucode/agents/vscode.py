@@ -203,7 +203,9 @@ def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
 def copilot_models(
     state: dict, provider: str | None = None, location: str | None = None
 ) -> list[CopilotModel]:
-    """The models Copilot CLI would offer from the same source; raises when there are none."""
+    """The models of a Model Provider Service (``provider``), a ``<catalog>.<schema>``
+    (``location``) or the discovered catalog, as the Copilot CLI lists them; raises when there are
+    none. VS Code and the GitHub Copilot app both use it."""
     if provider:
         return provider_service_catalog(state, provider, None, tool="vscode")
     if location:

@@ -5,20 +5,20 @@ own window uses. ug's Copilot plugin (``ucode.copilot_app_plugin``) writes them 
 app runs, then re-supplies the same provider and model ids in every session and serves them from
 the AI Gateway, so both come from :func:`desired_providers`. This module also talks to the running
 app directly, to check the rows and to delete them at revert. The app publishes the port and a
-per-launch token in ``~/.copilot/run/``. The providers have fixed ids, so revert finds them
-without any state.
+per-launch token in ``~/.copilot/run/``. The providers have fixed ids, so revert deletes them by
+id with no saved state.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlencode
 
 from ucode.agents.copilot import (
     WIRE_ANTHROPIC,
@@ -30,7 +30,14 @@ from ucode.agents.copilot import (
     model_labels,
 )
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
-from ucode.copilot_app_plugin import AppProviderRows, PluginModel, PluginProvider, Wire
+from ucode.copilot_app_plugin import (
+    AppProviderRows,
+    PluginModel,
+    PluginProvider,
+    Wire,
+    copilot_settings_path,
+)
+from ucode.os_compatibility.system_cross_os import process_running
 from ucode.ui import print_warning
 
 # The app versions whose WebSocket messages ug was checked against; others get a warning.
@@ -45,7 +52,8 @@ AppStatus = Literal["registered", "outdated", "not_registered", "not_running"]
 
 
 class CopilotAppError(RuntimeError):
-    """The app refused or didn't understand a request; nothing more was changed."""
+    """The app refused, didn't understand or didn't answer a request. ug sent nothing after it,
+    but requests already sent may have been applied."""
 
 
 class CopilotAppNotRunning(CopilotAppError):
@@ -95,7 +103,12 @@ class AppProvider:
     def rows(self) -> AppProviderRows:
         """The provider and its model rows as the plugin writes them to the app."""
         return AppProviderRows(
-            provider={"id": self.id, "name": self.name, "kind": self.kind, "settings": self.settings},
+            provider={
+                "id": self.id,
+                "name": self.name,
+                "kind": self.kind,
+                "settings": self.settings,
+            },
             secret=self.secret,
             models=tuple(
                 {**row, "id": self.model_row_id(row["modelId"]), "providerId": self.id}
@@ -124,7 +137,7 @@ OWNED_PROVIDER_IDS = tuple(_provider_id(spec.key) for spec in _PROVIDERS)
 
 
 def copilot_home() -> Path:
-    return Path(os.environ.get("COPILOT_HOME") or Path.home() / ".copilot")
+    return copilot_settings_path().parent
 
 
 def _base_path(wire: Wire, provider_service: str | None) -> str:
@@ -138,19 +151,28 @@ def _model_rows(
 ) -> list[dict[str, Any]]:
     """The app's model rows for ``catalog``'s models on ``wire``.
 
-    A Claude row's id is Copilot's catalog id, which is what makes the app apply Claude's request
-    settings, and its wire model is the gateway's id. Ids the app would see twice keep the first."""
+    A Claude row's id is Copilot's catalog id for the model behind it, which is what makes the app
+    apply Claude's request settings, and its wire model is the gateway's id. Ids the app would see
+    twice keep the first, with a warning."""
     models = [model for model in catalog if model.wire == wire]
     labels = model_labels(models, provider_service=provider_service)
     rows: dict[str, dict[str, Any]] = {}
     for model in models:
         if wire == WIRE_ANTHROPIC:
-            model_id = copilot_catalog_model_id(model.id)
+            model_id = copilot_catalog_model_id(model.catalog_name)
             if model_id is None:
+                print_warning(
+                    f"Skipping {model.id} in the GitHub Copilot app: ug couldn't tell which "
+                    "Claude model it serves."
+                )
                 continue
         else:
             model_id = model.registry_id
         if model_id in rows:
+            print_warning(
+                f"Skipping {model.id} in the GitHub Copilot app: it shows as {model_id}, like "
+                f"{rows[model_id]['wireModel']}."
+            )
             continue
         row: dict[str, Any] = {
             "modelId": model_id,
@@ -245,12 +267,18 @@ class _AppConnection:
 
         run = home / "run"
         try:
-            # Each file holds the value, then the app's pid; a stale one names a closed port.
-            port = int((run / "ws.port").read_text().split()[0])
+            # Each file holds the value, then the app's pid. The app leaves them behind when it
+            # exits, and another program may since have taken the port.
+            port_file = (run / "ws.port").read_text().split()
+            port = int(port_file[0])
             token = (run / "ws.token").read_text().split()[0]
+            pid = int(port_file[1]) if len(port_file) > 1 else None
         except (OSError, ValueError, IndexError):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
-        url = f"ws://127.0.0.1:{port}/?token={token}&requester_id=ug&session_channels=false"
+        if pid is not None and not process_running(pid):
+            raise CopilotAppNotRunning("The GitHub Copilot app isn't running.")
+        query = urlencode({"token": token, "requester_id": "ug", "session_channels": "false"})
+        url = f"ws://127.0.0.1:{port}/?{query}"
         try:
             # No Origin: the app refuses any origin but its own window.
             self._connection = connect(url, origin=None, compression=None, open_timeout=5)
@@ -416,8 +444,13 @@ def unregister() -> bool:
         app.close()
 
 
+def _differs(listed: dict[str, Any], wanted: dict[str, Any]) -> bool:
+    return any(name in listed and listed[name] != value for name, value in wanted.items())
+
+
 def status(providers: Iterable[AppProvider]) -> AppStatus:
-    """Whether the running app has exactly ``providers`` and their models among ug's providers.
+    """Whether the running app has ``providers`` and their models as ug's only providers, with the
+    same names, settings and row fields (those the app lists back).
 
     ``outdated`` means it has some of ug's providers, but not these. Raises
     :class:`CopilotAppError` when the app refuses."""
@@ -434,8 +467,13 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
         if ours != {provider.id for provider in providers}:
             return "outdated"
         for provider in providers:
-            listed = {model["id"] for model in _models(app, provider.id)}
-            if listed != {provider.model_row_id(row["modelId"]) for row in provider.models}:
+            wanted = provider.rows()
+            if _differs(existing[provider.id], dict(wanted.provider)):
+                return "outdated"
+            listed = {model["id"]: model for model in _models(app, provider.id)}
+            if set(listed) != {model["id"] for model in wanted.models}:
+                return "outdated"
+            if any(_differs(listed[model["id"]], dict(model)) for model in wanted.models):
                 return "outdated"
         return "registered"
     except CopilotAppNotRunning:
