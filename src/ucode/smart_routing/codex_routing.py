@@ -9,18 +9,20 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 # Re-exported so tests can patch the shared ``urlopen`` seam via
 # ``codex_routing.urllib.request`` — the actual call lives in ``routing``, but
 # Python modules are singletons so patching this name patches the one call site.
 import urllib.request  # noqa: F401
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
 
+from ucode.codex_config import provider_http_headers
 from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CODEX
-from ucode.smart_routing import orchestrator, routing
+from ucode.smart_routing import orchestrator, route_validation, routing, session_log
 from ucode.smart_routing.routing import RoutingDecision
 
 ROUTER_NAME = routing.ROUTER_NAME
@@ -40,6 +42,36 @@ SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
 
 
+def prioritize_gpt_models(models: list[str]) -> list[str]:
+    """Prefer numbered GPT targets while preserving provider IDs and relative order."""
+    return list(dict.fromkeys([*(model for model in models if _GPT_RE.search(model)), *models]))
+
+
+def codex_route_options(available_models: list[str]) -> list[tuple[str, str]]:
+    models = list(dict.fromkeys(available_models))
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "codex")
+
+
+def validate_codex_model_list(
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    *,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    """Return the shared route validation verdict for the Codex model list."""
+    return route_validation.validate(
+        workspace,
+        token,
+        codex_route_options(available_models),
+        router_name=routing.configured_router_name(),
+        provider=provider,
+        available_harness=AGENT_CODEX,
+    )
+
+
 def request_routing_decision(
     workspace: str,
     token: str,
@@ -48,11 +80,17 @@ def request_routing_decision(
     *,
     timeout: float = REQUEST_TIMEOUT_S,
     log: Callable[[str], None] | None = None,
+    attribution_headers: Mapping[str, str] | None = None,
+    provider: str | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
-    route_options = routing.route_options_for(available_models, "codex")
+    route_options = codex_route_options(available_models)
     if not route_options:
         return None, "no cached model services are available"
+    if attribution_headers is None:
+        attribution_headers = routing.attribution_headers(
+            "codex", harness_headers=provider_http_headers()
+        )
     router_name = routing.configured_router_name()
     if log is not None:
         payload = {
@@ -71,6 +109,8 @@ def request_routing_decision(
         route_options,
         router_name=router_name,
         timeout=timeout,
+        attribution_headers=attribution_headers,
+        **({"provider": provider} if provider else {}),
     )
 
 
@@ -82,12 +122,23 @@ def route_pre_tool_use(
     available_models: list[str],
     timeout: float = REQUEST_TIMEOUT_S,
     audit_decision: bool = False,
+    provider: str | None = None,
+    show_notice: bool = True,
 ) -> dict[str, Any] | None:
     """Route one Codex ``spawn_agent`` call and rewrite its model."""
     record = None
+    attribution = routing.attribution_headers(
+        "codex",
+        session_id=payload.get("session_id"),
+        # Codex's root thread ID is its session ID, which its own inference sends as thread-id.
+        agent_id=payload.get("agent_id") or payload.get("session_id"),
+        harness_headers=provider_http_headers(),
+    )
     if audit_decision:
+        started = time.monotonic()
 
         def record(payload, task, decision, requested):
+            routing_ms = round((time.monotonic() - started) * 1000)
             # Bound diagnostic text without changing the router input or native hook output.
             audit = replace(
                 decision,
@@ -99,17 +150,27 @@ def route_pre_tool_use(
             routing.write_decision_record(
                 DECISIONS_PATH, payload, task, audit, requested, include_task_text=False
             )
+            session_log.append_decision(
+                AGENT_CODEX, payload, task, decision, requested, routing_ms=routing_ms
+            )
 
     name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""
     return routing.route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent_tool,
         decision_fn=lambda task: request_routing_decision(
-            workspace, token, task, available_models, timeout=timeout
+            workspace,
+            token,
+            task,
+            available_models,
+            timeout=timeout,
+            attribution_headers=attribution,
+            **({"provider": provider} if provider else {}),
         ),
-        default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
-        notice_config=replace(SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix),
+        notice_config=replace(
+            SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix, show_message=show_notice
+        ),
         record_decision=record,
     )
 

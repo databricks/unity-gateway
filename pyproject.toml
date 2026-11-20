@@ -27,6 +27,7 @@ dependencies = [
   "opentelemetry-sdk>=1.44.0,<2",
   "questionary>=2.0.0",
   "tomlkit>=0.13.0",
+  "truststore>=0.10.0",
   "typer>=0.26.0",
   # enable changing codex model after first prompt
   "websockets>=13",
@@ -59,6 +60,7 @@ fallback-version = "0.0.0"
 
 [dependency-groups]
 dev = [
+    "cryptography>=49.0.0",
     "pytest>=9.0.3",
     "pytest-rerunfailures>=16.7",
     "pexpect>=4.9.0",
@@ -68,10 +70,13 @@ dev = [
     # ruff/ty output shifts between releases, so bump these deliberately.
     "ruff==0.16.5",
     "ty==0.0.75",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# One worker per CPU; tests/conftest.py keeps the live E2E suite serial.
+addopts = ["-n", "auto"]
 
 [tool.ruff]
 line-length = 100

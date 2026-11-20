@@ -1,11 +1,13 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import importlib.util
 import io
 import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -85,7 +87,7 @@ def test_managed_integration_ci_is_blocking():
     assert needs is not None
     assert "managed" in {job.strip() for job in needs.group(1).split(",")}
     assert (
-        "if: ${{ always() && (github.event_name != 'pull_request' || "
+        "if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     ) in gate
     baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
@@ -96,6 +98,12 @@ def test_managed_integration_ci_is_blocking():
     assert baseline | routing == _collect_integration_cases(
         "(managed_fixture or workspace_switch) and codex and not soft_fail"
     )
+    equals_model_case = (
+        "test_ug_codex_v2_routing.py::"
+        "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+    )
+    assert equals_model_case not in baseline
+    assert equals_model_case in routing
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
     )
@@ -105,6 +113,18 @@ def test_managed_integration_ci_is_blocking():
         "test_ug_configure_managed_models.py::test_managed_fixture_codex_smart_routing_banner"
         in routing
     )
+    version_aware = (
+        "test_ug_smart_routing_hooks.py::"
+        "test_smart_router_managed_default_matches_codex_version_at_launch"
+    )
+    assert version_aware in baseline
+    assert version_aware in _collect_integration_cases(
+        "harness_latest and codex and managed_fixture"
+    )
+    assert (
+        "test_ug_smart_routing_hooks.py::"
+        "test_smart_router_managed_default_routes_supported_codex_at_launch"
+    ) in routing
 
 
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
@@ -146,9 +166,29 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
     assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
     assert "shasum -a 256 -c" in job
-    assert "--macos-desktop" in job
+    assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
+    }
+
+
+def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
+    jobs = _integration_jobs()
+    job = jobs["codex-desktop-windows"]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-desktop-windows" in {name.strip() for name in needs.group(1).split(",")}
+    assert "runs-on: windows-latest" in job
+    assert "continue-on-error:" not in job
+    assert re.search(r"(?m)^      CHATGPT_APP_VERSION: \d+\.\d+\.\d+\.\d+$", job)
+    assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
+    assert "codex-app-prod/releases/$env:CHATGPT_APP_VERSION/ChatGPT-x64.msix" in job
+    assert "-ne $env:CHATGPT_APP_SHA256" in job
+    assert "--desktop-app" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn",
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_skill_calls_mcp",
     }
 
 
@@ -167,9 +207,10 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert "spctl --assess --type execute /Applications/ChatGPT.app" in workflow
     assert re.search(r"(?m)^          OPENAI_TEAM_ID: [A-Z0-9]{10}$", workflow)
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
-    assert "${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }}" in workflow
+    assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -243,16 +284,27 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         routing = _collect_integration_cases(
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
-        assert not (smoke | full) & routing
-        assert (
-            "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
-            in routing
+        managed_routing = _collect_integration_cases(
+            _ci_marker_expression(jobs["managed"], agent, smart_routing=True)
         )
+        assert not (smoke | full) & routing
+        equals_model_case = (
+            "test_ug_codex_v2_routing.py::"
+            "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+        )
+        assert equals_model_case not in routing
+        assert equals_model_case in managed_routing
+        for model_option in ("saved", "split"):
+            assert (
+                "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
+                f"[{model_option}]" in routing
+            )
         assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
         for name in ("full", "managed"):
-            assert "smart_routing: [false]" in jobs[name]
+            if name == "managed":
+                assert "smart_routing: [false]" in jobs[name]
             assert (
-                "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
+                "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
                 "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
@@ -263,9 +315,17 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             )
         assert "- agent: codex\n            smart_routing: true" in jobs["managed"]
         full |= routing
+        relay = _collect_integration_cases(_ci_marker_expression(jobs["codex-relay"], agent))
+        assert relay == {
+            "test_ug_codex_relayed.py::test_ug_codex_relayed_completes_inference_through_the_relay"
+        }
+        assert not (smoke | full) & relay
+        full |= relay
     # Full skips smoke cases only because smoke runs them on the same OS matrix.
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
-    assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
+    for platform in ("ubuntu-22.04", "windows-latest"):
+        for lane_agent in ("claude", "codex"):
+            assert f"- os: {platform}\n            agent: {lane_agent}" in jobs["full"]
     assert not smoke & full
     selected = smoke | full
     if agent == "claude":
@@ -277,6 +337,22 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     assert selected == _collect_integration_cases(f"live and {agent} and not soft_fail")
 
 
+def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
+    jobs = _integration_jobs()
+    relay = jobs["codex-relay"]
+    assert "group: databricks-protected-runner-group" in relay
+    assert "labels: linux-ubuntu-latest" in relay
+    assert "CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}" in relay
+    assert "CODEX_ACCESS_TOKEN" not in jobs["full"]
+    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in relay
+    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in relay
+    assert "steps: *live-steps" in relay
+    assert "continue-on-error:" not in relay
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-relay" in {name.strip() for name in needs.group(1).split(",")}
+
+
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
     monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
     jobs = _integration_jobs()
@@ -286,8 +362,11 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
     assert "DATABRICKS_BEARER:" not in job
-    assert "os: [ubuntu-22.04, windows-latest]" in job
-    assert "agent: [claude, copilot]" in job
+    # The blocking caller runs the sharded Claude legs; the advisory caller the Copilot legs.
+    assert "inputs.mode == 'required' &&" in job
+    assert "inputs.mode == 'advisory' &&" in job
+    assert '"agent":"claude","shard":"1/3"' in job
+    assert '"agent":"copilot"' in job
     assert "fail-fast: false" in job
     assert "group: databricks-protected-runner-group" in job
     assert (
@@ -303,7 +382,10 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
         "matrix.os == 'windows-latest' && 85 || 40 }}"
     ) in job
     assert "AGENT: ${{ matrix.agent }}" in job
-    assert "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}" in job
+    assert (
+        "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}"
+        "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in job
+    )
     selected = set()
     for agent in ("claude", "copilot"):
         cases = _collect_integration_cases(_ci_marker_expression(job, agent))
@@ -339,7 +421,13 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     jobs = _integration_jobs()
     assert "concurrency:" not in jobs["smoke"]
     assert "concurrency:" not in jobs["full"]
-    assert "max-parallel: 4" in jobs["full"]
+    assert "max-parallel:" not in jobs["full"]
+    assert "needs: workspace" in jobs["full"]
+    assert "not smoke" in _ci_marker_expression(jobs["full"], "claude")
+    assert "not smoke" in _ci_marker_expression(jobs["full"], "codex")
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in jobs["full"]
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in jobs["full"]
+    assert "E2E_ADMIN_SP_CLIENT_ID" not in jobs["full"]
 
 
 def test_full_claude_lane_includes_both_desktop_journeys():
@@ -349,7 +437,8 @@ def test_full_claude_lane_includes_both_desktop_journeys():
         "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
         "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
     } <= cases
-    assert "os: [ubuntu-22.04, windows-latest]" in full
+    for platform in ("ubuntu-22.04", "windows-latest"):
+        assert f"- os: {platform}\n            agent: claude" in full
     assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
 
 
@@ -395,7 +484,7 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing
 
 def _discover_cujs(root, output):
     plan = _workflow_job("dedicated-cuj-plan", "dedicated-cuj")
-    script = textwrap.dedent(plan.split("        run: |\n", 1)[1])
+    script = textwrap.dedent(plan.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=root,
@@ -419,8 +508,10 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
-        "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
+        "CODEX_VERSION: ${{ (matrix.test == 'test_cuj4_smart_routing.py' || "
+        "matrix.test == 'test_cuj7_model_discovery.py') && '0.171.0' || "
         "inputs.codex_version || '0.156.0' }}"
     ) in job
 
@@ -501,7 +592,7 @@ def test_latest_harness_slack_notification(
         "NOTIFY_NAME": "Latest harness test",
         "NOTIFY_RESULT": result,
         "CLAUDE_VERSION": claude_version,
-        "CODEX_VERSION": "0.154.0",
+        "CODEX_VERSION": "0.156.0",
         "GITHUB_REPOSITORY": "databricks/unity-gateway",
         "GITHUB_RUN_ID": "123",
         "GITHUB_API_URL": "https://api.github.com",
@@ -543,7 +634,7 @@ def test_latest_harness_slack_notification(
         assert not posted
         return
     runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
-    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.156.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
@@ -563,15 +654,28 @@ def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     entries, stderr = _discover_cujs(root, tmp_path / "github-output")
 
     assert entries is not None, stderr
-    assert [entry["test"] for entry in entries] == sorted(
-        path.name for path in (root / "tests/e2e_cuj").glob("test_*.py")
+    files = sorted(path.name for path in (root / "tests/e2e_cuj").glob("test_*.py"))
+    assert sorted({entry["test"] for entry in entries}) == files
+    assert len({entry["name"] for entry in entries}) == len(files), (
+        f"Duplicate CUJ_NAME values: {[entry['name'] for entry in entries]}"
     )
-    names = [entry["name"] for entry in entries]
-    assert len(set(names)) == len(names), f"Duplicate CUJ_NAME values: {names}"
     for entry in entries:
         number = re.fullmatch(r"test_cuj(\d+)_[a-z0-9_]+\.py", entry["test"])
         assert number, f"Name CUJ files test_cuj<N>_<topic>.py: {entry['test']}"
         assert entry["name"].startswith(f"CUJ {number.group(1)} · "), entry
+    # A file recorded with several shards expands to that many matrix entries, 1/N through N/N.
+    recorded = json.loads((root / "tests/live_test_times.json").read_text())
+    for path in files:
+        shards = recorded.get(f"cuj-{path}", {}).get("Linux", {}).get("shards", 1)
+        legs = [entry for entry in entries if entry["test"] == path]
+        assert len(legs) == shards
+        for entry in legs:
+            if shards > 1:
+                index, _, total = entry["shard"].partition("/")
+                assert (int(index), int(total)) == (legs.index(entry) + 1, shards)
+                assert entry["shard_index"] == legs.index(entry) + 1
+            else:
+                assert "shard" not in entry and "shard_index" not in entry
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -594,6 +698,7 @@ FORK_GUARD = (
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
     "anthropic-mps",
+    "codex-relay",
     "cowork-inference-windows",
     "cowork-inference-macos",
     "workspace",
@@ -604,11 +709,14 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "copilot",
     "antigravity",
+    "vscode",
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
+    "codex-desktop-windows",
     "dedicated-cuj-plan",
     "dedicated-cuj",
+    "live-shard-times",
     "cujs",
 }
 
@@ -626,8 +734,9 @@ def _skips_fork_prs(jobs, name):
         return True
     needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
     for need in [need.strip() for need in needs.group(1).split(",")] if needs else []:
-        requires_success = (
-            condition is None or f"needs.{need}.result == 'success'" in condition.group(1)
+        expression = condition.group(1) if condition else ""
+        requires_success = f"needs.{need}.result == 'success'" in expression or not re.search(
+            r"\b(?:always|cancelled|failure|success)\(\)", expression
         )
         if requires_success and _skips_fork_prs(jobs, need):
             return True
@@ -657,6 +766,7 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
     integration = workflow.split("\n  integration:\n", 1)[1].split("\n  report:\n", 1)[0]
+    gate = workflow.split("\n  security-gate:\n", 1)[1].split("\n  integration:\n", 1)[0]
     report = workflow.split("\n  report:\n", 1)[1]
 
     assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
@@ -665,16 +775,26 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!({MEMBER_ONLY} ||" in reject
-    assert "Prior contributors can run integration tests on their own PR" in reject
+    assert f"!{MEMBER_ONLY}" in reject
+    # Integration runs PR code with CI secrets, so a contributor can't start it on their own PR.
+    assert "CONTRIBUTOR" not in workflow
+    assert "only Databricks org members can run integration tests" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
-    assert "needs: authorize" in integration
+    assert "needs: authorize" in gate
+    assert "uses: ./.github/workflows/security-gate.yml" in gate
+    assert "pr-number: ${{ github.event.issue.number }}" in gate
+    assert "head-sha: ${{ needs.authorize.outputs.sha }}" in gate
+    assert "actions: read" in gate and "secrets:" not in gate
+    assert "needs: [authorize, security-gate]" in integration
+    assert "if:" not in integration, "Both prerequisites must succeed before secrets are supplied"
     assert "group: fork-integration-${{ github.event.issue.number }}" in integration
     assert "uses: ./.github/workflows/integration.yml" in integration
     assert "ref: ${{ needs.authorize.outputs.sha }}" in integration
     assert "needs.authorize.result == 'success'" in report
+    assert "needs: [authorize, security-gate, integration]" in report
+    assert "SCAN_RESULT: ${{ needs.security-gate.result }}" in report
     assert "repos/$GITHUB_REPOSITORY/statuses/$SHA" in report
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0], (
         "Workflow-level concurrency would let any PR comment cancel a run"
@@ -763,6 +883,336 @@ def test_no_workflow_uses_pull_request_target():
     assert [path.name for path in workflows if "pull_request_target" in path.read_text()] == []
 
 
+def test_security_scan_runs_before_every_job_that_runs_pr_code():
+    # A finding skips every test job, which fails the required test and e2e checks.
+    gate_job = (
+        "  security-gate:\n    name: Security Gate\n    permissions:\n"
+        "      actions: read\n    uses: ./.github/workflows/security-gate.yml\n"
+    )
+    ci = _workflow("ci.yml")
+    publish = _workflow("publish-skills-test.yml")
+    scan = _workflow("security-scan.yml")
+    gate = _workflow("security-gate.yml")
+
+    for workflow in (ci, publish):
+        assert gate_job in workflow
+        jobs = dict(
+            re.findall(
+                r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+                workflow.split("\njobs:\n", 1)[1],
+            )
+        )
+        gated = {"security-gate"}
+        while True:
+            previous = gated.copy()
+            for name, job in jobs.items():
+                needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+                if needs and {need.strip() for need in needs[1].split(",")} <= gated:
+                    gated.add(name)
+            if gated == previous:
+                break
+        assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
+    assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
+    assert "workflow_call:" not in scan
+    assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
+    assert "run-name: 'Security Scan for CI run ${{ github.event.workflow_run.id }}'" in scan
+    assert "run-name: 'CI #${{ github.event.pull_request.number || github.run_id }}'" in ci
+    assert 'origin "$POLICY_SHA"' in scan and "${{ github.workflow_sha }}" in scan
+    assert "bootstrap" not in scan
+    assert re.search(r"(?m)^on:\n  workflow_call:\n    inputs:\n", gate)
+    assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in gate
+    assert "PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}" in gate
+    assert "HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}" in gate
+    assert "PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}" in gate
+    assert "actions: read" in gate and "uses:" not in gate
+    assert "${{ secrets." not in scan + gate
+    # The PR's .gitattributes must not hide changes from the diff-based scans.
+    assert 'git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff' in scan
+    # Unquoted path lists, and no `# nosemgrep` waivers from the PR itself.
+    assert 'git -C pr diff --no-renames --name-only -z "$BASE_SHA...HEAD" > changed.txt' in scan
+    assert scan.count("--disable-nosem --metrics=off") == 2
+
+
+@pytest.mark.parametrize(
+    ("responses", "accepted", "polls"),
+    [
+        ([[{}]], True, 1),
+        ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
+        ([[], [{}]], True, 2),
+        ([[]], False, 11),
+        ([[{"status": "queued", "conclusion": None}]], False, 11),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 11),
+        ([[{"display_title": "Security Scan #8"}]], False, 11),
+        ([[{"event": "pull_request"}]], False, 11),
+        ([[{"event": "workflow_dispatch"}]], False, 11),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 11),
+        ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
+        ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
+    ]
+    + [
+        ([[{"conclusion": conclusion}]], False, 1)
+        for conclusion in [
+            "failure",
+            "cancelled",
+            "timed_out",
+            "skipped",
+            "neutral",
+            "action_required",
+        ]
+    ],
+)
+def test_security_gate_waits_for_the_current_scan(monkeypatch, responses, accepted, polls):
+    code, calls = _run_security_gate(monkeypatch, responses)
+    assert (code == 0) == accepted
+    assert calls == polls
+
+
+def _run_security_gate(
+    monkeypatch,
+    responses,
+    *,
+    authenticated=True,
+    updated="2026-11-13T00:00:00Z",
+    pr="7",
+    sha=HEAD,
+    request_change=None,
+    api_error=None,
+):
+    body = _workflow("security-gate.yml").split("        run: |\n", 1)[1].split("\n      - ", 1)[0]
+    script = textwrap.dedent(body).removeprefix("python3 - <<'PY'\n").removesuffix("PY")
+    for key, value in {
+        "REPO": "databricks/unity-gateway",
+        "PR_NUMBER": pr,
+        "HEAD_SHA": sha,
+        "PR_UPDATED_AT": updated,
+        "GH_TOKEN": "test-token" if authenticated else "",
+        "GITHUB_API_URL": "https://api.github.com",
+    }.items():
+        monkeypatch.setenv(key, value)
+    scan = {
+        "id": 1,
+        "path": ".github/workflows/security-scan.yml",
+        "display_title": "Security Scan for CI run 42",
+        "event": "workflow_run",
+        "head_sha": "b" * 40,  # The trusted workflow runs at main, not the PR head.
+        "created_at": "2026-11-13T00:00:00Z",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://example/scan/1",
+        "pull_requests": [],  # GitHub can omit PR associations on fork runs.
+    }
+    request = {
+        "id": 42,
+        "path": ".github/workflows/ci.yml",
+        "display_title": "CI #7",
+        "event": "pull_request",
+        "head_sha": HEAD,
+        "created_at": "2026-11-13T00:00:00Z",
+    } | (request_change or {})
+    calls = {"request": 0, "scan": 0}
+
+    def pages(which, index):
+        changes = responses[min(index, len(responses) - 1)]
+        runs = [request] if which == "request" else [scan | change for change in changes]
+        return [
+            {"workflow_runs": [scan | {"path": "other.yml"}] * 100},
+            {"workflow_runs": runs},
+        ]
+
+    def endpoint_kind(endpoint):
+        if endpoint == (
+            f"repos/databricks/unity-gateway/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
+        ):
+            return "request"
+        assert endpoint == (
+            "repos/databricks/unity-gateway/actions/workflows/security-scan.yml/runs"
+            "?event=workflow_run&created=%3E%3D2026-11-13T00:00:00Z&per_page=100"
+        )
+        return "scan"
+
+    def fetch(request, timeout):
+        assert request.get_header("Authorization") == (
+            "Bearer test-token" if authenticated else None
+        )
+        assert timeout == 30
+        if api_error:
+            raise api_error
+        endpoint, page = request.full_url.rsplit("&page=", 1)
+        assert endpoint.startswith("https://api.github.com/")
+        which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
+        if page == "1":
+            calls[which] += 1
+        return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fetch)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    with pytest.raises(SystemExit) as result:
+        exec(compile(script, "security-gate.yml", "exec"), {})
+    return result.value.code, max(calls.values())
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"event": "push"},
+        {"display_title": "CI #8"},
+        {"path": ".github/workflows/other.yml"},
+        {"created_at": "2026-11-12T00:00:00Z"},
+        {"id": 43},  # A scan of request 42 cannot satisfy a different request.
+    ],
+)
+def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
+    code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
+    assert code != 0 and calls == 11
+
+
+@pytest.mark.parametrize("matches_commit", [True, False])
+def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
+    monkeypatch, matches_commit
+):
+    # Comments arrive after the scan: reuse it without a PR-event freshness cutoff.
+    sha = HEAD if matches_commit else "a" * 40
+    code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
+    assert (code == 0) == matches_commit
+    assert calls == (1 if matches_commit else 11)
+
+
+@pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
+def test_security_gate_rejects_missing_or_invalid_authorized_commit(monkeypatch, pr, sha):
+    code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", pr=pr, sha=sha)
+    assert code != 0 and calls == 0
+
+
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_security_gate_supports_anonymous_and_authenticated_requests(monkeypatch, authenticated):
+    code, _ = _run_security_gate(monkeypatch, [[{}]], authenticated=authenticated)
+    assert code == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        *[
+            urllib.error.HTTPError("https://api.github.com", status, "failure", {}, None)
+            for status in (403, 404, 503)
+        ],
+        urllib.error.URLError("unreachable"),
+        TimeoutError("timed out"),
+    ],
+)
+def test_security_gate_api_errors_block_ci(monkeypatch, error):
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error)
+    assert str(code).startswith("::error::")
+    assert "tests remain blocked" in code and "re-run failed CI jobs" in code
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_security_gate_explains_rate_limits(monkeypatch, status):
+    error = urllib.error.HTTPError(
+        "https://api.github.com",
+        status,
+        "rate limited",
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1794602022"},
+        None,
+    )
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error)
+    assert "rate limit reached; tests remain blocked" in code
+    assert "Re-run failed CI jobs" in code and "1794602022" in code
+
+
+def test_security_gate_supports_required_workflow_events():
+    workflow = _workflow("security-gate.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    assert "  workflow_call:\n" in trigger
+    assert "  pull_request:\n  merge_group:\n" in trigger
+    assert "secrets:" not in workflow and "cancel-in-progress:" not in workflow
+
+
+@pytest.mark.parametrize(
+    ("event_name", "head_repo", "hosted", "waits"),
+    [
+        ("pull_request", "external/fork", True, True),
+        ("pull_request", "databricks/unity-gateway", True, True),
+        ("issue_comment", "", False, True),
+        ("merge_group", "", True, False),
+        ("push", "", True, False),
+        ("schedule", "", True, False),
+    ],
+)
+def test_security_gate_runner_and_token_respect_event_trust(event_name, head_repo, hosted, waits):
+    from types import SimpleNamespace
+
+    workflow = _workflow("security-gate.yml")
+    runner = re.search(r"runs-on: >-\n(.*?)\n    timeout-minutes:", workflow, re.S)[1]
+    token = re.search(r"GH_TOKEN: (.*)", workflow)[1]
+    wait_step = workflow.split("      - name: Wait for the shared Security Scan\n", 1)[1]
+    condition = re.search(r"        if: (.*)", wait_step)[1]
+    github = SimpleNamespace(
+        event_name=event_name,
+        repository="databricks/unity-gateway",
+        token="test-token",
+        event=SimpleNamespace(
+            pull_request=SimpleNamespace(
+                head=SimpleNamespace(repo=SimpleNamespace(full_name=head_repo))
+            )
+        ),
+    )
+
+    def evaluate(expression):
+        expression = expression.strip().removeprefix("${{").removesuffix("}}")
+        expression = " ".join(expression.replace("&&", " and ").replace("||", " or ").split())
+        return eval(expression, {"__builtins__": {}}, {"github": github, "fromJSON": json.loads})
+
+    assert evaluate(runner) == (
+        "ubuntu-latest"
+        if hosted
+        else {"group": "databricks-protected-runner-group", "labels": "linux-ubuntu-latest"}
+    )
+    assert evaluate(token) == ("" if hosted else "test-token")
+    assert evaluate(condition) == waits
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the report step runs bash on Linux")
+@pytest.mark.parametrize(
+    ("scan_result", "integration_result", "state", "message"),
+    [
+        ("success", "success", "success", "Fork integration success"),
+        ("success", "failure", "failure", "Fork integration failure"),
+        ("failure", "skipped", "failure", "blocked by Security Scan (failure)"),
+        ("cancelled", "skipped", "failure", "blocked by Security Scan (cancelled)"),
+        ("skipped", "skipped", "failure", "blocked by Security Scan (skipped)"),
+    ],
+)
+def test_fork_integration_reports_scan_failure_on_authorized_commit(
+    tmp_path, scan_result, integration_result, state, message
+):
+    report = _workflow("fork-integration.yml").split("\n  report:\n", 1)[1]
+    script = textwrap.dedent(report.split("        run: |\n", 1)[1])
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n')
+    fake_gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CALLS": str(tmp_path / "calls"),
+            "GITHUB_REPOSITORY": "databricks/unity-gateway",
+            "PR_NUMBER": "7",
+            "SHA": HEAD,
+            "RESULT": integration_result,
+            "SCAN_RESULT": scan_result,
+            "RUN_URL": "https://example/run",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text()
+    assert f"statuses/{HEAD} -f state={state}" in calls
+    assert message in calls
+
+
 def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():
     workflow = _workflow("user-journey-test-required.yml")
     trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
@@ -839,11 +1289,14 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "codex-relay",
         "antigravity",
         "managed",
         "codex-desktop-macos",
+        "codex-desktop-windows",
         "dedicated-cuj-plan",
         "dedicated-cuj",
+        "live-shard-times",
     ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
@@ -863,11 +1316,14 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "codex-relay",
             "antigravity",
             "managed",
             "codex-desktop-macos",
+            "codex-desktop-windows",
             "dedicated-cuj-plan",
             "dedicated-cuj",
+            "live-shard-times",
         )
     }
     results[failed_job]["result"] = job_result
@@ -938,7 +1394,11 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert (
-                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                        len(
+                            marks
+                            & {"claude", "codex", "opencode", "copilot", "antigravity", "vscode"}
+                        )
+                        == 1
                     ), node.name
 
 
@@ -1062,6 +1522,19 @@ def test_live_suites_use_fresh_id_for_random_ids():
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="CI parses these on Linux runners")
+def test_cowork_shell_scripts_parse():
+    # The ${VAR:?message} word re-parses quotes, so an apostrophe in it breaks the whole script;
+    # bash -n keeps that from reaching a macOS lane.
+    scripts = sorted((Path(__file__).parent.parent / "scripts/cowork-inference").rglob("*.sh"))
+    assert scripts
+    for path in scripts:
+        result = subprocess.run(
+            ["bash", "-n", str(path)], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0, f"{path}: {result.stderr}"
+
+
 @pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
 def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
@@ -1070,7 +1543,7 @@ def test_cowork_ci_permissions_and_required_gate(job_name):
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert condition.group(1) == (
-        "${{ github.event_name != 'merge_group' && "
+        "${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && "
         "(github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     )
@@ -1117,12 +1590,34 @@ def test_cowork_ci_covers_each_claude_model_source(job_name):
     ]
 
 
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
+    job = _integration_jobs()[job_name]
+    step = job.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}\n" in step
+    )
+    # `ug mcp add` and the connector proxy authenticate against the e2e workspace.
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in step
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in step
+    assert ("-Capability mcp" in step) or ("--capability mcp" in step)
+    # The PAT minted for Desktop's connectors is revoked even when the job fails.
+    revoke = job.split("      - name: Revoke the Desktop PAT\n", 1)[1].split("      - name: ", 1)[0]
+    assert "        if: always()\n" in revoke
+    assert "desktop-pat.py revoke" in revoke
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in revoke
+    # configure selects the MCP service for Desktop's connectors.
+    assert "      UG_COWORK_MCP: true\n" in job
+
+
 def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     jobs = _integration_jobs()
     job = jobs["anthropic-mps"]
     assert (
         "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+        "matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}\n"
     ) in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
@@ -1140,6 +1635,29 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     assert len(gates) == desktop.count("      - name: ") + 1
     assert "DATABRICKS_BEARER_COMMAND=" in desktop
     assert "name: cowork-inference-anthropic\n" in desktop
+    # The staging lane runs the same MCP web search; its PAT is minted with the bearer command.
+    assert "      UG_COWORK_MCP: true\n" in job
+    mcp = desktop.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}\n" in mcp
+    )
+    assert "-Capability mcp" in mcp
+    revoke = desktop.split("      - name: Revoke the Desktop PAT\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}\n" in revoke
+    )
+    assert "desktop-pat.py revoke" in revoke
+    assert "${{ runner.temp }}/cowork-inference/mcp/\n" in desktop
+    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_MCP:" in body]
+    assert sorted(opted_in) == [
+        "anthropic-mps",
+        "cowork-inference-macos",
+        "cowork-inference-windows",
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
@@ -1156,7 +1674,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 )
 def test_required_e2e_enforces_integration_result(event, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    script = required.split("        run: ", 1)[1].strip()
+    script = required.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
@@ -1171,3 +1689,756 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
+    workflow = WORKFLOW.read_text()
+    jobs = _integration_jobs()
+    job = jobs["vscode"]
+    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}" in workflow
+    assert (
+        'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
+        in workflow
+    )
+    assert "runs-on: ${{ matrix.os }}" in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "continue-on-error: true" in job
+    assert "AGENT: vscode" in job
+    assert "TEST_MARKER: live and vscode" in job
+    assert (
+        "      - name: Install a virtual display for VS Code\n"
+        "        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}\n"
+        "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
+    ) in workflow
+    gate_needs = re.search(r"(?m)^    needs: \[(.*)\]$", jobs["cujs"]).group(1)
+    assert "vscode" not in [need.strip() for need in gate_needs.split(",")]
+
+
+def test_latest_harness_drives_the_newest_vscode_and_copilot():
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    assert "npm view @github/copilot@latest version" in resolver
+    assert "https://update.code.visualstudio.com/api/update/linux-x64/stable/latest" in resolver
+    for output in ("copilot", "vscode", "vscode_sha256"):
+        assert f"needs.resolve-versions.outputs.{output}" in harness
+    assert "- suite: vscode\n            runner: ubuntu-22.04\n" in harness
+    assert "marker: harness_latest and vscode" in harness
+    assert (
+        'args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION"\n'
+        '              --vscode-sha256 "$VSCODE_SHA256")'
+    ) in harness
+    assert "if: ${{ matrix.suite == 'vscode' }}" in harness
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize(
+    "failing",
+    [
+        None,
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ],
+)
+@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
+def test_required_tests_enforces_lint_result(failing, bad):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    assert (
+        "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
+        "vscode-extension]\n" in required
+    )
+    script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "COVERAGE_RESULT": "success",
+    }
+    if failing:
+        env[failing] = bad
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (failing is None), result.stderr
+
+
+def test_integration_requires_a_passing_security_gate():
+    # `!cancelled()` alone would let integration receive secrets after a failed scan.
+    integration = (
+        _workflow("ci.yml").split("\n  integration:\n", 1)[1].split("\n  required-tests:\n")[0]
+    )
+    condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
+    assert "needs.security-gate.result == 'success'" in condition
+    assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
+
+
+@pytest.mark.parametrize(
+    ("args", "workspace", "workers"),
+    [
+        # The unit CI job passes only --ignore=tests/test_e2e.py, which pytest keeps out of args.
+        ([], "", None),
+        (["tests/test_cli.py"], "", None),
+        (["tests/test_e2e.py"], "", 0),
+        (["tests/test_e2e.py::TestUnityGateway"], "", 0),
+        ([], "https://workspace.example", 0),
+    ],
+)
+def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers):
+    from types import SimpleNamespace
+
+    from tests import conftest
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
+    assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
+
+
+@pytest.mark.parametrize(
+    ("args", "parallel"),
+    [
+        # Deselect every live test: the hook decides the worker count before collection.
+        (["tests/test_e2e.py", "-k", "no_such_test"], False),
+        (["tests/test_jsonc.py"], True),
+    ],
+)
+def test_pytest_discovers_the_serial_live_hook(args, parallel):
+    # The child run must not inherit this CI shard or overwrite its coverage report.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    # Two workers: enough to show the hook left unit runs parallel without starting one child
+    # worker per CPU inside every parent xdist worker.
+    env = {key: value for key, value in os.environ.items() if key not in skip}
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (0, 5), result.stdout + result.stderr
+    assert ("workers [" in result.stdout) is parallel, result.stdout
+
+
+def test_unit_shards_run_every_test_exactly_once():
+    from tests import shard
+
+    files = [f"tests/test_{name}.py" for name in "abcdefgh"]
+    slow = {"tests/test_a.py::test_0": 9.0, "tests/test_a.py::test_1": 3.0}
+    times = {"files": {"tests/test_a.py": [40.0, 100], "tests/test_b.py": [0.5, 10]}, "slow": slow}
+    nodeids = [
+        f"{path}::test_{index}" for path in files for index in range(100 if "_a" in path else 10)
+    ]
+    for total in (1, 3, 20, 40):
+        plan = shard.plan(files, total, times)
+        assert plan == shard.plan(list(files), total, times)  # identical on every shard
+        owners = [
+            [
+                index
+                for index, owned in enumerate(shard.owned_tests(units, nodeids, set(slow)))
+                if owned
+            ]
+            for units in plan
+        ]
+        assert sorted(index for owned in owners for index in owned) == list(range(len(nodeids)))
+    # Slow tests are units of their own; the rest of a slow file spreads across shards.
+    plan = shard.plan(files, 8, times)
+    assert sum(("test", "tests/test_a.py::test_0") in units for units in plan) == 1
+    owners = {
+        index for index, units in enumerate(plan) for unit in units if unit[1] == "tests/test_a.py"
+    }
+    # 40 s less 12 s of slow tests leaves 28 s: seven 4-second chunks on seven shards.
+    assert len(owners) == 7
+    assert shard.test_files() == sorted(
+        f"tests/{path.name}"
+        for path in Path(shard.TESTS).glob("test_*.py")
+        if path.name != "test_e2e.py"
+    )
+
+
+def test_unit_shard_loads_stay_balanced():
+    from tests import shard
+
+    for system, total in (("Linux", 24), ("Windows", 64)):
+        times = shard.load_times(system)
+        assert all(seconds >= shard.SLOW_SECONDS for seconds in times["slow"].values())
+        plan = shard.plan(shard.test_files(), total, times)
+        units = sorted(unit for owned in plan for unit in owned)
+        assert len(units) == len(set(units))
+        weights = []
+        for owned in plan:
+            load = 0.0
+            for unit in owned:
+                if unit[0] == "test":
+                    load += times["slow"][unit[1]]
+                else:
+                    slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                    load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+            weights.append(load)
+        assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+@pytest.mark.parametrize("spec", ["0/4", "5/4", "x/4"])
+def test_unit_shard_spec_rejects_bad_values(spec):
+    from tests import shard
+
+    with pytest.raises(ValueError):
+        shard.parse(spec)
+
+
+def _write_unit_shard_artifact(root, system, *, first_file_cases, first_file_collected):
+    """Write one downloaded shard artifact that owns every unit file whole.
+
+    The report claims the first file collected ``first_file_collected`` tests while its JUnit
+    holds exactly ``first_file_cases``, so a defect under test can make the two disagree.
+    """
+    from tests import shard
+
+    files = shard.test_files()
+    directory = root / f"unit-shard-{system}-1"
+    directory.mkdir(parents=True)
+    collected = {}
+    cases = []
+    for path in files:
+        module = Path(path).stem
+        if path == files[0]:
+            file_cases, count = first_file_cases, first_file_collected
+        else:
+            file_cases = [
+                (f"tests.{module}", "test_0", 0.1),
+                (f"tests.{module}", "test_1", 0.1),
+            ]
+            count = 2
+        cases += file_cases
+        collected[path] = count
+    junit = (
+        "<testsuite>"
+        + "".join(
+            f'<testcase classname="{classname}" name="{name}" time="{seconds}"/>'
+            for classname, name, seconds in cases
+        )
+        + "</testsuite>"
+    )
+    (directory / "junit.xml").write_text(junit, encoding="utf-8")
+    (directory / "shard-report.json").write_text(
+        json.dumps(
+            {
+                "shard": "1/1",
+                "units": [["chunk", path, 1, 1] for path in files],
+                "collected": collected,
+                "selected": sum(collected.values()),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _audit_unit_shards(tmp_path):
+    """Run scripts/unit_test_times.py over tmp_path's shard artifacts; return the result."""
+    script = Path(__file__).parent.parent / "scripts" / "unit_test_times.py"
+    output = tmp_path / "unit_test_times.json"
+    result = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "shards"), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result, output
+
+
+def test_unit_test_times_accepts_a_complete_shard_run(tmp_path):
+    """A both-OS shard set covering every test once passes and rebuilds class-qualified ids."""
+    from tests import shard
+
+    files = shard.test_files()
+    first = Path(files[0])
+    slow = round(shard.SLOW_SECONDS + 1, 2)
+    # Every file collects two tests; the first file also holds a class-based slow test, to
+    # prove the audit rebuilds its full nodeid from the JUnit classname.
+    cases = [
+        (f"tests.{first.stem}", "test_0", 0.1),
+        (f"tests.{first.stem}", "test_1", 0.1),
+        (f"tests.{first.stem}.TestRebuild", "test_slow", slow),
+    ]
+    for system in ("Linux", "Windows"):
+        _write_unit_shard_artifact(
+            tmp_path / "shards", system, first_file_cases=cases, first_file_collected=3
+        )
+    result, output = _audit_unit_shards(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    times = json.loads(output.read_text(encoding="utf-8"))
+    assert sorted(times) == ["Linux", "Windows"]
+    for system in ("Linux", "Windows"):
+        assert sorted(times[system]["files"]) == files
+        assert times[system]["slow"][f"{files[0]}::TestRebuild::test_slow"] == slow
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["a test ran twice", "a test never ran", "an OS never reported"],
+)
+def test_unit_test_times_rejects_incomplete_shard_runs(defect, tmp_path):
+    """A re-run test, a lost test or a missing OS fails the exactly-once audit.
+
+    A test that ran twice while another in the same file never ran keeps every per-file count
+    correct, so only the per-test check catches it.
+    """
+    from tests import shard
+
+    files = shard.test_files()
+    first = Path(files[0])
+    if defect == "a test ran twice":
+        cases = [
+            (f"tests.{first.stem}", "test_0", 0.1),
+            (f"tests.{first.stem}", "test_0", 0.1),
+        ]
+        collected = 2
+    else:
+        cases = [(f"tests.{first.stem}", "test_0", 0.1)]
+        collected = 2
+    _write_unit_shard_artifact(
+        tmp_path / "shards", "Linux", first_file_cases=cases, first_file_collected=collected
+    )
+    if defect != "an OS never reported":
+        _write_unit_shard_artifact(
+            tmp_path / "shards",
+            "Windows",
+            first_file_cases=cases,
+            first_file_collected=collected,
+        )
+    result, _ = _audit_unit_shards(tmp_path)
+    # SystemExit reports its message on stderr, where CI's job log shows it.
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "::error::Unit shards did not cover the suite" in result.stderr
+    if defect == "a test ran twice":
+        assert f"Linux: {files[0]}::test_0 ran 2 times" in result.stderr
+    elif defect == "a test never ran":
+        assert f"Linux: {files[0]} ran 1 of 2 tests" in result.stderr
+    else:
+        assert "Windows: no unit shard artifacts" in result.stderr
+
+
+LIVE_SHARD_LANES = (
+    # (job, lane, agent) for the integration lanes CI splits by test file and case.
+    ("full", "full-claude", "claude"),
+    ("anthropic-mps", "anthropic-mps-claude", "claude"),
+)
+
+
+@pytest.mark.parametrize(("job_name", "lane", "agent"), LIVE_SHARD_LANES)
+def test_live_shards_run_every_case_exactly_once(job_name, lane, agent):
+    from tests import live_shard, shard
+
+    jobs = _integration_jobs()
+    times = live_shard.lane_times(lane, "Windows")
+    cases = sorted(_collect_integration_cases(_ci_marker_expression(jobs[job_name], agent)))
+    assert cases
+    files = sorted({shard.file_of(case) for case in cases})
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", files, "Windows")
+        owned = shard.owned_tests(units, cases, set(times["slow"]))
+        owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
+    # Every case of the lane runs in exactly one shard, whatever files CI collects on the lane.
+    assert sorted(case for owned in owners for case in owned) == cases
+
+
+@pytest.mark.parametrize("lane", [entry[1] for entry in LIVE_SHARD_LANES])
+def test_live_shard_loads_stay_balanced(lane):
+    from tests import live_shard, shard
+
+    times = live_shard.lane_times(lane, "Windows")
+    assert times["files"], "record fresh times from the live-test-times artifact"
+    files = sorted(times["files"])
+    total = times["shards"]
+    plan = [
+        live_shard.units_for(lane, f"{index}/{total}", files, "Windows")
+        for index in range(1, total + 1)
+    ]
+    units = sorted(unit for owned in plan for unit in owned)
+    assert len(units) == len(set(units))
+    weights = []
+    for owned in plan:
+        load = 0.0
+        for unit in owned:
+            if unit[0] == "test":
+                load += times["slow"][unit[1]]
+            else:
+                slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+        weights.append(load)
+    assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+@pytest.mark.parametrize(("lane", "job_name"), [(entry[1], entry[0]) for entry in LIVE_SHARD_LANES])
+def test_live_shard_matrix_matches_the_recorded_shard_count(lane, job_name):
+    from tests import live_shard
+
+    jobs = _integration_jobs()
+    total = live_shard.lane_times(lane, "Windows")["shards"]
+    legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', jobs[job_name])
+    if legs:  # full: the shard legs are plain matrix entries.
+        assert sorted(legs, key=lambda leg: int(leg[0])) == [
+            (str(index), str(total)) for index in range(1, total + 1)
+        ]
+    else:  # anthropic-mps: the mode input selects the legs, so the shards live in its JSON.
+        for index in range(1, total + 1):
+            assert f'"shard":"{index}/{total}"' in jobs[job_name]
+        assert "inputs.mode == 'advisory' &&" in jobs[job_name]
+    # Sharded lanes feed the spec to the shared runner step; every leg uploads its own artifact.
+    assert "LIVE_SHARD: ${{ matrix.shard || '' }}" in jobs[job_name]
+    assert f"LIVE_SHARD_LANE: {lane}" in jobs[job_name]
+    assert "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in jobs[job_name]
+
+
+def test_cuj_shards_run_every_case_exactly_once():
+    from tests import live_shard, shard
+
+    test = "test_cuj4_smart_routing.py"
+    lane = f"cuj-{test}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--confcutdir=tests/e2e_cuj",
+            f"tests/e2e_cuj/{test}",
+            "--collect-only",
+            "-q",
+        ],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    cases = sorted(line for line in result.stdout.splitlines() if line.startswith("test_"))
+    assert cases
+    times = live_shard.lane_times(lane, "Linux")
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", [test], "Linux")
+        owned = shard.owned_tests(units, cases, set(times["slow"]))
+        owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
+    assert sorted(case for owned in owners for case in owned) == cases
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the CUJ lanes run on Linux")
+def test_cuj_shards_deselect_through_a_real_pytest_run(tmp_path):
+    # Drive the real collection hooks: each shard keeps only its cases, writes its report, and
+    # the shards together keep every case exactly once.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    shards = []
+    for index in (1, 2, 3):
+        report = tmp_path / f"shard-{index}.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "--confcutdir=tests/e2e_cuj",
+                "tests/e2e_cuj/test_cuj4_smart_routing.py",
+                "--collect-only",
+                "-q",
+            ],
+            cwd=Path(__file__).parent.parent,
+            env={
+                **{key: value for key, value in os.environ.items() if key not in skip},
+                "UG_LIVE_SHARD": f"{index}/3",
+                "UG_LIVE_SHARD_LANE": "cuj-test_cuj4_smart_routing.py",
+                "UG_LIVE_SHARD_REPORT": str(report),
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        kept = {line for line in result.stdout.splitlines() if line.startswith("test_")}
+        assert kept
+        written = json.loads(report.read_text())
+        assert written["shard"] == f"{index}/3"
+        assert written["expected"]["test_cuj4_smart_routing.py"] == len(kept)
+        shards.append(kept)
+    assert len(set().union(*shards)) == sum(len(kept) for kept in shards)
+    baseline = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "--confcutdir=tests/e2e_cuj",
+            "tests/e2e_cuj/test_cuj4_smart_routing.py",
+            "--collect-only",
+            "-q",
+        ],
+        cwd=Path(__file__).parent.parent,
+        env={key: value for key, value in os.environ.items() if key not in skip},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert set().union(*shards) == {
+        line for line in baseline.stdout.splitlines() if line.startswith("test_")
+    }
+
+
+def test_run_integration_accepts_both_shard_flags():
+    # The flags left the mutually exclusive group once (argparse: "not allowed with argument"),
+    # which failed every Full journeys - Claude - Windows shard in 28 s.
+    spec = importlib.util.spec_from_file_location(
+        "run_integration", Path(__file__).parent.parent / "scripts/run_integration.py"
+    )
+    run_integration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_integration)
+    base = [
+        "--claude-version",
+        "2.1.290",
+        "--python",
+        "3.12",
+        "--ug-version",
+        "checkout",
+        "--workspace",
+        "https://example.databricks.com",
+        "--profile",
+        "ci",
+    ]
+    args = run_integration.arguments(base + ["--test-shard", "1/4", "--shard-lane", "full-claude"])
+    assert args.test_shard == "1/4" and args.shard_lane == "full-claude"
+    with pytest.raises(SystemExit):
+        run_integration.arguments(base + ["--test-shard", "1/4"])
+
+
+def test_live_shard_coverage_gate_downloads_every_shard_artifact():
+    job = _workflow_job("live-shard-times", "cujs")
+    for pattern in (
+        "integration-full-claude-windows-latest-shard*",
+        "integration-anthropic-mps-claude-windows-latest-shard*",
+        "e2e-cujs-*shard*",
+    ):
+        assert f"pattern: {pattern}" in job
+    assert "python3 scripts/live_shard_times.py" in job
+    gate = _workflow_job("cujs", "codex-desktop-macos")
+    assert "live-shard-times" in re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate).group(1)
+
+
+JUNIT_CASE = (
+    '<?xml version="1.0" encoding="utf-8"?><testsuite name="x" tests="{count}">{cases}</testsuite>'
+)
+
+
+def _fake_shard(root, name, report, cases):
+    directory = root / name
+    directory.mkdir(parents=True)
+    (directory / "shard-report.json").write_text(json.dumps(report), encoding="utf-8")
+    body = "".join(
+        f'<testcase classname="{classname}" name="{case}" time="{seconds}"/>'
+        for classname, case, seconds in cases
+    )
+    (directory / "junit.xml").write_text(JUNIT_CASE.format(count=len(cases), cases=body))
+
+
+def _fake_lane_artifacts(root, lane, system, total):
+    """One case per shard: disjoint units, agreeing collected files, no marker drops."""
+    for index in range(1, total + 1):
+        _fake_shard(
+            root,
+            f"{lane}-{system}-shard{index}",
+            {
+                "lane": lane,
+                "os": system,
+                "shard": f"{index}/{total}",
+                "units": [["test", f"test_x.py::c{index}"]],
+                "files": {"test_x.py": total},
+                "expected": {"test_x.py": 1},
+                "marker_deselected": {},
+            },
+            [("test_x", f"c{index}", "3.0")],
+        )
+
+
+def test_live_shard_times_verifies_coverage_and_records(tmp_path):
+    from tests import live_shard
+
+    lanes = live_shard.expected_shards()
+    for lane, (system, total) in sorted(lanes.items()):
+        _fake_lane_artifacts(tmp_path, lane, system, total)
+    recorded = tmp_path / "recorded.json"
+    result = subprocess.run(
+        [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    output = json.loads(recorded.read_text())
+    assert set(output) == set(lanes)
+    total = lanes["full-claude"][1]
+    assert output["full-claude"] == {
+        "Windows": {
+            "shards": total,
+            "files": {"test_x.py": [round(3.0 * total, 2), total]},
+            "slow": {f"test_x.py::c{index}": 3.0 for index in range(1, total + 1)},
+        }
+    }
+    # A shard that never uploaded its artifact fails the proof for its whole lane.
+    shutil.rmtree(tmp_path / f"full-claude-Windows-shard{total}")
+    result = subprocess.run(
+        [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "full-claude/Windows: shard set is" in result.stderr + result.stdout
+
+
+def test_checks_run_exactly_the_just_lint_commands():
+    """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
+    justfile = (Path(__file__).parent.parent / "justfile").read_text()
+    checks = _workflow("ci.yml").split("\n  checks:\n", 1)[1].split("\n  unit-linux:\n", 1)[0]
+    for recipe, command in (
+        ("ruff-check", "ruff check src/ tests/"),
+        ("ruff-format-check", "ruff format --check src/ tests/"),
+        ("ty", "ty check src/"),
+    ):
+        assert f"{recipe}:\n    uv run {command}\n" in justfile, recipe
+        assert f'"$VENV_BIN/{command.split()[0]}" {command.split(" ", 1)[1]}' in checks, recipe
+    assert "lint: ruff-check ruff-format-check ty\n" in justfile
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("coverage", ["success", "skipped", "failure"])
+def test_required_tests_requires_unit_shard_coverage(coverage):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "COVERAGE_RESULT": coverage,
+    }
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (coverage == "success"), result.stderr
+
+
+@pytest.mark.parametrize(
+    ("job_name", "needs"),
+    [
+        ("codex-desktop-macos", "managed"),
+        ("codex-desktop-windows", "[managed, codex-desktop-macos]"),
+    ],
+)
+def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
+    # These lanes share one model quota; 429s appeared only when ten or more overlapped across
+    # runs, and the merge queue builds up to five entries at once.
+    jobs = _integration_jobs()
+    assert f"\n    needs: {needs}\n" in jobs[job_name]
+    assert "    if: ${{ !cancelled() && " in jobs[job_name]
+    assert "      max-parallel: 1\n" in jobs["managed"]
+
+
+def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
+    workflow = _workflow("ci.yml")
+    jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", workflow))
+    required = jobs["integration"]
+    advisory = jobs["integration-advisory"]
+    for job in (required, advisory):
+        assert "needs.security-gate.result == 'success'" in job
+        assert "github.event_name != 'merge_group'" in job
+        assert "uses: ./.github/workflows/integration.yml" in job
+    assert "needs: security-gate" in required
+    assert "mode: required" in required
+    assert "needs: [security-gate, integration]" in advisory
+    assert "mode: advisory" in advisory
+    assert "needs: [e2e, integration]" in jobs["required-e2e"]
+
+
+def test_integration_modes_preserve_blocking_and_advisory_lanes():
+    jobs = _integration_jobs()
+    required = {
+        "installation",
+        "installation-windows",
+        "cowork-inference-windows",
+        "cowork-inference-macos",
+        "smoke",
+        "headless-windows",
+        "full",
+        "codex-relay",
+        "antigravity",
+        "managed",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+        "cujs",
+        "codex-desktop-macos",
+        "codex-desktop-windows",
+    }
+    advisory = {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"}
+    for name in required:
+        assert "inputs.mode != 'advisory'" in jobs[name], name
+    for name in advisory:
+        assert "inputs.mode != 'required'" in jobs[name], name
+    assert "inputs.mode == 'required'" in jobs["anthropic-mps"]
+    assert "inputs.mode == 'advisory'" in jobs["anthropic-mps"]
+    assert "needs: [workspace, full, managed]" in jobs["soft-fail"]
+    cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert cujs_needs is not None
+    assert {name.strip() for name in cujs_needs.group(1).split(",")} == {
+        "installation",
+        "installation-windows",
+        "headless-windows",
+        "cowork-inference-windows",
+        "cowork-inference-macos",
+        "workspace",
+        "smoke",
+        "full",
+        "codex-relay",
+        "anthropic-mps",
+        "antigravity",
+        "managed",
+        "codex-desktop-macos",
+        "codex-desktop-windows",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+        "live-shard-times",
+    }
+    for name in required | advisory:
+        condition = re.search(r"(?m)^    if: (.*)$", jobs[name]).group(1)
+        if FORK_GUARD in condition:
+            assert f"({FORK_GUARD})" in condition, name
+    assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]

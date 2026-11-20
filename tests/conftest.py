@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,61 @@ from ucode.ui import normalize_workspace_url
 collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior"]
 
 
+def pytest_collection_modifyitems(config, items):
+    """Under UG_TEST_SHARD=<index>/<total>, keep only this CI shard's files and chunks."""
+    spec = os.environ.get("UG_TEST_SHARD")
+    if not spec:
+        return
+    from tests import shard
+
+    units = shard.units_for(spec)
+    slow = set(shard.load_times()["slow"])
+    owned = shard.owned_tests(units, [item.nodeid for item in items], slow)
+    keep = [item for item, mine in zip(items, owned, strict=True) if mine]
+    drop = [item for item, mine in zip(items, owned, strict=True) if not mine]
+    position = {}
+    for item in items:
+        path = shard.file_of(item.nodeid)
+        position[path] = position.get(path, -1) + 1
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
+    report = os.environ.get("UG_TEST_SHARD_REPORT")
+    # Every xdist worker collects the same files; one report per shard is enough.
+    if report and getattr(config, "workerinput", {}).get("workerid", "gw0") == "gw0":
+        with open(report, "w", encoding="utf-8") as output:
+            json.dump(
+                {
+                    "shard": spec,
+                    "units": [list(unit) for unit in units],
+                    "collected": dict(
+                        sorted((path, index + 1) for path, index in position.items())
+                    ),
+                    "selected": len(keep),
+                },
+                output,
+            )
+
+
+def pytest_xdist_auto_num_workers(config):
+    """Keep the live E2E suite serial: its shards share one workspace's model quota."""
+    if os.environ.get("UCODE_TEST_WORKSPACE") or any(
+        os.path.basename(arg.split("::")[0]) == "test_e2e.py" for arg in config.args
+    ):
+        return 0
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_route_validation(monkeypatch):
+    from ucode.smart_routing import route_validation
+
+    monkeypatch.setattr(
+        route_validation,
+        "_http_post_json",
+        lambda *args, **kwargs: ({"is_supported": True}, None),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_selected_workspace(monkeypatch):
     """Start every test with no multi-workspace host selected, as a fresh process would."""
@@ -31,8 +87,17 @@ def _reset_selected_workspace(monkeypatch):
     monkeypatch.setattr(workspace_mod, "_host_types", {})
 
 
+def _extract_truststore() -> None:
+    import ssl
+
+    if ssl.SSLContext.__module__.startswith("truststore"):
+        import truststore
+
+        truststore.extract_from_ssl()
+
+
 @pytest.fixture(autouse=True)
-def _isolate_ucode_state(tmp_path, monkeypatch):
+def _isolate_ucode_state(tmp_path, monkeypatch, request):
     """Redirect ucode's state file and APP_DIR to a per-test tmp dir.
 
     Defense in depth: even if an individual test forgets to patch save_state,
@@ -40,12 +105,14 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     privileged writer for an OS-managed agent config.
     """
     import ucode.agents as agents_mod
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    import ucode.tls as tls_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
@@ -53,19 +120,57 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import copilot as copilot_mod
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
+    from ucode.agents.desktop import copilot_app as copilot_app_mod
+    from ucode.agents.desktop import copilot_app_plugin as copilot_app_plugin_mod
+    from ucode.agents.desktop import copilot_app_tracing as copilot_app_tracing_mod
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
+    from ucode.agents.desktop import setup as desktop_setup_mod
+    from ucode.smart_routing import session_log as session_log_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(tls_mod, "_STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(tls_mod, "_applied", None)
+    monkeypatch.delenv(tls_mod.TRUST_STORE_ENV_VAR, raising=False)
+    # Entry points default to the OS trust store; keep that out of the tests that follow.
+    request.addfinalizer(_extract_truststore)
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(config_io_mod, "_dry_run", False)
+    monkeypatch.setattr(claude_mod, "_explicit_configure", False)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    # Bound from APP_DIR at import; creating a log also prunes old ones in that directory.
+    monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
+    # Nor may any test touch the developer's shell profiles.
+    monkeypatch.setattr(copilot_app_tracing_mod, "_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(
+        copilot_app_tracing_mod, "_config_home", lambda: tmp_path / "home" / ".config"
+    )
+    # No test may find the developer's GitHub Copilot app, change its settings or providers, or
+    # write ug's plugin for it.
+    monkeypatch.setattr(desktop_setup_mod, "copilot_app_installed", lambda: False)
+    copilot_home = tmp_path / ".copilot"
+    monkeypatch.setattr(
+        copilot_app_mod,
+        "copilot_home",
+        lambda: Path(os.environ.get("COPILOT_HOME") or copilot_home),
+    )
+    monkeypatch.setattr(
+        copilot_app_plugin_mod,
+        "copilot_settings_path",
+        lambda: Path(os.environ.get("COPILOT_HOME") or copilot_home) / "settings.json",
+    )
+    monkeypatch.setattr(
+        copilot_app_plugin_mod, "plugin_root", lambda: tmp_path / ".ucode" / "copilot-app-plugin"
+    )
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
+    monkeypatch.setattr(vscode_mod, "find_install", lambda prefer_runtime=False: None)
+    monkeypatch.setattr(vscode_mod, "first_code_on_path", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
     monkeypatch.setattr(
         vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"
@@ -135,9 +240,22 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
+    # A developer's own machine may use a published agent configuration; tests opt in explicitly.
+    monkeypatch.setattr(
+        managed_files_mod,
+        "PUBLISHED_AGENT_CONFIG_MARKER_PATH",
+        tmp_path / "etc" / "agents-state.json",
+    )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(claude_mod, "_managed_settings_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_SETTINGS_PATH", tmp_path / ".claude" / "ucode-settings.json"
+    )
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_USER_SETTINGS_PATH", tmp_path / ".claude" / "settings.json"
+    )
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
@@ -179,6 +297,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
     # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
     monkeypatch.delenv("UG_HEADERS", raising=False)
+    # The routing hooks copy harness headers from these, so the developer's own values would leak.
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(
+        codex_config_mod, "DEFAULT_CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml"
+    )
     # When the suite runs inside a ug smart-routing session, these ambient env vars
     # make smart_routing_enabled()/configured_router_name() read the host's live
     # routing state, leaking a Databricks-Smart-Router-Recipe header into
@@ -261,6 +385,10 @@ def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
     return dict(e2e_state_for(e2e_workspace))
+
+
+def metric_observations(recorder, name):
+    return [(value, labels) for _, metric, value, labels in recorder.pending if metric == name]
 
 
 @pytest.fixture

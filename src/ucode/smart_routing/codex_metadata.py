@@ -6,9 +6,18 @@ import asyncio
 import copy
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
-from ucode.smart_routing.session_env import session_routing_enabled
+from ucode.constants import AGENT_CODEX
+from ucode.smart_routing import session_log
+from ucode.smart_routing.session_env import (
+    read_unsupported_validation,
+    read_validation_result,
+    session_routing_enabled,
+    validation_dismissed_path,
+    validation_warning,
+)
 
 ROUTING_STATE_KEY = "smart_router_state"
 TASK_STATE_SUFFIX = re.compile(r"(?:__sr_(?:on|off))+$")
@@ -37,6 +46,29 @@ class RoutingMetadata:
         self.controls = controls
         self.log = log
         self.children: set[str] = set()
+        self.recorded_validations: set[str] = set()
+        self.arming_threads: set[str] = set()
+        self.armed_turns: set[tuple[str, str]] = set()
+
+    # Only a prompt sent while the warning shows hides it, so a turn already running when the result arrives does not.
+    def arm_validation_warning(self, thread_id: str) -> None:
+        if validation_warning(read_validation_result(self.controls)) is None:
+            return
+        if not validation_dismissed_path(self.controls).exists():
+            self.arming_threads.add(thread_id)
+
+    # The root thread id first appears on a prompt; startup validation may still be running then.
+    def record_route_validation(self, thread_id: str) -> None:
+        if thread_id in self.recorded_validations:
+            return
+        result = read_unsupported_validation(self.controls)
+        if result is None:
+            return
+        self.recorded_validations.add(thread_id)
+        try:
+            session_log.append_route_validation(AGENT_CODEX, thread_id, result)
+        except (OSError, ValueError) as exc:
+            self.log(f"[METADATA] Cannot record route validation for thread={thread_id}: {exc}")
 
     async def enabled(self) -> bool | None:
         try:
@@ -59,6 +91,8 @@ class RoutingMetadata:
             params.setdefault("capabilities", {})["experimentalApi"] = True
         tid = params.get("threadId")
         if method == "turn/start" and isinstance(tid, str) and tid not in self.children:
+            await asyncio.to_thread(self.record_route_validation, tid)
+            await asyncio.to_thread(self.arm_validation_warning, tid)
             patch = params.get("responsesapiClientMetadataPatch")
             if patch is None or isinstance(patch, dict):
                 enabled = await self.enabled()
@@ -74,6 +108,8 @@ class RoutingMetadata:
     def observe(self, message: dict) -> None:
         params = message.get("params")
         params = params if isinstance(params, dict) else {}
+        if message.get("method") in ("turn/started", "turn/completed"):
+            self._observe_turn(message["method"], params)
         result = message.get("result")
         result = result if isinstance(result, dict) else {}
         thread = result.get("thread") or params.get("thread")
@@ -84,3 +120,18 @@ class RoutingMetadata:
             )
             if is_child:
                 self.children.add(thread["id"])
+
+    def _observe_turn(self, method: str, params: dict) -> None:
+        thread_id, turn = params.get("threadId"), params.get("turn")
+        if not isinstance(thread_id, str) or not isinstance(turn, dict):
+            return
+        if not isinstance(turn.get("id"), str):
+            return
+        key = (thread_id, turn["id"])
+        if method == "turn/started" and thread_id in self.arming_threads:
+            self.arming_threads.discard(thread_id)
+            self.armed_turns.add(key)
+        elif method == "turn/completed" and key in self.armed_turns:
+            self.armed_turns.discard(key)
+            with suppress(OSError):
+                validation_dismissed_path(self.controls).touch()

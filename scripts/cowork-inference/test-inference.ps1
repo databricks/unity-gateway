@@ -86,6 +86,10 @@ try {
             [Windows.Automation.AutomationElement]::NameProperty, 'Primary pane')
         $pane = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $paneCondition)
         if (-not $pane) { continue }
+        $controls = $pane.FindAll([Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.Condition]::TrueCondition)
+        $responseError = Get-CoworkResponseError -Names @($controls | ForEach-Object { $_.Current.Name })
+        if ($responseError) { throw $responseError }
         $responseCondition = [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::NameProperty, 'Claude responded: 48213')
         $finishedCondition = [Windows.Automation.PropertyCondition]::new(
@@ -150,4 +154,7 @@ try {
     $json = Protect-DiagnosticText $json
     $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
 }
-if ($report.error) { exit 1 }
+if ($report.error) {
+    Write-Error (Protect-DiagnosticText $report.error) -ErrorAction Continue
+    exit 1
+}

@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import codex_interposer, session_env
+from ucode.smart_routing import codex_interposer, session_env, session_log
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
     RoutingMetadata,
@@ -154,6 +154,39 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
         assert tui.messages == []
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("validation", "logged"),
+    [
+        (
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+            },
+            1,
+        ),
+        ({"routing_disabled": False}, 0),
+        ({"routing_disabled": True, "router_name": "stable", "logged": True}, 0),
+    ],
+    ids=["unsupported", "supported", "toggle-already-logged"],
+)
+def test_route_validation_is_logged_once_for_the_root_thread(tmp_path, validation, logged):
+    async def run():
+        metadata, _, _ = controller(tmp_path)
+        turn = {"id": "input", "method": "turn/start", "params": {"threadId": "root"}}
+        # The first prompt can precede the startup check's result file.
+        await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+        session_env.validation_result_path(metadata.controls).write_text(json.dumps(validation))
+        for _ in range(2):
+            await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+
+    asyncio.run(run())
+    records = session_log.read_records("codex", "root", session_log.ROUTE_VALIDATION_TYPE)
+    assert [(r["harness"], r["session_id"], r["router_name"]) for r in records] == (
+        [("codex", "root", "stable")] if logged else []
+    )
 
 
 class StreamingWire(Wire):
@@ -452,3 +485,553 @@ def test_child_navigation_does_not_change_child_attribution(tmp_path):
         }
     )
     assert metadata.children == {"child"}
+
+
+async def register_native_router(upstream, tui):
+    thread_id = "1cbd36a0-177f-4df1-a5c2-5495a86a04a7"
+    tui.incoming.put_nowait({"id": "native-start", "method": "thread/start", "params": {}})
+    request = await asyncio.wait_for(upstream.outgoing.get(), 2)
+    assert request["params"]["dynamicTools"][0]["name"] == "ug_smart_router"
+    reply = {"id": "native-start", "result": {"thread": {"id": thread_id}}}
+    upstream.incoming.put_nowait(reply)
+    assert await asyncio.wait_for(tui.outgoing.get(), 2) == reply
+    tui.incoming.put_nowait(
+        {
+            "id": "off-command",
+            "method": "turn/start",
+            "params": {
+                "threadId": thread_id,
+                "input": [
+                    {"type": "text", "text": "$smart-router off"},
+                    {
+                        "type": "skill",
+                        "name": "smart-router",
+                        "path": "/skills/smart-router/SKILL.md",
+                    },
+                ],
+            },
+        }
+    )
+    assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["method"] == "turn/start"
+    started = {"id": "off-command", "result": {"turn": {"id": "turn"}}}
+    upstream.incoming.put_nowait(started)
+    assert await asyncio.wait_for(tui.outgoing.get(), 2) == started
+    return thread_id
+
+
+def native_tool_request(thread_id, action="off"):
+    return {
+        "id": "native-call",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": thread_id,
+            "turnId": "turn",
+            "callId": "call",
+            "tool": "ug_smart_router",
+            "arguments": {"action": action},
+        },
+    }
+
+
+def test_native_tool_is_serviced_by_host_and_other_requests_forward(
+    running_interposer, monkeypatch
+):
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            thread_id = await register_native_router(upstream, tui)
+            request = native_tool_request(thread_id)
+            upstream.incoming.put_nowait(request)
+            response = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert response["id"] == request["id"]
+            assert response["result"]["success"] is True
+            assert "Smart Router is off" in response["result"]["contentItems"][0]["text"]
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            upstream.incoming.put_nowait(native_tool_request("child", "on"))
+            rejected = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert rejected["result"]["success"] is False
+            assert "only to this session's root" in rejected["result"]["contentItems"][0]["text"]
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            foreign = native_tool_request(thread_id)
+            foreign["params"]["tool"] = "another_tool"
+            upstream.incoming.put_nowait(foreign)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == foreign
+            assert request not in tui.messages
+            assert not task.done()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("method", ["thread/start", "thread/resume"])
+def test_caller_owned_smart_router_calls_and_replies_forward(
+    running_interposer, monkeypatch, method
+):
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            caller_thread = "2cbd36a0-177f-4df1-a5c2-5495a86a04a7"
+            tool = {
+                "type": "function",
+                "name": "ug_smart_router",
+                "description": "Caller-owned routing control",
+                "inputSchema": {"type": "object", "properties": {"action": {"type": "string"}}},
+            }
+            params = {"dynamicTools": [tool]}
+            if method == "thread/resume":
+                params["threadId"] = caller_thread
+            request = {"id": "caller-start", "method": method, "params": params}
+            tui.incoming.put_nowait(request)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == request
+            bound = {"id": "caller-start", "result": {"thread": {"id": caller_thread}}}
+            upstream.incoming.put_nowait(bound)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == bound
+
+            async def caller_handles_tool():
+                before = controls.read_text()
+                call = native_tool_request(caller_thread, "on")
+                call["id"] = "caller-call"
+                upstream.incoming.put_nowait(call)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == call
+                reply = {
+                    "id": "caller-call",
+                    "result": {
+                        "success": True,
+                        "contentItems": [{"type": "inputText", "text": "Caller handled routing"}],
+                    },
+                }
+                tui.incoming.put_nowait(reply)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == reply
+                assert controls.read_text() == before
+
+            await caller_handles_tool()
+            for tools in (None, []):
+                resume = {
+                    "id": "caller-resume",
+                    "method": "thread/resume",
+                    "params": {"threadId": caller_thread},
+                }
+                if tools is not None:
+                    resume["params"]["dynamicTools"] = tools
+                tui.incoming.put_nowait(resume)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == resume
+                resumed = {"id": resume["id"], "result": {"thread": {"id": caller_thread}}}
+                upstream.incoming.put_nowait(resumed)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == resumed
+                await caller_handles_tool()
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            response = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert response["result"]["success"] is True
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            await caller_handles_tool()
+            caller_thread = thread_id
+            request = {
+                "id": "caller-takes-over",
+                "method": "thread/resume",
+                "params": {"threadId": caller_thread, "dynamicTools": [tool]},
+            }
+            tui.incoming.put_nowait(request)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == request
+            bound = {"id": request["id"], "result": {"thread": {"id": caller_thread}}}
+            upstream.incoming.put_nowait(bound)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == bound
+            await caller_handles_tool()
+            assert not task.done()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "method,params",
+    [
+        ("item/tool/call", {"tool": "ug_smart_router", "threadId": "root"}),
+        ("item/tool/call", {"tool": "ug_smart_router", "turnId": "turn"}),
+        (
+            "item/tool/call",
+            {"tool": "ug_smart_router", "threadId": {}, "turnId": "turn"},
+        ),
+        (
+            "item/tool/call",
+            {"tool": "ug_smart_router", "threadId": "root", "turnId": []},
+        ),
+        ("turn/completed", None),
+        ("turn/completed", {"threadId": "root", "turn": None}),
+        ("turn/completed", {"threadId": "root", "turn": []}),
+        ("turn/completed", {"threadId": {}, "turn": {"id": "turn"}}),
+        ("turn/completed", {"threadId": "root", "turn": {"id": []}}),
+        ("turn/interrupt", None),
+        ("turn/interrupt", []),
+        ("turn/interrupt", {"threadId": {}, "turnId": "turn"}),
+        ("turn/interrupt", {"threadId": "root", "turnId": []}),
+    ],
+)
+def test_malformed_feedback_frames_preserve_relay_and_subsequent_toggle(
+    running_interposer, monkeypatch, method, params
+):
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            thread_id = await register_native_router(upstream, tui)
+            malformed = {"id": "malformed", "method": method, "params": params}
+            source, destination = (tui, upstream) if method == "turn/interrupt" else (upstream, tui)
+            source.incoming.put_nowait(malformed)
+            assert await asyncio.wait_for(destination.outgoing.get(), 2) == malformed
+            assert json.loads(controls.read_text()) == {}
+
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            reply = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert reply["id"] == "native-call"
+            assert reply["result"]["success"]
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            completed = {
+                "method": "turn/completed",
+                "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+            }
+            upstream.incoming.put_nowait(completed)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            ping = {"id": "after-malformed", "method": "ping"}
+            tui.incoming.put_nowait(ping)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == ping
+            assert not task.done()
+
+    asyncio.run(run())
+
+
+def test_native_tool_preparation_does_not_block_interrupts_or_other_frames(
+    running_interposer, monkeypatch
+):
+    started, release = threading.Event(), threading.Event()
+
+    def execute(self, params):
+        started.set()
+        if not release.wait(5):
+            raise RuntimeError("test did not release preparation")
+        return {"message": "preparation finished"}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            try:
+                assert await asyncio.to_thread(started.wait, 2)
+                interrupt = {
+                    "id": "interrupt",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": thread_id, "turnId": "turn"},
+                }
+                tui.incoming.put_nowait(interrupt)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == interrupt
+                notice = {"method": "turn/completed", "params": {"threadId": thread_id}}
+                upstream.incoming.put_nowait(notice)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == notice
+            finally:
+                release.set()
+            reply = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert reply["result"]["success"] is True
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "delivery,error", [("submitted", False), ("unconfirmed", False), ("unconfirmed", True)]
+)
+def test_native_delivery_notice_after_turn_without_model_or_shell(
+    running_interposer, monkeypatch, delivery, error
+):
+    process = object()
+
+    def execute(self, _params):
+        self.uploads["report"] = process
+        return {"delivery": "pending", "feedback_id": "report"}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+    checked = threading.Event()
+
+    async def status(_self, _report_id, upload):
+        assert upload is process
+        checked.set()
+        if error:
+            raise OSError("status unavailable")
+        return {"delivery": delivery, "message": "Feedback " + delivery}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "delivery", status)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["result"]["success"]
+            assert await asyncio.to_thread(checked.wait, 3)
+            await asyncio.sleep(0.05)
+            assert tui.outgoing.empty(), "delivery must wait for the model's final reply"
+            completed = {
+                "method": "turn/completed",
+                "params": {"threadId": thread_id, "turn": {"id": "turn", "status": "completed"}},
+            }
+            upstream.incoming.put_nowait(completed)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            started = await asyncio.wait_for(tui.outgoing.get(), 3)
+            ended = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert started["method"] == "item/started"
+            assert ended["method"] == "item/completed"
+            assert isinstance(started["params"]["startedAtMs"], int)
+            assert ended["params"]["completedAtMs"] >= started["params"]["startedAtMs"]
+            assert ended["params"]["item"] == started["params"]["item"]
+            text = ended["params"]["item"]["text"]
+            assert ("unconfirmed" if error else delivery) in text
+            assert upstream.outgoing.empty(), "notices must not start a new model turn"
+
+    asyncio.run(run())
+
+
+def test_overlapping_pending_deliveries_keep_each_process_during_backpressure(
+    running_interposer, monkeypatch
+):
+    processes, monitored = [], []
+
+    def execute(self, _params):
+        process = object()
+        processes.append(process)
+        report_id = f"report-{len(processes)}"
+        self.uploads[report_id] = process
+        return {"delivery": "pending", "feedback_id": report_id}
+
+    async def wait_for_feedback(process):
+        monitored.append(process)
+        return True
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+    from ucode.smart_routing import feedback
+
+    monkeypatch.setattr(feedback, "wait_for_feedback", wait_for_feedback)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            blocked, release = asyncio.Queue(), asyncio.Event()
+            send = upstream.send
+
+            async def backpressure(raw):
+                message = json.loads(raw)
+                if message.get("id") in ("call-1", "call-2"):
+                    blocked.put_nowait(message["id"])
+                    await release.wait()
+                await send(raw)
+
+            monkeypatch.setattr(upstream, "send", backpressure)
+            try:
+                for n, call_id in enumerate(("call-1", "call-2"), start=1):
+                    request = native_tool_request(thread_id, "on")
+                    request["id"] = call_id
+                    request["params"]["turnId"] = f"turn-{n}"
+                    upstream.incoming.put_nowait(request)
+                    assert await asyncio.wait_for(blocked.get(), 2) == call_id
+            finally:
+                release.set()
+            for _ in range(2):
+                assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["result"]["success"]
+            notice_items = []
+            for n in (1, 2):
+                completed = {
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": f"turn-{n}"}},
+                }
+                upstream.incoming.put_nowait(completed)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+                notices = [await asyncio.wait_for(tui.outgoing.get(), 2) for _ in range(2)]
+                assert all(item["params"]["turnId"] == f"turn-{n}" for item in notices)
+                notice_items.extend(notices)
+            assert sum(item["method"] == "item/completed" for item in notice_items) == 2
+            assert len(monitored) == 2
+            assert set(monitored) == set(processes)
+
+    asyncio.run(run())
+
+
+def test_turn_completed_prunes_feedback_turn_state(running_interposer, monkeypatch):
+    inputs = []
+
+    real_input = codex_interposer.CodexFeedbackInput
+
+    class SpyInput(real_input):
+        def __init__(self, send):
+            super().__init__(send)
+            inputs.append(self)
+
+    monkeypatch.setattr(codex_interposer, "CodexFeedbackInput", SpyInput)
+
+    def execute(self, _params):
+        return {"needs_reason": True}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            assert (await asyncio.wait_for(tui.outgoing.get(), 2))["method"] == (
+                "item/tool/requestUserInput"
+            )
+            interrupt = {
+                "id": "interrupt",
+                "method": "turn/interrupt",
+                "params": {"threadId": thread_id, "turnId": "turn"},
+            }
+            tui.incoming.put_nowait(interrupt)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == interrupt
+            feedback_input = inputs[0]
+            assert feedback_input.canceled_turns == {(thread_id, "turn")}
+            resolved = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert resolved == {
+                "method": "serverRequest/resolved",
+                "params": {"threadId": thread_id, "requestId": resolved["params"]["requestId"]},
+            }
+            for _ in range(2):
+                completed = {
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+                }
+                upstream.incoming.put_nowait(completed)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            assert feedback_input.canceled_turns == set(), (
+                "a second completed turn must not re-mark the pruned turn as canceled"
+            )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ending", ["cancel", "interrupt", "completed", "disconnect", "error"])
+def test_native_selector_replies_stay_local_and_cancel_cleanly(
+    running_interposer, monkeypatch, ending
+):
+    calls = []
+
+    def execute(self, params):
+        calls.append(params["arguments"])
+        return (
+            {"needs_reason": True}
+            if params["arguments"]["action"] == "off"
+            else {"message": "Canceled"}
+        )
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            prompt = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert prompt["method"] == "item/tool/requestUserInput"
+            assert prompt["params"]["threadId"] == thread_id
+            assert prompt["params"]["turnId"] == "turn"
+            question = prompt["params"]["questions"][0]
+            assert [option["label"] for option in question["options"]] == [
+                "Provide a reason",
+                "Cancel",
+            ]
+            approval = {"id": "unrelated-approval", "result": {"decision": "accept"}}
+            tui.incoming.put_nowait(approval)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == approval
+            if ending == "disconnect":
+                tui.incoming.put_nowait(None)
+                await asyncio.wait_for(task, 2)
+                assert calls == [{"action": "off"}]
+                assert upstream.outgoing.empty()
+                return
+            if ending == "interrupt":
+                message = {
+                    "id": "escape",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": thread_id, "turnId": "turn"},
+                }
+                tui.incoming.put_nowait(message)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == message
+            elif ending == "completed":
+                message = {
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+                }
+                upstream.incoming.put_nowait(message)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == message
+            else:
+                result = {"answers": {question["id"]: {"answers": ["Cancel"]}}}
+                reply = (
+                    {"id": prompt["id"], "result": result}
+                    if ending == "cancel"
+                    else {"id": prompt["id"], "error": {"code": -32601, "message": "unsupported"}}
+                )
+                tui.incoming.put_nowait(reply)
+            resolved = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert resolved == {
+                "method": "serverRequest/resolved",
+                "params": {"threadId": thread_id, "requestId": prompt["id"]},
+            }
+            reply = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert reply["id"] == "native-call"
+            assert reply["result"]["success"] == (ending != "error")
+            assert calls == (
+                [{"action": "off"}]
+                if ending == "error"
+                else [{"action": "off"}, {"action": "cancel"}]
+            )
+            assert json.loads(controls.read_text()) == {}
+            tui.incoming.put_nowait({"id": prompt["id"], "result": {"answers": {}}})
+            sentinel = {"id": "after-stale", "method": "ping"}
+            tui.incoming.put_nowait(sentinel)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == sentinel
+            assert upstream.outgoing.empty()
+
+    asyncio.run(run())
+
+
+UNSUPPORTED_WARNING = {"routing_disabled": True, "validation_ms": 120}
+
+
+def _prompt(metadata, turn_id):
+    async def send():
+        await asyncio.wait_for(
+            metadata.before_tui(
+                {"id": turn_id, "method": "turn/start", "params": {"threadId": "root"}}
+            ),
+            2,
+        )
+        metadata.observe(
+            {"method": "turn/started", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+        )
+
+    asyncio.run(send())
+
+
+def _complete(metadata, turn_id):
+    metadata.observe(
+        {"method": "turn/completed", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+    )
+
+
+def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _prompt(metadata, "first")
+    _complete(metadata, "first")
+    assert session_env.validation_dismissed_path(metadata.controls).exists()
+
+
+def test_warning_stays_through_a_turn_already_running_when_it_arrives(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    dismissed = session_env.validation_dismissed_path(metadata.controls)
+    _prompt(metadata, "first")
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _complete(metadata, "first")
+    assert not dismissed.exists()
+    _prompt(metadata, "second")
+    _complete(metadata, "second")
+    assert dismissed.exists()

@@ -231,3 +231,175 @@ def test_tool_display_format_is_not_the_file_value(evidence, template):
     records, task = evidence
     records[-1]["message"]["content"][0]["text"] = template.format(task["expected"])
     assert evaluate(records, task)["status"] == "failed"
+
+
+@pytest.fixture
+def mcp_evidence():
+    task = {
+        "capability": "mcp",
+        "prompt": "Use the web_search connector to find the Databricks website.",
+        "mcpServer": "web_search",
+        "mcpTool": "web_search",
+    }
+    records = [
+        {"message": {"role": "user", "content": task["prompt"]}},
+        {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "search",
+                        "name": "mcp__web_search__web_search",
+                        "input": {"query": "Databricks official website"},
+                    }
+                ],
+            }
+        },
+        {
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "search",
+                        "content": [
+                            {"type": "text", "text": "Databricks (https://www.databricks.com/)"}
+                        ],
+                    }
+                ],
+            }
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "**https://www.databricks.com**"}],
+            }
+        },
+    ]
+    return records, task
+
+
+def test_mcp_search_requires_a_shared_official_databricks_url(mcp_evidence):
+    records, task = mcp_evidence
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["mcpToolName"] == "mcp__web_search__web_search"
+    assert result["url"] == "https://www.databricks.com"
+
+
+def test_mcp_search_ignores_utm_source_attribution(mcp_evidence):
+    records, task = mcp_evidence
+    _search_result(records)["content"] = [
+        {"type": "text", "text": "https://www.databricks.com/?utm_source=openai"}
+    ]
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["url"] == "https://www.databricks.com"
+
+
+@pytest.mark.parametrize(
+    "search_url, answer_url, expected_status",
+    [
+        (
+            "https://www.databricks.com/product?category=ai&utm_source=openai#overview",
+            "https://www.databricks.com/product?category=ai#overview",
+            "passed",
+        ),
+        (
+            "https://www.databricks.com/product?category=ai&utm_source=openai#overview",
+            "https://www.databricks.com/product?category=data#overview",
+            "failed",
+        ),
+        (
+            "https://www.databricks.com/product?category=ai&utm_source=openai#overview",
+            "https://www.databricks.com/product?category=ai#details",
+            "failed",
+        ),
+    ],
+)
+def test_mcp_search_preserves_other_query_parameters_and_fragments(
+    mcp_evidence, search_url, answer_url, expected_status
+):
+    records, task = mcp_evidence
+    _search_result(records)["content"] = [{"type": "text", "text": search_url}]
+    records[3]["message"]["content"][0]["text"] = answer_url
+    result = evaluate(records, task)
+    assert result["status"] == expected_status
+
+
+def test_mcp_search_ignores_malformed_urls_beside_an_official_one(mcp_evidence):
+    records, task = mcp_evidence
+    _search_result(records)["content"] = [
+        {"type": "text", "text": "https://[invalid https://www.databricks.com/"}
+    ]
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["url"] == "https://www.databricks.com"
+
+
+def test_mcp_search_accepts_a_url_from_a_later_search(mcp_evidence):
+    records, task = mcp_evidence
+    first_call, first_result = _search_call(records), _search_result(records)
+    second_call = {**first_call, "id": "search-2"}
+    second_result = {
+        **first_result,
+        "tool_use_id": "search-2",
+        "content": [{"type": "text", "text": "https://databricks.com/product"}],
+    }
+    records[1]["message"]["content"].append(second_call)
+    records[2]["message"]["content"].append(second_result)
+    records[3]["message"]["content"] = [{"type": "text", "text": "https://databricks.com/product"}]
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["mcpToolId"] == "search-2"
+    assert result["url"] == "https://databricks.com/product"
+
+
+def _search_call(records):
+    return records[1]["message"]["content"][0]
+
+
+def _search_result(records):
+    return records[2]["message"]["content"][0]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "native_web_search",
+        "other_tool",
+        "other_connector",
+        "empty_query",
+        "tool_error",
+        "missing_result",
+        "lookalike_host",
+        "answer_without_url",
+        "answer_url_not_searched",
+    ],
+)
+def test_mcp_search_rejects_unproven_or_unrelated_answers(mcp_evidence, invalid):
+    records, task = mcp_evidence
+    answer = records[3]["message"]["content"][0]
+    match invalid:
+        case "native_web_search":
+            _search_call(records)["name"] = "WebSearch"
+        case "other_tool":
+            _search_call(records)["name"] = "mcp__web_search__fetch"
+        case "other_connector":
+            _search_call(records)["name"] = "mcp__other__web_search"
+        case "empty_query":
+            _search_call(records)["input"] = {"query": " "}
+        case "tool_error":
+            _search_result(records)["is_error"] = True
+        case "missing_result":
+            records.pop(2)
+        case "lookalike_host":
+            _search_result(records)["content"] = "https://databricks.com.example.org/"
+            answer["text"] = "https://databricks.com.example.org"
+        case "answer_without_url":
+            answer["text"] = "The Databricks website."
+        case "answer_url_not_searched":
+            answer["text"] = "https://databricks.com/product"
+    assert evaluate(records, task)["status"] == "failed"

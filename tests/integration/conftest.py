@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -20,7 +21,7 @@ from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
-AGENT_BINARIES = {"antigravity": "agy"}
+AGENT_BINARIES = {"antigravity": "agy", "vscode": "code"}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -32,13 +33,57 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity", "vscode")
         ):
             deselected.append(item)
         else:
             selected.append(item)
-    items[:] = selected
+    kept = selected
+    if os.environ.get("UG_LIVE_SHARD"):
+        # The suite runs with only this directory on sys.path; the live shard planner lives
+        # beside the unit one at the repository root.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tests import live_shard
+
+        kept, dropped, report = live_shard.plan_items(
+            os.environ["UG_LIVE_SHARD_LANE"], os.environ["UG_LIVE_SHARD"], selected
+        )
+        deselected.extend(dropped)
+        _live_shard_state.update(
+            report=report,
+            mine={item.nodeid for item in deselected},
+            marker_deselected={},
+        )
+    items[:] = kept
     config.hook.pytest_deselected(items=deselected)
+
+
+# Under UG_LIVE_SHARD, the marker filter (and --deselect) still runs after this conftest, so the
+# observer records those drops per file for the coverage proof.
+_live_shard_state: dict = {}
+
+
+def pytest_deselected(items):
+    if not _live_shard_state or not os.environ.get("UG_LIVE_SHARD_REPORT"):
+        return
+    marker_deselected = _live_shard_state["marker_deselected"]
+    for item in items:
+        if item.nodeid in _live_shard_state["mine"]:
+            continue
+        path = item.nodeid.split("::", 1)[0]
+        marker_deselected[path] = marker_deselected.get(path, 0) + 1
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _live_shard_state or not os.environ.get("UG_LIVE_SHARD_REPORT"):
+        return
+    from tests import live_shard
+
+    live_shard.write_report(
+        os.environ["UG_LIVE_SHARD_REPORT"],
+        _live_shard_state["report"],
+        _live_shard_state["marker_deselected"],
+    )
 
 
 @pytest.fixture(scope="session")
@@ -321,6 +366,22 @@ def antigravity_provider_models():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_relayed_provider():
+    return os.environ["UG_INTEGRATION_CODEX_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_access_token():
+    # Real Codex access token (ChatGPT Business/Enterprise admin console); the relayed launch needs
+    # it to run headless. Missing means the launch would fall back to a browser login, so fail
+    # rather than silently pass a degraded run — the suite has no capability skips.
+    token = os.environ.get("UG_INTEGRATION_CODEX_ACCESS_TOKEN", "").strip()
+    if not token:
+        pytest.fail("Set CODEX_ACCESS_TOKEN (a Codex access token) to run the relayed CUJ.")
+    return token
 
 
 @pytest.fixture(scope="session")

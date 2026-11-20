@@ -11,6 +11,7 @@ import tempfile
 import time
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from typing import Any
 
 from ucode.config_io import atomic_write_json
 from ucode.constants import (
@@ -73,12 +74,51 @@ def _read_with_retry(path: Path) -> dict[str, str]:
             time.sleep(CONTROLS_READ_RETRY_SECONDS)
 
 
-def session_routing_enabled(path: Path) -> bool:
-    overrides = _read_with_retry(path)
+def session_routing_enabled(path: Path, *, retry: bool = True) -> bool:
+    overrides = _read_with_retry(path) if retry else _read(path)
     return not all(
         overrides.get(key) == "0"
         for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
     )
+
+
+def validation_result_path(session_controls: Path) -> Path:
+    return session_controls.with_suffix(".validation.json")
+
+
+def validation_dismissed_path(session_controls: Path) -> Path:
+    return session_controls.with_suffix(".validation.dismissed")
+
+
+def read_validation_result(session_controls: Path) -> dict[str, Any] | None:
+    try:
+        result = json.loads(validation_result_path(session_controls).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def read_unsupported_validation(session_controls: Path) -> dict[str, Any] | None:
+    """Return the startup validation result when it turned routing off, else None."""
+    result = read_validation_result(session_controls)
+    if (
+        result is not None
+        and result.get("routing_disabled") is True
+        and result.get("logged") is not True
+    ):
+        return result
+    return None
+
+
+def validation_warning(result: dict[str, Any] | None) -> str | None:
+    """Return the footer warning for a check that found a problem, else None."""
+    if result is None:
+        return None
+    if result.get("validation_failed") is True:
+        return "⚠ Smart Router couldn't validate this session's model list"
+    if "validation_ms" in result:
+        return "⚠ smart routing unsupported"
+    return None
 
 
 def effective_environment(
@@ -101,15 +141,21 @@ def effective_environment(
     return effective
 
 
-def set_session_environment(values: Mapping[str, str]) -> bool:
+def set_session_environment(
+    values: Mapping[str, str], *, env: Mapping[str, str] | None = None
+) -> bool:
     """Atomically replace changed session overrides."""
-    path = session_env_path()
+    path = session_env_path(env)
+    permission_help = (
+        "Request native command approval to retry this command."
+        if env is None
+        else "Check that the launcher can access this session's controls."
+    )
     try:
         current = _read_with_retry(path)
     except PermissionError as exc:
         raise RuntimeError(
-            f"Permission denied reading Smart Router session controls at {path}. "
-            "Request native command approval to retry this command."
+            f"Permission denied reading Smart Router session controls at {path}. {permission_help}"
         ) from exc
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
@@ -126,7 +172,7 @@ def set_session_environment(values: Mapping[str, str]) -> bool:
         ):
             raise RuntimeError(
                 f"Permission denied writing Smart Router session controls at {path}. "
-                "Request native command approval to retry this command."
+                f"{permission_help}"
             ) from exc
         raise RuntimeError(
             f"Error writing Smart Router session controls at {path}: {cause or exc}"

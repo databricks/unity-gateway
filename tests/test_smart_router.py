@@ -20,6 +20,30 @@ runner = CliRunner()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_hook_activates_in_fresh_process(tmp_path, agent):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{}")
+    result = subprocess.run(
+        [sys.executable, "-m", "ucode.smart_routing.orchestrator", "--agent", agent],
+        input=json.dumps({"hook_event_name": "UserPromptSubmit"}),
+        env={
+            **os.environ,
+            "SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0",
+            session_env.SESSION_ENV_VAR: str(controls),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert output["hookEventName"] == "UserPromptSubmit"
+    assert "Smart Router Orchestrator is on for this session." in output["additionalContext"]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_subagent_audit_mismatch_is_silent(monkeypatch, caplog, agent):
     caplog.set_level("DEBUG", logger="ucode.cli")
     audit = Mock(
@@ -66,8 +90,8 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch, agent):
+def test_claude_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch):
+    agent = "claude"
     # Keep the venv path (including spaces), not its resolved system Python symlink.
     installation = tmp_path / "launch installation"
     installation.symlink_to(sys.prefix, target_is_directory=True)
@@ -96,15 +120,7 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert f"Smart Router is {'off' if action == 'disable' else 'on'}" in result.stdout
-        expected = (
-            {
-                v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-                v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-            }
-            if action == "disable"
-            else {}
-        )
+        expected = dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if action == "disable" else {}
         assert json.loads(session_path.read_text()) == expected
 
 
@@ -224,3 +240,28 @@ def test_omni_launches_turn_routing_off_without_a_reason(tmp_path, launch_mode, 
     assert result.exit_code == (0 if turned_off else 2), result.output
     saved = json.loads(session_file.read_text())
     assert saved == (dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if turned_off else {})
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_session_controls_reply_with_the_session_state(tmp_path, agent):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    env = {session_env.SESSION_ENV_VAR: str(session_file)}
+    replies = []
+
+    for flag in (
+        "--disable-smart-routing",
+        "--disable-smart-routing",
+        "--enable-smart-routing",
+        "--enable-smart-routing",
+    ):
+        result = runner.invoke(cli.app, [agent, flag], env=env)
+        assert result.exit_code == 0, result.output
+        replies.append(" ".join(result.output.split()))
+
+    assert replies == [
+        "✔ Smart Router is off for this session",
+        "✔ Smart Router is already off for this session",
+        "✔ Smart Router is on for this session",
+        "✔ Smart Router is already on for this session",
+    ]

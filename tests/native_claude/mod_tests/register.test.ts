@@ -1,26 +1,26 @@
 import type { AgentInfo, On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
-import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
+import { parseSmartRouterCommand } from '../hooks/isaac-feedback.ts';
+import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
 
-const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
 const ROUTED = {
   ENABLE_SMART_ROUTING_V2: '0',
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
   ENABLE_SMART_ROUTER_ORCHESTRATOR: '1',
   unset: [],
-  recipe: RECIPE,
 };
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 
-// A pinned environment variable is the policy refusal the managed security default
-// raises; only the extra body may carry the recipe.
-function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}) {
+function setup(on: On, { launched = true } = {}) {
+  on('session.id', () => ({ value: 'session-1' }));
+  on('fs.exists', () => ({ value: false }));
   // A routed launch puts its flags in the environment; session.start reads them back
   // so a reload keeps the toggle the session last applied.
   const env: Record<string, string | undefined> = {
-    CLAUDE_CODE_EXTRA_BODY: body,
+    UCODE_AGENT_LABELS_DIR: '/plugin-data',
+    CLAUDE_CODE_EXTRA_BODY: CALLER_BODY,
     ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? ROUTED.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
@@ -29,14 +29,13 @@ function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
     writes.push(e.name);
-    if (e.name === pinned) return { deny: `env (managed): ${e.name} is not for plugins outside policy to change` };
     env[e.name] = e.value;
     return { value: undefined };
   });
   return { env, writes };
 }
 
-test('session start carries the launch recipe and forwards the event and result', { options: ROUTED }, async ($, on) => {
+test('session start moves only the routing flags and forwards the event and result', { options: ROUTED }, async ($, on) => {
   const { env, writes } = setup(on);
   let calls = 0;
   on('session.start', ($, e) => {
@@ -48,29 +47,53 @@ test('session start carries the launch recipe and forwards the event and result'
   const result = await $.session.start(start);
   expect(calls).toBe(1);
   expect(result).toEqual({ cwd: '/resolved-work' });
-  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
-  // The recipe left ANTHROPIC_CUSTOM_HEADERS, which a managed config pins.
-  expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
-});
-
-test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on, { pinned: 'CLAUDE_CODE_EXTRA_BODY' });
-
-  const reply = await $.command.run({ command: 'smart-router', args: 'off' });
-
-  expect(reply.text).toContain('Could not update Smart Router');
+  // The recipe never comes from here: ug's managed policy-tier mod alone writes the body.
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
-  // The rollback puts the flags the launch set back, so routing stays as it was.
+  expect(writes).not.toContain('CLAUDE_CODE_EXTRA_BODY');
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
 });
 
-test('a caller body that is not a JSON object is left alone', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on, { body: 'not json' });
+test('an Auto flag without a launch picker leaves model and effort commands native', {
+  options: { ...ROUTED, ENABLE_SMART_ROUTER_AUTO_MODE: '1' },
+}, async ($, on) => {
+  const { env } = setup(on);
+  env.ENABLE_SMART_ROUTER_AUTO_MODE = '1';
+  const registered: string[] = [];
+  const commands: { command: string; args: string }[] = [];
+  on('session.start', () => ({ cwd: '/work' }));
+  on('command.register', ($, e) => {
+    registered.push(e.name);
+    return { value: undefined };
+  });
+  on('command.run', ($, e) => {
+    commands.push({ command: e.command, args: e.args });
+    return { ref: 1, text: `native ${e.command} ${e.args}` };
+  });
+  on('ui.invalidate', () => ({ value: undefined }));
+  await $.session.start(start);
+
+  expect((await $.command.run({ command: 'model', args: 'sonnet' })).text).toBe('native model sonnet');
+  expect((await $.command.run({ command: 'effort', args: 'high' })).text).toBe('native effort high');
+  expect(commands).toEqual([{ command: 'model', args: 'sonnet' }, { command: 'effort', args: 'high' }]);
+  expect(registered).not.toContain('auto');
+});
+
+test('a toggle moves the flags and never the protected body', { options: ROUTED }, async ($, on) => {
+  const { env, writes } = setup(on);
+  // A routed launch supplies the session controls the toggle must also reach.
+  env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
+  env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  await $.session.start(start);
 
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });
 
-  expect(reply.text).toContain('Could not update Smart Router');
-  expect(env.CLAUDE_CODE_EXTRA_BODY).toBe('not json');
+  expect(reply.text).toBe('Smart Router is off');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+  expect(writes).not.toContain('CLAUDE_CODE_EXTRA_BODY');
+  // A body that is not even a JSON object is no concern of the session mod's.
+  expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
 });
 
 test('a launch without routing keeps the command inert', { options: { ...ROUTED, ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($, on) => {
@@ -81,6 +104,10 @@ test('a launch without routing keeps the command inert', { options: { ...ROUTED,
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });
 
   expect(reply.text).toContain('was not enabled');
+  const explain = await $.command.run({ command: 'smart-router', args: 'explain on' });
+  expect(explain.text).toBe('Usage: /smart-router on|off|logs');
+  const invalidExplain = await $.command.run({ command: 'smart-router', args: 'explain invalid' });
+  expect(invalidExplain.text).toBe('Usage: /smart-router on|off|logs');
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
 });
 
@@ -123,6 +150,28 @@ async function hintTail($: any, tails: unknown[]): Promise<unknown> {
   await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: '' } });
   return tails.at(-1);
 }
+
+test('native Auto aliases preserve the configured digest, mapping and context', () => {
+  const model = 'system.ai.claude-opus-4-6[1m]';
+  const alias = 'ug-auto-111111111111-claude-opus-4-6[1m]';
+  const bare = 'ug-auto-222222222222-claude-opus-4-6';
+  const auto = {model: alias, mainModel: model, storeKey: 'main', description: 'Auto', models: [
+    {model, label: '1M', autoModel: alias}, {model: model.slice(0, -4), label: 'bare', autoModel: bare},
+  ]};
+  const overrides = {[alias]: model, [bare]: model.slice(0, -4)};
+  for (const selected of [alias, alias.slice(0, -4)]) {
+    expect(resolveAutoModel(auto, selected)).toBe(alias);
+    expect(sameAutoTarget(auto, model, selected, overrides)).toBe(true);
+    expect(sameAutoTarget(auto, selected, alias, overrides)).toBe(true);
+    expect(sameAutoTarget(auto, bare, selected, overrides)).toBe(false);
+    expect(sameAutoTarget(auto, model.slice(0, -4), selected, overrides)).toBe(false);
+    expect(sameAutoTarget(auto, model, selected, {[alias]: model.slice(0, -4)})).toBe(false);
+  }
+  for (const manual of [model, model.slice(0, -4), bare + '[1m]', alias.replace('111111111111', '333333333333').slice(0, -4)]) {
+    expect(resolveAutoModel(auto, manual)).toBe(manual);
+    expect(sameAutoTarget(auto, model, manual, overrides)).toBe(false);
+  }
+});
 
 test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
@@ -306,7 +355,7 @@ const FEEDBACK_PANE = {
 
 // Isaac's feedback rule is on and the engine answers the form's panes, logs, and processes.
 function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode = 0) {
-  const { env } = setup(on);
+  const { env, writes } = setup(on);
   Object.assign(env, {
     ISAAC_SMART_ROUTER_FEEDBACK: '1',
     UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -321,8 +370,6 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     const exitCode = e.argv.includes('--disable-smart-routing') ? offExitCode : 0;
     return { value: { exitCode, stdout: e.argv.includes('--inspect-target') ? '{"message_id":"m1"}' : '', stderr: '' } };
   });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('fs.exists', () => ({ value: false }));
   on('ui.log', ($, e) => {
     logs.push(e.text);
     return { value: undefined };
@@ -333,7 +380,7 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     return { value: { isPlaced: true } };
   });
   on('ui.close', () => ({ value: undefined }));
-  return { env, runs, logs, panes };
+  return { env, writes, runs, logs, panes };
 }
 
 test('an omni launch skips the form only for an off marked --feedback-collected', { options: ROUTED }, async ($, on) => {
@@ -352,11 +399,22 @@ test('an omni launch skips the form only for an off marked --feedback-collected'
 });
 
 test('--feedback-collected is accepted only after off', { options: ROUTED }, async ($, on) => {
-  const { env, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
-  for (const args of ['on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected']) {
+  const { env, writes, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
+  const initial = { ...env };
+  for (const args of [
+    'explain on', 'explain off', 'explain latest',
+    ' explain\t on ', ' explain\t latest ', ' explain\t off ',
+    'on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected',
+  ]) {
+    expect(parseSmartRouterCommand(args)).toBeUndefined();
     expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs');
   }
+  expect(env).toEqual(initial);
+  expect(writes).toEqual([]);
   expect(runs).toEqual([]);
+  env.ISAAC_LAUNCH_MODE = undefined;
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text)
+    .toContain('Smart Router is still on');
 
   // Without Isaac's feedback rule the flag changes nothing.
   env.ISAAC_SMART_ROUTER_FEEDBACK = '0';

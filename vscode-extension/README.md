@@ -12,13 +12,20 @@ workspace, run `ug configure --agents copilot` again and quit VS Code fully (on 
 window open): a running VS Code keeps the build it loaded, even in a new window. A first install shows its models
 in a window that is already open.
 
+The extension also runs in VS Code's Agents window (`code --agents`), which otherwise turns off any extension
+whose manifest doesn't declare `capabilities.agentsWindow.supported`; its models are listed there before you pick a
+project.
+
 The models need Copilot Chat, which VS Code turns off in a profile that never finished its chat setup. The
 extension then offers, once per profile, to turn it on (what + in the model picker does), and lists the models as
 soon as Copilot Chat starts, with no restart.
 
 Once per configure, once its models are listed, the extension also opens the chat on the workspace's default model
 (else the first model), in Local and Copilot sessions alike. Without that, VS Code applies the default model only to
-an empty chat whose model you didn't pick and Copilot didn't set. Your own `chat.defaultModel` wins.
+an empty chat whose model you didn't pick and Copilot didn't set. Your own `chat.defaultModel` wins. When new chats
+open in Copilot Chat's Copilot session (`chat.defaultToCopilotHarness`, on by default in VS Code 1.147), the extension
+then also picks that session's own copy of the model, which it lists a few seconds later: the Copilot session drops
+the extension's model id when a prompt is sent and asks for a GitHub sign-in instead.
 
 The models are the ones the Copilot CLI gets: the workspace's managed model list when its managed
 config has one, else the models `ug configure` discovered. With `--provider <catalog.schema.name>`

@@ -12,6 +12,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import urlsplit, urlunsplit
 
+from ucode import tls
 from ucode.metrics import EXPORT_INTERVAL_SECONDS, MAX_HANDOFF_BYTES, MAX_OBSERVATIONS
 
 if TYPE_CHECKING:
@@ -159,7 +160,7 @@ def aggregate(observations: list) -> MetricsData | None:
     from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
     from opentelemetry.sdk.resources import Resource
 
-    from ucode.metrics import COUNTER_METRICS, METRICS, _labels
+    from ucode.metrics import COUNTER_METRICS, METRICS, PROXY_RESPONSE_BYTES, _labels
     from ucode.telemetry import normalize_arch, normalize_os, ug_version
 
     reader = InMemoryMetricReader(
@@ -185,7 +186,7 @@ def aggregate(observations: list) -> MetricsData | None:
                 aggregation=ExplicitBucketHistogramAggregation(DURATION_BOUNDS),
             ),
             View(
-                instrument_name="proxy_response_bytes",
+                instrument_name=PROXY_RESPONSE_BYTES,
                 aggregation=ExplicitBucketHistogramAggregation(BYTE_BOUNDS),
             ),
         ],
@@ -201,7 +202,7 @@ def aggregate(observations: list) -> MetricsData | None:
                     meter.create_counter(name, unit="1")
                     if name in COUNTER_METRICS
                     else meter.create_histogram(
-                        name, unit="By" if name == "proxy_response_bytes" else "ms"
+                        name, unit="By" if name == PROXY_RESPONSE_BYTES else "ms"
                     )
                 )
             instrument = instruments[name]
@@ -262,6 +263,7 @@ def export_batch(batch: dict) -> None:
 
 def main() -> None:
     with suppress(Exception):
+        tls.apply()
         ExportBuffer().run(sys.stdin.buffer)
 
 

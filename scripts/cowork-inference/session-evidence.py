@@ -4,8 +4,12 @@ import argparse
 import json
 import ntpath
 import posixpath
+import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote_plus, urlparse
+
+DATABRICKS_HOSTS = {"databricks.com", "www.databricks.com"}
 
 
 def content_blocks(content):
@@ -22,6 +26,64 @@ def content_text(content):
         for block in content_blocks(content)
         if block.get("type") == "text" and isinstance(block.get("text"), str)
     )
+
+
+def databricks_urls(text):
+    """Official Databricks URLs without Markdown, trailing slashes, or search attribution."""
+    urls = set()
+    for url in re.findall(r"https?://[^\s)<>\]`*\"']+", text):
+        url = url.rstrip(".,;:/")
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+        except ValueError:  # e.g. an unclosed IPv6 bracket in search text
+            continue
+        if hostname in DATABRICKS_HOSTS:
+            query = "&".join(
+                part
+                for part in parsed.query.split("&")
+                if unquote_plus(part.partition("=")[0]).lower() != "utm_source"
+            )
+            urls.add(parsed._replace(path=parsed.path.rstrip("/"), query=query).geturl())
+    return urls
+
+
+def evaluate_mcp(answer, calls, results, task):
+    # Desktop names connector tools mcp__<connector>__<tool>.
+    tool_name = f"mcp__{task['mcpServer']}__{task['mcpTool']}"
+    searches = [
+        call
+        for call in calls
+        if call.get("name") == tool_name
+        and isinstance(call["input"].get("query"), str)
+        and call["input"]["query"].strip()
+    ]
+    found = {
+        call["id"]: databricks_urls(content_text(results[call["id"]].get("content", [])))
+        for call in searches
+    }
+    if not any(found.values()):
+        return {
+            "status": "failed",
+            "error": "No successful MCP web search returned an official Databricks URL",
+            "answer": answer,
+        }
+    answer_urls = databricks_urls(answer)
+    search = next((call for call in searches if answer_urls & found[call["id"]]), None)
+    if search is None:
+        return {
+            "status": "failed",
+            "error": "Completed answer does not repeat a Databricks URL from the search",
+            "answer": answer,
+        }
+    shared = sorted(answer_urls & found[search["id"]])
+    return {
+        "status": "passed",
+        "answer": answer,
+        "mcpToolId": search["id"],
+        "mcpToolName": search["name"],
+        "url": shared[0],
+    }
 
 
 def evaluate(records, task):
@@ -45,12 +107,6 @@ def evaluate(records, task):
     if not answers:
         return {"status": "pending"}
     answer = answers[-1].strip()
-    if answer != task["expected"]:
-        return {
-            "status": "failed",
-            "error": "Completed answer does not match the file",
-            "answer": answer,
-        }
     blocks = [block for message in messages for block in content_blocks(message.get("content"))]
     results = {
         block["tool_use_id"]: block
@@ -68,6 +124,14 @@ def evaluate(records, task):
         and isinstance(block.get("input"), dict)
         and not results[block["id"]].get("is_error")
     ]
+    if task["capability"] == "mcp":
+        return evaluate_mcp(answer, calls, results, task)
+    if answer != task["expected"]:
+        return {
+            "status": "failed",
+            "error": "Completed answer does not match the file",
+            "answer": answer,
+        }
     read = next(
         (
             call

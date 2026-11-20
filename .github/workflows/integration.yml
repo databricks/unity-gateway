@@ -3,6 +3,10 @@ name: Integration
 on:
   workflow_call:
     inputs:
+      mode:
+        description: Run required, advisory, or all integration jobs
+        type: string
+        default: all
       ref:
         description: Commit to test; fork-integration.yml passes the PR head pinned by /integration-test
         type: string
@@ -38,6 +42,10 @@ on:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
         default: 1.5.4-5037094733742080
         required: true
+      vscode_version:
+        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux and Windows lane)
+        default: 1.147.0
+        required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
         default: ''
@@ -51,7 +59,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
+  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}-${{ inputs.mode || 'all' }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
@@ -63,17 +71,47 @@ env:
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
+  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
   CLAUDE_DESKTOP_WINDOWS_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
   CLAUDE_DESKTOP_WINDOWS_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+  CLAUDE_DESKTOP_MACOS_URL: https://downloads.claude.ai/releases/darwin/universal/4.23118.0/Claude-8175c354eda704cea00fdeddfa69cea329dd321a.zip
+  CLAUDE_DESKTOP_MACOS_SHA256: 5b8feee3da048e26bbb29a5d601e97034f674ac3b76f7d0237751c46d6034b23
   NPM_REGISTRY: https://registry.npmjs.org
 
 jobs:
   installation:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Installation tests
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Installation tests
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
+      - &budget-start
+        name: Start the budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: &budget-secret-free
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+          UG_COWORK_PAT: ''
+        run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -86,6 +124,13 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
+      - &budget-setup-done
+        name: Mark setup done
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: *budget-secret-free
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - name: Test a fresh installed package without credentials
         run: |
           uv run --no-project --python 3.12 python scripts/run_integration.py \
@@ -105,12 +150,47 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      - &budget-check
+        name: Check this job's time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+          UG_COWORK_PAT: ''
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \
+            --workflow "$BUDGET_WORKFLOW" --job "$GITHUB_JOB" --name "$BUDGET_JOB_NAME" \
+            --started "$BUDGET_JOB_STARTED" --run-started "${BUDGET_RUN_STARTED:-$BUDGET_JOB_STARTED}" \
+            --ended "$(date +%s)" --changed-files "$changed"
 
   installation-windows:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Windows installation tests
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Windows installation tests
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -123,6 +203,7 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
+      - *budget-setup-done
       - name: Test a fresh installed package without workspace credentials
         shell: pwsh
         run: |
@@ -151,12 +232,13 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      - *budget-check
 
   cowork-inference-windows:
     name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
-    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 50
+    if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -172,15 +254,21 @@ jobs:
             model: claude-haiku-4-5-20251001
             relay: true
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
       PYTHONUTF8: 1
       UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
       UG_COWORK_MODEL: ${{ matrix.source.model }}
       UG_COWORK_RELAY: ${{ matrix.source.relay }}
+      # configure selects this lane's MCP service (task-fixture.json mcpService).
+      UG_COWORK_MCP: true
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
@@ -195,12 +283,19 @@ jobs:
           }
           & ./scripts/cowork-inference/test-diagnostics.ps1
           & ./scripts/cowork-inference/test-prepare-task.ps1
+      # The pinned installer is cached by its verified SHA256; the script still checks it.
+      - name: Cache the pinned Claude installer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/Claude.msix
+          key: claude-desktop-windows-${{ env.CLAUDE_DESKTOP_WINDOWS_SHA256 }}
       - name: Download and verify the approved Claude installer
         shell: pwsh
         run: ./scripts/cowork-inference/download-desktop.ps1
       - name: Install UG checkout and pinned Claude CLI
         shell: pwsh
         run: ./scripts/cowork-inference/install-dependencies.ps1
+      - *budget-setup-done
       - name: Configure Desktop with existing CI credentials
         shell: pwsh
         env:
@@ -238,6 +333,30 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
             -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork MCP web search
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability mcp -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/mcp"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Revoke the Desktop PAT
+        if: always()
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+          if (Test-Path -LiteralPath $python) {
+            & $python scripts/cowork-inference/desktop-pat.py revoke --state "$env:RUNNER_TEMP/cowork-pat-id"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -250,13 +369,15 @@ jobs:
             ${{ runner.temp }}/cowork-inference/native-*.log
             ${{ runner.temp }}/cowork-inference/file/
             ${{ runner.temp }}/cowork-inference/skill/
+            ${{ runner.temp }}/cowork-inference/mcp/
           if-no-files-found: warn
+      - *budget-check
 
   cowork-inference-macos:
     name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
-    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 60
+    if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
@@ -277,24 +398,37 @@ jobs:
             model: claude-haiku-4-5-20251001
             relay: true
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
       UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
       UG_COWORK_MODEL: ${{ matrix.source.model }}
       UG_COWORK_RELAY: ${{ matrix.source.relay }}
+      # configure selects this lane's MCP service (task-fixture.json mcpService).
+      UG_COWORK_MCP: true
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22.19.0
+      # The pinned archive is cached by its verified SHA256; the script still checks it.
+      - name: Cache the pinned Claude app
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/Claude.zip
+          key: claude-desktop-macos-${{ env.CLAUDE_DESKTOP_MACOS_SHA256 }}
       - name: Install and verify Claude Desktop
         run: bash scripts/cowork-inference/macos/install-desktop.sh
       - name: Install UG checkout and pinned Claude CLI
         run: bash scripts/cowork-inference/macos/install-dependencies.sh
+      - *budget-setup-done
       - name: Configure and assert Cowork inference through macOS Accessibility
         id: cowork-inference
         env:
@@ -317,11 +451,28 @@ jobs:
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability skill'
+      - name: Assert Cowork MCP web search
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability mcp'
       - name: Stop desktop processes
         if: always()
         run: |
           pkill -f '/Applications/Claude.app/Contents/' || test "$?" = 1
           pkill -x Terminal || test "$?" = 1
+      - name: Revoke the Desktop PAT
+        if: always()
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          if [ -n "${UG_COWORK_PYTHON:-}" ]; then
+            "$UG_COWORK_PYTHON" scripts/cowork-inference/desktop-pat.py revoke --state "$RUNNER_TEMP/cowork-pat-id"
+          fi
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -330,13 +481,26 @@ jobs:
           retention-days: 3
           path: ${{ runner.temp }}/macos-cowork-evidence/
           if-no-files-found: warn
+      - *budget-check
 
   workspace:
     name: Workspace validation
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Workspace validation
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - *budget-setup-done
       - name: Verify the existing e2e workspace and credential are configured
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -352,8 +516,10 @@ jobs:
               raise SystemExit("The existing e2e DATABRICKS_BEARER secret is missing.")
           print("CI workspace matches; the existing e2e credential is present.")
           PY
+      - *budget-check
 
   smoke:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
@@ -364,6 +530,8 @@ jobs:
         os: [ubuntu-22.04, windows-latest]
         agent: [claude, codex]
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
@@ -371,6 +539,7 @@ jobs:
       TEST_MARKER: live and smoke and ${{ matrix.agent }} and not soft_fail
       ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ matrix.os }}
     steps: &live-steps
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -408,6 +577,10 @@ jobs:
         run: |
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      - name: Install a virtual display for VS Code
+        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+      - *budget-setup-done
       - name: Run the selected live cases against the e2e workspace
         shell: bash
         run: |
@@ -417,9 +590,13 @@ jobs:
             opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
             copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
             antigravity) args=(--antigravity-build "$ANTIGRAVITY_BUILD") ;;
+            vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
+          fi
+          if [[ -n "$LIVE_SHARD" ]]; then
+            args+=(--test-shard "$LIVE_SHARD" --shard-lane "$LIVE_SHARD_LANE")
           fi
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
@@ -440,6 +617,12 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
       # Claude Desktop runs only in the Windows Claude anthropic-mps lane; see scripts/cowork-inference/README.md.
+      - name: Cache the pinned Claude installer
+        if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/Claude.msix
+          key: claude-desktop-windows-${{ env.CLAUDE_DESKTOP_WINDOWS_SHA256 }}
       - name: Install Claude Desktop
         id: desktop-install
         if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
@@ -488,6 +671,21 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
             -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork MCP web search
+        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability mcp -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/mcp"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Revoke the Desktop PAT
+        if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+          & $python scripts/cowork-inference/desktop-pat.py revoke --state "$env:RUNNER_TEMP/cowork-pat-id"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork evidence
         if: ${{ !cancelled() && steps.desktop-install.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -500,7 +698,9 @@ jobs:
             ${{ runner.temp }}/cowork-inference/native-*.log
             ${{ runner.temp }}/cowork-inference/file/
             ${{ runner.temp }}/cowork-inference/skill/
+            ${{ runner.temp }}/cowork-inference/mcp/
           if-no-files-found: warn
+      - *budget-check
 
   anthropic-mps:
     name: Anthropic MPS - Staging workspace · ${{ matrix.agent == 'claude' && 'Claude' || 'Copilot' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.agent == 'copilot' && ' (non-blocking)' || '' }}
@@ -513,10 +713,17 @@ jobs:
     timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || matrix.os == 'windows-latest' && 85 || 40 }}
     strategy:
       fail-fast: false
+      # The Windows Claude journeys split across shards balanced from recorded case times
+      # (tests/live_shard.py); the Cowork Desktop steps run once, on the first shard.
+      # The blocking caller runs the Claude legs (the Windows ones as three shards balanced
+      # from recorded case times, tests/live_shard.py); the advisory caller runs the Copilot
+      # legs; a dispatch without a mode runs both.
       matrix:
-        os: [ubuntu-22.04, windows-latest]
-        agent: [claude, copilot]
+        include: ${{ fromJSON(inputs.mode == 'required' && '[{"os":"ubuntu-22.04","agent":"claude"},{"os":"windows-latest","agent":"claude","shard":"1/3","shard_index":1},{"os":"windows-latest","agent":"claude","shard":"2/3","shard_index":2},{"os":"windows-latest","agent":"claude","shard":"3/3","shard_index":3}]' || inputs.mode == 'advisory' && '[{"os":"ubuntu-22.04","agent":"copilot"},{"os":"windows-latest","agent":"copilot"}]' || '[{"os":"ubuntu-22.04","agent":"claude"},{"os":"windows-latest","agent":"claude","shard":"1/3","shard_index":1},{"os":"windows-latest","agent":"claude","shard":"2/3","shard_index":2},{"os":"windows-latest","agent":"claude","shard":"3/3","shard_index":3},{"os":"ubuntu-22.04","agent":"copilot"},{"os":"windows-latest","agent":"copilot"}]') }}
+
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Anthropic MPS - Staging workspace · ${{ matrix.agent == 'claude' && 'Claude' || 'Copilot' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.agent == 'copilot' && ' (non-blocking)' || '' }}
       PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
       NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
       UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com
@@ -525,22 +732,29 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: anthropic_mps and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}
+      ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
       # Desktop jobs skip merge-group runs, like the other Cowork lanes.
-      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.agent == 'claude' }}
+      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}
       UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
       UG_COWORK_MODEL: claude-haiku-4-5-20251001
       UG_COWORK_RELAY: false
+      UG_COWORK_MCP: true
+      LIVE_SHARD: ${{ matrix.shard || '' }}
+      LIVE_SHARD_LANE: anthropic-mps-claude
     steps: *live-steps
 
   headless-windows:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Windows headless journey · Claude
     needs: workspace
     runs-on: windows-latest
     timeout-minutes: 20
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Windows headless journey · Claude
       DEPENDENCY: ${{ inputs.dependency }}
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -570,6 +784,7 @@ jobs:
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           & $databricks version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - *budget-setup-done
       - name: Configure and complete a real headless gateway task
         shell: pwsh
         env:
@@ -602,11 +817,12 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      - *budget-check
 
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
-    needs: [workspace, smoke]
+    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
     runs-on: ${{ matrix.os }}
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
@@ -614,12 +830,32 @@ jobs:
     strategy:
       fail-fast: false
       # Native Codex routing needs a newer binary; other journeys retain the baseline.
-      max-parallel: 4
+      # Every leg starts at once: the Claude Windows ones are shards balanced from recorded case
+      # times (tests/live_shard.py), so no lane waits on another (#1829 removed the waits).
       matrix:
-        os: [ubuntu-22.04, windows-latest]
-        agent: [claude, codex]
-        smart_routing: [false]
         include:
+          - os: ubuntu-22.04
+            agent: codex
+          - os: windows-latest
+            agent: codex
+          - os: ubuntu-22.04
+            agent: claude
+          - os: windows-latest
+            agent: claude
+            shard: "1/4"
+            shard_index: 1
+          - os: windows-latest
+            agent: claude
+            shard: "2/4"
+            shard_index: 2
+          - os: windows-latest
+            agent: claude
+            shard: "3/4"
+            shard_index: 3
+          - os: windows-latest
+            agent: claude
+            shard: "4/4"
+            shard_index: 4
           - os: ubuntu-22.04
             agent: codex
             smart_routing: true
@@ -627,21 +863,47 @@ jobs:
             agent: codex
             smart_routing: true
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || inputs.codex_version || '0.156.0' }}
-      # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
-      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
-      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}
+      CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || inputs.codex_version || '0.156.0' }}
+      # Smoke cases run separately on this OS; don't repeat them here.
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and not codex_relay and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
+      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
+      LIVE_SHARD: ${{ matrix.shard || '' }}
+      LIVE_SHARD_LANE: full-claude
+    steps: *live-steps
+
+  codex-relay:
+    if: ${{ inputs.mode != 'advisory' }}
+    name: Codex relay login and inference
+    needs: workspace
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Codex relay login and inference
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: codex
+      TEST_MARKER: live and codex and codex_relay
+      ARTIFACT_NAME: integration-codex-relay
     steps: *live-steps
 
   # See tests/integration/README.md#soft-fail-tests for supported cases and restoration criteria.
   soft-fail:
     name: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, full, managed]
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -653,6 +915,8 @@ jobs:
         os: [ubuntu-22.04, windows-latest]
         agent: [claude]
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
@@ -665,7 +929,7 @@ jobs:
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
     name: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -675,6 +939,8 @@ jobs:
         os: [ubuntu-22.04, windows-latest]
     timeout-minutes: 30
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
@@ -687,7 +953,7 @@ jobs:
   # cujs `needs`.
   copilot:
     name: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -697,6 +963,8 @@ jobs:
         os: [ubuntu-22.04, windows-latest]
     timeout-minutes: 30
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
@@ -709,11 +977,13 @@ jobs:
   # and Linux, and ug installs no Windows build.
   antigravity:
     name: Full journeys · Antigravity · Linux
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · Antigravity · Linux
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
@@ -722,16 +992,42 @@ jobs:
       ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
     steps: *live-steps
 
+  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the cujs
+  # `needs`. On Linux the tests drive the VS Code window on a private Xvfb display.
+  vscode:
+    name: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    timeout-minutes: 30
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: vscode
+      TEST_MARKER: live and vscode
+      ARTIFACT_NAME: integration-full-vscode-${{ matrix.os }}
+    steps: *live-steps
+
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
   # Runs on the managed e2e workspace with an injected config that enables Claude/Codex but not
   # OpenCode (a service principal authenticates it, like the `managed` lane).
   managed-opencode:
     name: Managed OpenCode self-managed (non-blocking)
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ inputs.mode != 'required' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     continue-on-error: true
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Managed OpenCode self-managed (non-blocking)
       UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
       DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
@@ -739,6 +1035,7 @@ jobs:
       TEST_MARKER: managed_fixture and opencode
       ARTIFACT_NAME: integration-managed-opencode
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -754,6 +1051,7 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
+      - *budget-setup-done
       - name: Run the self-managed OpenCode journey against the managed workspace
         shell: bash
         run: |
@@ -781,16 +1079,20 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
+      - *budget-check
+
   # This general managed lane is Linux-only; anthropic-mps covers Claude MPS managed
   # settings on Windows too. Dedicated CUJs require POSIX PTYs.
+
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # One lane at a time: the Codex lanes on this service principal share one model quota.
+      max-parallel: 1
       matrix:
         agent: [claude, codex]
         smart_routing: [false]
@@ -798,11 +1100,14 @@ jobs:
           - agent: codex
             smart_routing: true
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || inputs.codex_version || '0.156.0' }}
+      CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || inputs.codex_version || '0.156.0' }}
       ARTIFACT_NAME: integration-managed-${{ matrix.agent }}${{ matrix.smart_routing && '-smart-routing' || '' }}
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -818,6 +1123,7 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
+      - *budget-setup-done
       - name: Run the managed cases against the managed e2e workspace
         shell: bash
         env:
@@ -852,32 +1158,49 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      - *budget-check
 
   dedicated-cuj-plan:
     name: Plan E2E CUJs
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Plan E2E CUJs
+    if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       cujs: ${{ steps.discover.outputs.cujs }}
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - *budget-setup-done
       - name: Discover every E2E CUJ file
         id: discover
         shell: bash
         run: |
           set -euo pipefail
+          # A CUJ file slow enough to dominate `e2e` (tests/live_test_times.json) runs as that
+          # many shards; every other file keeps today's single runner.
           cujs=$(for path in tests/e2e_cuj/test_*.py; do
             name=$(sed -n 's/^CUJ_NAME = "\(.*\)"$/\1/p' "$path")
             [ -n "$name" ] || { echo "$path must define CUJ_NAME" >&2; exit 1; }
-            jq -nc --arg test "${path##*/}" --arg name "$name" '{test: $test, name: $name}'
+            shards=$(jq -r --arg test "${path##*/}" '.["cuj-"+$test].Linux.shards // 1' tests/live_test_times.json)
+            for index in $(seq 1 "$shards"); do
+              jq -nc --arg test "${path##*/}" --arg name "$name" \
+                --argjson shards "$shards" --argjson index "$index" '
+                {test: $test, name: $name} +
+                (if $shards > 1 then {shard: "\($index)/\($shards)", shard_index: $index} else {} end)'
+            done
           done | jq -sc .)
           echo "cujs=$cujs" >> "$GITHUB_OUTPUT"
+      - *budget-check
 
   dedicated-cuj:
+    if: ${{ inputs.mode != 'advisory' }}
     name: E2E CUJs · ${{ matrix.name }}
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     # One runner per file: CUJs own separate workspaces but share machine-wide /etc agent settings.
@@ -889,7 +1212,9 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.dedicated-cuj-plan.outputs.cujs) }}
     env:
-      CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || inputs.codex_version || '0.156.0' }}
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: E2E CUJs · ${{ matrix.name }}
+      CODEX_VERSION: ${{ (matrix.test == 'test_cuj4_smart_routing.py' || matrix.test == 'test_cuj7_model_discovery.py') && '0.171.0' || inputs.codex_version || '0.156.0' }}
       UV_INDEX_URL: https://pypi.org/simple
       # Every CUJ runner installs from PyPI at once; ride out slow responses instead of failing a shard.
       UV_HTTP_TIMEOUT: "120"
@@ -899,11 +1224,16 @@ jobs:
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
       UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
+      # Sharded CUJ files: the conftest keeps only this shard's cases and writes the report.
+      UG_LIVE_SHARD: ${{ matrix.shard || '' }}
+      UG_LIVE_SHARD_LANE: ${{ matrix.shard && format('cuj-{0}', matrix.test) || '' }}
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22.19.0
@@ -920,27 +1250,115 @@ jobs:
           uv tool install .
           npm install -g \
             "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
-            "@openai/codex@$CODEX_VERSION"
+            "@openai/codex@$CODEX_VERSION" \
+            "@github/copilot@$COPILOT_VERSION"
+      - *budget-setup-done
       - name: Run ${{ matrix.test }}
         run: |
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}" -v --basetemp "$RUNNER_TEMP/cuj"
+            pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}" -v \
+            --basetemp "$RUNNER_TEMP/cuj" --junitxml="$RUNNER_TEMP/cuj-junit.xml"
+        env:
+          # The runner context is not available in a job-level env, only in steps.
+          UG_LIVE_SHARD_REPORT: ${{ runner.temp }}/cuj-shard-report.json
       - name: Upload CUJ evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: e2e-cujs-${{ matrix.test }}
+          name: e2e-cujs-${{ matrix.test }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
           include-hidden-files: true
           if-no-files-found: ignore
-          path: ${{ runner.temp }}/cuj/*/artifacts/
+          path: |
+            ${{ runner.temp }}/cuj/*/artifacts/
+            ${{ runner.temp }}/cuj-junit.xml
+            ${{ runner.temp }}/cuj-shard-report.json
+      - *budget-check
 
-  cujs:
-    name: All integration tests
-    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, anthropic-mps, antigravity, managed, codex-desktop-macos, dedicated-cuj-plan, dedicated-cuj]
+  # Checks the live lanes' shards together ran every case exactly once, and records fresh
+  # per-case timings so tests/live_test_times.json can rebalance the shards when they drift.
+  live-shard-times:
+    name: Live shard coverage
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Live shard coverage
+    if: ${{ !cancelled() && needs.full.result == 'success' && needs.anthropic-mps.result == 'success' && needs.dedicated-cuj.result == 'success' }}
+    needs: [full, anthropic-mps, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - name: Mark live-shard checkout complete
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_COVERAGE_CHECKOUT_DONE=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: integration-full-claude-windows-latest-shard*
+          path: ${{ runner.temp }}/shards
+      - name: Mark full-shard download complete
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_COVERAGE_FULL_DONE=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: integration-anthropic-mps-claude-windows-latest-shard*
+          path: ${{ runner.temp }}/shards
+      - name: Mark MPS-shard download complete
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_COVERAGE_MPS_DONE=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: e2e-cujs-*shard*
+          path: ${{ runner.temp }}/shards
+      - name: Mark CUJ-shard download complete
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_COVERAGE_CUJ_DONE=$(date +%s)" >> "$GITHUB_ENV"
+      - *budget-setup-done
+      - name: Summarize live-shard setup
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          {
+            echo '### Live shard coverage setup'
+            echo '| Step | Elapsed (seconds) |'
+            echo '| --- | ---: |'
+            printf '| Checkout and clock start | %s |\n' "$((BUDGET_COVERAGE_CHECKOUT_DONE - BUDGET_JOB_STARTED))"
+            printf '| Full-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_FULL_DONE - BUDGET_COVERAGE_CHECKOUT_DONE))"
+            printf '| MPS-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_MPS_DONE - BUDGET_COVERAGE_FULL_DONE))"
+            printf '| CUJ-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_CUJ_DONE - BUDGET_COVERAGE_MPS_DONE))"
+            printf '| Other setup | %s |\n' "$((BUDGET_RUN_STARTED - BUDGET_COVERAGE_CUJ_DONE))"
+            echo 'Intervals include runner scheduling and timing-marker overhead.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Prove the shards ran every case once and record fresh times
+        run: python3 scripts/live_shard_times.py "$RUNNER_TEMP/shards" "$RUNNER_TEMP/live_test_times.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: live-test-times
+          path: ${{ runner.temp }}/live_test_times.json
+      - *budget-check
+
+  cujs:
+    name: All integration tests
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: All integration tests
+    if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - *budget-setup-done
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -956,18 +1374,29 @@ jobs:
           print("All integration jobs passed: " + ", ".join(results))
           PY
 
+      - *budget-check
+
   # OpenAI's appcast keeps every versioned macOS build, so the desktop app can be pinned by hash.
+
   codex-desktop-macos:
     name: Codex desktop inference · macOS
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # Codex lanes on the managed service principal share one model quota; see the Windows lane.
+    needs: managed
+    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Codex desktop inference · macOS
       DEPENDENCY: ${{ inputs.dependency }}
+      # The desktop harness launches the app with CODEX_SPARKLE_ENABLED=false (the app's own
+      # Sparkle gate, in tests/integration/utils/macos_app.py), so every journey runs exactly
+      # this SHA-pinned build instead of a newer appcast one applied mid-job.
       CHATGPT_APP_VERSION: 26.1103.31037
       CHATGPT_APP_SHA256: 7bad147d40446192757dbfdd71e26529146823ade2bcc52b3d6e6525de816613
       TEST_MARKER: managed_fixture and macos_desktop and codex
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
@@ -983,12 +1412,21 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
+      # The pinned build is a few hundred megabytes; cache it so only the hash check runs.
+      - name: Cache the pinned ChatGPT app
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ChatGPT.zip
+          key: chatgpt-app-macos-${{ env.CHATGPT_APP_VERSION }}-${{ env.CHATGPT_APP_SHA256 }}
       - name: Install the pinned ChatGPT desktop app
         run: |
           zip="$RUNNER_TEMP/ChatGPT.zip"
-          curl -fsSL --retry 3 -o "$zip" "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip"
+          if [ ! -f "$zip" ]; then
+            curl -fsSL --retry 3 -o "$zip" "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip"
+          fi
           echo "$CHATGPT_APP_SHA256  $zip" | shasum -a 256 -c
           ditto -x -k "$zip" /Applications
+      - *budget-setup-done
       - name: Complete a Codex turn in the desktop app against the managed e2e workspace
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
@@ -1002,7 +1440,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            --macos-desktop "${args[@]}" -- -m "$TEST_MARKER"
+            --desktop-app "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload macOS desktop evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -1015,3 +1453,94 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.xml
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
+
+      - *budget-check
+
+  # The app's updater feed (codex-app-prod/windows-release.json) names versioned MSIX builds that
+  # OpenAI keeps, so the Windows app can be pinned by hash too.
+
+  codex-desktop-windows:
+    name: Codex desktop inference · Windows
+    # After the macOS desktop lane, so each run has one Codex caller on the managed service
+    # principal at a time: five merge-queue entries stay under the ~10 concurrent callers at which
+    # that quota returned 429s.
+    needs: [managed, codex-desktop-macos]
+    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Codex desktop inference · Windows
+      DEPENDENCY: ${{ inputs.dependency }}
+      CHATGPT_APP_VERSION: 26.1103.7773.0
+      CHATGPT_APP_SHA256: c043c8032b7a1e6ab383252a910176405265ac3edbc909218d875fb284dea672
+      TEST_MARKER: managed_fixture and windows_desktop and codex
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+          enable-cache: ${{ inputs.ref == '' }}
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Expose the Databricks CLI on Windows
+        shell: bash
+        run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      # The pinned build is a few hundred megabytes; cache it so only the hash check runs.
+      - name: Cache the pinned ChatGPT app
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ChatGPT.msix
+          key: chatgpt-app-windows-${{ env.CHATGPT_APP_VERSION }}-${{ env.CHATGPT_APP_SHA256 }}
+      - name: Install the pinned ChatGPT desktop app
+        shell: pwsh
+        run: |
+          $msix = Join-Path $env:RUNNER_TEMP 'ChatGPT.msix'
+          if (-not (Test-Path -LiteralPath $msix)) {
+            curl.exe -fsSL --retry 3 -o $msix "https://persistent.oaistatic.com/codex-app-prod/releases/$env:CHATGPT_APP_VERSION/ChatGPT-x64.msix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if ((Get-FileHash -LiteralPath $msix -Algorithm SHA256).Hash -ne $env:CHATGPT_APP_SHA256) {
+            throw 'The ChatGPT MSIX does not match the pinned SHA256'
+          }
+          Add-AppxPackage -Path $msix
+      - *budget-setup-done
+      - name: Complete a Codex turn in the desktop app against the managed e2e workspace
+        shell: bash
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+        run: |
+          args=(--codex-version "$CODEX_VERSION")
+          if [[ -n "$DEPENDENCY" ]]; then
+            args+=(--dependency "$DEPENDENCY")
+          fi
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            --desktop-app "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Upload Windows desktop evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-codex-desktop-windows
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/
+      - *budget-check

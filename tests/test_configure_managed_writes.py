@@ -22,6 +22,11 @@ from ucode.agents.desktop import setup as desktop_setup
 MODEL = "databricks-claude-sonnet-4"
 
 
+def _flat(text: str) -> str:
+    """Drop all whitespace so assertions hold however the terminal wraps long paths."""
+    return "".join(text.split())
+
+
 def _headless(monkeypatch, *, explicit: bool) -> None:
     """No terminal, the real write policy, and (for configure) the explicit-write flag."""
     monkeypatch.setattr(claude, "managed_writes_allowed", managed_files.managed_writes_allowed)
@@ -116,12 +121,13 @@ def test_root_runs_privileged_commands_without_sudo(monkeypatch):
 
 
 @pytest.mark.parametrize("args", [["configure"], ["revert"]], ids=["configure", "revert"])
-def test_configure_and_revert_request_explicit_writes(monkeypatch, args):
+def test_configure_and_revert_request_explicit_writes(monkeypatch, tmp_path, args):
     def stop(*_a, **_kw):
         raise RuntimeError("stop after the flag is set")
 
     monkeypatch.setattr(cli_mod, "install_databricks_cli", stop)
     monkeypatch.setattr(cli_mod, "revert", stop)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "managed.json")
 
     CliRunner().invoke(cli_mod.app, args)
 
@@ -231,14 +237,14 @@ def test_revert_cli_reports_managed_file_deletion_failure(
     monkeypatch.setattr(managed_files, "_sudo_remove", denied)
     monkeypatch.setattr(managed_files, "_sudo_replace", reject_write)
 
-    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+    result = CliRunner().invoke(cli_mod.app, ["revert"])
 
-    output = " ".join(result.output.split())
+    output = _flat(result.output)
     assert result.exit_code == 1, result.output
-    assert f"Could not restore {display} managed settings" in output
-    assert str(path) in output
-    assert "The backup was retained" in output
-    assert "run `ug revert` again" in output
+    assert _flat(f"Could not restore {display} managed settings") in output
+    assert _flat(str(path)) in output
+    assert _flat("The backup was retained") in output
+    assert _flat("run `ug revert` again") in output
     assert path.read_text(encoding="utf-8") == contents
     assert {file.name: file.read_bytes() for file in backup_dir.iterdir()} == backup
     assert cli_mod.load_state() == state_before
@@ -263,13 +269,15 @@ def test_revert_cli_explains_untracked_managed_file(
         manifest.write_text('{"version": 1, "files": {}}', encoding="utf-8")
     cli_mod.save_state({"workspace": WS})
 
-    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+    result = CliRunner().invoke(cli_mod.app, ["revert"])
 
-    output = " ".join(result.output.split())
+    output = _flat(result.output)
     assert result.exit_code == 0, result.output
-    assert f"{display} managed settings at {path} were left unchanged" in output
-    assert "no UG backup record was found" in output
-    assert "If no longer needed, remove the file manually or ask your administrator" in output
+    assert _flat(f"{display} managed settings at {path} were left unchanged") in output
+    assert _flat("no UG backup record was found") in output
+    assert (
+        _flat("If no longer needed, remove the file manually or ask your administrator") in output
+    )
     assert path.read_bytes() == contents
     assert manifest.exists() == manifest_present
     if manifest_present:
@@ -317,12 +325,12 @@ def test_revert_cli_reports_an_uninspectable_managed_path_without_failing_cleanu
     monkeypatch.setattr(Path, "exists", exists)
     cli_mod.save_state({"workspace": WS})
 
-    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+    result = CliRunner().invoke(cli_mod.app, ["revert"])
 
-    output = " ".join(result.output.split())
+    output = _flat(result.output)
     assert result.exit_code == 0, result.output
-    assert f"Could not inspect {display} managed settings at {path}" in output
-    assert "Check this file manually or ask your administrator" in output
+    assert _flat(f"Could not inspect {display} managed settings at {path}") in output
+    assert _flat("Check this file manually or ask your administrator") in output
     assert cli_mod.load_state() == {}
 
 
@@ -374,13 +382,13 @@ def test_revert_cli_explains_untracked_settings_after_relay_conflict(
     monkeypatch.setattr(claude, "claude_header_mod_root", lambda: None)
     cli_mod.save_state(state)
 
-    result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
+    result = CliRunner().invoke(cli_mod.app, ["revert"])
 
-    output = " ".join(result.output.split())
+    output = _flat(result.output)
     assert result.exit_code == 0, result.output
-    assert str(path) in output
-    assert "no UG backup record was found" in output
-    assert "remove the file manually" in output
+    assert _flat(str(path)) in output
+    assert _flat("no UG backup record was found") in output
+    assert _flat("remove the file manually") in output
     assert path.read_bytes() == contents
     assert not managed_files.MANAGED_BACKUP_MANIFEST_PATH.exists()
     assert cli_mod.load_state() == {}

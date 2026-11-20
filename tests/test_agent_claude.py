@@ -18,8 +18,13 @@ import pytest
 from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
+from ucode.databricks import RelayLookup
 from ucode.smart_routing import claude_routing, v2
-from ucode.state import MANAGED_OVERLAY_KEY
+from ucode.state import (
+    CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
+    MANAGED_OVERLAY_KEY,
+    desktop_uses_claude_subscription_relay,
+)
 from ucode.telemetry import client_platform
 
 
@@ -654,11 +659,16 @@ class TestRenderOverlay:
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
-    def test_static_models_skipped_when_relayed(self):
-        # When using relayed inference, static models are ignored.
+    def test_static_models_skipped_when_relayed_through_a_provider(self):
+        # A relayed Model Provider Service supplies the catalog; static models are ignored.
         static = ["system.ai.claude-opus-4-8"]
         overlay, _ = claude.render_overlay(
-            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+            WS,
+            "s4",
+            provider="main.default.anthropic",
+            relayed=True,
+            relayed_base_url="http://localhost:8000",
+            static_models=static,
         )
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
@@ -713,6 +723,18 @@ class TestRenderOverlay:
             }
         ]
 
+    def test_static_models_kept_when_relayed_without_a_provider(self):
+        # A static list naming a relay-backed model service launches relayed, and the admin's
+        # list still owns the picker and allow-list.
+        static = ["main.default.claude-anthropic-sonnet-5-5", "main.default.oss-large"]
+        overlay, _ = claude.render_overlay(
+            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+        )
+        assert overlay["availableModels"] == static
+        assert overlay["modelPicker"]["replaceBuiltInOptions"] is True
+        assert "apiKeyHelper" not in overlay
+        assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+
     def test_static_models_label_is_prettified(self):
         static = [
             "system.ai.claude-opus-4-8",
@@ -736,6 +758,165 @@ class TestRenderOverlay:
         ]
         assert overlay["availableModels"] == static
         assert [opt["model"] for opt in overlay["modelPicker"]["options"]] == static
+
+
+class TestStaticModelsNeedSubscriptionRelay:
+    _STATE = {
+        "workspace": WS,
+        "claude_static_models": ["main.default.relayed", "main.default.oss", "system.ai.kimi"],
+    }
+
+    @pytest.fixture(autouse=True)
+    def _no_managed_settings(self, monkeypatch):
+        monkeypatch.setattr(claude, "_relay_blocking_managed_settings", lambda: [])
+
+    def _relay_backed(
+        self, monkeypatch, *, signed_in: bool = True, unknown: frozenset[str] = frozenset()
+    ) -> list[str]:
+        looked_up: list[str] = []
+        monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
+
+        def lookup(_ws, _token, model):
+            looked_up.append(model)
+            if model in unknown:
+                return RelayLookup.UNKNOWN
+            if model == "main.default.relayed":
+                return RelayLookup.RELAYED
+            return RelayLookup.NOT_RELAYED
+
+        monkeypatch.setattr(claude, "model_service_relay_lookup", lookup)
+        monkeypatch.setattr(claude, "_has_subscription_login", lambda: signed_in)
+        return looked_up
+
+    def test_hosted_only_lists_make_no_request(self, monkeypatch):
+        monkeypatch.setattr(
+            claude, "get_databricks_token", lambda *_a, **_k: pytest.fail("no lookup needed")
+        )
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-5-5"]}
+        assert not claude.static_models_need_subscription_relay(state)
+        assert not claude.static_models_need_subscription_relay({"workspace": WS})
+
+    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys):
+        looked_up = self._relay_backed(monkeypatch)
+        assert claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
+        assert looked_up == ["main.default.relayed", "main.default.oss"]
+        assert "claude auth login" not in capsys.readouterr().out
+
+    def test_user_without_a_subscription_login_keeps_gateway_auth(self, monkeypatch, capsys):
+        # The list is shared, so a user who isn't signed in keeps the rest of it rather than
+        # being sent to a browser login; configure names only the relay-backed service.
+        self._relay_backed(monkeypatch, signed_in=False)
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
+        out = capsys.readouterr().out
+        assert "claude auth login" in out
+        assert "main.default.relayed" in out
+        assert "main.default.oss" not in out
+
+    def test_sign_in_note_is_shown_only_on_configure(self, monkeypatch, capsys):
+        self._relay_backed(monkeypatch, signed_in=False)
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE))
+        assert "claude auth login" not in capsys.readouterr().out
+
+    def test_oauth_token_env_counts_as_signed_in(self, monkeypatch):
+        self._relay_backed(monkeypatch, signed_in=False)
+        monkeypatch.setenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, "sk-ant-oat01-test")
+        monkeypatch.setattr(
+            claude, "_has_subscription_login", lambda: pytest.fail("env token is enough")
+        )
+        assert claude.static_models_need_subscription_relay(dict(self._STATE))
+
+    def test_managed_auth_keeps_gateway_auth_instead_of_blocking(self, monkeypatch, capsys):
+        # ug's own managed apiKeyHelper (or an enterprise one) would make the relayed write fail,
+        # so the user stays on gateway auth with the way out named.
+        self._relay_backed(monkeypatch)
+        monkeypatch.setattr(claude, "_relay_blocking_managed_settings", lambda: ["apiKeyHelper"])
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
+        out = capsys.readouterr().out
+        assert "apiKeyHelper" in out
+        assert "ug revert" in out
+
+    def test_configure_saves_the_result_and_launch_reuses_it(self, monkeypatch):
+        looked_up = self._relay_backed(monkeypatch)
+        state = dict(self._STATE)
+        assert claude.static_models_need_subscription_relay(state, configuring=True)
+        assert state[claude.CLAUDE_RELAY_DETECTION_KEY]["relay_backed"] == ["main.default.relayed"]
+        looked_up.clear()
+        assert claude.static_models_need_subscription_relay(state)
+        assert looked_up == []
+
+    def test_launch_looks_up_again_when_the_list_changes_or_the_result_is_old(self, monkeypatch):
+        looked_up = self._relay_backed(monkeypatch)
+        state = dict(self._STATE)
+        claude.static_models_need_subscription_relay(state, configuring=True)
+        changed = {**state, "claude_static_models": ["main.default.relayed"]}
+        looked_up.clear()
+        claude.static_models_need_subscription_relay(changed)
+        assert looked_up == ["main.default.relayed"]
+
+        state[claude.CLAUDE_RELAY_DETECTION_KEY]["checked_at"] -= (
+            claude._RELAY_DETECTION_REUSE_S + 1
+        )
+        looked_up.clear()
+        claude.static_models_need_subscription_relay(state)
+        assert looked_up == ["main.default.relayed", "main.default.oss"]
+
+    def test_failed_lookup_warns_and_isnt_saved(self, monkeypatch, capsys):
+        self._relay_backed(monkeypatch, unknown=frozenset({"main.default.relayed"}))
+        state = dict(self._STATE)
+        assert not claude.static_models_need_subscription_relay(state)
+        assert "Couldn't check whether main.default.relayed" in capsys.readouterr().out
+        assert claude.CLAUDE_RELAY_DETECTION_KEY not in state
+
+    @pytest.mark.parametrize("signed_in", [True, False])
+    def test_global_configure_keeps_gateway_auth(self, monkeypatch, signed_in):
+        # `ug configure --global` can't write a relay, so a signed-in administrator mustn't turn
+        # the machine-wide (and MDM) setup relayed.
+        self._relay_backed(monkeypatch, signed_in=signed_in)
+        monkeypatch.setattr(
+            claude, "get_databricks_token", lambda *_a, **_k: pytest.fail("no lookup needed")
+        )
+        managed_files.set_machine_wide_only(True)
+        try:
+            assert not claude.static_models_need_subscription_relay(
+                dict(self._STATE), configuring=True
+            )
+        finally:
+            managed_files.set_machine_wide_only(False)
+
+    def test_no_relay_backed_service_skips_the_login_check(self, monkeypatch):
+        self._relay_backed(monkeypatch)
+        monkeypatch.setattr(
+            claude, "model_service_relay_lookup", lambda *_a: RelayLookup.NOT_RELAYED
+        )
+        monkeypatch.setattr(
+            claude, "_has_subscription_login", lambda: pytest.fail("no login check needed")
+        )
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE))
+
+    def test_auth_failure_keeps_gateway_auth(self, monkeypatch):
+        def fail(*_a, **_k):
+            raise RuntimeError("expired")
+
+        monkeypatch.setattr(claude, "get_databricks_token", fail)
+        state = {"workspace": WS, "claude_static_models": ["main.default.sonnet"]}
+        assert not claude.static_models_need_subscription_relay(state)
+
+
+class TestRelayBlockingManagedSettings:
+    def test_skipped_or_missing_managed_settings_dont_block(self, monkeypatch):
+        monkeypatch.setattr(claude, "managed_settings_skipped", lambda: True)
+        assert claude._relay_blocking_managed_settings() == []
+        monkeypatch.setattr(claude, "managed_settings_skipped", lambda: False)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        assert claude._relay_blocking_managed_settings() == []
+
+    def test_reports_auth_keys_that_override_the_relay(self, monkeypatch, tmp_path):
+        path = tmp_path / "managed-settings.json"
+        path.write_text(json.dumps({"apiKeyHelper": "ug helper"}), encoding="utf-8")
+        monkeypatch.setattr(claude, "managed_settings_skipped", lambda: False)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+        assert claude._relay_blocking_managed_settings() == ["apiKeyHelper"]
 
 
 class TestRenderOverlayOtelTracing:
@@ -922,8 +1103,23 @@ class TestResolveWebSearchModel:
         assert claude._resolve_web_search_model({}) is None
         assert claude._resolve_web_search_model({"codex_models": []}) is None
 
+    @pytest.mark.parametrize(
+        ("models", "expected"),
+        [
+            (["", " ", "m1", "m2"], "m1"),
+            ([None, 42, False, {"name": "not-a-model"}, " m1 ", "m2"], "m1"),
+            ([None, 42, "", " "], None),
+            ([None, "", "system.ai.gpt-5-mini", " system.ai.gpt-6-luna "], "system.ai.gpt-6-luna"),
+        ],
+    )
+    def test_ignores_invalid_saved_model_entries(self, models, expected):
+        assert claude._resolve_web_search_model({"codex_models": models}) == expected
+
     def test_override_wins_over_codex_models(self):
-        state = {"web_search_model": "winner", "codex_models": ["loser"]}
+        state = {
+            "web_search_model": "winner",
+            "codex_models": ["system.ai.gpt-6-luna", "system.ai.gpt-5-mini"],
+        }
         assert claude._resolve_web_search_model(state) == "winner"
 
 
@@ -1606,6 +1802,247 @@ class TestWriteToolConfigManagedSettings:
             lambda *a, **kw: _managed_config_result({"claude": {}}),
         )
         return managed_path, sudo_writes
+
+    @pytest.mark.parametrize("can_write", [False, True])
+    @pytest.mark.parametrize("managed_routing", [False, True])
+    @pytest.mark.parametrize(
+        "configure_version",
+        [None, "", "unknown_v99", "subagent_orch_v0_claude_only", "subagent_auto_v0_claude_only"],
+    )
+    def test_auto_picker_survives_ordinary_launch(
+        self, tmp_path, monkeypatch, can_write, managed_routing, configure_version
+    ):
+        from ucode.agents.claude_auto import is_auto_model, picker_is_configured
+
+        path, writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result(
+                {"enabled_agents": {"claude": {"smart_routing_enabled": managed_routing}}}
+            ),
+        )
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
+        ordinary_version = "subagent_orch_v0_claude_only"
+        auto_version = "subagent_auto_v0_claude_only"
+        configure_auto = configure_version == auto_version
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        if configure_version is None:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", configure_version)
+        monkeypatch.setattr(claude, "_explicit_configure", True)
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        configured_auto = configure_auto
+        # Managed routing under the Auto config version keeps the static catalog's
+        # replacement picker and serves Auto from one row inside it.
+        static_catalog = managed_routing and configure_auto
+        managed = json.loads(path.read_text())
+        assert picker_is_configured(managed) is configured_auto
+        assert managed["modelPicker"]["replaceBuiltInOptions"] is (
+            not configured_auto or static_catalog
+        )
+        auto_rows = [
+            row
+            for row in managed["modelPicker"]["options"]
+            if isinstance(row, dict) and is_auto_model(row.get("model", ""))
+        ]
+        assert len(auto_rows) == (1 if static_catalog else 0)
+        if static_catalog:
+            # Auto leads UG's rows (Claude renders its native Default row above them).
+            assert managed["modelPicker"]["options"][0] == auto_rows[0]
+            assert auto_rows[0]["label"] == "Auto"
+            alias = auto_rows[0]["model"]
+            assert managed["modelOverrides"][alias] == "system.ai.claude-sonnet-4-6"
+            assert managed["availableModels"] == [
+                "system.ai.claude-sonnet-4-6",
+                alias,
+            ]
+        installed = path.read_bytes()
+        write_count = len(writes)
+        monkeypatch.setattr(claude, "_explicit_configure", False)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: can_write)
+        for version in (ordinary_version, auto_version):
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+            claude.write_tool_config(state, state["claude_static_models"][0])
+            assert picker_is_configured(json.loads(path.read_text())) is configured_auto
+            assert path.read_bytes() == installed
+            assert len(writes) == write_count
+
+    @pytest.mark.parametrize("managed_routing", [False, True])
+    @pytest.mark.parametrize("disable", ["without_version", "routing_off"])
+    def test_reconfigure_without_auto_version_removes_auto_picker(
+        self, tmp_path, monkeypatch, managed_routing, disable
+    ):
+        from ucode.agents.claude_auto import is_auto_model, picker_is_configured
+        from ucode.smart_routing import config
+
+        path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result(
+                {"enabled_agents": {"claude": {"smart_routing_enabled": managed_routing}}}
+            ),
+        )
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
+        monkeypatch.setattr(claude, "_explicit_configure", True)
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        assert picker_is_configured(json.loads(path.read_text()))
+        if disable == "without_version":
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION")
+            monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+            claude.write_tool_config(state, state["claude_static_models"][0])
+        else:
+            with config.version_scope():
+                previous = v2.override_smart_routing(False, agent="claude")
+                try:
+                    claude.write_tool_config(state, state["claude_static_models"][0])
+                finally:
+                    v2.restore_smart_routing_env(previous)
+        settings = json.loads(path.read_text())
+        assert not picker_is_configured(settings)
+        assert settings["modelPicker"]["replaceBuiltInOptions"] is True
+        assert not any(is_auto_model(row["model"]) for row in settings["modelPicker"]["options"])
+        assert not any(is_auto_model(alias) for alias in settings.get("modelOverrides", {}))
+        assert not any(is_auto_model(model) for model in settings.get("availableModels", []))
+        assert not is_auto_model(settings["env"].get("ANTHROPIC_MODEL", ""))
+        assert "ANTHROPIC_CUSTOM_MODEL_OPTION" not in settings["env"]
+
+    def test_static_auto_row_adds_one_row_and_keeps_replacement_picker(self):
+        from ucode.agents.claude_auto import (
+            AUTO_DESCRIPTION,
+            add_picker_entry,
+            auto_variant,
+            is_auto_model,
+        )
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        haiku = "system.ai.claude-haiku-4-5"
+        settings = {
+            "env": {"ANTHROPIC_MODEL": haiku},
+            "availableModels": [sonnet, haiku],
+            "enforceAvailableModels": True,
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {"model": sonnet, "label": "Sonnet 5.5"},
+                    {"model": haiku, "label": "Haiku 4.5"},
+                ],
+            },
+        }
+        result = add_picker_entry(settings, static_auto_row=True)
+        assert result["modelPicker"]["replaceBuiltInOptions"] is True
+        options = result["modelPicker"]["options"]
+        # Auto is the first UG row; the catalog's own rows keep their order after it.
+        assert is_auto_model(options[0]["model"])
+        assert [row["model"] for row in options[1:]] == [sonnet, haiku]
+        auto_rows = [row for row in options if is_auto_model(row["model"])]
+        # Exactly one Auto row, pointing at the variant of the configured default model.
+        assert len(auto_rows) == 1
+        assert auto_rows[0]["model"] == auto_variant({"model": haiku})
+        assert auto_rows[0]["label"] == "Auto"
+        assert auto_rows[0]["description"] == AUTO_DESCRIPTION
+        sonnet_variant = auto_variant({"model": sonnet})
+        haiku_variant = auto_variant({"model": haiku})
+        assert result["modelOverrides"] == {sonnet_variant: sonnet, haiku_variant: haiku}
+        assert result["availableModels"] == [sonnet, haiku, sonnet_variant, haiku_variant]
+        assert result["enforceAvailableModels"] is True
+        # The input settings are not mutated.
+        assert "modelOverrides" not in settings
+
+    def test_static_auto_row_reconfigure_moves_trailing_auto_first(self):
+        from ucode.agents.claude_auto import (
+            AUTO_DESCRIPTION,
+            add_picker_entry,
+            auto_variant,
+            is_auto_model,
+        )
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        haiku = "system.ai.claude-haiku-4-5"
+        sonnet_variant = auto_variant({"model": sonnet})
+        haiku_variant = auto_variant({"model": haiku})
+        # A file installed by an earlier build, with the Auto row last.
+        installed = {
+            "env": {"ANTHROPIC_MODEL": sonnet},
+            "availableModels": [sonnet, haiku, sonnet_variant, haiku_variant],
+            "modelOverrides": {sonnet_variant: sonnet, haiku_variant: haiku},
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {"model": sonnet, "label": "Sonnet 5.5"},
+                    {"model": haiku, "label": "Haiku 4.5"},
+                    {"model": sonnet_variant, "label": "Auto", "description": AUTO_DESCRIPTION},
+                ],
+            },
+        }
+        result = add_picker_entry(installed, static_auto_row=True)
+        assert result["modelPicker"]["options"] == [
+            {"model": sonnet_variant, "label": "Auto", "description": AUTO_DESCRIPTION},
+            {"model": sonnet, "label": "Sonnet 5.5"},
+            {"model": haiku, "label": "Haiku 4.5"},
+        ]
+        assert result["modelOverrides"] == installed["modelOverrides"]
+        assert result["availableModels"] == installed["availableModels"]
+        # Reconfiguring again is a no-op.
+        assert add_picker_entry(result, static_auto_row=True) == result
+        assert sum(is_auto_model(row["model"]) for row in result["modelPicker"]["options"]) == 1
+
+    def test_custom_slot_mode_still_replaces_built_in_options(self):
+        from ucode.agents.claude_auto import add_picker_entry, auto_variant
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        settings = {
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": sonnet, "label": "Sonnet 5.5"}],
+            },
+        }
+        result = add_picker_entry(settings)
+        assert result["modelPicker"]["replaceBuiltInOptions"] is False
+        assert all(
+            not row["model"].startswith("ug-auto") for row in result["modelPicker"]["options"]
+        )
+        assert result["modelOverrides"] == {auto_variant({"model": sonnet}): sonnet}
+
+    def test_picker_is_configured_recognizes_only_installed_auto_modes(self):
+        from ucode.agents.claude_auto import (
+            add_picker_entry,
+            picker_has_auto_row,
+            picker_is_configured,
+        )
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        static = add_picker_entry(
+            {
+                "availableModels": [sonnet],
+                "modelPicker": {
+                    "replaceBuiltInOptions": True,
+                    "options": [{"model": sonnet, "label": "Sonnet"}],
+                },
+            },
+            static_auto_row=True,
+        )
+        assert picker_has_auto_row(static) is True
+        assert picker_is_configured(static) is True
+        # A foreign replacement picker without the Auto row never counts as configured.
+        foreign = {
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": sonnet, "label": "Sonnet"}],
+            },
+            "modelOverrides": {f"ug-auto-{sonnet}": sonnet},
+        }
+        assert picker_has_auto_row(foreign) is False
+        assert picker_is_configured(foreign) is False
+        # The custom-slot mode keeps being recognized.
+        custom = add_picker_entry({"modelPicker": {"options": [{"model": sonnet}]}})
+        assert picker_has_auto_row(custom) is False
+        assert picker_is_configured(custom) is True
+        # Without any Auto provision neither mode is configured.
+        assert picker_is_configured({"modelPicker": {"options": [{"model": sonnet}]}}) is False
 
     def test_reapply_unchanged_config_invokes_no_sudo(self, tmp_path, monkeypatch):
         # Repeated `ug claude` launches with an unchanged config and an intact managed file must
@@ -2593,6 +3030,20 @@ class TestWriteToolConfigManagedSettings:
         assert managed_writes == []
         assert warns == []
 
+    def test_relayed_without_a_provider_is_marked_cli_only(self, monkeypatch):
+        # A relayed launch from relay-backed model services is CLI-only, so Desktop keeps gateway
+        # auth; a later non-relayed configure clears the marker.
+        self._patch(monkeypatch, [], [])
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
+        monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda path: [])
+        state = {"workspace": WS, "codex_models": []}
+        state = claude.write_tool_config(state, "main.default.relayed-sonnet", relayed=True)
+        assert state[CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY] is True
+        assert not desktop_uses_claude_subscription_relay(state)
+
+        state = claude.write_tool_config(state, "main.default.relayed-sonnet")
+        assert CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY not in state
+
     @pytest.mark.parametrize(
         "managed_auth",
         [
@@ -3367,6 +3818,12 @@ class TestResolveLaunchBinary:
 
 class TestClaudeLaunch:
     @pytest.fixture(autouse=True)
+    def _isolated_launch_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "managed.json")
+
+    @pytest.fixture(autouse=True)
     def _claude_on_windows_path(self, monkeypatch):
         if sys.platform != "win32":
             return
@@ -3396,7 +3853,29 @@ class TestClaudeLaunch:
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [(state, "claude", ["--debug"])]
 
-    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("options", "tool_args", "model_args"),
+        [
+            (LaunchOptions(), ["--debug"], []),
+            (
+                LaunchOptions(user_pinned_model="main.default.relayed"),
+                ["--debug"],
+                ["--model", "main.default.relayed"],
+            ),
+            (
+                LaunchOptions(launch_model="system.ai.kimi"),
+                ["--debug"],
+                ["--model", "system.ai.kimi"],
+            ),
+            # A model forwarded to Claude Code after `--` wins over ug's own.
+            (
+                LaunchOptions(user_pinned_model="main.default.relayed"),
+                ["--model", "system.ai.kimi"],
+                [],
+            ),
+        ],
+    )
+    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch, options, tool_args, model_args):
         calls: list[tuple] = []
 
         class Server:
@@ -3423,7 +3902,8 @@ class TestClaudeLaunch:
             def wait(self):
                 return 0
 
-        def start_relay_proxy(workspace, token_provider, port):
+        def start_relay_proxy(workspace, token_provider, port, *, routes_to_subscription_relay):
+            assert callable(routes_to_subscription_relay)
             calls.append(("proxy", workspace, port, token_provider(False)))
             return Server(), Cache(), Client()
 
@@ -3445,8 +3925,8 @@ class TestClaudeLaunch:
                     "claude_relayed": True,
                     "relayed_proxy_port": 12345,
                 },
-                ["--debug"],
-                options=LaunchOptions(),
+                tool_args,
+                options=options,
             )
 
         assert exc.value.code == 0
@@ -3456,6 +3936,11 @@ class TestClaudeLaunch:
             12345,
             f"tok:{WS}:test:False",
         )
+        argv = next(call[1] for call in calls if call[0] == "popen")
+        model_flags = [arg for arg in argv if arg == "--model"]
+        assert len(model_flags) == (1 if model_args or "--model" in tool_args else 0)
+        if model_args:
+            assert argv[argv.index("--model") : argv.index("--model") + 2] == model_args
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
     def test_smart_routing_on_windows_uses_native_binary(self, monkeypatch, tmp_path):
@@ -3682,6 +4167,100 @@ class TestClaudeLaunch:
         assert json.loads(settings_path.read_text()) == original_settings
         assert calls[0][-2:] == ["--model", custom_model]
 
+    @pytest.mark.parametrize(
+        ("target", "behaves_as"),
+        [
+            ("system.ai.claude-sonnet-5-5", None),
+            ("claude-haiku-4-5", None),
+            ("team.models.custom", None),
+            ("system.ai.claude-sonnet-5-5[1m]", None),
+            ("team.models.admin", "claude-sonnet-5-5[1m]"),
+        ],
+    )
+    @pytest.mark.parametrize("version", [None, "subagent_auto_v0_claude_only"])
+    def test_auto_alias_restarts_on_real_model(
+        self, monkeypatch, tmp_path, target, behaves_as, version
+    ):
+        from ucode.agents.claude_auto import auto_variant
+
+        calls = []
+        configured = auto_variant({"model": target, "behavesAs": behaves_as})
+        saved = configured.removesuffix("[1m]")
+        user_path = tmp_path / "settings.json"
+        user_path.write_text(json.dumps({"model": saved}))
+        settings_path = tmp_path / "ucode-settings.json"
+        settings_path.write_text("{}")
+        managed_path = tmp_path / "managed-settings.json"
+        if behaves_as:
+            managed_path.write_text(json.dumps({"modelOverrides": {configured: target}}))
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+        if version is None:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        claude.launch({"workspace": WS}, [], options=LaunchOptions())
+        argv = calls[0]
+        assert argv[argv.index("--model") + 1] == target
+        assert json.loads(user_path.read_text())["model"] == saved
+        assert "modelOverrides" not in json.loads(settings_path.read_text())
+
+    @pytest.mark.parametrize("static_row", [False, True])
+    @pytest.mark.parametrize("routed", [False, True])
+    def test_installed_auto_row_cannot_enable_auto_without_the_version(
+        self, monkeypatch, tmp_path, static_row, routed
+    ):
+        from ucode.agents.claude_auto import add_picker_entry
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        base = {
+            "env": {"ANTHROPIC_MODEL": sonnet},
+            "availableModels": [sonnet],
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": sonnet, "label": "Sonnet 5.5"}],
+            },
+        }
+        managed = add_picker_entry(base, static_auto_row=static_row)
+        managed_path = tmp_path / "managed-settings.json"
+        managed_path.write_text(json.dumps(managed))
+        before = managed_path.read_bytes()
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
+        auto_decisions = []
+        launch_v2 = Mock(
+            side_effect=lambda *_a, **_kw: auto_decisions.append(claude.auto_mode_enabled())
+        )
+        monkeypatch.setattr(v2, "launch_claude", launch_v2)
+
+        claude.launch(
+            {"workspace": WS},
+            [],
+            options=LaunchOptions(launch_smart_routing=routed),
+        )
+
+        if not routed:
+            launch_v2.assert_not_called()
+            assert len(calls) == 1
+        else:
+            assert auto_decisions == [False]
+        assert managed_path.read_bytes() == before
+
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(v2, "launch_claude", Mock())
@@ -3852,6 +4431,7 @@ class TestClaudeLaunch:
             binary="claude",
             user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
             launch_model=None,
+            default_model=None,
             compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
@@ -4330,6 +4910,8 @@ class TestServerSideWebSearchOptIn:
 
     @pytest.fixture(params=["_normal", "_routing"])
     def launch_settings(self, request, monkeypatch):
+        monkeypatch.setattr(claude, "header_mod_active", lambda *, require_current=False: True)
+        monkeypatch.setattr(claude, "recipe_mod_active", lambda: True)
         return lambda **kwargs: getattr(self, request.param)(monkeypatch, **kwargs)
 
     @pytest.mark.parametrize("env", [None, "0", "false", "NO", "off"])
@@ -5413,3 +5995,221 @@ class TestGetFamilyDefaults:
         managed_file(json.dumps({"modelPicker": self.PICKER, "env": self.WRITER_ENV}))
         state, kwargs = source
         assert claude.get_family_defaults(state, **{**self.NO_SOURCE, **kwargs}) is None
+
+
+class TestAutoConfigurationCleanup:
+    @pytest.fixture
+    def files(self, tmp_path, monkeypatch):
+        import ucode.config_io as config_io
+
+        monkeypatch.setattr(config_io, "_dry_run", False)
+        managed = tmp_path / "managed.json"
+        private = claude.CLAUDE_SETTINGS_PATH
+        native = claude.CLAUDE_USER_SETTINGS_PATH
+        private.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(
+            claude,
+            "reconcile_privileged_files",
+            lambda files, **kw: [path.write_text(text) for path, text in files.items()],
+        )
+        return managed, private, native
+
+    def test_cleans_all_files_and_repairs_native_selection_under_managed_policy(self, files):
+        managed, private, native = files
+        alias, target = "ug-auto-old", "team.models.main"
+        managed.write_text(
+            json.dumps(
+                {
+                    "modelOverrides": {alias: target, "admin": "team.models.admin"},
+                    "modelPicker": {
+                        "replaceBuiltInOptions": True,
+                        "options": [
+                            {"model": alias, "label": "Auto"},
+                            {"model": target, "label": "Main"},
+                        ],
+                    },
+                    "availableModels": [alias],
+                    "enforceAvailableModels": True,
+                    "env": {
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION": alias,
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Auto",
+                        "OTHER": "keep",
+                    },
+                }
+            )
+        )
+        private.write_text(json.dumps({"modelOverrides": {alias: "wrong-target"}, "theme": "dark"}))
+        native.write_text(json.dumps({"model": alias, "theme": "light"}))
+        native.chmod(0o640)
+
+        claude.cleanup_auto_configuration()
+
+        result = json.loads(managed.read_text())
+        assert result["modelOverrides"] == {"admin": "team.models.admin"}
+        assert result["modelPicker"] == {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": target, "label": "Main"}],
+        }
+        assert result["availableModels"] == [target]
+        assert result["enforceAvailableModels"] is True
+        assert result["env"] == {"OTHER": "keep"}
+        assert json.loads(private.read_text()) == {"modelOverrides": {}, "theme": "dark"}
+        assert json.loads(native.read_text()) == {"model": target, "theme": "light"}
+        if os.name != "nt":
+            assert native.stat().st_mode & 0o777 == 0o640
+        before = [path.read_bytes() for path in files]
+        claude.cleanup_auto_configuration()
+        assert [path.read_bytes() for path in files] == before
+
+    def test_native_selection_cannot_escape_managed_allowlist(self, files):
+        managed, private, native = files
+        managed.write_text(json.dumps({"availableModels": ["allowed"]}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "forbidden"}}))
+        native.write_text(json.dumps({"model": "ug-auto-old", "theme": "dark"}))
+        claude.cleanup_auto_configuration()
+        assert json.loads(native.read_text()) == {"theme": "dark"}
+
+    def test_native_alias_only_allowlist_remains_restrictive(self, files):
+        _, _, native = files
+        native.write_text(
+            json.dumps(
+                {
+                    "model": "ug-auto-old",
+                    "availableModels": ["ug-auto-old"],
+                    "modelOverrides": {"ug-auto-old": "target"},
+                }
+            )
+        )
+        claude.cleanup_auto_configuration()
+        assert json.loads(native.read_text()) == {
+            "model": "target",
+            "availableModels": ["target"],
+            "modelOverrides": {},
+        }
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks require Windows privileges")
+    @pytest.mark.parametrize("has_auto", [False, True])
+    def test_symlink_only_blocks_required_cleanup_before_any_writes(self, files, has_auto):
+        managed, private, native = files
+        managed.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "target"}}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "target"}}))
+        target = native.with_name("native-target.json")
+        target.write_text(json.dumps({"model": "ug-auto-old" if has_auto else "regular"}))
+        native.symlink_to(target)
+        before = [path.read_bytes() for path in files]
+        assert claude.auto_model_targets() == {"ug-auto-old": "target"}
+        if has_auto:
+            with pytest.raises(RuntimeError, match="symlink.*Remove its Auto settings"):
+                claude.cleanup_auto_configuration()
+            assert [path.read_bytes() for path in files] == before
+        else:
+            claude.cleanup_auto_configuration()
+            assert native.is_symlink()
+            assert native.read_bytes() == before[-1]
+            assert json.loads(private.read_text()) == {"modelOverrides": {}}
+
+    def test_failed_native_write_keeps_mappings_for_retry(self, files, monkeypatch):
+        managed, private, native = files
+        managed.write_text(json.dumps({"modelOverrides": {"ug-auto-opaque": "custom.main"}}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-opaque": "custom.main"}}))
+        native.write_text(json.dumps({"model": "ug-auto-opaque"}))
+        before = [path.read_bytes() for path in files]
+        real_write = claude.atomic_write_json
+
+        def fail_native(path, document):
+            if path == native:
+                raise OSError("write failed")
+            real_write(path, document)
+
+        monkeypatch.setattr(claude, "atomic_write_json", fail_native)
+        with pytest.raises(RuntimeError, match="write failed"):
+            claude.cleanup_auto_configuration()
+        assert [path.read_bytes() for path in files] == before
+        monkeypatch.setattr(claude, "atomic_write_json", real_write)
+        claude.cleanup_auto_configuration()
+        assert json.loads(native.read_text()) == {"model": "custom.main"}
+        assert json.loads(managed.read_text()) == {"modelOverrides": {}}
+        assert json.loads(private.read_text()) == {"modelOverrides": {}}
+
+    @pytest.mark.parametrize("scope", ["user", "global", "skip_os", "published", "dry_run"])
+    def test_respects_command_scope(self, files, monkeypatch, scope):
+        import ucode.config_io as config_io
+
+        managed, private, native = files
+        for path in files:
+            path.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "target"}, "other": 1}))
+        before = {path: path.read_bytes() for path in files}
+        if scope == "user":
+            monkeypatch.setattr(managed_files, "_config_scope", "user")
+        elif scope == "global":
+            monkeypatch.setattr(managed_files, "_machine_wide_only", True)
+        elif scope == "skip_os":
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        elif scope == "published":
+            monkeypatch.setattr(managed_files, "published_agent_config_used", lambda: True)
+        else:
+            monkeypatch.setattr(config_io, "_dry_run", True)
+        claude.cleanup_auto_configuration()
+        for path in files:
+            retained = (
+                scope == "dry_run"
+                or (path == managed and scope in {"user", "skip_os", "published"})
+                or (path != managed and scope == "global")
+            )
+            assert (path.read_bytes() == before[path]) is retained
+
+    def test_invalid_allowlist_fails_before_any_file_changes(self, files):
+        managed, private, native = files
+        managed.write_text(json.dumps({"availableModels": ["ug-auto-unresolved"]}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-other": "target"}}))
+        native.write_text(json.dumps({"model": "ug-auto-other"}))
+        before = [path.read_bytes() for path in files]
+        with pytest.raises(RuntimeError, match="Cannot remove Claude Auto settings"):
+            claude.cleanup_auto_configuration()
+        assert [path.read_bytes() for path in files] == before
+
+    @pytest.mark.parametrize(
+        "version", [None, "", "unknown", "subagent_only_v0", "subagent_auto_v0_claude_only"]
+    )
+    def test_only_exact_version_can_retain_auto(self, monkeypatch, version):
+        if version is not None:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        assert claude.auto_configuration_enabled() is (version == "subagent_auto_v0_claude_only")
+
+    def test_resolved_routing_off_overrides_exact_version(self, monkeypatch):
+        from ucode.smart_routing import config
+
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+        with config.version_scope():
+            previous = v2.override_smart_routing(False, agent="claude")
+            try:
+                assert config.auto_mode_enabled()
+                assert not claude.auto_configuration_enabled()
+            finally:
+                v2.restore_smart_routing_env(previous)
+
+
+@pytest.mark.parametrize("external_edit", [False, True])
+def test_auto_cleanup_follows_managed_backup_restore(tmp_path, monkeypatch, external_edit):
+    path, _ = TestWriteToolConfigManagedSettings()._sudo_counting_env(tmp_path, monkeypatch)
+    original = {
+        "modelOverrides": {"ug-auto-baseline": "target", "admin": "foreign"},
+        "company": "keep",
+    }
+    path.write_text(json.dumps(original))
+    claude.write_tool_config({"workspace": WS, "claude_models": {}}, None)
+    if external_edit:
+        document = json.loads(path.read_text())
+        document["newAdminKey"] = "preserve"
+        path.write_text(json.dumps(document))
+    targets = claude.auto_model_targets()
+    claude.revert_managed_settings()
+    claude.cleanup_auto_configuration(alias_targets=targets)
+    restored = json.loads(path.read_text())
+    assert restored["modelOverrides"] == {"admin": "foreign"}
+    assert restored["company"] == "keep"
+    if external_edit:
+        assert restored["newAdminKey"] == "preserve"

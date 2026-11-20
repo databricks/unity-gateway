@@ -5,7 +5,7 @@ import os
 
 import pytest
 from test_ug_smart_routing_hooks import _select_smart_router_version, _toggle_with_skill
-from utils.agents.codex import assert_agent_interaction_completed, completed_command_outputs
+from utils.agents.codex import assert_agent_interaction_completed, completed_smart_router_results
 from utils.evidence import (
     agent_sessions,
     assistant_answers,
@@ -88,16 +88,13 @@ def _wait_for(tui, predicate, description, *, timeout):
 
 
 def _assert_toggle_executed_once(session, enabled):
-    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
     outputs = [
         output
         for records in _root_sessions(session)
-        for output in completed_command_outputs(
-            records, command_contains=f"-m ucode.cli codex {flag}"
-        )
+        for output in completed_smart_router_results(records, "on" if enabled else "off")
     ]
     assert len(outputs) == 1, outputs
-    assert f"Smart Router is {'on' if enabled else 'off'} for this session" in outputs[0]
+    assert f"Smart Router is {'on' if enabled else 'off'} for this session" in outputs[0]["message"]
 
 
 @pytest.mark.live
@@ -146,8 +143,11 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
     )
     assignment = (
-        f'Run {python} "{gate}" exactly once. This command waits for a release file; '
-        "let it run without restarting it. After it finishes, spawn exactly one child with "
+        "Execute this exact command once, copying only the code block contents:\n\n"
+        f"```{'powershell' if os.name == 'nt' else 'sh'}\n"
+        f'{python} "{gate}"\n```\n\n'
+        "This command waits for a release file; let it run without restarting it. "
+        "After it succeeds, spawn exactly one child with "
         f'task_name nested, fork_turns none, asking it to read "{secret}" and return its '
         "entire contents. Then use send_message to send 'old sibling reached new sibling' "
         "to /root/new__sr_off. Wait for your child's answer and return that value."
