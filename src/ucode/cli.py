@@ -4231,13 +4231,16 @@ class _SpeculativePickerCatalog:
             catalog_kwargs,
         )
 
-    def result(self, state: dict, catalog_profile: str | None) -> AnthropicModelCatalog | None:
-        """The speculative catalog result when its identity still matches and it succeeded;
-        None sends the caller to the serial fetch with the live token."""
-        if (self.workspace, self.workspace_id, self.profile) != (
+    def result(
+        self, state: dict, catalog_profile: str | None, **catalog_kwargs: str | None
+    ) -> AnthropicModelCatalog | None:
+        """The speculative catalog result when its identity and catalog scope still match
+        and it succeeded; None sends the caller to the serial fetch with the live token."""
+        if (self.workspace, self.workspace_id, self.profile, self.catalog_kwargs) != (
             state["workspace"],
             state.get("workspace_id"),
             catalog_profile,
+            catalog_kwargs,
         ):
             return None
         try:
@@ -4512,11 +4515,12 @@ def _launch_tool(
             if launch_cache_entry is not None:
                 cached_picker_catalog = entry_catalog(launch_cache_entry)
         scoped_picker_catalog = claude_uc_picker_catalog and not provider
+        picker_catalog_scope: dict[str, str | None] = (
+            {} if unmanaged_picker_catalog else {"parent_schema": parent_schema}
+        )
         if (unmanaged_picker_catalog or scoped_picker_catalog) and cached_picker_catalog is None:
             picker_catalog_speculation = _SpeculativePickerCatalog.start(
-                state,
-                _get_catalog_profile(state),
-                **({} if unmanaged_picker_catalog else {"parent_schema": parent_schema}),
+                state, _get_catalog_profile(state), **picker_catalog_scope
             )
 
         state = configure_shared_state(
@@ -4669,7 +4673,7 @@ def _launch_tool(
         )
         if should_fetch_claude_picker_catalog:
             picker_catalog = (
-                picker_catalog_speculation.result(state, catalog_profile)
+                picker_catalog_speculation.result(state, catalog_profile, **picker_catalog_scope)
                 if picker_catalog_speculation
                 else None
             )
@@ -4789,7 +4793,7 @@ def _launch_tool(
             # AnthropicModelCatalog is a plain dataclass, so only None is falsy here. On a
             # cache hit the speculation never started, so only the cached catalog serves.
             discovered = cached_picker_catalog or (
-                picker_catalog_speculation.result(state, catalog_profile)
+                picker_catalog_speculation.result(state, catalog_profile, **picker_catalog_scope)
                 if picker_catalog_speculation
                 else None
             )
