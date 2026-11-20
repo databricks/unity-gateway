@@ -360,6 +360,113 @@ capture_path.write_text(json.dumps({
         assert data["enter_is_cr"], "CR (Enter) must follow the paste"
 
 
+class TestManualModelConfirmation:
+    @pytest.mark.parametrize(
+        "model, output, expected",
+        [
+            (
+                "haiku",
+                b"SetmodeltoClaudeHaiku5.5andsavedasyourdefaultfornewsessions\r\r\n",
+                True,
+            ),
+            ("haiku", b"Set model to haiku\n", True),
+            ("haiku", b"SetmodeltoSonnet5.5andsavedasyourdefaultfornewsessions\r\n", False),
+            ("haiku", b"SetmodeltoClaudeHaiku5.5", False),
+            ("haiku", b"Set model to haiku-other\n", False),
+            ("not-a-model", b"Could not set model to not-a-model\n", False),
+            ("system.ai.custom", b"Model set to system.ai.custom\n", True),
+            ("system.ai.custom", b"Model set to Custom Display\n", False),
+        ],
+    )
+    def test_requires_a_complete_matching_native_result(self, model, output, expected):
+        confirmation = claude_pty.ManualModelConfirmation(model)
+        observations = [confirmation.observe(bytes([byte])) for byte in output]
+        assert any(observations) is expected
+
+
+class TestModelSwitchInput:
+    @pytest.mark.parametrize(
+        "sequence",
+        [
+            b"\x1b[A",
+            b"\x1bOD",
+            b"\x1b[1~",
+            b"\x1b[4~",
+            b"\x1b[I",
+            b"\x1b[O",
+            b"\x1b[?1;2c",
+            b"\x1b[12;45R",
+        ],
+    )
+    def test_fragmented_navigation_and_terminal_replies_are_not_edits(self, sequence):
+        state = claude_pty.ModelSwitchInput()
+        for byte in sequence:
+            assert state.observe(bytes([byte]), 1.0) == (False, False)
+        assert state.observe(b"", 2.0) == (False, False)
+
+    def test_escape_alone_cancels_replay_without_relinquishing_the_default(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"\x1b", 1.0) == (False, False)
+        assert state.observe(b"", 2.0) == (True, False)
+
+    def test_submitted_slash_command_transfers_default_ownership(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"/model ", 1.0) == (True, False)
+        assert state.observe(b"sonnet\r", 1.1) == (True, True)
+        assert state.manual_model == "sonnet"
+        assert state.observe(b"/mod\r", 1.2) == (True, True)
+        assert state.manual_model is None
+        assert state.observe(b"plain text\r", 1.3) == (True, False)
+
+    @pytest.mark.parametrize(
+        "editing",
+        [b"\x1b[A", b"\x1bOD", b"\t", b"\x12", b"\x10", b"\x19"],
+        ids=["history", "cursor", "completion", "search", "previous", "yank"],
+    )
+    def test_submitting_an_unknown_line_transfers_default_ownership(self, editing):
+        state = claude_pty.ModelSwitchInput()
+        state.observe(editing, 1.0)
+        assert state.observe(b"\r", 1.1) == (True, True)
+        assert state.manual_model is None
+        assert state.observe(b"plain text\r", 1.2) == (True, False)
+
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            (b"  /model system.ai.claude-sonnet-5[1m]\r", "system.ai.claude-sonnet-5[1m]"),
+            (b"\x1b[200~/model haiku\x1b[201~\r", "haiku"),
+            (b"/model haikx\x7fu\r", "haiku"),
+            (b"/model\r", None),
+            (b"/model haiku extra\r", None),
+            (b"/model haiku\x1b[D\r", None),
+            (b"/model haiku\r\x1b[A\r", None),
+            (b"x" * 4096 + b"/model haiku\r", None),
+        ],
+    )
+    def test_manual_target_requires_a_complete_known_command(self, command, expected):
+        state = claude_pty.ModelSwitchInput()
+        for index, byte in enumerate(command):
+            state.observe(bytes([byte]), index / 1000)
+        assert state.manual_model == expected
+
+    def test_terminal_replies_do_not_make_a_known_line_unknown(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"plain text", 1.0) == (True, False)
+        for reply in [b"\x1b[?1;2c", b"\x1b[12;45R", b"\x1b[I", b"\x1b]10;rgb:ff/ff/ff\x07"]:
+            assert state.observe(reply, 1.1) == (False, False)
+        assert state.observe(b"\r", 1.2) == (True, False)
+
+    def test_multiline_paste_is_not_a_submitted_model_command(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"\x1b[200~/model sonnet\nexplain it\x1b[201~", 1.0) == (True, False)
+        assert state.observe(b"\r", 1.1) == (True, False)
+        assert state.observe(b"\x1b[200~", 1.2) == (True, False)
+        assert state.pending
+        assert state.observe(b"/model sonnet\nexplain it\x1b[201~", 1.3) == (True, False)
+        assert not state.pending
+        assert state.observe(b"\r", 1.4) == (True, False)
+
+
 # ---------------------------------------------------------------------------
 # Test E: waiting_to_switch timeout submits without /model (Bug D)
 # ---------------------------------------------------------------------------

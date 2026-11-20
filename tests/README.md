@@ -1183,6 +1183,12 @@ do not cover plugin-write/process-start failures, native plugin refresh, or daem
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
+Direct `test_claude_pty_replay.py` cases cover fragmented navigation and terminal
+replies, bracketed paste, edited or unknown input, and complete manual model
+commands. Confirmation cases require a complete matching result and reject
+incomplete, different, or failed selections. These checks cover the helpers;
+native persistence and runtime adoption require separate coverage.
+
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
