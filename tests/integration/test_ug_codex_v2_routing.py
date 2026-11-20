@@ -72,7 +72,7 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
 
 def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     """Scenario: configure ug with a user-owned native v2 catalog and observer hook,
-    then delegate one multiline file task with subagent-only routing.
+    then delegate one multiline file task through code mode with subagent-only routing.
 
     Expected: the native child and actual hook input contain the exact assignment,
     matched by the router decision's digest. One native child completes on the selected model; the parent stays on
@@ -85,6 +85,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     assignment = task.prompt + '\nKeep this literal: café λ; "quotes", \\slashes, {braces}.'
     task_name = "ug_native_file"
     prompt = (
+        "Use code mode to call the native spawn_agent tool with a plaintext message; "
+        "do not call collaboration.spawn_agent directly. "
         f'Delegate to one native child with task_name "{task_name}". '
         "Set message to exactly the assignment between BEGIN and END, preserving the newline.\n"
         f"BEGIN\n{assignment}\nEND\n"

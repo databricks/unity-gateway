@@ -205,7 +205,7 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
                 and isinstance(content, list)
             ):
                 # Encrypted Codex child instructions leave only task_name readable.
-                if entry["recipient"].rsplit("/", 1)[-1] == prompt and any(
+                if entry["recipient"].rsplit("/", 1)[-1] in {prompt, prompt + "__sr_on"} and any(
                     isinstance(part, dict)
                     and part.get("type") == "encrypted_content"
                     and isinstance(part.get("encrypted_content"), str)

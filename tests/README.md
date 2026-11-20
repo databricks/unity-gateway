@@ -23,6 +23,9 @@ the original spawn's ciphertext must match the child's NEW_TASK receipt, and its
 name must match the audited fallback digest. Component checks reject mismatched names,
 ciphertexts, missing delivery, and non-spawn calls. This does not establish plaintext
 routing for encrypted tasks; the dedicated native v2 assignment journey checks that separately.
+The encrypted-request matcher accepts the exact enabled-attribution suffix on a child
+task name, rejecting disabled and arbitrary suffixes. Toggle evidence still requires a
+successful state change; only an explicitly denied duplicate after that success is tolerated.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
@@ -1118,7 +1121,7 @@ gateway provider on Windows while Unix launch arguments stay unchanged and routi
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
-`integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.171.0 or newer:
+`integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
 The audit's SHA-256 digest and character count identify that exact assignment without
