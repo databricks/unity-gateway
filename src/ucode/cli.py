@@ -575,8 +575,8 @@ def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
     return find_profile_name_for_host(workspace)
 
 
-def _start_in_background[T](fn: Callable[..., T], *args: object, **kwargs: object) -> Future[T]:
-    """Run ``fn(*args, **kwargs)`` on a daemon thread; the returned future carries its result.
+def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
+    """Run ``fn(*args)`` on a daemon thread; the returned future carries its result or exception.
 
     Not a ``ThreadPoolExecutor`` worker, which interpreter exit joins: a caller that raises before
     reading the result must exit without waiting out the abandoned call's network retries.
@@ -585,7 +585,7 @@ def _start_in_background[T](fn: Callable[..., T], *args: object, **kwargs: objec
 
     def run() -> None:
         try:
-            future.set_result(fn(*args, **kwargs))
+            future.set_result(fn(*args))
         except BaseException as exc:
             future.set_exception(exc)
 
