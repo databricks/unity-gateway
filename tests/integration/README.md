@@ -820,11 +820,14 @@ is on screen first (both open the Language Models editor, which it closes), and 
 its label in the picker. The picked model has to hold for a few seconds, since ug's extension
 switches the chat to its default model once Copilot Chat is on. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`).
-Before clicking, the harness moves the pointer away. Playwright checks the target's native
-actionability within the existing step budget, including waiting for an intercepting hover
-tooltip to close, then clicks once. Unrelated tooltips do not block an actionable target.
-An unavailable target still fails; the picker's existing screen-change recovery may now
-take up to the step budget to receive a click timeout.
+Failed clicks retain an immediate `click-failed` screenshot and a redacted
+`<name>-click-failure-<action>.json` with the action, elapsed time, native error, target bounds,
+visible hover text/bounds and recognized screen. Capture failures add only their exception
+class to the action log and preserve the original click error. These are post-timeout reads,
+not an atomic view of the click; compare their geometry with Playwright's interception log.
+The original two-second click deadline and picker screen-change recovery remain unchanged.
+Screenshot and target-lookup capture each have a two-second limit; if the target has gone,
+the JSON still retains the original error and a capture-error class.
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window

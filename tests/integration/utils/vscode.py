@@ -227,7 +227,7 @@ class VSCode:
         self.shots += 1
         path = self.session.artifacts / f"{self.name}-{self.shots:02d}-{name}.png"
         try:
-            self.page.screenshot(path=str(path))
+            self.page.screenshot(path=str(path), timeout=CLICK_TIMEOUT_MS)
         except Exception:  # noqa: BLE001 (evidence is best effort; the assertion decides)
             pass
 
@@ -245,7 +245,36 @@ class VSCode:
         def click():
             # A tooltip left by the pointer's last position can cover the next target.
             self.page.mouse.move(0, 0)
-            locator.click(timeout=STEP_TIMEOUT_S * 1000)
+            started = time.monotonic()
+            try:
+                locator.click(timeout=CLICK_TIMEOUT_MS)
+            except Exception as error:
+                elapsed = time.monotonic() - started
+                self.shot("click-failed")
+                try:
+                    evidence = {
+                        "action": description,
+                        "elapsedSeconds": elapsed,
+                        "error": str(error),
+                        "screen": self._screen_or_none(),
+                    }
+                    try:
+                        evidence["targetBounds"] = locator.bounding_box(timeout=CLICK_TIMEOUT_MS)
+                        evidence["hovers"] = self.page.locator(
+                            ".context-view .hover-contents:visible"
+                        ).evaluate_all(
+                            "elements => elements.map(e => ({text: e.innerText, "
+                            "bounds: e.getBoundingClientRect().toJSON()}))"
+                        )
+                    except Exception as capture_error:
+                        evidence["captureError"] = type(capture_error).__name__
+                    self.session.record(
+                        f"{self.name}-click-failure-{len(self.actions)}.json",
+                        evidence,
+                    )
+                except Exception as capture_error:
+                    self.actions.append(f"  (click capture failed: {type(capture_error).__name__})")
+                raise
 
         self._act(description, click)
 
