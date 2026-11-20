@@ -5815,6 +5815,7 @@ class TestHttpGetJsonTimeout:
             raise httpx.ReadTimeout("The read operation timed out", request=request)
 
         client = httpx.Client(transport=httpx.MockTransport(timeout))
+        _force_pooled(monkeypatch)
         monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", lambda _seconds: None)
@@ -7448,6 +7449,7 @@ def test_http_transport_passes_headers_and_timeout(monkeypatch):
             return httpx.Response(200, content=b"{}", request=request)
 
     monkeypatch.setattr(db_mod, "_get_http_client", lambda: Client())
+    _force_pooled(monkeypatch)
     body, reason = db_mod._http_get_bytes(
         "https://example.test/api", "token", timeout=1.75, headers={"X-Transport-Test": "yes"}
     )
@@ -7487,6 +7489,11 @@ def _reset_pooled_client(monkeypatch):
     monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", os.getpid())
 
 
+def _force_pooled(monkeypatch):
+    """Pin the dispatch to the pooled client for tests that stub `_get_http_client`."""
+    monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
+
+
 @pytest.fixture
 def fresh_pooled_client(monkeypatch):
     """A loopback test must not reuse the cached pooled client: the client captures its proxy
@@ -7495,53 +7502,12 @@ def fresh_pooled_client(monkeypatch):
     rebuild direct, and close the client the test built so its connections don't outlive it
     (monkeypatch restores the previously cached one)."""
     _clear_proxy_env(monkeypatch)
+    _force_pooled(monkeypatch)
     _reset_pooled_client(monkeypatch)
     yield
     client = db_mod._HTTP_CLIENT
     if client is not None:
         client.close()
-
-
-def _stub_http_transport(handled):
-    """A transport double for _proxy_transport: records which route (proxied or direct)
-    handled each request."""
-    import httpx
-
-    class StubTransport(httpx.BaseTransport):
-        def __init__(self, name):
-            self.name = name
-
-        def handle_request(self, request):
-            handled.append((self.name, request.url.host))
-            return httpx.Response(200)
-
-        def close(self):
-            pass
-
-    return lambda **kwargs: StubTransport("proxied" if kwargs.get("proxy") else "direct")
-
-
-def test_system_proxies_use_urllib_system_proxy_and_bypass(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(
-        db_mod.urllib_request,
-        "getproxies",
-        lambda: {"http": "http://system-proxy:8080", "https": "http://system-proxy:8080"},
-    )
-    monkeypatch.setattr(
-        db_mod.urllib_request, "proxy_bypass", lambda host: host == "internal.example"
-    )
-
-    proxies = db_mod._urllib_proxies()
-    assert proxies == {
-        "http": "http://system-proxy:8080",
-        "https": "http://system-proxy:8080",
-    }
-    assert (
-        db_mod._urllib_proxy_for_request("https", "workspace.example", proxies)
-        == "http://system-proxy:8080"
-    )
-    assert db_mod._urllib_proxy_for_request("https", "internal.example", proxies) is None
 
 
 def test_pooled_client_built_on_tls_trust_store(monkeypatch):
@@ -7608,99 +7574,112 @@ def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
         child_client.close()
 
 
-def test_schemeless_system_proxy_is_normalized(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(
-        db_mod.urllib_request, "getproxies", lambda: {"https": "system-proxy:3128", "all": ""}
-    )
+class TestPooledClientDispatch:
+    """The pooled client is only for the default setup: OS trust store, no http/https proxy
+    (env or the macOS/Windows system settings). Everything else keeps urllib's own path, byte
+    for byte with main."""
 
-    proxies = db_mod._urllib_proxies()
+    @staticmethod
+    def _urlopen_sentinel(monkeypatch):
+        """Point urllib's urlopen at a recorder and make any pooled-client build fail loud."""
+        opened = []
 
-    assert proxies == {"https": "http://system-proxy:3128"}
+        class _Response:
+            headers = None
 
+            def __enter__(self):
+                return self
 
-def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(
-        db_mod.urllib_request,
-        "getproxies",
-        lambda: {"http": "registry-proxy:8080", "https": "registry-proxy:8080"},
-    )
-    monkeypatch.setattr(
-        db_mod.urllib_request, "proxy_bypass", lambda host: host == "bypassed.example"
-    )
+            def __exit__(self, *exc):
+                return False
 
-    import httpx
+            def read(self):
+                return b"{}"
 
-    handled = []
+        def urlopen(request, timeout):
+            opened.append((request, timeout))
+            return _Response()
 
-    monkeypatch.setattr(httpx, "HTTPTransport", _stub_http_transport(handled))
-    proxies = db_mod._urllib_proxies()
-    assert proxies == {
-        "http": "http://registry-proxy:8080",
-        "https": "http://registry-proxy:8080",
-    }
-    transport = db_mod._proxy_transport(httpx, proxies, httpx.Limits())
-    try:
-        transport.handle_request(httpx.Request("GET", "https://workspace.example/api"))
-        transport.handle_request(httpx.Request("GET", "https://bypassed.example/api"))
-    finally:
-        transport.close()
-    assert handled == [("proxied", "workspace.example"), ("direct", "bypassed.example")]
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(
+            db_mod, "_get_http_client", lambda: pytest.fail("pooled client must not be built")
+        )
+        return opened
 
+    def test_python_trust_store_uses_urlopen(self, monkeypatch):
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "python")
+        opened = self._urlopen_sentinel(monkeypatch)
 
-def test_socks_all_proxy_is_ignored_and_requests_go_direct(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setenv("ALL_PROXY", "socks5://socks-proxy:1080")
+        request = db_mod.urllib_request.Request("https://x/y")
+        db_mod._http_open(request, timeout=5)
 
-    assert db_mod._urllib_proxies() is None
+        assert opened == [(request, 5)]
 
-    import httpx
+    def test_https_proxy_env_uses_urlopen(self, monkeypatch):
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
+        opened = self._urlopen_sentinel(monkeypatch)
 
-    built = {}
-    real_client = httpx.Client
+        request = db_mod.urllib_request.Request("https://x/y")
+        db_mod._http_open(request, timeout=5)
 
-    def spy_client(*args, **kwargs):
-        built.update(kwargs)
-        return real_client(*args, **kwargs)
+        assert opened == [(request, 5)]
 
-    monkeypatch.setattr(httpx, "Client", spy_client)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
-    client = db_mod._get_http_client()
-    try:
-        assert isinstance(client._transport, httpx.HTTPTransport)
-        assert built["trust_env"] is False
-    finally:
-        client.close()
+    def test_system_proxy_uses_urlopen(self, monkeypatch):
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(
+            db_mod.urllib_request, "getproxies", lambda: {"https": "http://system-proxy:8080"}
+        )
+        opened = self._urlopen_sentinel(monkeypatch)
 
+        request = db_mod.urllib_request.Request("https://x/y")
+        db_mod._http_open(request, timeout=5)
 
-def test_socks_https_proxy_is_used_as_an_http_connect_proxy(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setenv("HTTPS_PROXY", "socks5://socks-proxy:1080")
+        assert opened == [(request, 5)]
 
-    assert db_mod._urllib_proxies() == {"https": "http://socks-proxy:1080"}
+    def test_all_proxy_alone_still_pools_direct(self, monkeypatch):
+        # urllib ignores all_proxy, so it doesn't disqualify the pooled client; the client
+        # must still be direct with trust_env off, so ALL_PROXY is never mounted.
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("ALL_PROXY", "socks5://socks-proxy:1080")
 
+        import httpx
 
-def test_env_no_proxy_bypasses_the_proxy_per_host(monkeypatch):
-    _clear_proxy_env(monkeypatch)
-    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
-    monkeypatch.setenv("NO_PROXY", "bypassed.example")
+        assert db_mod._use_pooled_client() is True
 
-    import httpx
+        built = {}
+        real_client = httpx.Client
 
-    handled = []
+        def spy_client(*args, **kwargs):
+            built.update(kwargs)
+            return real_client(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "HTTPTransport", _stub_http_transport(handled))
-    proxies = db_mod._urllib_proxies()
-    assert proxies == {"https": "http://env-proxy:3128"}
-    transport = db_mod._proxy_transport(httpx, proxies, httpx.Limits())
-    try:
-        transport.handle_request(httpx.Request("GET", "https://workspace.example/api"))
-        transport.handle_request(httpx.Request("GET", "https://bypassed.example/api"))
-    finally:
-        transport.close()
-    assert handled == [("proxied", "workspace.example"), ("direct", "bypassed.example")]
+        monkeypatch.setattr(httpx, "Client", spy_client)
+        _reset_pooled_client(monkeypatch)
+        client = db_mod._get_http_client()
+        try:
+            assert isinstance(client._transport, httpx.HTTPTransport)
+            assert built["trust_env"] is False
+        finally:
+            client.close()
+
+    def test_default_setup_pools(self, monkeypatch):
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
+
+        import httpx
+
+        assert db_mod._use_pooled_client() is True
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"{}"))
+        )
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+
+        response = db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
+
+        assert isinstance(response, db_mod._PooledResponse)
+        assert response.read() == b"{}"
 
 
 class TestPooledRedirectErrors:
@@ -7715,6 +7694,7 @@ class TestPooledRedirectErrors:
 
         client = MagicMock()
         client.send.side_effect = exc
+        _force_pooled(monkeypatch)
         monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
         return httpx
 
@@ -7742,6 +7722,7 @@ class TestPooledRedirectPolicies:
         import httpx
 
         client = httpx.Client(transport=httpx.MockTransport(handler))
+        _force_pooled(monkeypatch)
         monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
         return client
 
@@ -7844,6 +7825,7 @@ def test_status_errors_from_the_real_transport(monkeypatch):
             )
         )
         monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
+        _force_pooled(monkeypatch)
 
         _, reason = db_mod._http_get_bytes(
             f"https://example.test/api/{status}", "token", max_retries=0

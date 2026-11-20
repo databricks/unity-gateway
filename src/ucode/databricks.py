@@ -386,58 +386,15 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
         return False
 
 
-def _urllib_proxies() -> dict[str, str] | None:
-    """The http/https proxies urllib's ProxyHandler would use (env first, then the system
-    settings), normalized for httpx; None when there are none.
-
-    ``all_proxy`` is dropped (urllib ignores it, and a socks scheme would need httpx's
-    optional ``socksio``); a socks proxy URL becomes ``http://host:port``, which is what
-    urllib effectively does for https requests — a CONNECT tunnel to that host:port."""
+def _use_pooled_client() -> bool:
+    """Whether `_http_open` may use the pooled client: only the default setup, the OS trust
+    store with no http/https proxy configured (env or the macOS/Windows system settings).
+    Everything else keeps urllib's own path, byte for byte with main. ``all_proxy`` doesn't
+    count — urllib ignores it."""
+    if tls.effective_trust_store() != tls.TRUST_STORE_OS:
+        return False
     proxies = urllib_request.getproxies()
-    http_proxies: dict[str, str] = {}
-    for scheme in ("http", "https"):
-        proxy = proxies.get(scheme)
-        if not proxy:
-            continue
-        proxy_scheme, _, host_port = proxy.partition("://")
-        if not host_port:
-            # Scheme-less values ("host:port", from env or the system settings) are HTTP
-            # proxies to urllib's proxy handler; make that explicit for httpx.
-            proxy = f"http://{proxy}"
-        elif proxy_scheme not in ("http", "https"):
-            proxy = f"http://{host_port}"
-        http_proxies[scheme] = proxy
-    return http_proxies or None
-
-
-def _urllib_proxy_for_request(scheme: str, host: str, proxies: dict[str, str]) -> str | None:
-    if urllib_request.proxy_bypass(host):
-        return None
-    return proxies.get(scheme)
-
-
-def _proxy_transport(httpx, proxies, limits):
-    class SystemProxyTransport(httpx.BaseTransport):
-        def __init__(self):
-            # trust_env covers SSL_CERT_FILE/SSL_CERT_DIR only; HTTPTransport never mounts
-            # proxies from the environment, so the bypass-aware routing below stays in charge.
-            self.direct = httpx.HTTPTransport(trust_env=True, limits=limits)
-            self.proxied = {
-                proxy: httpx.HTTPTransport(proxy=proxy, trust_env=True, limits=limits)
-                for proxy in set(proxies.values())
-            }
-
-        def handle_request(self, request):
-            proxy = _urllib_proxy_for_request(request.url.scheme, request.url.host, proxies)
-            transport = self.proxied.get(proxy) if proxy else self.direct
-            return transport.handle_request(request)
-
-        def close(self):
-            self.direct.close()
-            for transport in self.proxied.values():
-                transport.close()
-
-    return SystemProxyTransport()
+    return not (proxies.get("http") or proxies.get("https"))
 
 
 _HTTP_CLIENT: httpx.Client | None = None
@@ -465,24 +422,16 @@ def _get_http_client() -> httpx.Client:
         return _HTTP_CLIENT
     with _HTTP_CLIENT_LOCK:
         if _HTTP_CLIENT is None or _HTTP_CLIENT_PID != pid:
-            # Before any SSL context is built — the client's and the transports' — so httpx's
-            # default contexts verify against the trust store tls.apply() selected for the
+            # Before any SSL context is built — the client's and the transport's — so httpx's
+            # default context verifies against the OS trust store tls.apply() selected for the
             # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
-            # Under the `python` store those defaults trust certifi, or SSL_CERT_FILE /
-            # SSL_CERT_DIR when set, rather than the OpenSSL paths urllib reads; the
-            # certificate-failure hint already tells python-mode users to set SSL_CERT_FILE.
             tls.apply()
             limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
-            proxies = _urllib_proxies()
-            transport = (
-                _proxy_transport(httpx, proxies, limits)
-                if proxies
-                else httpx.HTTPTransport(trust_env=True, limits=limits)
-            )
             client = httpx.Client(
-                transport=transport,
-                # Proxy and bypass routing above follows urllib; trust_env is off so httpx
-                # never mounts ALL_PROXY (and socks proxies needing socksio) behind our back.
+                transport=httpx.HTTPTransport(trust_env=True, limits=limits),
+                # Only reached with no http/https proxy configured; trust_env stays off so
+                # httpx never mounts ALL_PROXY (and socks proxies needing socksio) behind
+                # our back.
                 trust_env=False,
                 follow_redirects=True,
                 limits=limits,
@@ -515,7 +464,11 @@ class _PooledResponse:
         return self._body
 
 
-def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledResponse:
+def _http_open(request: urllib_request.Request, *, timeout: float):
+    if not _use_pooled_client():
+        # Not the default setup (python trust store, or an http/https proxy configured): keep
+        # urllib's own path — its proxy handling and trust store — exactly as main ran it.
+        return urllib_request.urlopen(request, timeout=timeout)
     import httpx
 
     request_headers = dict(request.header_items())
