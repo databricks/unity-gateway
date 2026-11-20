@@ -6,6 +6,7 @@ import {
   DEFAULT_TOKEN_TTL_MS,
   FORCE_REFRESH_FLAG,
   REFRESH_MARGIN_MS,
+  SESSION_ID_HEADER,
   buildProviders,
   childEnv,
   createTokenSource,
@@ -13,6 +14,7 @@ import {
   isAuthRejection,
   jwtExpiryMs,
   withLoginHint,
+  withSessionId,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/ug-plugin.mjs";
 
 const config = {
@@ -166,7 +168,7 @@ test("an invalidate during a mint keeps its token out of the cache", async () =>
 
 test("buildProviders attaches the token provider to every provider", () => {
   const provide = async () => "t";
-  const [provider] = buildProviders(config, provide);
+  const [provider] = buildProviders(config, provide, "app-session");
   assert.equal(provider.bearerTokenProvider, provide);
   assert.equal(provider.baseUrl, "https://ws/ai-gateway/anthropic");
   assert.equal(config.providers[0].bearerTokenProvider, undefined);
@@ -198,4 +200,37 @@ test("isAuthRejection matches only 401 errors and call failures", () => {
   assert.equal(isAuthRejection({ type: "model.call_failure", data: { statusCode: 429 } }), false);
   assert.equal(isAuthRejection({ type: "session.error", data: {} }), false);
   assert.equal(isAuthRejection({ type: "assistant.usage", data: { statusCode: 401 } }), false);
+});
+
+test("buildProviders sends the app session's id on every provider's requests", () => {
+  const providers = buildProviders(
+    { providers: [config.providers[0], { name: "p2", type: "openai", baseUrl: "https://ws/ai-gateway/openai" }] },
+    async () => "t",
+    "app-session",
+  );
+  assert.deepEqual(
+    providers.map((provider) => provider.headers),
+    [{ [SESSION_ID_HEADER]: "app-session", A: "1" }, { [SESSION_ID_HEADER]: "app-session" }],
+  );
+  assert.deepEqual(config.providers[0].headers, { A: "1" });
+});
+
+test("buildProviders takes the session id the runtime gives the extension", (t) => {
+  const previous = process.env.SESSION_ID;
+  process.env.SESSION_ID = "from-runtime";
+  t.after(() => {
+    if (previous === undefined) delete process.env.SESSION_ID;
+    else process.env.SESSION_ID = previous;
+  });
+  assert.equal(buildProviders(config, async () => "t")[0].headers[SESSION_ID_HEADER], "from-runtime");
+});
+
+test("an admin's session-id header wins, in any case", () => {
+  assert.deepEqual(withSessionId({ "Session-Id": "admin" }, "app-session"), { "Session-Id": "admin" });
+  assert.deepEqual(withSessionId({ "session-id": "admin", B: "2" }, "app-session"), { "session-id": "admin", B: "2" });
+});
+
+test("without a session id the headers stay as configured", () => {
+  assert.deepEqual(withSessionId({ A: "1" }, undefined), { A: "1" });
+  assert.deepEqual(withSessionId(undefined, ""), {});
 });

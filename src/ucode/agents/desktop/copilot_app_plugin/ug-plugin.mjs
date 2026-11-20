@@ -122,6 +122,22 @@ export function withLoginHint(token, showHint) {
   };
 }
 
-export function buildProviders(config, bearerTokenProvider) {
-  return config.providers.map((provider) => ({ ...provider, bearerTokenProvider }));
+// The gateway logs it as the usage table's client session id. An admin's header of that name wins.
+export const SESSION_ID_HEADER = "session-id";
+
+export function withSessionId(headers = {}, sessionId) {
+  if (!sessionId || Object.keys(headers).some((name) => name.toLowerCase() === SESSION_ID_HEADER)) {
+    return { ...headers };
+  }
+  return { [SESSION_ID_HEADER]: sessionId, ...headers };
+}
+
+// ``sessionId`` is the app session this extension process serves, which the runtime passes in
+// SESSION_ID: joinSession resumes that session.
+export function buildProviders(config, bearerTokenProvider, sessionId = process.env.SESSION_ID) {
+  return config.providers.map((provider) => ({
+    ...provider,
+    headers: withSessionId(provider.headers, sessionId),
+    bearerTokenProvider,
+  }));
 }
