@@ -21,6 +21,7 @@ FIRST_LAUNCH_TIMEOUT_S = 90
 STEP_TIMEOUT_S = 60
 TURN_TIMEOUT_S = 240
 CLICK_TIMEOUT_MS = 2000
+CAPTURE_TIMEOUT_MS = 500
 POLL_S = 0.25
 # How long a screen gets to react to an action before the same screen is read as new.
 SETTLE_S = 3
@@ -223,11 +224,11 @@ class VSCode:
             self.copilot_chat_ready = True
         return screen
 
-    def shot(self, name: str) -> None:
+    def shot(self, name: str, *, timeout_ms: float | None = None) -> None:
         self.shots += 1
         path = self.session.artifacts / f"{self.name}-{self.shots:02d}-{name}.png"
         try:
-            self.page.screenshot(path=str(path), timeout=CLICK_TIMEOUT_MS)
+            self.page.screenshot(path=str(path), timeout=timeout_ms)
         except Exception:  # noqa: BLE001 (evidence is best effort; the assertion decides)
             pass
 
@@ -250,7 +251,7 @@ class VSCode:
                 locator.click(timeout=CLICK_TIMEOUT_MS)
             except Exception as error:
                 elapsed = time.monotonic() - started
-                self.shot("click-failed")
+                self.shot("click-failed", timeout_ms=CAPTURE_TIMEOUT_MS)
                 try:
                     evidence = {
                         "action": description,
@@ -259,13 +260,13 @@ class VSCode:
                         "screen": self._screen_or_none(),
                     }
                     try:
-                        evidence["targetBounds"] = locator.bounding_box(timeout=CLICK_TIMEOUT_MS)
                         evidence["hovers"] = self.page.locator(
                             ".context-view .hover-contents:visible"
                         ).evaluate_all(
                             "elements => elements.map(e => ({text: e.innerText, "
                             "bounds: e.getBoundingClientRect().toJSON()}))"
                         )
+                        evidence["targetBounds"] = locator.bounding_box(timeout=CAPTURE_TIMEOUT_MS)
                     except Exception as capture_error:
                         evidence["captureError"] = type(capture_error).__name__
                     self.session.record(

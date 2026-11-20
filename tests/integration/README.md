@@ -822,12 +822,14 @@ switches the chat to its default model once Copilot Chat is on. Each window reco
 and every change of the recognized screen (`<name>-states.json`).
 Failed clicks retain an immediate `click-failed` screenshot and a redacted
 `<name>-click-failure-<action>.json` with the action, elapsed time, native error, target bounds,
-visible hover text/bounds and recognized screen. Capture failures add only their exception
-class to the action log and preserve the original click error. These are post-timeout reads,
-not an atomic view of the click; compare their geometry with Playwright's interception log.
-The original two-second click deadline and picker screen-change recovery remain unchanged.
-Screenshot and target-lookup capture each have a two-second limit; if the target has gone,
-the JSON still retains the original error and a capture-error class.
+visible hover text/bounds and recognized screen. Metadata lookup failures keep the core
+evidence with a capture-error class; evidence-write failures add their class to the action
+log. Both preserve the original click error. These are post-timeout reads, not an atomic
+view of the click; compare their geometry with Playwright's interception log. The original
+two-second click deadline and picker screen-change recovery remain unchanged.
+Failure screenshots and target lookup each have a 500ms limit; other screenshots retain
+their default timeout. Hover evidence is read before target lookup so it survives a target
+disappearing. Screenshots remain best effort.
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window

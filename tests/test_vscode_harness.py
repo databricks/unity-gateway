@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from tests.integration.utils.vscode import CLICK_TIMEOUT_MS, VSCode
+from tests.integration.utils.vscode import CAPTURE_TIMEOUT_MS, CLICK_TIMEOUT_MS, VSCode
 
 
 class TestClickEvidence(unittest.TestCase):
@@ -44,7 +44,8 @@ class TestClickEvidence(unittest.TestCase):
         self.assertEqual(evidence["screen"], self.ui.page.evaluate.return_value)
         self.assertGreaterEqual(evidence["elapsedSeconds"], 0)
         self.ui.page.screenshot.assert_called_once()
-        self.target.bounding_box.assert_called_once_with(timeout=CLICK_TIMEOUT_MS)
+        self.assertEqual(self.ui.page.screenshot.call_args.kwargs["timeout"], CAPTURE_TIMEOUT_MS)
+        self.target.bounding_box.assert_called_once_with(timeout=CAPTURE_TIMEOUT_MS)
         self.target.click.assert_called_once_with(timeout=CLICK_TIMEOUT_MS)
 
     def test_missing_target_keeps_core_failure_evidence(self):
@@ -56,6 +57,7 @@ class TestClickEvidence(unittest.TestCase):
         evidence = self.ui.session.record.call_args.args[1]
         self.assertEqual(evidence["error"], str(self.error))
         self.assertEqual(evidence["captureError"], "TimeoutError")
+        self.assertEqual(evidence["hovers"][0]["text"], "Use configured approval settings")
 
     def test_capture_failure_preserves_click_error(self):
         self.target.click.side_effect = self.error
