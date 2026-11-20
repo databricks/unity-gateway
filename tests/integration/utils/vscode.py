@@ -245,12 +245,7 @@ class VSCode:
         def click():
             # A tooltip left by the pointer's last position can cover the next target.
             self.page.mouse.move(0, 0)
-            self._wait(
-                lambda: self.page.locator(".context-view .hover-contents:visible").count() == 0,
-                STEP_TIMEOUT_S,
-                "the previous hover tooltip to close",
-            )
-            locator.click(timeout=CLICK_TIMEOUT_MS)
+            locator.click(timeout=STEP_TIMEOUT_S * 1000)
 
         self._act(description, click)
 

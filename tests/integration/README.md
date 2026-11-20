@@ -820,10 +820,11 @@ is on screen first (both open the Language Models editor, which it closes), and 
 its label in the picker. The picked model has to hold for a few seconds, since ug's extension
 switches the chat to its default model once Copilot Chat is on. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`).
-Before clicking, the harness moves the pointer away and waits within the existing step
-budget for visible hover tooltips to close; it still clicks once and fails if a tooltip
-persists. Offline component checks cover delayed dismissal, no tooltip and a persistent
-tooltip, without establishing native VS Code behavior.
+Before clicking, the harness moves the pointer away. Playwright checks the target's native
+actionability within the existing step budget, including waiting for an intercepting hover
+tooltip to close, then clicks once. Unrelated tooltips do not block an actionable target.
+An unavailable target still fails; the picker's existing screen-change recovery may now
+take up to the step budget to receive a click timeout.
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window
