@@ -40,6 +40,8 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     selected = [model for model in models if model["slug"] in CODEX_NATIVE_CATALOG_MODELS]
     assert {model["slug"] for model in selected} == set(CODEX_NATIVE_CATALOG_MODELS)
     assert all(model.get("multi_agent_version") == "v2" for model in selected)
+    for model in selected:
+        model["multi_agent_tools_in_code_mode"] = True
 
     codex_home = session.home / ".codex"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -71,8 +73,9 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
 
 
 def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
-    """Scenario: configure ug with a user-owned native v2 catalog and observer hook,
-    then delegate one multiline file task through code mode with subagent-only routing.
+    """Scenario: configure ug with a user-owned native v2 catalog that exposes native
+    tools in code mode and an observer hook, then delegate one multiline file task
+    through code mode with subagent-only routing.
 
     Expected: the native child and actual hook input contain the exact assignment,
     matched by the router decision's digest. One native child completes on the selected model; the parent stays on

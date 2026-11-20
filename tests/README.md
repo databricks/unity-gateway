@@ -1121,7 +1121,9 @@ gateway provider on Windows while Unix launch arguments stay unchanged and routi
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
-`integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer:
+`integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer.
+Its pre-existing user-owned catalog opts native tools into code mode, overriding the
+bundled model's direct-only preference. This transport exposes plaintext assignments:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
 The audit's SHA-256 digest and character count identify that exact assignment without

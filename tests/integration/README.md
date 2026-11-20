@@ -120,7 +120,8 @@ the original spawn ciphertext with the child's NEW_TASK receipt and require the 
 task-name fallback digest, while plaintext assignments require their full-text digest.
 The existing parent/child completion, selected model, and live decision checks still apply.
 The native v2 assignment journey explicitly uses code mode and separately requires
-plaintext at the hook and child. Direct native calls may remain encrypted. Toggle
+plaintext at the hook and child. Its user-owned catalog explicitly exposes native tools
+in code mode; direct-only bundled settings are not a plaintext guarantee. Direct native calls may remain encrypted. Toggle
 evidence accepts the exact guard rejection of a duplicate off call only after a
 successful off result; it still rejects an initial denial or any other failed call.
 
