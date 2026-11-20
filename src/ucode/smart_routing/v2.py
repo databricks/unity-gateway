@@ -1091,7 +1091,6 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
-    codex_version: str = "unknown",
     launch_config: dict | None = None,
     available_models: list[str] | None = None,
 ) -> NoReturn:
@@ -1150,7 +1149,7 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    statusline_config = codex_statusline.launch_config(codex_version, session_env_path)
+    statusline_config = codex_statusline.launch_config(session_env_path)
     config_io.deep_merge_dict(overlay, statusline_config)
     config_args = codex_config_args(overlay)
     if app_server_launch:

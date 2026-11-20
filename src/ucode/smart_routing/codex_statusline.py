@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, session_routing_enabled
 
-MINIMUM_VERSION = (0, 171, 0)
-MINIMUM_ALPHA = 12
 SERVER_NAME = "ug-smart-router-statusline"
 TOOL_NAME = "statusline"
 RESOURCE_URI = "ui://ug-smart-router/footer"
@@ -27,20 +24,7 @@ TOOL = {
 }
 
 
-def supported_version(version: str) -> bool:
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?(?:\+[\w.-]+)?", version)
-    if match is None:
-        return False
-    release = tuple(int(part) for part in match.group(1, 2, 3))
-    if release != MINIMUM_VERSION:
-        return release > MINIMUM_VERSION
-    stage, number = match.group(4, 5)
-    return stage != "alpha" or int(number) >= MINIMUM_ALPHA
-
-
-def launch_config(version: str, controls: Path) -> dict:
-    if not supported_version(version):
-        return {}
+def launch_config(controls: Path) -> dict:
     return {
         "features.tui_extensions_statusline": True,
         "tui.status_line_provider": {"server": SERVER_NAME, "tool": TOOL_NAME},

@@ -1,15 +1,15 @@
 # Test suites and user journeys
 
-`test_codex_statusline.py` covers the experimental footer's version boundary,
-live control-file reads, Claude-style green ON/gray OFF badges, ON/OFF/UNKNOWN recovery,
-nullable per-thread display inputs, MCP
-advertisement and protocol errors, and isolation between two real stdio provider
-processes using Python's `-P` launch flag. `test_codex_smart_routing_v2.py` checks
-that both POSIX and Windows launches wire the provider into the app-server and its selection into the terminal,
-with first-prompt routing on or off. Stable 0.169.0 and alpha.11 receive no new
-fields. These are offline component checks; native alpha UI and credentialed
-gateway validation are separate, as described in the
-[validation guide](../docs/codex-smart-router-statusline.md).
+`test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
+OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
+protocol errors, and two real stdio providers using Python's `-P` flag.
+`test_codex_smart_routing_v2.py` checks POSIX/Windows wiring and the required upgrade
+from older builds to stable 0.171.0. `test_agent_codex.py` owns version boundaries,
+including prerelease rejection at the minimum, and slow-probe recovery;
+`test_cli.py` covers explicit and managed upgrade/decline/disable through the public command. The separate
+footer version gate was removed because routed launch now enforces the requirement.
+These are component checks; native UI and credentialed gateway validation are
+separate, as described in the [validation guide](../docs/codex-smart-router-statusline.md).
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
@@ -1105,7 +1105,7 @@ gateway provider on Windows while Unix launch arguments stay unchanged and routi
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
-`integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
+`integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.171.0 or newer:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
 The audit's SHA-256 digest and character count identify that exact assignment without
@@ -1512,8 +1512,8 @@ Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
 suite runs the remaining live cases in separate agent and OS jobs, with cases
 serial inside each VM. Codex smoke and general full/managed coverage retain
-0.156.0. Separate required full and managed matrix rows use 0.165.0 only for
-`codex_smart_routing` cases; CUJ4 also uses 0.165.0, while other CUJs retain
+0.156.0. Separate required full and managed matrix rows use 0.171.0 only for
+`codex_smart_routing` cases; CUJ4 also uses 0.171.0, while other CUJs retain
 0.156.0. The catalog-fallback routing-off case stays on the baseline version.
 The existing workflow contract tests collect both selections and require disjoint
 case sets whose union preserves coverage. Windows' existing native-toggle exclusions remain.

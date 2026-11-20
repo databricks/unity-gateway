@@ -26,31 +26,9 @@ def _read_lines(stream, replies):
         replies.put(line)
 
 
-@pytest.mark.parametrize(
-    ("version", "supported"),
-    [
-        ("unknown", False),
-        ("0.169.0", False),
-        ("0.170.0", False),
-        ("0.171.0-alpha.2", False),
-        ("0.171.0-alpha.11", False),
-        ("0.171.0-alpha.12", True),
-        ("0.171.0-alpha.13", True),
-        ("0.171.0-beta.1", True),
-        ("0.171.0-rc.1", True),
-        ("0.171.0", True),
-        ("0.171.0+build.1", True),
-        ("0.171.0-dev", False),
-        ("0.172.0", True),
-    ],
-)
-def test_statusline_version_boundary(version, supported):
-    assert statusline.supported_version(version) is supported
-
-
 def test_launch_config_pins_session_without_credentials(tmp_path):
     controls = tmp_path / "controls with spaces.json"
-    config = statusline.launch_config("0.171.0-alpha.12", controls)
+    config = statusline.launch_config(controls)
     server = config["mcp_servers"][statusline.SERVER_NAME]
     assert server["command"] == sys.executable
     assert server["args"] == ["-P", "-X", "utf8", "-m", "ucode.smart_routing.codex_statusline"]
@@ -60,11 +38,10 @@ def test_launch_config_pins_session_without_credentials(tmp_path):
         "server": statusline.SERVER_NAME,
         "tool": statusline.TOOL_NAME,
     }
-    assert statusline.launch_config("0.169.0", controls) == {}
 
 
 def test_terminal_config_contains_only_feature_and_selection(tmp_path):
-    config = statusline.launch_config("0.171.0-alpha.12", tmp_path / "controls.json")
+    config = statusline.launch_config(tmp_path / "controls.json")
     config["server_only"] = "private"
     assert statusline.tui_config(config) == {
         "features.tui_extensions_statusline": True,
@@ -224,9 +201,7 @@ def test_real_stdio_process_keeps_sessions_separate_and_polls_live_controls():
                         {ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"}
                     )
                 )
-            server = statusline.launch_config("0.171.0-alpha.12", controls)["mcp_servers"][
-                statusline.SERVER_NAME
-            ]
+            server = statusline.launch_config(controls)["mcp_servers"][statusline.SERVER_NAME]
             process = subprocess.Popen(
                 [server["command"], *server["args"]],
                 env=env,

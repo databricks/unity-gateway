@@ -1,16 +1,17 @@
 # Integration tests
 
-The experimental Codex footer has offline protocol, process-isolation, and launcher
+The Codex footer has offline protocol, process-isolation, and launcher
 coverage in `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`.
 Those component checks also cover Claude-style green ON/gray OFF badges, nullable
 snapshots, Python's `-P` provider launch flag, and terminal config isolation. Native
 UI checks must verify badge colors as well as the ON/OFF text; OFF remains visible,
 matching Claude's persistent hint.
-The stable CI baseline does not exercise this new renderer. Test it with pinned
-Codex `0.171.0-alpha.12` using the
+Routing CI now pins stable Codex `0.171.0`; older routed clients must upgrade
+through the existing gate (component coverage includes decline/failure and
+prereleases). The separate footer version gate was removed. Native UI checks use the
 [footer validation steps](../../docs/codex-smart-router-statusline.md). A native
 footer or resource read alone does not establish gateway inference or routed-child
-coverage. Keep the stable rollout gated on validation of the actual stable build.
+coverage. Windows native footer rendering remains a manual validation step.
 
 CUJ7's `test_ug_claude_saved_provider_smart_routing` and
 `test_ug_codex_saved_provider_smart_routing` configure a saved provider in the unmanaged
@@ -1317,8 +1318,8 @@ their original legacy-env cases remain, and the Claude skill toggles add a manag
 which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
 first-prompt wrapper starts. Codex's managed default has two launch journeys.
 `test_smart_router_managed_default_matches_codex_version_at_launch` reads the actual native
-version. Before 0.164.0 it requires a version warning, no upgrade prompt, no routing skills,
-and completed native child work without routing. On supported versions it instead requires
+version. Before 0.171.0 it declines the required upgrade and requires a blocked launch,
+then explicitly disables routing and completes native child work without routing skills. On supported versions it instead requires
 both skills, a completed routed child and parent answer, and a correlated decision. This keeps
 the same journey valid for pinned, latest-agent, and explicit-version runs. `test_smart_router_managed_default_routes_supported_codex_at_launch`
 runs in the routing-capable Codex lane and requires both skills, a completed child and parent
@@ -1567,7 +1568,7 @@ The complete integration suite collects 131 executions (128 with Claude and Code
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
-The native v2 assignment journey requires Codex 0.164.0 or newer. It uses a bundled
+The native v2 assignment journey requires Codex 0.171.0 or newer. It uses a bundled
 v2 catalog and a user-owned observer hook, without test-supplied native feature flags.
 It checks the exact multiline assignment at PreToolUse and the actual native recipient,
 and matches the router decision's SHA-256 digest and character count to that assignment.
@@ -1575,11 +1576,11 @@ The observer retains the caller's task name; the child path includes `__sr_on` f
 The launch/off/on journeys match audit digests against native assignment text;
 CUJ4 matches them against the recorded real router requests. Full native plaintext,
 completed parent and child models, and preserved settings remain required. Select it with
-`--codex-version 0.165.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
+`--codex-version 0.171.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
 The `codex_smart_routing` marker also selects the native launch/off/on journeys,
 managed routing banner, catalog-fallback routing-on case, and the routing-on
 `ug codex app-server` help and client cases. The baseline lane keeps one routing-on
-app-server client case, which checks that Codex below 0.164.0 runs the app-server
+app-server client case, which checks that Codex below 0.171.0 runs the app-server
 without smart routing and without an upgrade prompt. To reproduce the
 baseline lane, use `--codex-version 0.156.0 -- -m 'live and not codex_smart_routing'`.
 
@@ -1801,14 +1802,14 @@ headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
 on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
 full/managed journeys, and dedicated CUJs. Routing cases run in separate required
-matrix rows with Codex 0.165.0; only the dedicated CUJ4 runner uses that newer pin.
+matrix rows with Codex 0.171.0; dedicated CUJ4 and CUJ7 runners use that newer pin too.
 The full selections are disjoint within each agent and OS:
 
 | Agent lane | Marker |
 | --- | --- |
 | Claude | `live and claude and not soft_fail and not smoke and not codex_smart_routing` |
 | Codex 0.156.0 | `live and codex and not soft_fail and not smoke and not codex_smart_routing` |
-| Codex 0.165.0 | `live and codex and not soft_fail and not smoke and codex_smart_routing` |
+| Codex 0.171.0 | `live and codex and not soft_fail and not smoke and codex_smart_routing` |
 
 Managed Codex uses the same marker split on its managed workspace, retaining both-agent
 installation in each row. The catalog-fallback routing-off parameter, direct router-hook

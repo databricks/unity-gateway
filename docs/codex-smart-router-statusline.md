@@ -1,7 +1,7 @@
 # Codex Smart Router footer
 
 The terminal footer uses the experimental MCP status-line provider API first
-available in Codex `0.171.0-alpha.12`. UG registers a local stdio provider for each
+shipped in stable Codex `0.171.0`. UG registers a local stdio provider for each
 routed launch and selects it in the terminal client. Both configurations are
 launch-only. The provider needs no gateway credentials or network access.
 
@@ -18,7 +18,7 @@ the badge in its persistent footer, since this API only controls the footer.
 ## Validation
 
 Install the checkout in an isolated Python environment and use Codex
-`0.171.0-alpha.12` on that environment's PATH. Do not replace the user's stable
+`0.171.0` on that environment's PATH. Do not replace the user's
 installation as part of automated tests. Check both `codex --version` and `ug --version`.
 
 Run the offline checks:
@@ -48,21 +48,36 @@ For a configured test workspace and an explicitly selected profile:
    Codex may add its own trust and onboarding records, such as
    `tui.screen_reader_detection_done`; compare `tui.status_line` and
    `tui.status_line_provider` independently of that bookkeeping.
-9. On stable `0.169.0`, confirm routed launch still works with its existing footer.
+9. With an older client, verify the upgrade gate blocks routed launch until the
+   upgrade succeeds. `--disable-smart-routing` retains ordinary launch behavior.
 
-Existing native routing journeys can be run with pinned alpha through
-`scripts/run_integration.py --ug-version checkout --codex-version 0.171.0-alpha.12
+Existing native routing journeys can be run with pinned stable Codex through
+`scripts/run_integration.py --ug-version checkout --codex-version 0.171.0
 --profile <selected-profile> --workspace <test-workspace> -- -k routing_toggle`.
 Those journeys verify inference and session continuity; the footer assertions above
 are additional manual UI checks.
 
-## Stable rollout
+## Stable validation
 
-Keep the feature PR in draft while testing the alpha. Do not force users onto an
-experimental Codex release. Before delivery, identify the first stable release
-containing the provider API, rerun protocol, UI, and routed inference checks on that
-exact build, then update UG's minimum Codex version and its existing upgrade tests.
-Version `0.171.0` is a candidate, not a confirmed stable release target.
+On 2026-11-20, native Linux Codex `0.171.0` passed ON/OFF/ON badge rendering and
+UNKNOWN/read recovery. An isolated-wheel Arclet run against the supplied workspace
+completed five hidden-file tasks across two concurrent sessions and a first-prompt
+launch, with installed-skill toggles, unchanged conversation identity, independent
+controls, and unchanged saved footer settings and UG profile. GPT-6-Luna was selected
+through ordinary user settings. Seven installation checks passed.
+
+Successful router selection remains unverified: first-prompt routing returned HTTP
+400/downstream 422 and fell back; delegated child file tasks completed but produced
+no routing decision. These are separate from the passing footer checks. Native
+Windows rendering remains untested.
+
+## Required upgrade
+
+Routed launches require stable Codex `0.171.0` or newer. Earlier builds, including
+`0.171.0-alpha.*`, must pass the existing native upgrade flow before starting.
+Declining or failing the upgrade blocks routed launch; `--disable-smart-routing`
+keeps ordinary launch behavior. `UG_AUTO_UPGRADE_AGENT=1` selects automatic upgrade.
+The footer is registered after that launch gate, without a second version probe.
 
 Upstream contract and starter:
-[create-statusline](https://github.com/openai/codex/blob/rust-v0.171.0-alpha.12/codex-rs/skills/src/assets/samples/create-statusline/SKILL.md).
+[create-statusline](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/skills/src/assets/samples/create-statusline/SKILL.md).

@@ -66,7 +66,7 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
-Codex smart routing now requires 0.164.0, including existing managed-enabled
+Codex smart routing now requires 0.171.0, including existing managed-enabled
 workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
 for upgrading or launching with `--disable-smart-routing`.
 
@@ -687,18 +687,15 @@ Routing-enabled responses are buffered until each model step completes.
 
 ### Codex smart-routing compatibility
 
-Smart routing now requires Codex 0.164.0
-or newer, including workspaces that already enable managed smart routing. Users on
-Codex 0.156–0.163 who previously launched successfully must upgrade or explicitly
-run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
-known older version and checks the result before launching. Declining, failing, or
-remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
-intentional requirement ensures native v2 provides readable delegated assignments;
-UG does not silently disable routing. A routed `ug codex app-server` cannot prompt,
-because its stdin carries the client's protocol, so on a known older Codex it warns
-on stderr and runs without smart routing instead. Ordinary launches require Codex 0.156.0
-and newer. The general integration CI baseline is 0.156.0; routing cases use
-0.165.0.
+Smart routing requires Codex **0.171.0 or newer**, including workspaces that already
+use managed routing. A known older client cannot silently fall back to unrouted work. Earlier versions, including 0.171.0 prereleases, must upgrade
+or explicitly run `ug codex --disable-smart-routing`. UG offers its usual upgrade
+prompt and checks the result before launching. Declining or failing the upgrade
+keeps the routed launch blocked. `UG_AUTO_UPGRADE_AGENT=1` runs that upgrade without
+asking. This requirement provides both the native Smart Router footer and readable
+delegated assignments; UG does not silently disable routing. Ordinary launches
+require Codex 0.156.0 or newer. Routing CI pins stable 0.171.0; the general baseline
+remains 0.156.0.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
 version is still unknown, UG stops without offering or running an update and asks
@@ -739,13 +736,11 @@ bypass `spawn_agent` have no guaranteed marker. Reserve `smart_router_state` for
 per-turn metadata; a static Codex `responses_api_metadata` entry with that name
 would override dynamic values.
 
-Routed Codex terminal sessions on **0.171.0-alpha.12 or newer** show
-`smart router` with a green `ON` or gray `OFF` badge beside the current model,
-directory, and remaining context, matching Claude's badge colors. The indicator
-stays visible when routing is off, as Claude's prompt hint does.
-This uses Codex's experimental MCP status-line provider API. Earlier versions,
-including stable 0.169.0, keep their existing footer. UG does not install an alpha
-or raise its minimum Codex version for this feature.
+Routed Codex terminal sessions show `smart router` with a green `ON` or gray `OFF`
+badge beside the current model, directory, and remaining context. The indicator
+stays visible when routing is off, as Claude's prompt hint does. The MCP status-line
+provider API ships in stable Codex 0.171.0 and still requires its experimental
+feature flag, which UG supplies for that launch.
 
 The indicator reads the same session controls as routing on each refresh, including
 after `$smart-router off` and `$smart-router on`. Unreadable controls show
@@ -755,7 +750,7 @@ only; saved status-line settings and other MCP servers are preserved. The select
 footer replaces the normal footer's item layout for that session. This does not add
 an indicator to the Codex desktop app or other app-server clients.
 
-For alpha validation and the stable-release rollout gate, see
+For validation and upgrade behavior, see
 [Codex Smart Router footer](docs/codex-smart-router-statusline.md).
 
 ### Smart Router Orchestrator
