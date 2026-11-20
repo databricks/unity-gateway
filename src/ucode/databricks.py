@@ -2250,7 +2250,9 @@ def _fetch_databricks_token_for_profile(
                 )
         # A forced refresh is a retry after a rejected token; its failure must not
         # shadow an earlier token that non-forced callers may still be using.
-        if not force_refresh and not transient_failure:
+        if not force_refresh and not transient_failure and allow_reauth:
+            # A skipped re-auth (the speculative non-interactive fetch) must not memoize the
+            # failure: configure's own fetch then never attempts `auth login --no-browser`.
             _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
         raise RuntimeError(error)
     _remember_token(memo_key, token, lifetime_s, _token_epoch=token_epoch)
