@@ -413,6 +413,7 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
     if is_dry_run():
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return
+    _cleanup_copilot_app_leftover()
     state = copilot_app_state(state)
     try:
         desired = copilot_app.state_providers(state, provider=provider, location=location)
@@ -450,35 +451,57 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
     )
 
 
+COPILOT_APP_REMOVAL_PENDING = (
+    "removal pending: the Databricks models are removed the next time the GitHub Copilot app starts"
+)
+
+
 def revert_copilot_app() -> str:
-    """Remove ug's providers from the app when it's running, then ug's plugin. Never starts the
-    app. Returns a summary for revert."""
+    """Remove ug's providers from the running app, then ug's plugin. With the app closed, leave
+    both to the plugin's next start. Never starts the app. Returns a summary for revert."""
     if is_dry_run():
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return COPILOT_APP_DRY_RUN
+    _cleanup_copilot_app_leftover()
     had_plugin = copilot_app_plugin.plugin_root().exists()
-    removed = False
-    problems: list[str] = []
-    if had_plugin or copilot_app_installed():
-        try:
-            removed = copilot_app.unregister()
-        except copilot_app.CopilotAppNotRunning:
-            if had_plugin:
-                problems.append(
-                    "the app is closed, so the Databricks models stay in its picker until you "
-                    "open it and run `ug revert` again"
-                )
-        except copilot_app.CopilotAppError as exc:
-            problems.append(str(exc))
-    plugin_removed = False
+    if not had_plugin and not copilot_app_installed():
+        return "not set up"
+    try:
+        unregistered = copilot_app.unregister()
+    except copilot_app.CopilotAppNotRunning:
+        if not had_plugin:
+            return "not set up"
+        return _defer_copilot_app_removal()
+    except copilot_app.CopilotAppError as exc:
+        return f"failed: {exc}"
     try:
         plugin_removed = copilot_app_plugin.remove()
     except copilot_app_plugin.SettingsError as exc:
-        if had_plugin:
-            problems.append(f"{exc}; remove ug's unity-gateway entries from it yourself")
-    if problems:
-        return ("removed ug's plugin, but " if plugin_removed else "") + "; ".join(problems)
-    return "removed" if removed or plugin_removed else "not set up"
+        if not had_plugin:
+            return "removed" if unregistered else "not set up"
+        return f"failed: {exc}; remove ug's unity-gateway entries from it yourself"
+    return "removed" if unregistered or plugin_removed else "not set up"
+
+
+def _defer_copilot_app_removal() -> str:
+    try:
+        if copilot_app_plugin.defer_remove():
+            return COPILOT_APP_REMOVAL_PENDING
+    except copilot_app_plugin.SettingsError as exc:
+        return f"failed: {exc}; remove ug's unity-gateway entries from it yourself"
+    # Without an installed plugin nothing can remove the rows later.
+    copilot_app_plugin.remove()
+    return (
+        "removed ug's plugin; open the GitHub Copilot app and run `ug revert` again to remove "
+        "the Databricks models from it"
+    )
+
+
+def _cleanup_copilot_app_leftover() -> None:
+    try:
+        copilot_app_plugin.cleanup_leftover()
+    except OSError as exc:
+        print_warning(f"Could not delete ug's old GitHub Copilot app plugin: {exc}")
 
 
 @dataclass(frozen=True)
@@ -491,6 +514,7 @@ class CopilotAppStatus:
 
 _COPILOT_PLUGIN_LABELS = {
     "installed": "installed",
+    "removal_pending": "removal pending",
     "disabled": "disabled",
     "not_installed": "not installed",
     "invalid_settings": "invalid settings",
@@ -517,9 +541,12 @@ def copilot_app_status(
         return None
     if state.get("copilot_app_integration") is False:
         return CopilotAppStatus("off (workspace-managed)")
+    _cleanup_copilot_app_leftover()
     plugin_status = copilot_app_plugin.status()
     if plugin_status == "not_installed" and not copilot_app_installed():
         return None
+    if plugin_status == "removal_pending":
+        return CopilotAppStatus(COPILOT_APP_REMOVAL_PENDING)
     try:
         desired = copilot_app.state_providers(state, provider=provider, location=location)
         registration = copilot_app.status(desired.app)

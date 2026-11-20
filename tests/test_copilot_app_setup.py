@@ -235,7 +235,7 @@ class TestConfigureCopilotApp:
 
         agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
 
-        assert plugin.status() == "not_installed"
+        assert plugin.status() == "removal_pending"
 
 
 class TestRemove:
@@ -248,14 +248,57 @@ class TestRemove:
         assert plugin.status() == "not_installed"
         assert "enabledPlugins" not in _settings()
 
-    def test_a_closed_app_keeps_its_rows_until_revert_runs_again(self):
+    def test_a_closed_app_leaves_the_removal_to_the_plugins_next_start(self):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
         result = desktop_setup.revert_copilot_app()
 
-        assert result.startswith("removed ug's plugin, but the app is closed")
-        assert "run `ug revert` again" in result
-        assert plugin.status() == "not_installed"
+        assert result == desktop_setup.COPILOT_APP_REMOVAL_PENDING
+        assert "the next time the GitHub Copilot app starts" in result
+        assert plugin.status() == "removal_pending"
+        assert _settings()["enabledPlugins"] == {plugin.PLUGIN_KEY: True}
+        assert _extension_config()["remove"] is True
+
+    def test_a_later_run_deletes_what_the_plugin_left_behind(self):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        desktop_setup.revert_copilot_app()
+        _settings_path().write_text(json.dumps({"model": "kept"}))
+
+        result = desktop_setup.copilot_app_status(STATE, provider=None, location=None)
+
+        assert result is not None
+        assert result.row == "plugin not installed, models unknown (app closed)"
+        assert not plugin.plugin_root().exists()
+        assert _settings() == {"model": "kept"}
+
+    def test_a_pending_removal_is_kept_while_its_keys_remain(self):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        desktop_setup.revert_copilot_app()
+
+        result = desktop_setup.copilot_app_status(STATE, provider=None, location=None)
+
+        assert result is not None
+        assert result.row == desktop_setup.COPILOT_APP_REMOVAL_PENDING
+        assert plugin.plugin_root().exists()
+
+    def test_reverting_with_the_app_open_after_a_pending_removal_finishes_it(self, app):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        desktop_setup.revert_copilot_app()
+        _register(app)
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+        assert app.providers == {}
+        assert not plugin.plugin_root().exists()
+        assert "enabledPlugins" not in _settings()
+
+    def test_configure_again_cancels_a_pending_removal(self):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        desktop_setup.revert_copilot_app()
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert plugin.status() == "installed"
+        assert "remove" not in _extension_config()
 
     def test_a_second_revert_after_opening_the_app_removes_the_rows(self, app):
         _register(app)
