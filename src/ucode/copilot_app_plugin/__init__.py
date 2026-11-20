@@ -2,8 +2,8 @@
 
 ug writes a local plugin marketplace it owns and turns it on in Copilot's ``settings.json``. The
 plugin's extension writes ug's providers and model rows to the app's model picker over the app's
-local WebSocket API, serves them straight from the AI Gateway under the same ids, and mints a fresh
-Databricks token for every request with ``ug auth-token``.
+local WebSocket API and serves them straight from the AI Gateway under the same ids. It gets each
+request's Databricks token from ``ug auth-token``, reusing it until shortly before it expires.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ucode.config_io import atomic_write_json
+from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_token_argv
+from ucode.databricks import build_auth_token_argv
 
 MARKETPLACE = "unity-gateway"
 PLUGIN = "databricks"
@@ -85,6 +87,8 @@ class PluginConfig:
     providers: tuple[PluginProvider, ...]
     headers: Mapping[str, str] = field(default_factory=dict)
     profile: str | None = None
+    use_pat: bool = False
+    custom_oauth: CustomOAuthConfig | None = None
     # The extension's process gets the app runtime's PATH, which may lack the directories ug and
     # the Databricks CLI live in.
     path_dirs: tuple[str, ...] = ()
@@ -115,17 +119,33 @@ def _extension_dir(root: Path) -> Path:
 
 
 def _token_command(config: PluginConfig) -> list[str]:
-    command = [config.ug_path, "auth-token", "--host", config.workspace]
-    if config.profile:
-        command += ["--profile", config.profile]
-    return command
+    # `ug auth-token --host` ignores the saved PAT and custom OAuth choices, so the command names
+    # them itself.
+    if config.custom_oauth:
+        command = build_custom_auth_token_argv(config.workspace, config.custom_oauth)
+    else:
+        command = build_auth_token_argv(config.workspace, config.profile, use_pat=config.use_pat)
+    return [config.ug_path, *command[1:]]
 
 
 def _login_hint(config: PluginConfig) -> str:
+    failed = f"Couldn't get a Databricks token for {config.workspace}."
+    if config.use_pat:
+        section = config.profile or "your-profile"
+        return (
+            f"{failed} Add a `token = <PAT>` entry under [{section}] in ~/.databrickscfg, or rerun "
+            "`ug configure`, then try again."
+        )
+    if config.custom_oauth:
+        return f"{failed} Rerun `ug configure` to sign in again, then try again."
     login = f"databricks auth login --host {config.workspace}"
     if config.profile:
         login += f" --profile {config.profile}"
-    return f"Couldn't get a Databricks token for {config.workspace}. Run `{login}`, then try again."
+    return f"{failed} Run `{login}`, then try again."
+
+
+def _missing_ug_hint(config: PluginConfig) -> str:
+    return f"Unity Gateway wasn't found at {config.ug_path}. Rerun `ug configure`, then try again."
 
 
 def _provider_entry(provider: PluginProvider, config: PluginConfig) -> dict:
@@ -185,6 +205,7 @@ def extension_config(config: PluginConfig) -> dict:
         "pathDirs": list(config.path_dirs),
         "databricksPath": config.databricks_path,
         "loginHint": _login_hint(config),
+        "missingUgHint": _missing_ug_hint(config),
         "app": {
             "providers": [_app_entry(rows) for rows in config.app_providers],
             "ownedProviderIds": list(config.owned_provider_ids),
@@ -259,6 +280,28 @@ def _object(settings: dict, key: str, path: Path) -> dict:
     return value
 
 
+def _check_writable(path: Path) -> None:
+    if path.is_symlink():
+        raise SettingsError(
+            f"{path} is a symlink, which ug won't replace. Edit the file it points to instead."
+        )
+
+
+def _write_settings(path: Path, settings: dict) -> None:
+    _check_writable(path)
+    mode = path.stat().st_mode & 0o777 if path.exists() else None
+    atomic_write_json(path, settings)
+    if mode is not None:
+        path.chmod(mode)
+
+
+def _owns_marketplace(settings: dict, root: Path) -> bool:
+    marketplaces = settings.get(_MARKETPLACES_KEY)
+    marketplace = marketplaces.get(MARKETPLACE) if isinstance(marketplaces, dict) else None
+    source = marketplace.get("source") if isinstance(marketplace, dict) else None
+    return isinstance(source, dict) and source.get("path") == str(root)
+
+
 def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     """Add ug's marketplace and turn its plugin on, keeping every other setting."""
     root = root or plugin_root()
@@ -268,7 +311,7 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
         "source": {"source": "directory", "path": str(root)}
     }
     _object(settings, _ENABLED_KEY, path)[PLUGIN_KEY] = True
-    atomic_write_json(path, settings)
+    _write_settings(path, settings)
 
 
 def install(
@@ -276,6 +319,7 @@ def install(
 ) -> Path:
     path = settings_path or copilot_settings_path()
     read_settings(path)
+    _check_writable(path)
     root = write_plugin(config, root)
     enable(root, path)
     return root
@@ -287,20 +331,27 @@ def remove(
     wait: Callable[[float], None] | None = None,
 ) -> bool:
     """Remove ug's settings keys, give the app time to unload the extension, then remove the
-    plugin directory. Returns whether anything was removed."""
+    plugin directory. A ``unity-gateway`` marketplace at another path isn't ug's, so it and its
+    plugin key stay. Returns whether anything was removed."""
     root = root or plugin_root()
     path = settings_path or copilot_settings_path()
     settings = read_settings(path)
     changed = False
+    marketplaces = settings.get(_MARKETPLACES_KEY)
+    foreign = (
+        isinstance(marketplaces, dict)
+        and MARKETPLACE in marketplaces
+        and not _owns_marketplace(settings, root)
+    )
     for key, entry in ((_MARKETPLACES_KEY, MARKETPLACE), (_ENABLED_KEY, PLUGIN_KEY)):
         value = settings.get(key)
-        if isinstance(value, dict) and entry in value:
+        if not foreign and isinstance(value, dict) and entry in value:
             del value[entry]
             if not value:
                 del settings[key]
             changed = True
     if changed:
-        atomic_write_json(path, settings)
+        _write_settings(path, settings)
     if root.exists():
         if changed:
             (wait or time.sleep)(UNLOAD_WAIT_S)
@@ -315,13 +366,8 @@ def status(root: Path | None = None, settings_path: Path | None = None) -> Statu
         settings = read_settings(settings_path)
     except SettingsError:
         return "invalid_settings"
-    marketplaces = settings.get(_MARKETPLACES_KEY)
-    marketplace = marketplaces.get(MARKETPLACE) if isinstance(marketplaces, dict) else None
-    source = marketplace.get("source") if isinstance(marketplace, dict) else None
     if not (
-        isinstance(source, dict)
-        and source.get("path") == str(root)
-        and (_extension_dir(root) / "extension.mjs").exists()
+        _owns_marketplace(settings, root) and (_extension_dir(root) / "extension.mjs").exists()
     ):
         return "not_installed"
     enabled = settings.get(_ENABLED_KEY)

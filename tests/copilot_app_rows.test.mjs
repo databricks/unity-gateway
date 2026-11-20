@@ -4,9 +4,13 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 
 import { copilotHome, readEndpoint, syncInBackground, syncOnce } from "../src/ucode/copilot_app_plugin/app-rows.mjs";
+
+// The Copilot runtime's Node has a global WebSocket; Node before 22 doesn't.
+const skip = typeof WebSocket === "function" ? false : "this Node has no global WebSocket";
+const test = (name, fn) => nodeTest(name, { skip }, fn);
 
 function encode(text) {
   const payload = Buffer.from(text);

@@ -156,6 +156,40 @@ class TestExtensionConfig:
             "ownedProviderIds": [],
         }
 
+    def test_a_pat_token_command_and_hint(self):
+        config = plugin.extension_config(_config(use_pat=True))
+        assert config["tokenCommand"][-1] == "--use-pat"
+        assert config["tokenCommand"][0] == "/opt/ug/bin/ug"
+        assert "`token = <PAT>` entry under [dev]" in config["loginHint"]
+
+    def test_a_custom_oauth_token_command_and_hint(self):
+        oauth = {
+            "client_id": "my-app",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["all-apis", "offline_access"],
+        }
+        config = plugin.extension_config(_config(profile=None, custom_oauth=oauth))
+        assert config["tokenCommand"] == [
+            "/opt/ug/bin/ug",
+            "auth-token",
+            "--host",
+            "https://example.cloud.databricks.com",
+            "--client-id",
+            "my-app",
+            "--redirect-url",
+            "http://localhost:8020",
+            "--scopes",
+            "all-apis,offline_access",
+        ]
+        assert "Rerun `ug configure`" in config["loginHint"]
+        with_profile = plugin.extension_config(
+            _config(profile=None, custom_oauth={**oauth, "profile": "ug-oauth"})
+        )
+        assert with_profile["tokenCommand"][-2:] == ["--profile", "ug-oauth"]
+
+    def test_a_missing_ug_hint_names_its_path(self):
+        assert "/opt/ug/bin/ug" in plugin.extension_config(_config())["missingUgHint"]
+
     def test_token_command_and_hint_name_the_workspace_and_profile(self):
         config = plugin.extension_config(_config())
         assert config["tokenCommand"] == [
@@ -310,6 +344,39 @@ class TestSettings:
         assert plugin.remove(wait=waits.append) is True
         assert waits == []
         assert not root.exists()
+
+    def test_remove_keeps_a_foreign_unity_gateway_marketplace(self, home):
+        path = _settings(home)
+        path.parent.mkdir()
+        foreign = {
+            "extraKnownMarketplaces": {
+                "unity-gateway": {"source": {"source": "directory", "path": "/elsewhere"}}
+            },
+            "enabledPlugins": {"databricks@unity-gateway": True},
+        }
+        path.write_text(json.dumps(foreign))
+        assert plugin.remove(wait=lambda seconds: None) is False
+        assert json.loads(path.read_text()) == foreign
+
+    def test_a_symlinked_settings_file_is_refused(self, home, tmp_path):
+        target = tmp_path / "real-settings.json"
+        target.write_text("{}")
+        _settings(home).parent.mkdir()
+        _settings(home).symlink_to(target)
+        with pytest.raises(plugin.SettingsError, match="symlink"):
+            plugin.install(_config())
+        assert not plugin.plugin_root().exists()
+        assert target.read_text() == "{}"
+
+    def test_rewriting_settings_keeps_their_mode(self, home):
+        path = _settings(home)
+        path.parent.mkdir()
+        path.write_text("{}")
+        path.chmod(0o644)
+        plugin.install(_config())
+        assert path.stat().st_mode & 0o777 == 0o644
+        plugin.remove()
+        assert path.stat().st_mode & 0o777 == 0o644
 
     def test_remove_drops_empty_keys(self, home):
         plugin.install(_config())

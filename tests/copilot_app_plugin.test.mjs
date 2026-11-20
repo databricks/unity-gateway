@@ -9,6 +9,7 @@ import {
   buildProviders,
   childEnv,
   createTokenSource,
+  hintFor,
   isAuthRejection,
   jwtExpiryMs,
   withLoginHint,
@@ -96,7 +97,7 @@ test("withLoginHint shows the hint once per run of failures", async () => {
       if (fail) throw new Error("no login");
       return "t";
     },
-    () => hints++,
+    () => (hints++, true),
   );
   await assert.rejects(bearer(), /no login/);
   await assert.rejects(bearer(), /no login/);
@@ -118,6 +119,49 @@ test("withLoginHint still throws the token error when the hint fails", async () 
     },
   );
   await assert.rejects(bearer(), /no login/);
+});
+
+test("withLoginHint tries again until a hint is shown", async () => {
+  const shown = [false, true];
+  let calls = 0;
+  const bearer = withLoginHint(
+    async () => {
+      throw new Error("no login");
+    },
+    () => shown[calls++],
+  );
+  await assert.rejects(bearer());
+  await assert.rejects(bearer());
+  await assert.rejects(bearer());
+  assert.equal(calls, 2);
+});
+
+test("hintFor picks the hint by how ug auth-token failed", () => {
+  const hints = { loginHint: "login", missingUgHint: "missing" };
+  assert.equal(hintFor(Object.assign(new Error(), { code: 1 }), hints), "login");
+  assert.equal(hintFor(Object.assign(new Error(), { code: "ENOENT" }), hints), "missing");
+  assert.equal(hintFor(Object.assign(new Error(), { code: "TIMEOUT" }), hints), null);
+  assert.equal(hintFor(new Error("printed no token"), hints), null);
+});
+
+test("an invalidate during a mint keeps its token out of the cache", async () => {
+  const calls = [];
+  let release;
+  const token = createTokenSource(config, {
+    run: (argv) => {
+      calls.push(argv);
+      if (calls.length === 1) return new Promise((resolve) => (release = resolve));
+      return Promise.resolve(jwt(3600));
+    },
+    now: () => 0,
+  });
+  const first = token();
+  token.invalidate();
+  release(jwt(7200));
+  assert.equal(await first, jwt(7200));
+  assert.equal(await token(), jwt(3600));
+  assert.equal(await token(), jwt(3600));
+  assert.deepEqual(calls, [config.tokenCommand, [...config.tokenCommand, FORCE_REFRESH_FLAG]]);
 });
 
 test("buildProviders attaches the token provider to every provider", () => {
