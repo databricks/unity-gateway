@@ -174,6 +174,10 @@ class TestHostType:
 
         import ucode.databricks as db_mod
 
+        # Pin the dispatch to the pooled client: a runner with HTTPS_PROXY or
+        # UG_TLS_TRUST_STORE=python would otherwise make this a real urllib request.
+        monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
+
         requests = []
 
         def not_found(request):

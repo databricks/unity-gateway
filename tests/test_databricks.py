@@ -7691,10 +7691,15 @@ class TestPooledClientDispatch:
         assert opened == [(request, 5)]
 
     def test_all_proxy_alone_still_pools_direct(self, monkeypatch):
-        # urllib ignores all_proxy, so it doesn't disqualify the pooled client; the client
-        # must still be direct with trust_env off, so ALL_PROXY is never mounted.
+        # urllib ignores all_proxy (and no_proxy), so they don't disqualify the pooled client;
+        # the client must still be direct with trust_env off, so ALL_PROXY is never mounted.
+        # getproxies is stubbed because a macOS runner's system proxy would leak in otherwise.
         _clear_proxy_env(monkeypatch)
-        monkeypatch.setenv("ALL_PROXY", "socks5://socks-proxy:1080")
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "getproxies",
+            lambda: {"all": "socks5://socks-proxy:1080", "no": "bypassed.example"},
+        )
 
         import httpx
 
@@ -7719,6 +7724,8 @@ class TestPooledClientDispatch:
 
     def test_default_setup_pools(self, monkeypatch):
         _clear_proxy_env(monkeypatch)
+        # Stub getproxies too: a macOS runner's system proxy would leak in otherwise.
+        monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
         monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
 
         import httpx
