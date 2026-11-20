@@ -297,15 +297,15 @@ class TestDesiredProviders:
 
         calls = []
 
-        def models(state, provider, location):
-            calls.append((provider, location))
+        def models(state, provider, location, *, agent):
+            calls.append((provider, location, agent))
             return CATALOG
 
         monkeypatch.setattr(vscode, "copilot_models", models)
 
         desired = copilot_app.state_providers({"workspace": WORKSPACE}, provider="my-mps")
 
-        assert calls == [("my-mps", None)]
+        assert calls == [("my-mps", None, "the GitHub Copilot app")]
         assert desired == copilot_app.desired_providers(
             WORKSPACE, CATALOG, provider_service="my-mps"
         )

@@ -47,6 +47,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_copilot_app_with_copilot,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -2006,6 +2007,18 @@ def status() -> int:
             )
         if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
             rows.append(("VS Code", "off (workspace-managed)"))
+        if tool == AGENT_COPILOT:
+            from ucode import copilot_app_setup
+
+            app_status = copilot_app_setup.status(
+                effective_state,
+                provider=provider_service,
+                location=get_model_location(effective_state, tool),
+            )
+            if app_status:
+                rows.append(("GitHub Copilot app", app_status.row))
+                for warning in app_status.warnings:
+                    print_warning(warning)
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -2115,6 +2128,13 @@ def revert() -> int:
         # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
         vscode_result = "failed"
+    from ucode import copilot_app_setup
+
+    try:
+        copilot_app_result = copilot_app_setup.remove()
+    except OSError as exc:
+        print_warning(f"Could not revert the GitHub Copilot app: {exc}. Run ug revert again.")
+        copilot_app_result = "failed"
 
     results: dict[str, bool] = {
         # Antigravity's skills.json is shared with its app and IDE extensions, so revert
@@ -2149,6 +2169,12 @@ def revert() -> int:
         print_kv("Published agent configuration settings", published_agent_config_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
+    print_kv("GitHub Copilot app", copilot_app_result)
+    if copilot_app_result.startswith("removed"):
+        print_note(
+            "Chats already open in the GitHub Copilot app keep the Databricks models until you "
+            "start a new chat or restart the app."
+        )
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -5510,6 +5536,15 @@ def configure(
             "Copilot Chat in VS Code.",
         ),
     ] = False,
+    no_copilot_app: Annotated[
+        bool,
+        typer.Option(
+            "--no-copilot-app",
+            hidden=True,
+            help="Don't add the Databricks models to the GitHub Copilot desktop app. By default, "
+            "configuring copilot also sets up the app when it is installed.",
+        ),
+    ] = False,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5631,6 +5666,7 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
+        request_copilot_app_with_copilot(not no_copilot_app)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

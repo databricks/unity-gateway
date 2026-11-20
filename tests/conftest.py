@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -57,6 +58,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     import ucode.tls as tls_mod
+    from ucode import copilot_app as copilot_app_mod
+    from ucode import copilot_app_plugin as copilot_app_plugin_mod
+    from ucode import copilot_app_setup as copilot_app_setup_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
@@ -85,6 +89,25 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
+    monkeypatch.setattr(agents_mod, "_copilot_app_with_copilot", True)
+    # No test may find the developer's GitHub Copilot app, change its settings or providers, or
+    # write ug's plugin for it.
+    monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP", raising=False)
+    monkeypatch.setattr(copilot_app_setup_mod, "installed", lambda: False)
+    copilot_home = tmp_path / ".copilot"
+    monkeypatch.setattr(
+        copilot_app_mod,
+        "copilot_home",
+        lambda: Path(os.environ.get("COPILOT_HOME") or copilot_home),
+    )
+    monkeypatch.setattr(
+        copilot_app_plugin_mod,
+        "copilot_settings_path",
+        lambda: Path(os.environ.get("COPILOT_HOME") or copilot_home) / "settings.json",
+    )
+    monkeypatch.setattr(
+        copilot_app_plugin_mod, "plugin_root", lambda: tmp_path / ".ucode" / "copilot-app-plugin"
+    )
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)

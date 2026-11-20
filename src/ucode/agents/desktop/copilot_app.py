@@ -262,7 +262,9 @@ def state_providers(
     from ucode.agents.vscode import copilot_models
 
     return desired_providers(
-        state["workspace"], copilot_models(state, provider, location), provider_service=provider
+        state["workspace"],
+        copilot_models(state, provider, location, agent="the GitHub Copilot app"),
+        provider_service=provider,
     )
 
 
@@ -411,7 +413,7 @@ def _models(app: _AppConnection, provider_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _connect() -> _AppConnection:
+def _connect(*, warn_version: bool = True) -> _AppConnection:
     app = _AppConnection(copilot_home())
     try:
         version = _version(app)
@@ -421,7 +423,7 @@ def _connect() -> _AppConnection:
     except CopilotAppError:
         # The version only decides the warning below.
         version = None
-    if version not in VERIFIED_APP_VERSIONS:
+    if warn_version and version not in VERIFIED_APP_VERSIONS:
         print_warning(
             f"GitHub Copilot app {version or '(unknown version)'} hasn't been verified with ug; "
             "continuing anyway."
@@ -467,7 +469,7 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
     :class:`CopilotAppError` when the app refuses."""
     providers = list(providers)
     try:
-        app = _connect()
+        app = _connect(warn_version=False)
     except CopilotAppNotRunning:
         return "not_running"
     try:
