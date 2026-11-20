@@ -226,8 +226,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(
 
     # Native trust records may be added; user settings must remain intact.
     before, after = tomllib.loads(original_config.decode()), tomllib.loads(config.read_text())
-    hooks = before.pop("hooks")
-    assert {key: after.get("hooks", {}).get(key) for key in hooks} == hooks
+    configured_hooks = before.pop("hooks")
+    assert {key: after.get("hooks", {}).get(key) for key in configured_hooks} == configured_hooks
     assert {key: after.get(key) for key in before} == before
     assert catalog.read_bytes() == original_catalog
     if configured_catalog is not None:
