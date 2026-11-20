@@ -363,6 +363,8 @@ class _CopilotRelayHandler(_ProxyHandler):
         if not any(name.lower() == "accept-encoding" for name in headers):
             headers["Accept-Encoding"] = "identity"
         self.on_direct_request(self.command, path.split("?", 1)[0])
+        # The base relay records metrics from these labels, and only the gateway path sets them.
+        self._metric_labels = {"proxy_mode": self.metrics_proxy_mode, "http_method": self.command}
         try:
             with self.client.stream(
                 self.command, self.direct_base_url(host) + path, headers=headers, content=body
