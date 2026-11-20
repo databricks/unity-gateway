@@ -246,7 +246,7 @@ class TestRemove:
         assert desktop_setup.revert_copilot_app() == "removed"
         assert app.providers == {}
         assert plugin.status() == "not_installed"
-        assert "enabledPlugins" not in _settings()
+        assert not _settings_path().exists()
 
     def test_a_closed_app_leaves_the_removal_to_the_plugins_next_start(self):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
@@ -289,7 +289,7 @@ class TestRemove:
         assert desktop_setup.revert_copilot_app() == "removed"
         assert app.providers == {}
         assert not plugin.plugin_root().exists()
-        assert "enabledPlugins" not in _settings()
+        assert not _settings_path().exists()
 
     def test_configure_again_cancels_a_pending_removal(self):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
