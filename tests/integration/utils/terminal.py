@@ -104,7 +104,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
-        r"^[ \t]*↑/↓ to select · Enter to view · Esc to close[ \t]*\s*\Z",
+        r"^[ \t]*↑/↓ to (?:select|navigate) · Enter to view · Esc to close[ \t]*\s*\Z",
         text,
     )
 
@@ -129,15 +129,16 @@ def _claude_background_tasks_complete(text):
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
     # 2.1.322 adds a collapsed history heading after the current task rows.
-    # Keep requiring an exact Completed group and every current row to be done.
+    # Newer versions omit the Completed count; every current row must still be done.
     if rows and re.fullmatch(r"Earlier in this session \([0-9]+\)", rows[-1]):
         rows.pop()
     if not rows:
         return False
-    completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
+    completed = re.fullmatch(r"Completed(?: \(([1-9][0-9]*)\))?", rows[0])
     return (
         completed is not None
-        and len(rows) - 1 == int(completed[1])
+        and len(rows) > 1
+        and (completed[1] is None or len(rows) - 1 == int(completed[1]))
         and all(re.fullmatch(r"(?:❯\s*)?✔\s+.+\s+done\s+·\s+.+", row) for row in rows[1:])
     )
 

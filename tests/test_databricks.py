@@ -941,6 +941,21 @@ class TestListModelProviderServices:
         assert entry["relayed"] is True
         assert entry["provider_type"] == "openai"
 
+    def test_flags_relayed_github_copilot(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.copilot-seats",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_GITHUB_COPILOT",
+                    "github_copilot": {"relayed": {}},
+                    "targets": [{"model": "claude-sonnet-5.5"}],
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "github_copilot"
+        assert entry["targets"] == ["claude-sonnet-5.5"]
+
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
@@ -1322,6 +1337,13 @@ class TestResolveProviderService:
         )
         assert service is None
         assert "can't route to" in error
+
+    def test_copilots_supported_list_leaves_out_github_copilot(self):
+        error = db_mod._provider_service_unusable_reason(
+            "copilot", {"provider_type": "gemini_enterprise"}, "main.a.gemini"
+        )
+        assert error is not None and "(supported: anthropic," in error
+        assert "github_copilot" not in error
 
     def test_copilot_accepts_openai(self, monkeypatch):
         self._patch(monkeypatch)
@@ -1829,6 +1851,69 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("copilot", service)
         assert db_mod.service_usable_for_tool("claude", service)
+
+    _COPILOT_RELAY = {
+        "name": "main.s.copilot-seats",
+        "provider_type": "github_copilot",
+        "targets": ["claude-sonnet-5.5"],
+        "relayed": True,
+    }
+
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_for_copilot_and_vscode(self, tool):
+        assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
+        assert not db_mod.service_usable_for_tool("claude", self._COPILOT_RELAY)
+
+    def test_choices_label_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        choices, reason = db_mod.tool_provider_service_choices("copilot", WS, "tok")
+
+        assert reason is None
+        assert choices == [
+            ("main.s.anthropic", "main.s.anthropic"),
+            ("main.s.copilot-seats", "main.s.copilot-seats (GitHub Copilot subscription)"),
+        ]
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
+    def test_other_agents_refuse_a_github_copilot_relay(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "'github_copilot' provider" in reason
+
+    def test_github_copilot_without_a_relay_is_refused(self):
+        service = {**self._COPILOT_RELAY, "relayed": False}
+        reason = db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        assert reason is not None
+        assert "doesn't relay a subscription" in reason
+
+    def test_provider_flag_resolves_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
+        )
+
+        service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
+
+        assert error is None
+        assert service is not None and db_mod.is_copilot_seat_relay(service)
+
+    def test_picker_lists_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
+            ["main.s.anthropic", "main.s.copilot-seats"],
+            None,
+        )
 
 
 class TestModelProviderFeatureUnavailable:
@@ -6944,6 +7029,118 @@ class TestSharedHostProfiles:
         ]
 
 
+class TestModelServiceDestinationModels:
+    def test_malformed_primary_keeps_known_relay_providers_but_not_catalog_identity(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        None,
+                        {
+                            "traffic_percentage": 100,
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            },
+                        },
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) is None
+
+    def test_single_primary_without_traffic_is_live_for_both_consumers(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
+
+    @pytest.mark.parametrize(
+        "destination,expected",
+        [
+            ({"external_model_config": {"target": {"model": "gpt-6-luna"}}}, "gpt-6-luna"),
+            (
+                {"pay_per_token_config": {"model": "models/system.ai.gpt-6-luna"}},
+                "system.ai.gpt-6-luna",
+            ),
+        ],
+    )
+    def test_reads_model_identity_from_each_destination_type(self, destination, expected):
+        service = {"config": {"routing": {"destinations": [destination]}}}
+        assert db_mod.model_service_destination_models(service) == [expected]
+
+    def test_includes_error_and_budget_fallbacks_but_ignores_idle_and_deleted(self):
+        def external(model, **kwargs):
+            return {"external_model_config": {"target": {"model": model}}, **kwargs}
+
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        external("gpt-6-luna", traffic_percentage=100),
+                        external("gpt-4o", traffic_percentage=0),
+                        external("gpt-4o", traffic_percentage=100, is_deleted=True),
+                    ],
+                    "fallback": {
+                        "destinations": [
+                            external("gpt-6-astra"),
+                            external("gpt-4o", is_deleted=True),
+                        ]
+                    },
+                    "budget_fallbacks": [{"destination": external("gpt-6-sol")}],
+                }
+            }
+        }
+
+        assert db_mod.model_service_destination_models(service) == [
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+        ]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {},
+            {"config": None},
+            {"config": {"routing": {"destinations": []}}},
+            {"config": {"routing": {"destinations": [{"external_model_config": {"target": {}}}]}}},
+            {"config": {"routing": {"destinations": [{"pay_per_token_config": {"model": 123}}]}}},
+            {"config": {"routing": {"destinations": [{"traffic_percentage": "100"}]}}},
+            {
+                "config": {
+                    "routing": {
+                        "destinations": [
+                            {
+                                "provisioned_throughput_config": {
+                                    "model_serving_endpoint": "serving-endpoints/custom"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        ],
+    )
+    def test_incomplete_identity_is_not_inferred(self, service):
+        assert db_mod.model_service_destination_models(service) is None
+
+
 class TestModelServicesNeedSubscriptionRelay:
     """A static model-service list launches relayed when a service routes to a relayed MPS."""
 
@@ -7114,7 +7311,7 @@ class TestModelServicesNeedSubscriptionRelay:
             "claude-sonnet-5-5",
             "main.default.oss",
         ]
-        assert db_mod.relay_candidate_model_services(models) == [
+        assert db_mod.custom_model_services(models) == [
             "main.default.sonnet[1m]",
             "main.default.oss",
         ]

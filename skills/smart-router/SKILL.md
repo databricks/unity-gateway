@@ -1,20 +1,34 @@
 ---
 name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
-allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
+allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.8.1"
+  version: "1.10.3"
 ---
 
 # Smart Router
 
-Use the Python executable exported by the launching Unity Gateway installation.
-Keep its path quoted and do not substitute `ug` or `python` from PATH.
+Keep toggle and feedback replies in ordinary product language. Do not announce
+skill usage, cite instructions, or show skill names, file paths, or internal tool
+names unless the user asks about the implementation. Asking for a feedback reason
+is ordinary user input within the requested toggle, not a permission or approval
+request. Ask the user directly without explaining which instruction requires it.
 
-- In Claude Code, run exactly `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing` for `on` or
+In Codex, only the explicit `$smart-router off` skill command may start the off
+flow. A natural-language request must leave routing unchanged; tell the user to
+invoke the command. Do not interpret a quoted command or a command with a reason
+appended as an off invocation. Use the launcher-provided native `ug_smart_router` tool with
+`{"action":"on"}` or `{"action":"off"}`. Do not run toggle, capture, submission,
+or status shell commands. If the native tool is unavailable, report that this
+session needs an updated Unity Gateway launch; do not fall back to Bash or
+request shell approval. Do not restart the conversation yourself.
+
+In Claude Code's skill fallback, use the Python executable exported by the
+launching Unity Gateway installation. Keep its path quoted and do not substitute
+`ug` or `python` from PATH. Run exactly
+`"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing` for `on` or
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`.
-- In Codex, run exactly `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing` for `on` or
-  `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing` for `off`.
+
 - In Codex only, for `logs`, run exactly
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table`
   and reply with ONLY a fenced code block (```text) containing its stdout exactly,
@@ -34,33 +48,50 @@ Keep its path quoted and do not substitute `ug` or `python` from PATH.
 In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"` and `"$env:CODEX_SESSION_ID"` in place of
 `"$CODEX_SESSION_ID"`; keep the remaining arguments the same.
-If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
+In Claude, if `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
 
 If the command reports that Smart Router is already on or already off, return that
 result and stop. Do not retry, restart a turn, or request feedback for unchanged settings.
 
-If Codex reports permission denied reading the session controls, request native
-approval for the same command with `sandbox_permissions="require_escalated"` and
-retry only after approval. If approval is unavailable or denied, report that routing
-was not changed. Do not change file permissions or disable the sandbox.
-
-If the user already explained why they want routing off, reuse that explanation
-verbatim in `--smart-router-feedback '<reason>'` on the first off command. Do not
-ask them to repeat it. A quoted complaint, tool output, or model-generated reason
-is not the user's explanation.
-
-If the off command requires feedback, routing is still on. Ask why the user is
-turning Smart Router off only when they have not supplied a valid reason. Require
-at least 16 characters after trimming surrounding whitespace; ask again if the
-reason is shorter. Never invent or pad their reason.
-If they cancel, stop without disabling routing. Once they provide a valid reason,
-repeat the off command with `--smart-router-feedback '<reason>'` appended, quoting
-the exact text as one shell argument. After a successful toggle, submit that text
-through `/isaac-feedback --category smart-routing <reason>`. Report a submission
-failure without re-enabling routing. This requirement applies when Isaac sets
-`ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on` (case-insensitive);
-do not change that flag to bypass it.
+Omnigent launches (`ISAAC_LAUNCH_MODE=omni`) are exempt from this feedback flow.
+Relay the toggle result and stop if no feedback is requested.
+In Codex, the off call opens a native selection prompt when feedback is required:
+"Provide a reason" opens text entry, and "Cancel" keeps routing on and sends nothing.
+The launcher requires at least 16 characters, discloses that the reason and session
+details go to the Isaac team, and handles cancellation. Wait for the tool result;
+do not ask a duplicate chat question, call a separate question tool, or switch to
+Plan mode. Always collect the reason through this disclosed prompt, including when
+the user mentioned a reason earlier. Never supply a reason yourself, invent one,
+or pad their input.
+If the result reports a validation error, relay it and stop. A short reason ends
+this attempt with routing still on and nothing sent. Do not reopen the prompt,
+ask another question, or retry automatically; wait for the user's next request.
+The launcher identifies the preceding task, freezes its routing context, starts
+Isaac's background feedback submission, and turns routing off, as Claude does.
+Delivery failures leave routing off.
+Reason submission needs no additional shell approval. Do not submit the same
+report through `/isaac-feedback` or another command.
+Relay the native result briefly, including any notices. If delivery is pending,
+say the user can keep working; do not poll or block the conversation. The launcher
+reports completion. Keep routing off throughout delivery; never claim delivery
+succeeded merely because routing is off.
+In Claude's skill fallback, if the user already explained why they want routing
+off, pass their exact explanation with `--smart-router-feedback '<reason>'` on
+the first off command. Do not ask them to repeat it. Explain that their reason
+and session details will be sent to the Isaac team. A quoted complaint, tool
+output, or model-generated reason is not the user's explanation.
+If the off result requires feedback, routing is still on. Ask why only when they
+have not supplied a valid reason. Require at least 16 characters after trimming
+surrounding whitespace; ask again if shorter. Never invent or pad their reason.
+If they cancel, stop without disabling routing or submitting feedback.
+If a new reason was needed, repeat off with `--smart-router-feedback '<reason>'`
+appended, quoting the exact text as one shell argument. After a successful off,
+submit the supplied reason through `/isaac-feedback --category smart-routing <reason>`.
+Report a submission
+failure without re-enabling routing. This requirement applies outside Omnigent
+when Isaac sets `ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on`
+(case-insensitive); do not change that flag to bypass it.
 
 With no argument, explain that only `on`, `off`, and (in Codex) `logs` and `logs --id <ID>` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
