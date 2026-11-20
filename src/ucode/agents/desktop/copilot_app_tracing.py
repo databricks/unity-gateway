@@ -54,8 +54,11 @@ def _paths(value: object) -> list[Path]:
 def _remove_block(path: Path, created: bool) -> bool:
     if not path.is_file():
         return False
-    text = path.read_text(encoding="utf-8")
-    if _BEGIN not in text:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not _BLOCK.search(text):
         return False
     rest = _BLOCK.sub("\n", text).strip("\n")
     if not rest and (created or path.name == _FISH_FILE_NAME):
