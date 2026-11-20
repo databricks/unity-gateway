@@ -44,6 +44,7 @@ from ucode.databricks import (
     databricks_cli_version,
     ensure_databricks_cli_version,
     ensure_pat_bearer,
+    fetch_databricks_token_untimed,
     get_databricks_profiles,
     get_databricks_token,
     install_ai_tools,
@@ -3570,6 +3571,76 @@ class TestGetDatabricksToken:
         ]
         assert {attrs["token_source"] for attrs in labels} == {"cli"}
 
+    def test_untimed_fetch_duration_is_reported_once_by_timed_reuse(
+        self, monkeypatch, metrics_recorder
+    ):
+        """An untimed caller's real fetch is reported by the first timed reuse as the cache
+        miss with that fetch's duration; later reuses are plain cache hits."""
+        db_mod.clear_databricks_token_cache()
+
+        def fake_cli_run(cmd, **_kwargs):
+            time.sleep(0.1)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"access_token": "token", "expires_in": 3600}), ""
+            )
+
+        monkeypatch.setattr(db_mod, "run", fake_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        try:
+            assert fetch_databricks_token_untimed(WS, "spec") == "token"
+            memoized = db_mod._memoized_token(db_mod._token_memo_key(WS, "spec"))
+            assert memoized is not None and memoized.unreported_fetch_ms >= 100
+
+            assert get_databricks_token(WS, "spec") == "token"
+            assert get_databricks_token(WS, "spec") == "token"
+        finally:
+            db_mod.clear_databricks_token_cache()
+
+        observations = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert len(observations) == 2
+        [(miss_ms, miss_labels), (hit_ms, hit_labels)] = observations
+        assert miss_labels["in_process_cache_hit"] is False
+        assert miss_labels["token_source"] == "cli"
+        assert miss_ms >= 100
+        assert hit_labels["in_process_cache_hit"] is True
+        assert "awaited_duration_ms" not in miss_labels
+        assert "awaited_duration_ms" not in hit_labels
+
+    def test_credential_failure_raises_login_required_and_transient_does_not(self, monkeypatch):
+        """A CLI-identified credential failure raises the login-required error best-effort
+        callers treat as an expected miss; unrecognized failures stay plain RuntimeErrors."""
+
+        def cli_run(stderr):
+            return lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, "", stderr)
+
+        monkeypatch.setattr(db_mod, "run", cli_run("no cached credentials"))
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            fetch_databricks_token_untimed(WS, "spec")
+
+        monkeypatch.setattr(db_mod, "run", cli_run("connection reset by peer"))
+        with pytest.raises(RuntimeError, match="network connectivity") as excinfo:
+            fetch_databricks_token_untimed(WS, "spec")
+        assert not isinstance(excinfo.value, db_mod.DatabricksLoginRequiredError)
+
+    def test_memoized_failure_raises_login_required_for_the_speculation(self, monkeypatch):
+        """An untimed fetch reuse of an earlier fetch's memoized credential failure raises
+        the login-required error, so the speculation's join treats it as an expected miss
+        instead of reporting a hard token-fetch failure."""
+
+        def failing_cli_run(cmd, **_kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "no cached credentials")
+
+        monkeypatch.setattr(db_mod, "run", failing_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            get_databricks_token(WS, "spec")
+
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            fetch_databricks_token_untimed(WS, "spec")
+
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
         release_fetch = threading.Event()
@@ -3838,6 +3909,42 @@ class TestGetDatabricksToken:
         calls = log.read_text().splitlines()
         assert sum("auth token" in call for call in calls) == 2
         assert calls.count("auth login --help") == 1
+
+    def test_skipped_reauth_failure_is_not_memoized(self, tmp_path, monkeypatch):
+        """The speculative non-reauth fetch must not poison configure's own fetch: a
+        non-transient failure it memoizes would skip configure's auth login --no-browser."""
+        flag = tmp_path / "reauthed"
+        env, log = self._logging_fake(
+            tmp_path,
+            self._HELP_WITH_NO_BROWSER
+            + "if '--no-browser' in sys.argv[1:]:\n"
+            + f"    Path({str(flag)!r}).write_text('')\n"
+            + f"if Path({str(flag)!r}).exists():\n"
+            + "    print(json.dumps({'access_token': 'after-reauth'}))\n"
+            + "else:\n"
+            + "    print('no cached credentials', file=sys.stderr)\n"
+            + "    sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+
+        with pytest.raises(RuntimeError, match="no access token"):
+            fetch_databricks_token_untimed(WS)
+
+        # The skipped re-auth made no `auth login` call at all — not even the --help probe.
+        calls_after_first_fetch = log.read_text().splitlines()
+        assert calls_after_first_fetch
+        assert not any("auth login" in call for call in calls_after_first_fetch)
+
+        # The default fetch still attempts the non-interactive re-auth (`auth login
+        # --no-browser`) instead of raising the memoized failure, and it repairs the cache.
+        assert get_databricks_token(WS) == "after-reauth"
+        assert (
+            sum(
+                "auth login" in call and "--no-browser" in call
+                for call in log.read_text().splitlines()
+            )
+            >= 1
+        )
 
     def test_force_refresh_retries_a_memoized_failure(self, tmp_path, monkeypatch):
         flag = tmp_path / "logged-in"
@@ -4649,13 +4756,13 @@ class TestProbeUnityGatewayCapabilities:
     def test_definitive_auth_failure_matches_invalid_token_403(self):
         # A stale PAT 403s with an "Invalid access token" body — that's the token being
         # rejected, not a missing grant, so it must classify as a definitive auth failure.
-        assert db_mod._looks_like_definitive_auth_failure(
+        assert db_mod.looks_like_definitive_auth_failure(
             'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
         )
-        assert db_mod._looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
-        assert db_mod._looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
+        assert db_mod.looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
+        assert db_mod.looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
         # A plain permission 403 (missing grant) is left to permission routing.
-        assert not db_mod._looks_like_definitive_auth_failure(
+        assert not db_mod.looks_like_definitive_auth_failure(
             "HTTP 403: Missing Unity Catalog grants"
         )
 
