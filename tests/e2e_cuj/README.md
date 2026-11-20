@@ -295,3 +295,5 @@ CI pins Codex 0.165.0 for CUJ7, matching CUJ4's routing-capable version.
 Saved-provider routing checks retain each matched request's router name, offered model/harness
 pairs, response status and gateway request ID in `routing-request-<sequence>.json`, including
 failed responses. Task prompts, arbitrary headers and response bodies are excluded.
+Capture runs after task completion, as each routing response reaches validation. A failure
+before validation or on an earlier response can prevent later routing artifacts.
