@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -378,6 +379,9 @@ class TestSeatRelay:
     def _wrapper() -> Path:
         return vscode.runtime_wrapper_path(insiders=False)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
     def test_routes_copilot_through_the_seat_relay_without_a_restart(
         self, code, seats, runtime, capsys
     ):
@@ -400,6 +404,9 @@ class TestSeatRelay:
         assert "No restart is needed" in printed
         assert "Quit VS Code" not in printed
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
     def test_keeps_the_developers_settings_and_comments(self, code, seats):
         self._settings().parent.mkdir(parents=True)
         self._settings().write_text('{\n    // mine\n    "editor.tabSize": 2,\n}\n')
