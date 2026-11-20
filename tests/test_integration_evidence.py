@@ -1,8 +1,11 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
+import hashlib
 import json
+import os
 import re
-from pathlib import PurePosixPath, PureWindowsPath
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -15,11 +18,106 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.harness import UserSession
 from tests.integration.utils.terminal import (
+    claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+def test_antigravity_native_log_evidence_is_bounded_and_redacted(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(7):
+        text = f"Making Gateway streaming request to: http://127.0.0.1/models/model-{index}\n"
+        text += "x" * 70_000 + "secret-session-bearer\nrequest timed out; retrying\n"
+        (directory / f"cli-{index}.log").write_text(text)
+        os.utime(directory / f"cli-{index}.log", (index + 1, index + 1))
+
+    assert antigravity.requested_urls(session) == [
+        f"http://127.0.0.1/models/model-{index}" for index in range(7)
+    ]
+    artifact = (session.artifacts / "antigravity-logs.json").read_text()
+    assert "secret-session-bearer" not in artifact
+    value = json.loads(artifact)
+    assert value["files_omitted"] == 2
+    assert [log["name"] for log in value["logs"]] == [f"cli-{index}.log" for index in range(2, 7)]
+    for log in value["logs"]:
+        assert log["truncated"]
+        assert len(log["tail"]) == 64_000
+        assert log["tail"].endswith("<redacted>\nrequest timed out; retrying\n")
+
+
+def test_antigravity_native_log_evidence_without_logs(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    assert antigravity.requested_urls(session) == []
+    assert json.loads((session.artifacts / "antigravity-logs.json").read_text()) == {
+        "files_omitted": 0,
+        "logs": [],
+    }
+
+
+def test_antigravity_native_log_evidence_keeps_recent_files_by_modification_time(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(12):
+        path = directory / f"cli-{index}.log"
+        path.write_text(f"Making Gateway streaming request to: http://127.0.0.1/{index}\n")
+        os.utime(path, (index + 1, index + 1))
+
+    urls = antigravity.requested_urls(session)
+
+    assert urls == [
+        f"http://127.0.0.1/{index}" for index in sorted(range(12), key=lambda i: f"cli-{i}.log")
+    ]
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["files_omitted"] == 7
+    assert {log["name"] for log in value["logs"]} == {f"cli-{index}.log" for index in range(7, 12)}
+    assert all(not log["truncated"] for log in value["logs"])
+
+
+def test_antigravity_native_log_redacts_token_crossing_tail_boundary(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    (directory / "cli-1.log").write_text("prefixsecret-session-bearer" + "x" * 63_990)
+
+    antigravity.requested_urls(session)
+
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["logs"][0]["tail"] == "<redacted>" + "x" * 63_990
+
+
+@pytest.mark.parametrize("wrap", ["", "\n "])
+def test_claude_workspace_trust_requires_full_project_path(wrap):
+    cwd = PureWindowsPath(r"D:\a\_temp\ug-integration-project-8725e2e1b7c0\project with spaces")
+    screen = f"Accessing workspace:\n{str(cwd).replace('with spaces', 'with' + wrap + ' spaces')}\n❯ No, exit\n  Yes, I trust this folder"
+    assert claude_workspace_trust_dialog_shown(screen, cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("8725e2e1b7c0", "other"), cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("Accessing workspace:", ""), cwd)
 
 
 @pytest.mark.parametrize(
@@ -152,6 +250,7 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 )
 @pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
+@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
 @pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
 @pytest.mark.parametrize(
     "condition",
@@ -163,12 +262,12 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
     ids=["unset", "whitespace"],
 )
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
-    extra_command, missing_message, guard_style, selected, condition
+    extra_command, missing_message, guard_style, write_output, selected, condition
 ):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
     branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
     suffix = "" if guard_style == "exit" else " }"
-    guard = f"if ({condition}) {{ Write-Output {missing_message}{branch}"
+    guard = f"if ({condition}) {{ {write_output}{missing_message}{branch}"
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
         f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
@@ -718,6 +817,57 @@ def test_tagged_calculation_uses_a_short_native_task_name():
     assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
 
 
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_codex_assignment_digests_match_native_delivery(encrypted):
+    marker = "ug_123abc"
+    assignment = f"Calculate 1+1 and reply {marker}=2"
+    ciphertext = "gAAAAABrAFzz" + "a" * 80
+    content = [
+        {
+            "type": "input_text",
+            "text": f"Message Type: NEW_TASK\nTask name: /root/{marker}__sr_on\n"
+            "Sender: /root\nPayload:\n" + ("" if encrypted else assignment),
+        }
+    ]
+    if encrypted:
+        content.append({"type": "encrypted_content", "encrypted_content": ciphertext})
+    call = {
+        "type": "function_call",
+        "name": "spawn_agent",
+        "arguments": json.dumps(
+            {"task_name": marker, "message": ciphertext if encrypted else assignment}
+        ),
+    }
+    delivery = {"type": "agent_message", "content": content}
+    sessions = {
+        "parent": [{"type": "response_item", "payload": call}],
+        "child": [{"type": "response_item", "payload": delivery}],
+    }
+    expected = marker if encrypted else assignment
+    assert codex.routed_assignment_digests(sessions, marker) == {
+        hashlib.sha256(expected.encode()).hexdigest()
+    }
+    assert not codex.routed_assignment_digests(sessions, "ug_other")
+    if not encrypted:
+        assert hashlib.sha256(marker.encode()).hexdigest() not in codex.routed_assignment_digests(
+            sessions, marker
+        )
+        return
+    for changed in (
+        {"task_name": "ug_other", "message": ciphertext},
+        {"task_name": marker, "message": ciphertext + "different"},
+        {"task_name": marker, "message": {"encrypted": ciphertext}},
+    ):
+        call["arguments"] = json.dumps(changed)
+        assert not codex.routed_assignment_digests(sessions, marker)
+    call["arguments"] = json.dumps({"task_name": marker, "message": ciphertext})
+    call["name"] = "send_message"
+    assert not codex.routed_assignment_digests(sessions, marker)
+    call["name"] = "spawn_agent"
+    content.pop()
+    assert not codex.routed_assignment_digests(sessions, marker)
+
+
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("child", [False, True])
 def test_tagged_calculation_rejects_mistyped_marker_and_wrong_result(tmp_path, agent, child):
@@ -1086,6 +1236,45 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
     )
 
 
+def test_codex_skill_confirmation_allows_only_guarded_duplicates_after_success():
+    successful = {
+        "type": "DynamicToolCall",
+        "tool": "ug_smart_router",
+        "arguments": {"action": "off"},
+        "status": "completed",
+        "success": True,
+        "content_items": [{"type": "inputText", "text": '{"message":"Smart Router is off"}'}],
+    }
+    denied = {
+        **successful,
+        "status": "failed",
+        "success": False,
+        "content_items": [
+            {
+                "type": "inputText",
+                "text": "Use $smart-router off to turn Smart Router off. Routing is unchanged.",
+            }
+        ],
+    }
+
+    def records(*items):
+        return [
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": item}}
+            for item in items
+        ]
+
+    assert codex.completed_smart_router_results(records(successful, denied), "off") == [
+        {"message": "Smart Router is off"}
+    ]
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records(denied), "off")
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records(denied, successful), "off")
+    denied["content_items"][0]["text"] = "Another failure. Routing is unchanged."
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records(successful, denied), "off")
+
+
 def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():
     calls = [_call(1), _call(2)]
     assert claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _RESUMED)) == "child-id"
@@ -1145,3 +1334,27 @@ def test_claude_follow_up_spawned_nothing_rejects_new_children_or_spawns(after):
     before = {_PARENT: [_spawn("a")], **_child("one")}
     with pytest.raises(AssertionError):
         claude.assert_follow_up_spawned_nothing(before, after)
+
+
+@pytest.mark.parametrize("action", ["on", "off"])
+def test_native_smart_router_evidence_requires_correlated_completed_result(action):
+    item = {
+        "type": "DynamicToolCall",
+        "tool": "ug_smart_router",
+        "arguments": {"action": action},
+        "status": "completed",
+        "success": True,
+        "content_items": [
+            {"type": "inputText", "text": json.dumps({"message": "Smart Router is " + action})}
+        ],
+    }
+    records = [{"type": "event_msg", "payload": {"type": "item_completed", "item": item}}]
+    assert codex.completed_smart_router_results(records, action) == [
+        {"message": "Smart Router is " + action}
+    ]
+    assert codex.completed_smart_router_results(records, "cancel") == []
+    item["success"] = False
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records, action)
+    item["tool"] = "unrelated"
+    assert codex.completed_smart_router_results(records, action) == []

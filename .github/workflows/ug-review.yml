@@ -45,6 +45,7 @@ jobs:
     timeout-minutes: 30
     env:
       DATABRICKS_HOST: https://ai-oss-ecosystem-integration-testing.cloud.databricks.com
+      GATEWAY_MODEL: system.ai.claude-opus-5-5
       NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
       OCR_NO_UPDATE: "1"
     steps:
@@ -66,6 +67,8 @@ jobs:
         id: policy
         working-directory: .ug-review-trusted
         run: |
+          # The review action's checkout deletes this directory; keep the later step's script.
+          cp .github/scripts/ug-review/recommendation.py "$RUNNER_TEMP/ug-recommendation.py"
           delimiter="ug-review-policy-$(openssl rand -hex 16)"
           {
             echo "background<<$delimiter"
@@ -136,7 +139,7 @@ jobs:
           llm_extra_headers: x-databricks-use-coding-agent-mode=true
           # The gateway model requires adaptive thinking; the action defaults to disabled.
           llm_extra_body: '{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}'
-          llm_model: system.ai.claude-opus-5-5
+          llm_model: ${{ env.GATEWAY_MODEL }}
           ocr_version: "1.12.0"
           rule: .github/open-code-review/rules.json
           background: ${{ steps.policy.outputs.background }}
@@ -211,6 +214,59 @@ jobs:
               if not head or head != os.environ['REVIEW_HEAD']:
                   raise SystemExit('::error::OCR result does not match the requested commit.')
           PY
+
+      # Advisory recommendation over the completed review. A missing or
+      # unparseable `RECOMMENDATION: APPROVE|REJECT` marker becomes
+      # `recommendation=none`: the note comment is posted and labels are left
+      # alone. The job only reaches this step after the completeness check
+      # passed, so an incomplete review never produces a verdict.
+      - name: Derive the review recommendation
+        if: ${{ steps.pr.outputs.head != '' && steps.ocr.outcome == 'success' }}
+        id: recommendation
+        env:
+          GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}
+          RECOMMENDATION_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 "$RUNNER_TEMP/ug-recommendation.py"
+
+      - name: Publish the review recommendation
+        if: ${{ steps.pr.outputs.head != '' && steps.ocr.outcome == 'success' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          RECOMMENDATION: ${{ steps.recommendation.outputs.recommendation }}
+          RECOMMENDATION_BODY: /tmp/ug-recommendation-body.md
+          RECOMMENDATION_LABEL: ready-to-approve
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.RECOMMENDATION_BODY, 'utf8');
+            const args = { ...context.repo, issue_number: Number(process.env.PR_NUMBER) };
+            // Replace the previous recommendation comment so older verdicts do
+            // not pile up next to the current one.
+            const marker = '<!-- ug-review-recommendation-run:';
+            const { data: comments } = await github.rest.issues.listComments(
+              { ...args, per_page: 100 });
+            const previous = comments.find((comment) =>
+              comment.user?.type === 'Bot' && (comment.body || '').includes(marker));
+            if (previous) {
+              await github.rest.issues.updateComment(
+                { ...context.repo, comment_id: previous.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...args, body });
+            }
+            const label = process.env.RECOMMENDATION_LABEL;
+            if (process.env.RECOMMENDATION === 'approve') {
+              // addLabels creates a missing repository label.
+              await github.rest.issues.addLabels({ ...args, labels: [label] });
+            } else {
+              // A reject, or a run without a recommendation, must not leave a
+              // stale `ready-to-approve` on a head nobody judged.
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue(
+                { ...args, per_page: 100 });
+              if (labels.some((item) => item.name === label)) {
+                await github.rest.issues.removeLabel({ ...args, name: label });
+              }
+            }
 
       - name: Remove temporary package credentials
         if: always()

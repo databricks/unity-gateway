@@ -21,8 +21,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
+  security-gate:
+    name: Security Gate
+    permissions:
+      actions: read
+    uses: ./.github/workflows/security-gate.yml
+
   lint:
     name: Lint
+    # Every other job waits on lint, so a scan finding skips them all.
+    needs: security-gate
     runs-on: ubuntu-latest
     env:
       # See the test job: hosted runners can't reach the internal pypi-proxy,
@@ -65,7 +73,26 @@ jobs:
         run: |
           uv lock
           uv sync
+      - name: Trust a disposable test CA in the Windows certificate store
+        # tests/test_tls_https.py checks that ug verifies a server whose root is only in the OS
+        # trust store. On Linux that store is a CA bundle file the test points OpenSSL at.
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP "ug-test-ca"
+          uv run --no-sync python tests/tls_ca.py $directory
+          certutil -addstore -f Root (Join-Path $directory "ca.pem")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "UG_TEST_OS_TRUSTED_CA_DIR=$directory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: uv run --no-sync pytest --ignore=tests/test_e2e.py
+      - name: Windows provisioning helpers (Windows PowerShell 5.1)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/mdm/windows-provision.Tests.ps1
+      - name: Windows provisioning helpers (PowerShell 7)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/mdm/windows-provision.Tests.ps1
 
   claude-mod:
     name: Claude mod · 2.1.290
@@ -110,6 +137,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm test
+      - name: GitHub Copilot app plugin tests
+        run: node --test ../tests/*.test.mjs
       # ug packs the extension from these committed files, so they must match the sources.
       - name: Check the committed bundle is up to date
         run: |

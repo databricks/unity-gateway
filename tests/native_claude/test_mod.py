@@ -16,9 +16,13 @@ from uuid import uuid4
 
 import pytest
 from session import Session, install_header_mod
+from test_credentials import _STREAM
 
 from tests.native_claude.messages_api import messages_api
 from ucode.agents.claude import _enable_header_mod
+from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import config, orchestrator, savings, session_env
 from ucode.smart_routing.v2 import (
     CLAUDE_SAVINGS_OPTION_DEFAULTS,
@@ -114,11 +118,16 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         Session(native_binary, tmp_path / "a", env, options=savings_options) as a,
         Session(native_binary, tmp_path / "b", {}) as b,
     ):
-        assert a.observe()["options"] == {**_claude_mod_launch_options(env), **savings_options}
+        assert a.observe()["options"] == {
+            **_claude_mod_launch_options(env),
+            **savings_options,
+            "autoPicker": "",
+        }
         # Claude fills in the declared defaults for options a launch omits.
         assert b.observe()["options"] == {
             **_claude_mod_launch_options({}),
             **CLAUDE_SAVINGS_OPTION_DEFAULTS,
+            "autoPicker": "",
         }
         assert not (a.plugin / "hooks/launch.json").exists()
 
@@ -623,6 +632,81 @@ def test_marked_omni_off_turns_routing_off_without_the_feedback_form(native_bina
         shutil.rmtree(controls.parent)
 
 
+def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary, tmp_path):
+    """Initialize a regular model with feedback required, then submit a main turn.
+
+    Routing stays off without a feedback-gated disable. Inference deliberately fails
+    without credentials; this checks native startup/next-turn state, not a live answer.
+    """
+
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+        "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+        "ISAAC_LAUNCH_MODE": "cli",
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    # Fresh Auto launches initialize OFF until the native selected model is known.
+    controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+    auto = {
+        "model": "ug-auto-sonnet",
+        "mainModel": "claude-sonnet-4-6",
+        "description": "Auto",
+        "storeKey": "test-main",
+        "models": [
+            {"model": "claude-sonnet-4-6", "label": "Sonnet", "autoModel": "ug-auto-sonnet"}
+        ],
+    }
+    try:
+        with Session(native_binary, tmp_path / "manual-auto", env, auto_picker=auto) as session:
+            for after_turn in (False, True):
+                if after_turn:
+                    session.send("Reply OK without tools.", expect_error=True)
+                observed = session.observe()
+                assert observed["environment"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+                assert observed["body"]["smart_router_recipe_name"] == "DISABLED"
+                assert not session_env.session_routing_enabled(controls)
+    finally:
+        shutil.rmtree(controls.parent)
+
+
+@pytest.mark.parametrize(
+    ("limits", "preferences", "window"),
+    [
+        ({"team.alias-claude-preview": (125_000, 8192)}, {}, "125k"),
+        ({}, {"autoCompactWindow": 180_000}, "180k"),
+    ],
+)
+def test_saved_custom_auto_alias_window_on_startup(
+    native_binary, tmp_path, monkeypatch, limits, preferences, window
+):
+    """Read the effective compaction window from a new Claude process."""
+
+    monkeypatch.setattr(
+        "ucode.agents.claude.native_settings_paths", lambda: (tmp_path / "settings.json",)
+    )
+    model = "team.alias-claude-preview"
+    alias = auto_variant({"model": model})
+    settings = {"modelOverrides": {alias: model}, **preferences}
+    catalog = AnthropicModelCatalog([model], {}, model_id_to_limits=limits)
+    apply_auto_context_windows(settings, {}, [{"model": model, "autoModel": alias}], catalog)
+
+    with Session(
+        native_binary,
+        tmp_path / "restarted",
+        {},
+        user_settings={"model": alias},
+        launch_settings=settings,
+        model=None,
+    ) as session:
+        report = session.send("/context")["result"]
+    assert f"**Model:** {alias}" in report
+    tokens = next(line for line in report.splitlines() if line.startswith("**Tokens:**"))
+    assert f" / {window} " in tokens, tokens
+
+
 def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp_path):
     # The child checks launch settings before replacing itself with the real disabled router.
     script = (
@@ -1061,8 +1145,6 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
 
 
 def test_native_language_reload_updates_parent_context_once(native_binary, tmp_path):
-    from test_credentials import _STREAM
-
     requests = []
 
     class Handler(BaseHTTPRequestHandler):

@@ -103,15 +103,21 @@ def effective_environment(
     return effective
 
 
-def set_session_environment(values: Mapping[str, str]) -> bool:
+def set_session_environment(
+    values: Mapping[str, str], *, env: Mapping[str, str] | None = None
+) -> bool:
     """Atomically replace changed session overrides."""
-    path = session_env_path()
+    path = session_env_path(env)
+    permission_help = (
+        "Request native command approval to retry this command."
+        if env is None
+        else "Check that the launcher can access this session's controls."
+    )
     try:
         current = _read_with_retry(path)
     except PermissionError as exc:
         raise RuntimeError(
-            f"Permission denied reading Smart Router session controls at {path}. "
-            "Request native command approval to retry this command."
+            f"Permission denied reading Smart Router session controls at {path}. {permission_help}"
         ) from exc
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
@@ -128,7 +134,7 @@ def set_session_environment(values: Mapping[str, str]) -> bool:
         ):
             raise RuntimeError(
                 f"Permission denied writing Smart Router session controls at {path}. "
-                "Request native command approval to retry this command."
+                f"{permission_help}"
             ) from exc
         raise RuntimeError(
             f"Error writing Smart Router session controls at {path}: {cause or exc}"

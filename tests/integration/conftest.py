@@ -19,7 +19,7 @@ from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
-AGENT_BINARIES = {"antigravity": "agy"}
+AGENT_BINARIES = {"antigravity": "agy", "vscode": "code"}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -31,7 +31,7 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity", "vscode")
         ):
             deselected.append(item)
         else:
@@ -319,6 +319,22 @@ def antigravity_provider_models():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_relayed_provider():
+    return os.environ["UG_INTEGRATION_CODEX_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_access_token():
+    # Real Codex access token (ChatGPT Business/Enterprise admin console); the relayed launch needs
+    # it to run headless. Missing means the launch would fall back to a browser login, so fail
+    # rather than silently pass a degraded run — the suite has no capability skips.
+    token = os.environ.get("UG_INTEGRATION_CODEX_ACCESS_TOKEN", "").strip()
+    if not token:
+        pytest.fail("Set CODEX_ACCESS_TOKEN (a Codex access token) to run the relayed CUJ.")
+    return token
 
 
 @pytest.fixture(scope="session")

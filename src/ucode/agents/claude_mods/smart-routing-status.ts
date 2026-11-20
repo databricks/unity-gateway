@@ -1,4 +1,5 @@
 import type { On } from 'claude-code'
+import { autoTarget, type AutoPicker } from './auto-model.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -58,7 +59,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
 }
 
 // isReplaced lets another above-prompt row take the band's place while it shows.
-export const registerStatusBand = (on: On, isReplaced: () => boolean = () => false): void => {
+export const registerStatusBand = (on: On, auto?: AutoPicker, isReplaced: () => boolean = () => false): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   // The prompt hint row always carries the state as a plain tail, so it stays visible after
@@ -72,7 +73,13 @@ export const registerStatusBand = (on: On, isReplaced: () => boolean = () => fal
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    if (auto) {
+      // The static Auto row is the default variant's alias; name the session's main model.
+      const target = autoTarget(auto, await $.session.model())
+      const main = target === undefined ? undefined : auto.models.find((row) => row.model === target)
+      if (main) state = `Auto (${main.label}) · ${state}`
+    }
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
@@ -92,7 +99,7 @@ export const registerStatusBand = (on: On, isReplaced: () => boolean = () => fal
           italic: true,
           children: ['— ' + (firstPrompt ? 'routing first prompt + subagents' : 'routing subagents')],
         })
-      : Text({ dimColor: true, children: ["— Reenable with '/smart-router on'"] })
+      : Text({ dimColor: true, children: [auto ? "— Reenable with Auto in '/model'" : "— Reenable with '/smart-router on'"] })
 
     const line = Box({
       flexDirection: 'row',

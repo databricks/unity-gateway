@@ -123,17 +123,37 @@ def test_periodic_export_uses_60_seconds_and_stops(monkeypatch):
         }
     )
     uploaded = []
-    monkeypatch.setattr(exporter, "export_batch", uploaded.append)
     waits = []
+    real_wait = buffer.wake.wait
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb", buffering=0) as reader, os.fdopen(write_fd, "wb") as writer:
 
-    def wait(seconds):
-        waits.append(seconds)
-        buffer.closed.set()
+        def upload(batch):
+            uploaded.append((batch, buffer.closed.is_set(), writer.closed))
+            writer.close()
 
-    monkeypatch.setattr(buffer.wake, "wait", wait)
-    buffer.run(io.BytesIO())
-    assert waits == [60]
-    assert uploaded[0]["observations"] == [("ug_usage_duration_ms", 12, {})]
+        def wait(seconds):
+            waits.append(seconds)
+            if len(waits) == 1:
+                # Expire the interval while stdin remains open, without sleeping a minute.
+                assert not buffer.closed.is_set()
+                assert not buffer.wake.is_set()
+                return False
+            assert real_wait(2), "exporter did not stop after EOF"
+            return True
+
+        monkeypatch.setattr(exporter, "export_batch", upload)
+        monkeypatch.setattr(buffer.wake, "wait", wait)
+        try:
+            buffer.run(reader)
+        finally:
+            writer.close()
+            assert buffer.closed.wait(2), "stdin reader did not stop"
+    assert waits == [60, 60]
+    assert len(uploaded) == 1
+    batch, reader_closed, writer_closed = uploaded[0]
+    assert not reader_closed and not writer_closed
+    assert batch["observations"] == [("ug_usage_duration_ms", 12, {})]
 
 
 @pytest.fixture
@@ -147,6 +167,35 @@ def reporter_pipe():
             yield child, reader
         finally:
             child.stdin.close()
+
+
+def test_reporter_replacement_closes_pipe_under_lock_but_spawns_outside(
+    metrics_recorder, reporter_pipe, monkeypatch
+):
+    runtime = metrics_recorder
+    closed_under_lock = []
+    spawned_under_lock = []
+
+    class RetiredPipe(io.BytesIO):
+        def close(self):
+            closed_under_lock.append(runtime.lock.locked())
+            super().close()
+
+    runtime.reporter = Mock(stdin=RetiredPipe())
+    runtime.reporter.poll.return_value = 0
+    child, _ = reporter_pipe
+
+    def spawn():
+        spawned_under_lock.append(runtime.lock.locked())
+        runtime.stop.set()
+        return child
+
+    monkeypatch.setattr(exporter, "start_exporter", spawn)
+    runtime._export_loop()
+    assert closed_under_lock == [True]
+    assert spawned_under_lock == [False]
+    assert runtime.reporter is child
+    assert child.stdin.closed
 
 
 def fill_pipe(child):
