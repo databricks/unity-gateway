@@ -63,6 +63,13 @@ const shortModel = (model: string): string => {
 // The selected model is only a prediction until the spawn receipt names the launched one.
 const differs = (selected: string, launched: string): boolean =>
   canonicalModel(launched) !== canonicalModel(selected)
+// The launch line of a card: the launched model, flagged when it is not the selected one.
+const launchNote = (selected: string, launched?: string): string => {
+  if (!launched) return 'Launch model not reported; labels cannot be verified'
+  return differs(selected, launched)
+    ? `⚠ Launched Model: ${shortModel(launched)} (differs from the selected model)`
+    : `Launched Model: ${shortModel(launched)}`
+}
 // Flags a launch that is not the model the heading named.
 const mismatchNote = (selected: string, launched: string): string =>
   differs(selected, launched) ? ` ⚠ heading said ${shortModel(selected)}` : ''
@@ -135,9 +142,7 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
     const launched = record.spawned.model
     lines.push(Box({ paddingLeft: reasonPadding, children: [Text({
       color: launched && !differs(record.model, launched) ? undefined : 'red',
-      children: [!launched ? 'Launch model not reported; labels cannot be verified'
-        : differs(record.model, launched) ? `⚠ Launched Model: ${shortModel(launched)} (differs from the selected model)`
-        : `Launched Model: ${shortModel(launched)}`],
+      children: [launchNote(record.model, launched)],
     })] }))
   }
   if (record.rationale) {
@@ -276,6 +281,9 @@ async function routeCall($: any, e: any): Promise<void> {
 export async function* routeAgentStream($: any, step: any, source: AsyncGenerator<any, any>): AsyncGenerator<any, any> {
   // Rewriting the reply would void a server-side auto-mode verdict, so that review keeps its input.
   if (await $.serverReview()) return yield* source
+  // Nothing to head when routing is off, so the reply streams untouched.
+  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length
+      || (routing.autoModels && !await $.routingEnabled())) return yield* source
   const held: any[] = []
   const calls = new Map<number, { tool: string; id: string; json: string }>()
   const release = async function* (): AsyncGenerator<any> {
