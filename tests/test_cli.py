@@ -80,6 +80,11 @@ def no_state_writes():
 def no_gateway_catalog_fetch(monkeypatch):
     """Keep plain Claude launches off real auth and the network; an empty catalog falls back."""
     monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    # The launch's speculation fetches on a background thread; stub it too so no test
+    # shells out to a real `databricks auth token` from there.
+    monkeypatch.setattr(
+        cli_mod, "fetch_databricks_token_untimed", lambda *_args, **_kwargs: "token"
+    )
     monkeypatch.setattr(
         cli_mod,
         "list_anthropic_model_catalog",
@@ -10598,6 +10603,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         catalog_error_once: str | None = None,
         token_error: Exception | None = None,
         configure_returns: dict | None = None,
+        configure_hook: object | None = None,
+        real_speculation_fetch: bool = False,
     ):
         state = dict(MINIMAL_STATE)
         catalog_started = threading.Event()
@@ -10628,6 +10635,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
                 assert catalog_started.wait(
                     TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS
                 ), "picker catalog did not start during configure"
+            if configure_hook is not None:
+                configure_hook()
             return {**state, **(configure_returns or {})}
 
         configure = MagicMock(side_effect=lambda _tool, configured, *_args, **_kwargs: configured)
@@ -10646,7 +10655,8 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
                 raise token_error
             return "token"
 
-        monkeypatch.setattr(cli_mod, "fetch_databricks_token_untimed", fake_token)
+        if not real_speculation_fetch:
+            monkeypatch.setattr(cli_mod, "fetch_databricks_token_untimed", fake_token)
         monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
         monkeypatch.setattr(
             cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, relayed)
@@ -10688,12 +10698,6 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert "main.default.claude-sonnet-5" in (
             calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
-        # The undecorated speculative fetch stays out of the token-fetch histogram: main's
-        # own timed get_databricks_token call remains the launch's single duration record.
-        assert (
-            metric_observations(metrics_recorder, metrics_mod.DATABRICKS_TOKEN_FETCH_DURATION_MS)
-            == []
-        )
 
     def test_scoped_picker_catalog_starts_during_configure(self, monkeypatch):
         managed = {
@@ -10706,6 +10710,61 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert calls["result"].exit_code == 0, calls["result"].output
         assert len(calls["catalog_calls"]) == 1
         assert calls["catalog_calls"][0][2] == {"parent_schema": "main.default"}
+
+    def test_speculated_fetch_is_reported_as_the_launchs_cache_miss(
+        self, monkeypatch, metrics_recorder
+    ):
+        """Configure's timed token fetch waits on the speculation's inflight fetch; it must
+        report the real CLI fetch as the launch's cache miss with that fetch's duration,
+        not as a cache hit, and record no second duration sample."""
+        db_mod.clear_databricks_token_cache()
+        cli_fetch_started = threading.Event()
+
+        def fake_cli_run(cmd, **_kwargs):
+            cli_fetch_started.set()
+            time.sleep(0.2)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"access_token": "token", "expires_in": 3600}), ""
+            )
+
+        monkeypatch.setattr(db_mod, "run", fake_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda _workspace: None)
+        monkeypatch.setattr(
+            "os.environ",
+            {k: v for k, v in os.environ.items() if not k.startswith("DATABRICKS_BEARER")},
+        )
+        # Run the real timed wrapper and the real memo/single-flight machinery; only the CLI
+        # subprocess is faked. configure's own fetch below is the production one at
+        # `configure_shared_state`'s gateway probe, which overlaps the speculation.
+        monkeypatch.setattr(cli_mod, "get_databricks_token", db_mod.get_databricks_token)
+        monkeypatch.setattr(
+            cli_mod, "fetch_databricks_token_untimed", db_mod.fetch_databricks_token_untimed
+        )
+
+        def configure_hook():
+            assert cli_fetch_started.wait(self.WAIT_SECONDS), "speculation never fetched"
+            assert cli_mod.get_databricks_token(MINIMAL_STATE["workspace"], None) == "token"
+
+        try:
+            calls = self._invoke_with_overlapped_catalog(
+                monkeypatch,
+                managed=None,
+                expect_catalog_start=False,
+                configure_hook=configure_hook,
+                real_speculation_fetch=True,
+            )
+        finally:
+            db_mod.clear_databricks_token_cache()
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+        [(value, labels)] = metric_observations(
+            metrics_recorder, metrics_mod.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert labels["in_process_cache_hit"] is False
+        assert labels["token_source"] == "cli"
+        assert value >= 100
 
     @pytest.mark.parametrize(
         "configure_returns",

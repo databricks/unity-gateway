@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
@@ -1862,6 +1862,10 @@ class _MemoizedToken:
     error: str | None
     valid_until: float
     wall_valid_until: float
+    # Duration of the real fetch that populated this memo when no timed observation
+    # reported it (an untimed caller ran the fetch); the first timed caller that
+    # reuses the token reports it and the field is cleared.
+    unreported_fetch_ms: float | None = None
 
 
 _TOKEN_MEMO: dict[tuple[str, str | None], _MemoizedToken] = {}
@@ -1941,6 +1945,7 @@ def _remember_token(
     lifetime_s: float | None,
     *,
     _token_epoch: int | None = None,
+    unreported_fetch_ms: float | None = None,
 ) -> None:
     ttl = (
         lifetime_s - _TOKEN_MEMO_EXPIRY_MARGIN_S
@@ -1956,7 +1961,22 @@ def _remember_token(
             # token behind for subsequent non-forced callers.
             _TOKEN_MEMO.pop(key, None)
             return
-        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl, time.time() + ttl)
+        _TOKEN_MEMO[key] = _MemoizedToken(
+            token, None, time.monotonic() + ttl, time.time() + ttl, unreported_fetch_ms
+        )
+
+
+def _take_unreported_fetch_duration(
+    key: tuple[str, str | None], entry: _MemoizedToken
+) -> float | None:
+    """Return the memo entry's unreported fetch duration once, clearing it so the
+    first timed caller that reuses an untimed fetch's token reports that fetch's
+    duration as the launch's cache miss and later callers report plain hits."""
+    with _TOKEN_MEMO_LOCK:
+        if _TOKEN_MEMO.get(key) is not entry or entry.unreported_fetch_ms is None:
+            return None
+        _TOKEN_MEMO[key] = replace(entry, unreported_fetch_ms=None)
+        return entry.unreported_fetch_ms
 
 
 def _remember_token_failure(
@@ -2062,6 +2082,7 @@ def _get_databricks_token_for_profile(
     force_refresh: bool,
     browser_login: bool,
     allow_reauth: bool = True,
+    untimed: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -2073,7 +2094,8 @@ def _get_databricks_token_for_profile(
                 f"profile={profile or '<none>'}",
             )
             if memoized.token:
-                metrics.annotate(in_process_cache_hit=True)
+                if not untimed:
+                    _annotate_fetched_token(memo_key, memoized)
                 return memoized.token
             if not browser_login:
                 raise RuntimeError(memoized.error)
@@ -2090,7 +2112,8 @@ def _get_databricks_token_for_profile(
                     f"profile={profile or '<none>'}",
                 )
                 if memoized.token:
-                    metrics.annotate(in_process_cache_hit=True)
+                    if not untimed:
+                        _annotate_fetched_token(memo_key, memoized)
                     return memoized.token
                 if not browser_login:
                     raise RuntimeError(memoized.error)
@@ -2102,7 +2125,19 @@ def _get_databricks_token_for_profile(
             browser_login=browser_login,
             allow_reauth=allow_reauth,
             token_epoch=token_epoch,
+            time_fetch=untimed,
         )
+
+
+def _annotate_fetched_token(memo_key: tuple[str, str | None], memoized: _MemoizedToken) -> None:
+    """Label the caller's timed observation for a token reused from the memo. A token
+    minted by an untimed caller (the launch's speculation) reports that fetch's real
+    duration as the cache miss instead of this call's near-instant cache hit."""
+    duration_ms = _take_unreported_fetch_duration(memo_key, memoized)
+    if duration_ms is None:
+        metrics.annotate(in_process_cache_hit=True)
+    else:
+        metrics.annotate(awaited_duration_ms=round(duration_ms))
 
 
 def _fetch_databricks_token_for_profile(
@@ -2113,6 +2148,7 @@ def _fetch_databricks_token_for_profile(
     browser_login: bool,
     allow_reauth: bool = True,
     token_epoch: int,
+    time_fetch: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -2140,6 +2176,7 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
+    fetch_started = time.perf_counter() if time_fetch else None
 
     def _fetch() -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
@@ -2249,7 +2286,15 @@ def _fetch_databricks_token_for_profile(
             # failure: configure's own fetch then never attempts `auth login --no-browser`.
             _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
         raise RuntimeError(error)
-    _remember_token(memo_key, token, lifetime_s, _token_epoch=token_epoch)
+    _remember_token(
+        memo_key,
+        token,
+        lifetime_s,
+        _token_epoch=token_epoch,
+        unreported_fetch_ms=(
+            (time.perf_counter() - fetch_started) * 1000 if fetch_started is not None else None
+        ),
+    )
     return token
 
 
@@ -2265,6 +2310,25 @@ def fetch_databricks_token_untimed(
     :func:`get_databricks_token` times and reports, for callers that must
     stay out of the token-fetch metrics (a failed best-effort fetch is
     reported by its own handler, not as a hard failure here)."""
+    return _fetch_databricks_token(
+        workspace,
+        profile,
+        force_refresh=force_refresh,
+        browser_login=browser_login,
+        allow_reauth=allow_reauth,
+        untimed=True,
+    )
+
+
+def _fetch_databricks_token(
+    workspace: str,
+    profile: str | None,
+    *,
+    force_refresh: bool,
+    browser_login: bool,
+    allow_reauth: bool,
+    untimed: bool,
+) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
     # bearer directly. Used by the e2e job, where the protected runner has
@@ -2299,6 +2363,7 @@ def fetch_databricks_token_untimed(
         force_refresh=force_refresh,
         browser_login=browser_login,
         allow_reauth=allow_reauth,
+        untimed=untimed,
     )
 
     metrics.bind(workspace, token)
@@ -2320,14 +2385,16 @@ def get_databricks_token(
 
     Best-effort callers that handle their own failures call
     :func:`fetch_databricks_token_untimed` instead, so a recovered speculation is not
-    counted as a hard token-fetch failure and adds no second duration
-    observation."""
-    return fetch_databricks_token_untimed(
+    counted as a hard token-fetch failure and reports no duration observation of its
+    own; the timed caller that reuses its token reports the fetch's duration as the
+    launch's cache miss."""
+    return _fetch_databricks_token(
         workspace,
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
         allow_reauth=allow_reauth,
+        untimed=False,
     )
 
 

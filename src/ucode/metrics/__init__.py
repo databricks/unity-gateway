@@ -29,6 +29,10 @@ COMMAND_OPERATION = "command"
 UG_CLI_ERROR = "ug_cli_error"
 DATABRICKS_TOKEN_FETCH_OPERATION = "databricks_token_fetch"
 DATABRICKS_TOKEN_FETCH_DURATION_MS = f"{DATABRICKS_TOKEN_FETCH_OPERATION}_duration_ms"
+# Annotate-only label: measure records it as the operation's duration instead of the
+# wall time around the call, so a caller that awaited another thread's fetch reports
+# that fetch's duration (see the Databricks token fetch's in-process single flight).
+AWAITED_DURATION_MS = "awaited_duration_ms"
 DATABRICKS_LOGIN_OPERATION = "databricks_login"
 # The api_operation label for the gateway's model listing (`/models`).
 MODELS_LIST_OPERATION = "models_list"
@@ -106,7 +110,7 @@ BOOL_LABELS = frozenset(
         "continued_with_fallback",
     }
 )
-INT_LABELS = frozenset({"http_status_code", "attempt", "process_exit_code"})
+INT_LABELS = frozenset({"http_status_code", "attempt", "process_exit_code", AWAITED_DURATION_MS})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.+\-]{1,128}\Z")
 _scope: ContextVar[dict[str, Any] | None] = ContextVar("ug_metric_scope", default=None)
 _runtime: Recorder | None = None
@@ -509,7 +513,15 @@ def measure(
     finally:
         with suppress(Exception):
             if scope is not None and started is not None:
-                record(name, (time.perf_counter() - started) * 1000, workspace=workspace, **values)
+                awaited = values.pop(AWAITED_DURATION_MS, None)
+                record(
+                    name,
+                    awaited
+                    if isinstance(awaited, (int, float))
+                    else (time.perf_counter() - started) * 1000,
+                    workspace=workspace,
+                    **values,
+                )
         with suppress(Exception):
             if scope is not None:
                 _scope.reset(scope)
