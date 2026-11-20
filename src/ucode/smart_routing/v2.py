@@ -18,7 +18,6 @@ from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode import claude_answer_delivery, config_io, metrics
-from ucode.agents.args import has_explicit_model_arg
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -774,6 +773,7 @@ def launch_claude(
     default_model: str | None = None,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
+    from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
 
@@ -1094,6 +1094,8 @@ def launch_codex(
     launch_config: dict | None = None,
     available_models: list[str] | None = None,
 ) -> NoReturn:
+    from ucode.agents.args import has_explicit_model_arg
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(

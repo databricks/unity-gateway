@@ -1334,6 +1334,8 @@ utility-subcommand and remote-attachment exclusion;
 these are not live coverage.
 Those component model-forwarding cases use a supported Codex version independent
 of the test runner's installed binaries.
+`../test_smart_router.py` checks orchestrator hook activation in fresh Python
+processes for both agents; this covers hook startup without live inference.
 The classifier reuses UG's model/config syntax; other native options with separate
 values retain their prior unrouted behavior rather than guessing their arity.
 
