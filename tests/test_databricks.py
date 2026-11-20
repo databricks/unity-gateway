@@ -5801,9 +5801,38 @@ class TestRunDatabricksCliInstaller:
 
 
 class TestHttpGetJsonTimeout:
-    """httpx read timeouts surface through the pooled path as a `network error:` reason —
-    retried within the caller's budget and never raised, or they would escape the best-effort
-    MCP discovery flow and crash the command."""
+    """Read timeouts — pooled httpx and urllib alike — surface as a `network error:` reason,
+    never raised, or they would escape the best-effort MCP discovery flow and crash the
+    command. urllib still runs for the python trust store and proxied setups."""
+
+    @staticmethod
+    def _urlopen_timeout(monkeypatch):
+        def raise_timeout(request, timeout=None):
+            raise TimeoutError("The read operation timed out")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+        monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: False)
+
+    def test_urllib_get_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        self._urlopen_timeout(monkeypatch)
+
+        payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok")
+
+        assert (payload, reason) == (None, "network error: The read operation timed out")
+
+    def test_urllib_post_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        self._urlopen_timeout(monkeypatch)
+
+        payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
+
+        assert (payload, reason) == (None, "network error: The read operation timed out")
+
+    def test_urllib_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        self._urlopen_timeout(monkeypatch)
+
+        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
+
+        assert (body, reason) == (None, "network error: The read operation timed out")
 
     def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
         import httpx
