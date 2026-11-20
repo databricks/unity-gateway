@@ -525,12 +525,14 @@ def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledRes
     if "connection" not in header_names:
         request_headers["Connection"] = "keep-alive"
     if "user-agent" not in header_names:
-        request_headers["User-Agent"] = f"Python-urllib/{urllib_request.__version__}"
+        # urllib's own default: '%d.%d' % sys.version_info[:2].
+        request_headers["User-Agent"] = f"Python-urllib/{sys.version_info[0]}.{sys.version_info[1]}"
     httpx_request = httpx.Request(
         request.get_method(),
         request.full_url,
         headers=request_headers,
-        content=request.data,
+        # The only Request built with data is `_http_send_json`'s, which sends bytes or None.
+        content=cast("bytes | None", request.data),
         extensions={"timeout": httpx.Timeout(timeout).as_dict()},
     )
     try:
@@ -543,7 +545,7 @@ def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledRes
             request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
         ) from exc
     except httpx.RequestError as exc:
-        pending = [exc]
+        pending: list[BaseException] = [exc]
         seen: set[int] = set()
         reason: BaseException = exc
         while pending:
