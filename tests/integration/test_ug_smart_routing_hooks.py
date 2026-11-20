@@ -1037,7 +1037,7 @@ def test_smart_router_managed_default_matches_codex_version_at_launch(
             )
             gate.send("n\r", "decline the required upgrade")
             gate.wait_for(lambda _: gate.ended, "blocked launch to exit")
-            gate.child.close(force=False)
+            gate.child.close()
             assert gate.child.exitstatus != 0
             assert "Codex smart routing requires Codex 0.171.0 or newer" in " ".join(
                 ANSI.sub("", "".join(gate.output)).split()
