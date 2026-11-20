@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.agents import antigravity
 from utils.desktop import desktop_config_library
 from utils.evidence import fresh_id
 from utils.harness import UserSession
@@ -145,7 +146,8 @@ def session(request, installed_binary):
                     user.env[key] = value
             user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         try:
-            yield user
+            with antigravity.record_requests(user):
+                yield user
         finally:
             try:
                 # Restore machine-level settings through the same public CLI that

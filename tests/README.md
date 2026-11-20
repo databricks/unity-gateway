@@ -346,7 +346,10 @@ search output. URL matching ignores surrounding Markdown emphasis and inline-cod
 while preserving paths, queries, fragments, and unformatted literal asterisks.
 These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
-the command fails or times out.
+the command fails or times out. Session teardown also saves Antigravity request URLs before
+cleanup when a task assertion fails. Offline checks in `test_integration_evidence.py` cover
+successful and failed assertions and sessions without native logs. These artifacts identify
+native request destinations, not gateway timing or timeout causality.
 
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are

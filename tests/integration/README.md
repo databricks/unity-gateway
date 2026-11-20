@@ -803,7 +803,11 @@ trust screens through visible choices, and reads the answer from a finished agen
 (type 15 on 1.4.9) in Antigravity's SQLite conversation store (`utils/agents/antigravity.py`); the
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
-TUI `/model` switch, and Windows (no Antigravity gateway build).
+TUI `/model` switch, and Windows (no Antigravity gateway build). Session teardown saves
+`antigravity-requests.json` from native logs before revert, including when a task assertion fails.
+Existing answer and model assertions still determine pass or fail. Offline checks in
+`../test_integration_evidence.py` verify archive retention after successful and failed assertions
+and omit archives for sessions without native logs; they do not identify a historical timeout cause.
 
 VS Code Copilot Chat has four live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
 no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
