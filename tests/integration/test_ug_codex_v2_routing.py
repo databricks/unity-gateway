@@ -41,7 +41,7 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     assert {model["slug"] for model in selected} == set(CODEX_NATIVE_CATALOG_MODELS)
     assert all(model.get("multi_agent_version") == "v2" for model in selected)
     for model in selected:
-        model["multi_agent_tools_in_code_mode"] = True
+        model["multi_agent_tools_in_code_mode"] = False
 
     codex_home = session.home / ".codex"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -76,9 +76,9 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
     "model_option", [None, "--model", "--model="], ids=["saved", "split", "equals"]
 )
 def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, model_option):
-    """Scenario: configure ug with a user-owned native v2 catalog that exposes tools
-    in code mode and an observer hook, then delegate one multiline file task through
-    code mode with subagent-only routing. Launch with
+    """Scenario: configure ug with a user-owned native v2 catalog that disables tools
+    in code mode and an observer hook, then delegate one multiline file task with
+    subagent-only routing. UG must expose the plaintext tool path at launch. Launch with
     the saved model or explicitly enable routing and forward either native model syntax.
 
     Expected: the native child and actual hook input contain the exact assignment,
@@ -92,8 +92,6 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace, mo
     assignment = task.prompt + '\nKeep this literal: café λ; "quotes", \\slashes, {braces}.'
     task_name = "ug_native_file"
     prompt = (
-        "Use code mode to call the native spawn_agent tool with a plaintext message; "
-        "do not call collaboration.spawn_agent directly. "
         f'Delegate to one native child with task_name "{task_name}". '
         "Set message to exactly the assignment between BEGIN and END, preserving the newline.\n"
         f"BEGIN\n{assignment}\nEND\n"

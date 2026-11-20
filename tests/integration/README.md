@@ -106,13 +106,12 @@ still require real routed work. Offline evidence checks
 reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
 
-Codex may persist an encrypted child assignment. Calculation journeys then correlate
-the original spawn ciphertext with the child's NEW_TASK receipt and require the audit's
-task-name fallback digest, while plaintext assignments require their full-text digest.
-The existing parent/child completion, selected model, and live decision checks still apply.
-The native v2 assignment journey explicitly uses code mode and separately requires
-plaintext at the hook and child. Its user-owned catalog explicitly exposes native tools
-in code mode; direct-only bundled settings are not a plaintext guarantee. Direct native calls may remain encrypted. Toggle
+Smart-routed Codex launches expose native collaboration tools through code mode in a
+session-owned catalog, retaining native protocols and the original user catalog.
+The native v2 assignment journey starts with code-mode tools disabled in that catalog
+and requires the full assignment at the hook and child, its audited digest, and actual
+completion on the selected model. Missing or encrypted assignments cannot produce a
+label-based routing decision. Toggle
 evidence accepts the exact guard rejection of a duplicate off call only after a
 successful off result; it still rejects an initial denial or any other failed call.
 

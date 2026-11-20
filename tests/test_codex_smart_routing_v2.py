@@ -31,7 +31,12 @@ def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
     source = tmp_path / "user.json"
     original = {
         "models": [
-            {"slug": "gpt-6-luna", "multi_agent_version": "v2", "future": {"x": 1}},
+            {
+                "slug": "gpt-6-luna",
+                "multi_agent_version": "v2",
+                "multi_agent_tools_in_code_mode": False,
+                "future": {"x": 1},
+            },
             {"slug": "glm-5-3-flash", "multi_agent_version": None},
             {"slug": "hidden-alias", "multi_agent_version": "v2", "visibility": "hide"},
         ]
@@ -39,10 +44,10 @@ def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
     source.write_text(json.dumps(original))
     before = source.read_bytes()
     output = tmp_path / "session.json"
-    assert v2._codex_plaintext_catalog("codex", str(source), [], output) == str(output)
+    assert v2._codex_routing_catalog("codex", str(source), [], output) == str(output)
     expected = json.loads(before)
-    expected["models"][0]["multi_agent_version"] = "v1"
-    expected["models"][2]["multi_agent_version"] = "v1"
+    for model in expected["models"]:
+        model["multi_agent_tools_in_code_mode"] = True
     assert json.loads(output.read_text()) == expected
     assert source.read_bytes() == before
 
@@ -56,14 +61,18 @@ def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path
 
     monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", prepare)
     output = tmp_path / "session.json"
-    v2._codex_plaintext_catalog("/native/codex", None, ["model-a"], output)
+    v2._codex_routing_catalog("/native/codex", None, ["model-a"], output)
     assert calls == [("/native/codex", ["model-a"])]
-    assert json.loads(output.read_text())["models"][0]["multi_agent_version"] == "v1"
+    assert json.loads(output.read_text())["models"][0] == {
+        "slug": "model-a",
+        "multi_agent_version": "v2",
+        "multi_agent_tools_in_code_mode": True,
+    }
 
 
 def test_plaintext_catalog_rejects_unreadable_source(tmp_path):
     with pytest.raises(RuntimeError, match="Cannot load the Codex model catalog"):
-        v2._codex_plaintext_catalog("codex", str(tmp_path / "missing"), [], tmp_path / "out")
+        v2._codex_routing_catalog("codex", str(tmp_path / "missing"), [], tmp_path / "out")
 
 
 def test_smart_routing_switch_message_is_boxed():
@@ -901,7 +910,14 @@ class TestCustomCatalogModels:
         session_catalog = Path(json.loads(catalog_override.split("=", 1)[1]))
         source_catalog = tmp_path / "cli.json"
         assert session_catalog != source_catalog
-        assert json.loads(session_catalog.read_text()) == json.loads(source_catalog.read_text())
+        expected = json.loads(source_catalog.read_text())
+        for model in expected["models"]:
+            model["multi_agent_tools_in_code_mode"] = True
+        assert json.loads(session_catalog.read_text()) == expected
+        assert all(
+            "multi_agent_tools_in_code_mode" not in row
+            for row in json.loads(source_catalog.read_text())["models"]
+        )
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override

@@ -9,15 +9,12 @@ update that leaves the client too old; explicit routing remains gated. Routing C
 These are component checks; the installed-version journeys are documented in the
 [integration guide](integration/README.md).
 
-Codex calculation routing evidence supports plaintext assignments and native encrypted
-delivery. Plaintext must match the audited assignment digest. For encrypted delivery,
-the original spawn's ciphertext must match the child's NEW_TASK receipt, and its task
-name must match the audited fallback digest. Component checks reject mismatched names,
-ciphertexts, missing delivery, and non-spawn calls. This does not establish plaintext
-routing for encrypted tasks; the dedicated native v2 assignment journey checks that separately.
-The encrypted-request matcher accepts the exact enabled-attribution suffix on a child
-task name, rejecting disabled and arbitrary suffixes. Toggle evidence still requires a
-successful state change; only an explicitly denied duplicate after that success is tolerated.
+Codex routing uses the full plaintext assignment and records its digest. Smart-routed
+launches expose native collaboration tools through code mode in a session-owned catalog,
+without changing the model's protocol or user catalog. The native v2 assignment journey
+starts with code-mode tools disabled in the user's catalog, then verifies the exact
+assignment reaches the router and child. Encrypted or missing assignments must never
+route on a task name: the hook leaves the caller's model unchanged and writes no decision.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.

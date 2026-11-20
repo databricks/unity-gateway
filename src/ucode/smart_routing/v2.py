@@ -641,7 +641,6 @@ def route_claude_subagent(
             provider,
             attribution_headers=attribution,
         ),
-        default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
     )
     routing_ms = round((time.monotonic() - started) * 1000)
@@ -1084,7 +1083,7 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
-def _codex_plaintext_catalog(
+def _codex_routing_catalog(
     binary: str, catalog_path: str | None, models: list[str], output: Path
 ) -> str:
     from ucode.agents.codex_catalog import prepare_codex_catalog
@@ -1097,10 +1096,9 @@ def _codex_plaintext_catalog(
     entries = catalog.get("models") if isinstance(catalog, dict) else None
     if not isinstance(entries, list) or not entries:
         raise RuntimeError("Cannot load the Codex model catalog for plaintext task routing.")
-    # Native v2 encrypts assignments before PreToolUse can send them to the router.
+    # Native model metadata otherwise overrides the launch's code-mode setting.
     for model in entries:
-        if model.get("multi_agent_version") == "v2":
-            model["multi_agent_version"] = "v1"
+        model["multi_agent_tools_in_code_mode"] = True
     write_json_file(output, catalog)
     return str(output)
 
@@ -1166,7 +1164,7 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
-    overlay["model_catalog_json"] = _codex_plaintext_catalog(
+    overlay["model_catalog_json"] = _codex_routing_catalog(
         binary,
         overlay.get("model_catalog_json"),
         list(dict.fromkeys([*available_models, start_model])),
