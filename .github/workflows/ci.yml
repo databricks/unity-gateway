@@ -219,8 +219,30 @@ jobs:
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
       - name: Install the shard's agent CLI
+        id: install-agent
         if: ${{ matrix.package != '' }}
-        run: npm install -g "$AGENT_PACKAGE"
+        run: |
+          {
+            date -u '+started_at=%Y-%m-%dT%H:%M:%SZ'
+            node --version
+            npm --version
+            printf 'package=%s\n' "$AGENT_PACKAGE"
+          } | tee "$RUNNER_TEMP/agent-install-context.txt"
+          npm install -g "$AGENT_PACKAGE" --loglevel=http --timing
+      - name: Record the installed agent dependency tree
+        if: ${{ always() && steps.install-agent.outcome != 'skipped' && matrix.package != '' }}
+        continue-on-error: true
+        run: npm ls --global --depth=0 --json > "$RUNNER_TEMP/agent-install-tree.json"
+      # Keep only package/version evidence; npm debug logs can contain credentials.
+      - name: Upload agent installation evidence
+        if: ${{ always() && steps.install-agent.outcome != 'skipped' && matrix.package != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: agent-install-${{ matrix.group }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/agent-install-context.txt
+            ${{ runner.temp }}/agent-install-tree.json
+          retention-days: 7
       - name: Install ug and test dependencies
         run: |
           uv lock
