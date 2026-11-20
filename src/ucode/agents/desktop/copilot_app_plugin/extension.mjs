@@ -6,6 +6,7 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { removeInBackground } from "./app-remove.mjs";
 import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
+import { createTracer } from "./app-tracing.mjs";
 import {
   buildProviders,
   createTokenSource,
@@ -56,16 +57,19 @@ if (config.remove) {
     say(hint);
     return true;
   });
+  const tracer = createTracer(config, tokenSource, { log: logSyncFailure });
   session = await joinSession({
     providers: buildProviders(config, bearerTokenProvider),
     models: config.models,
   });
   session.on((event) => {
+    tracer?.handle(event);
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();
     // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
     if (event.type === "session.error") say(config.loginHint);
   });
+  tracer?.replay(() => session.getEvents());
   const launched = await restart;
   if (launched) await tellRestart(session, launched);
 }
