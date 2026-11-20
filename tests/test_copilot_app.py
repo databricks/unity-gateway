@@ -41,6 +41,7 @@ class FakeApp:
         self.received: list[dict] = []
         self.handshakes: list[dict] = []
         self.busy = 0
+        self.busy_kinds: tuple[str, ...] = ("upsert",)
         self.fail: str | None = None
         self.drop: str | None = None
         self.before_reply: dict[str, list[dict]] = {}
@@ -64,7 +65,7 @@ class FakeApp:
         kind = message["type"]
         if self.fail == kind:
             return {"type": "error", "message": "refused", "request_id": message.get("request_id")}
-        if kind.startswith("upsert") and self.busy:
+        if kind.startswith(self.busy_kinds) and self.busy:
             self.busy -= 1
             return {"type": "error", "message": "provider update still in progress"}
         if kind == "get_healthcheck":
@@ -250,74 +251,81 @@ class TestDesiredProviders:
         )
 
 
-def test_registers_the_three_providers_with_their_models(app):
-    copilot_app.register(_app_providers())
-
-    providers = _by_name(app)
-    claude, gpt = providers["Databricks Claude"], providers["Databricks GPT"]
-    open_models = providers["Databricks Open Models"]
-    assert claude["settings"]["baseUrl"] == f"{WORKSPACE}/ai-gateway/anthropic"
-    assert gpt["settings"]["baseUrl"] == f"{WORKSPACE}/ai-gateway/mlflow/v1"
-    assert open_models["settings"]["wireApi"] == "completions"
-    # The app stores the placeholder in its own keychain slot; only the Claude provider needs one.
-    assert app.secrets == {claude["id"]: copilot_app.PLACEHOLDER_KEY}
-    rows = {m["providerId"]: m for m in app.models.values()}
-    assert rows[claude["id"]]["modelId"] == "claude-sonnet-4.6"
-    assert rows[claude["id"]]["wireModel"] == "system.ai.claude-sonnet-4-6"
-    assert rows[claude["id"]]["displayName"] == "Claude Sonnet 4.6"
-    assert rows[gpt["id"]]["modelId"] == "gpt-5-2"
-    assert rows[gpt["id"]]["wireModel"] == "system.ai.gpt-5-2"
-    assert rows[gpt["id"]]["wireApiOverride"] == "responses"
-    assert rows[open_models["id"]]["modelId"] == "glm-5"
-    assert rows[open_models["id"]]["wireModel"] == "system.ai.glm-5"
-    assert "wireApiOverride" not in rows[open_models["id"]]
-    assert len(app.models) == 3
-    assert all("Origin" not in headers for headers in app.handshakes)
+def seed(app, providers):
+    """Puts ``providers`` in the fake app the way the plugin writes them."""
+    for rows in (provider.rows() for provider in providers):
+        app.providers[rows.provider["id"]] = {
+            **rows.provider,
+            "hasSecret": rows.secret is not None,
+        }
+        for model in rows.models:
+            app.models[model["id"]] = dict(model)
 
 
-def test_registering_again_updates_in_place_without_resending_the_key(app):
-    copilot_app.register(_app_providers())
-    claude_id = _by_name(app)["Databricks Claude"]["id"]
-    app.received.clear()
+class TestPluginRows:
+    def test_the_plugin_writes_the_app_rows(self):
+        desired = copilot_app.desired_providers(WORKSPACE, CATALOG)
+        rows = desired.plugin_app
 
-    copilot_app.register(_app_providers(workspace="https://other.cloud.databricks.com"))
+        assert [r.provider["id"] for r in rows] == [p.id for p in desired.plugin]
+        for provider_rows, provider in zip(rows, desired.app, strict=True):
+            assert provider_rows.provider == {
+                "id": provider.id,
+                "name": provider.name,
+                "kind": provider.kind,
+                "settings": provider.settings,
+            }
+            assert provider_rows.secret == provider.secret
+            assert [
+                (m["id"], m["providerId"], m["modelId"], m["wireModel"])
+                for m in provider_rows.models
+            ] == [
+                (
+                    provider.model_row_id(row["modelId"]),
+                    provider.id,
+                    row["modelId"],
+                    row["wireModel"],
+                )
+                for row in provider.models
+            ]
+        assert set(copilot_app.OWNED_PROVIDER_IDS) >= {r.provider["id"] for r in rows}
+        assert len(copilot_app.OWNED_PROVIDER_IDS) == 3
 
-    assert _by_name(app)["Databricks Claude"]["id"] == claude_id
-    assert all("secret" not in message for message in app.sent("upsert_model_provider"))
-    assert _by_name(app)["Databricks Claude"]["settings"]["baseUrl"] == (
-        "https://other.cloud.databricks.com/ai-gateway/anthropic"
-    )
+    def test_the_plugin_rows_and_the_picker_rows_agree(self):
+        desired = copilot_app.desired_providers(
+            WORKSPACE,
+            [
+                *CATALOG,
+                CopilotModel("system.ai.gpt-6", WIRE_RESPONSES, listed_limits=(922_000, 128_000)),
+            ],
+        )
+        for plugin_provider, provider_rows in zip(desired.plugin, desired.plugin_app, strict=True):
+            for model, row in zip(plugin_provider.models, provider_rows.models, strict=True):
+                assert (model.model_id, model.wire_model, model.name) == (
+                    row["modelId"],
+                    row["wireModel"],
+                    row["displayName"],
+                )
+                assert model.vision == row["supportsVision"]
+                assert model.limits == (
+                    (row["maxPromptTokens"], row["maxOutputTokens"])
+                    if "maxPromptTokens" in row
+                    else None
+                )
+        gpt = {m.model_id: m for m in desired.plugin[1].models}
+        assert gpt["gpt-6"].limits == (794_000, 128_000)
 
+    def test_only_chat_completions_models_turn_off_reasoning_effort(self):
+        claude, gpt, open_models = copilot_app.desired_providers(WORKSPACE, CATALOG).plugin
 
-def test_a_catalog_change_drops_ugs_stale_providers_and_models(app):
-    app.providers["mine"] = {"id": "mine", "name": "Mine", "kind": "custom"}
-    copilot_app.register(_app_providers())
-
-    copilot_app.register(
-        _app_providers([CATALOG[1], CopilotModel("system.ai.gpt-6", WIRE_RESPONSES)])
-    )
-
-    assert sorted(app.providers) == sorted(["mine", _by_name(app)["Databricks GPT"]["id"]])
-    assert sorted(m["modelId"] for m in app.models.values()) == ["gpt-5-2", "gpt-6"]
-
-    copilot_app.register(_app_providers(CATALOG[2:]))
-
-    assert [m["modelId"] for m in app.models.values()] == ["glm-5"]
-
-
-def test_a_row_the_user_added_to_ugs_provider_is_replaced(app):
-    copilot_app.register(_app_providers())
-    claude = _by_name(app)["Databricks Claude"]
-    app.models["user-row"] = {"id": "user-row", "providerId": claude["id"], "modelId": "x"}
-
-    copilot_app.register(_app_providers())
-
-    assert "user-row" not in app.models
+        assert [m.reasoning_effort for m in open_models.models] == [False]
+        assert [m.reasoning_effort for m in (*claude.models, *gpt.models)] == [None, None]
+        assert [m.vision for m in claude.models] == [True]
 
 
 def test_unregister_deletes_only_ugs_providers(app):
     app.providers["mine"] = {"id": "mine", "name": "Databricks Claude", "kind": "anthropic"}
-    copilot_app.register(_app_providers())
+    seed(app, _app_providers())
     assert len(app.providers) == 4
 
     assert copilot_app.unregister() is True
@@ -325,6 +333,7 @@ def test_unregister_deletes_only_ugs_providers(app):
     assert list(app.providers) == ["mine"]
     assert app.models == {}
     assert copilot_app.unregister() is False
+    assert all("Origin" not in headers for headers in app.handshakes)
 
 
 class TestStatus:
@@ -332,7 +341,7 @@ class TestStatus:
         providers = _app_providers()
         assert copilot_app.status(providers) == "not_registered"
 
-        copilot_app.register(providers)
+        seed(app, providers)
         assert copilot_app.status(providers) == "registered"
         assert copilot_app.status(_app_providers(CATALOG[:1])) == "outdated"
 
@@ -341,6 +350,21 @@ class TestStatus:
 
         copilot_app.unregister()
         assert copilot_app.status(providers) == "not_registered"
+
+    def test_a_row_the_user_added_counts_as_outdated(self, app):
+        providers = _app_providers()
+        seed(app, providers)
+        claude = providers[0].id
+        app.models["user-row"] = {"id": "user-row", "providerId": claude, "modelId": "x"}
+
+        assert copilot_app.status(providers) == "outdated"
+
+    def test_a_listed_model_without_an_id_is_ignored(self, app):
+        providers = _app_providers()
+        seed(app, providers)
+        app.models["odd"] = {"providerId": providers[0].id, "modelId": "claude-odd"}
+
+        assert copilot_app.status(providers) == "registered"
 
     def test_a_closed_app_is_not_running(self, tmp_path, monkeypatch):
         monkeypatch.setenv("COPILOT_HOME", str(tmp_path / ".copilot"))
@@ -354,18 +378,20 @@ class TestStatus:
 
 
 def test_retries_while_the_app_applies_another_change(app):
+    seed(app, _app_providers())
     app.busy = 2
+    app.busy_kinds = ("delete_model_provider",)
 
-    copilot_app.register(_app_providers())
+    assert copilot_app.unregister() is True
+    assert app.providers == {}
 
-    assert len(app.providers) == 3
 
+def test_a_refusal_stops_the_unregister(app):
+    seed(app, _app_providers())
+    app.fail = "delete_model_provider"
 
-def test_a_refusal_stops_the_registration(app):
-    app.fail = "upsert_provider_model"
-
-    with pytest.raises(copilot_app.CopilotAppError, match="refused upsert_provider_model"):
-        copilot_app.register(_app_providers())
+    with pytest.raises(copilot_app.CopilotAppError, match="refused delete_model_provider"):
+        copilot_app.unregister()
 
 
 def _healthcheck(version, **fields):
@@ -373,7 +399,8 @@ def _healthcheck(version, **fields):
 
 
 def test_every_request_carries_a_request_id(app):
-    copilot_app.register(_app_providers())
+    seed(app, _app_providers())
+    copilot_app.unregister()
 
     ids = [message.get("request_id") for message in app.received]
     assert all(ids)
@@ -387,60 +414,48 @@ def test_every_request_carries_a_request_id(app):
 )
 def test_a_reply_not_for_this_request_is_skipped(app, capsys, stray):
     app.before_reply["get_healthcheck"] = [stray]
+    seed(app, _app_providers())
 
-    copilot_app.register(_app_providers())
-
+    assert copilot_app.unregister() is True
     assert "hasn't been verified" not in capsys.readouterr().out
-    assert len(app.providers) == 3
 
 
 def test_an_error_for_another_request_is_skipped(app):
     app.before_reply["get_healthcheck"] = [
         {"type": "error", "message": "boom", "request_id": "ug-someone-else"}
     ]
+    seed(app, _app_providers())
 
-    copilot_app.register(_app_providers())
-
-    assert len(app.providers) == 3
+    assert copilot_app.unregister() is True
 
 
 def test_an_error_without_a_request_id_answers_the_pending_request(app):
     app.before_reply["get_healthcheck"] = [{"type": "error", "message": "Invalid message format"}]
 
     with pytest.raises(copilot_app.CopilotAppError, match="Invalid message format"):
-        copilot_app.register(_app_providers())
+        copilot_app.unregister()
 
 
-def test_an_app_that_quits_mid_registration_is_not_running(app):
-    app.drop = "upsert_provider_model"
+def test_an_app_that_quits_mid_unregister_is_not_running(app):
+    seed(app, _app_providers())
+    app.drop = "delete_model_provider"
 
     with pytest.raises(copilot_app.CopilotAppNotRunning):
-        copilot_app.register(_app_providers())
+        copilot_app.unregister()
 
 
-def test_a_listed_model_without_an_id_is_left_alone(app):
-    copilot_app.register(_app_providers())
-    claude = _by_name(app)["Databricks Claude"]["id"]
-    app.models["odd"] = {"providerId": claude, "modelId": "claude-odd"}
-
-    copilot_app.register(_app_providers())
-
-    assert "odd" in app.models
-
-
-def test_an_unknown_app_version_warns_and_still_registers(app, capsys):
+def test_an_unknown_app_version_warns_and_continues(app, capsys):
     app.version = "9.0.0"
+    seed(app, _app_providers())
 
-    copilot_app.register(_app_providers())
-
+    assert copilot_app.unregister() is True
     assert "GitHub Copilot app 9.0.0 hasn't been verified with ug" in " ".join(
         capsys.readouterr().out.split()
     )
-    assert len(app.providers) == 3
 
 
-def test_a_verified_app_version_registers_quietly(app, capsys):
-    copilot_app.register(_app_providers())
+def test_a_verified_app_version_is_quiet(app, capsys):
+    copilot_app.unregister()
 
     assert "hasn't been verified" not in capsys.readouterr().out
 
@@ -450,7 +465,7 @@ def test_a_closed_app_is_not_running(tmp_path, monkeypatch):
     monkeypatch.setenv("COPILOT_HOME", str(home))
 
     with pytest.raises(copilot_app.CopilotAppNotRunning):
-        copilot_app.register(_app_providers())
+        copilot_app.unregister()
 
     # The app leaves its run files behind when it exits.
     (home / "run").mkdir(parents=True)
@@ -464,4 +479,4 @@ def test_a_rejected_token_is_an_app_error(app):
     (copilot_app.copilot_home() / "run" / "ws.token").write_text("wrong\n4242\n")
 
     with pytest.raises(copilot_app.CopilotAppError, match="refused ug"):
-        copilot_app.register(_app_providers())
+        copilot_app.unregister()

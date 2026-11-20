@@ -1,11 +1,12 @@
 """Registers ug's model providers in the GitHub Copilot desktop app.
 
 The app lists models in its picker only for providers written through the local WebSocket API its
-own window uses. The app must be running: it publishes the port and a per-launch token in
-``~/.copilot/run/``. ug's Copilot plugin (``ucode.copilot_app_plugin``) re-supplies the same
-provider and model ids in every session and serves them from the AI Gateway with a fresh token, so
-both come from :func:`desired_providers`. The providers have fixed ids, so registering again
-updates them in place and revert finds them without any state.
+own window uses. ug's Copilot plugin (``ucode.copilot_app_plugin``) writes them there whenever the
+app runs, then re-supplies the same provider and model ids in every session and serves them from
+the AI Gateway, so both come from :func:`desired_providers`. This module also talks to the running
+app directly, to check the rows and to delete them at revert. The app publishes the port and a
+per-launch token in ``~/.copilot/run/``. The providers have fixed ids, so revert finds them
+without any state.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from ucode.agents.copilot import (
     model_labels,
 )
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
-from ucode.copilot_app_plugin import PluginModel, PluginProvider, Wire
+from ucode.copilot_app_plugin import AppProviderRows, PluginModel, PluginProvider, Wire
 from ucode.ui import print_warning
 
 # The app versions whose WebSocket messages ug was checked against; others get a warning.
@@ -91,6 +92,17 @@ class AppProvider:
     def model_row_id(self, model_id: str) -> str:
         return _model_row_id(self.key, model_id)
 
+    def rows(self) -> AppProviderRows:
+        """The provider and its model rows as the plugin writes them to the app."""
+        return AppProviderRows(
+            provider={"id": self.id, "name": self.name, "kind": self.kind, "settings": self.settings},
+            secret=self.secret,
+            models=tuple(
+                {**row, "id": self.model_row_id(row["modelId"]), "providerId": self.id}
+                for row in self.models
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class DesiredProviders:
@@ -100,6 +112,15 @@ class DesiredProviders:
     plugin: tuple[PluginProvider, ...]
     # Gateway headers the plugin must add for these providers, beside ug's usual ones.
     headers: dict[str, str]
+
+    @property
+    def plugin_app(self) -> tuple[AppProviderRows, ...]:
+        """``PluginConfig.app_providers``: the rows the plugin writes to the app."""
+        return tuple(provider.rows() for provider in self.app)
+
+
+# ``PluginConfig.owned_provider_ids``: every provider id ug may have written to the app.
+OWNED_PROVIDER_IDS = tuple(_provider_id(spec.key) for spec in _PROVIDERS)
 
 
 def copilot_home() -> Path:
@@ -145,12 +166,20 @@ def _model_rows(
     return list(rows.values())
 
 
-def _plugin_model(row: dict[str, Any]) -> PluginModel:
+def _plugin_model(row: dict[str, Any], wire: Wire) -> PluginModel:
     limits = None
     if "maxPromptTokens" in row:
         limits = (row["maxPromptTokens"], row["maxOutputTokens"])
     return PluginModel(
-        row["modelId"], row["wireModel"], row["displayName"], limits, row["supportsVision"]
+        row["modelId"],
+        row["wireModel"],
+        row["displayName"],
+        limits,
+        row["supportsVision"],
+        # Every model on Chat Completions mishandles Copilot's `reasoning_effort`: OpenAI and Azure
+        # reject it for GPT before 5, GLM 5.3 rejects `none`, and GLM and Kimi think less at `high`
+        # than without it.
+        reasoning_effort=False if wire == WIRE_COMPLETIONS else None,
     )
 
 
@@ -188,7 +217,7 @@ def desired_providers(
                 id=provider.id,
                 wire=spec.wire,
                 base_path=base_path,
-                models=tuple(_plugin_model(row) for row in rows),
+                models=tuple(_plugin_model(row, spec.wire) for row in rows),
             )
         )
     headers = {MODEL_PROVIDER_SERVICE_HEADER: provider_service} if provider_service else {}
@@ -367,59 +396,6 @@ def _delete_provider(app: _AppConnection, provider_id: str) -> None:
         "model_provider_deleted",
         provider_id=provider_id,
     )
-
-
-def register(providers: Iterable[AppProvider]) -> None:
-    """Add or update ``providers`` (:attr:`DesiredProviders.app`) and their models in the running
-    app, and delete ug's other providers.
-
-    Raises :class:`CopilotAppNotRunning` when the app is closed, else :class:`CopilotAppError`
-    when it refuses."""
-    providers = list(providers)
-    app = _connect()
-    try:
-        existing = _providers(app)
-        wanted_ids = {provider.id for provider in providers}
-        for spec in _PROVIDERS:
-            provider_id = _provider_id(spec.key)
-            if provider_id in existing and provider_id not in wanted_ids:
-                _delete_provider(app, provider_id)
-        for provider in providers:
-            current = existing.get(provider.id)
-            message: dict[str, Any] = {
-                "type": "upsert_model_provider",
-                "provider": {
-                    "id": provider.id,
-                    "name": provider.name,
-                    "kind": provider.kind,
-                    "settings": provider.settings,
-                },
-            }
-            if provider.secret and not (current and current.get("hasSecret")):
-                message["secret"] = provider.secret
-            app.request(message, "model_provider_upserted")
-            wanted = {provider.model_row_id(row["modelId"]) for row in provider.models}
-            for model in _models(app, provider.id):
-                if model["id"] not in wanted:
-                    app.request(
-                        {"type": "delete_provider_model", "model_id": model["id"]},
-                        "provider_model_deleted",
-                        model_id=model["id"],
-                    )
-            for row in provider.models:
-                app.request(
-                    {
-                        "type": "upsert_provider_model",
-                        "model": {
-                            **row,
-                            "id": provider.model_row_id(row["modelId"]),
-                            "providerId": provider.id,
-                        },
-                    },
-                    "provider_model_upserted",
-                )
-    finally:
-        app.close()
 
 
 def unregister() -> bool:
