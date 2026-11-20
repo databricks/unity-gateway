@@ -1532,7 +1532,10 @@ CUJ4 matches them against the recorded real router requests. Full native plainte
 completed parent and child models, and preserved settings remain required. Select it with
 `--codex-version 0.165.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
 The `codex_smart_routing` marker also selects the native launch/off/on journeys,
-managed routing banner, and catalog-fallback routing-on case. To reproduce the
+managed routing banner, catalog-fallback routing-on case, and the routing-on
+`ug codex app-server` help and client cases. The baseline lane keeps one routing-on
+app-server client case, which checks that Codex below 0.164.0 runs the app-server
+without smart routing and without an upgrade prompt. To reproduce the
 baseline lane, use `--codex-version 0.156.0 -- -m 'live and not codex_smart_routing'`.
 
 ```bash

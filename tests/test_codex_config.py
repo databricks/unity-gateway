@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import pytest
 import tomlkit
 
 from ucode.agents import codex
-from ucode.codex_config import codex_config_args, strip_hook_trust_state
+from ucode.codex_config import (
+    codex_config_args,
+    is_codex_app_server_launch,
+    strip_hook_trust_state,
+)
 
 WS = "https://example.databricks.com"
 
@@ -96,6 +101,25 @@ args = ["codex-token"]
         pre_tool_override = next(arg for arg in args if arg.startswith("hooks.PreToolUse="))
         assert "route-subagent" in pre_tool_override
         assert 'model_provider="Databricks"' in args
+
+
+class TestIsCodexAppServerLaunch:
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["app-server"], True),
+            (["app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (["-c", "a=1", "--config=b=2", "app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (["--config", "a=1", "app-server"], True),
+            (["app-server", "generate-ts", "--out", "ts"], False),
+            (["exec", "app-server"], False),
+            (["-c", "app-server"], False),
+            (["-c"], False),
+            ([], False),
+        ],
+    )
+    def test_matches_only_the_app_server_itself(self, tool_args, expected):
+        assert is_codex_app_server_launch(tool_args) is expected
 
 
 class TestStripHookTrustState:

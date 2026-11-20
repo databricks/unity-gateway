@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -30,6 +31,7 @@ from ucode.codex_config import (
     codex_config_precedence_paths,
     codex_managed_config_path,
     custom_catalog_models,
+    is_codex_app_server_launch,
     strip_hook_trust_state,
 )
 from ucode.config_io import (
@@ -1949,6 +1951,18 @@ def _run_codex(
         exec_or_spawn([*base_argv, *tool_args])
 
 
+def _app_server_needs_newer_codex(tool_args: list[str]) -> bool:
+    """Whether an app-server launch runs on a Codex too old to route.
+
+    The app-server's stdin is its client's protocol stream, so it can't answer the upgrade prompt
+    a routed launch offers.
+    """
+    if not is_codex_app_server_launch(tool_args):
+        return False
+    parsed = _parse_version(agent_version(SPEC["binary"]))
+    return parsed is not None and parsed < MINIMUM_SMART_ROUTING_CODEX_VERSION
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -1961,6 +1975,12 @@ def launch(
             "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
             "`--disable-smart-routing` or pick another provider."
         )
+    if options.launch_smart_routing and _app_server_needs_newer_codex(tool_args):
+        print_warning_err(
+            f"Smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} or newer; "
+            f"found {agent_version(SPEC['binary'])}. Running the app-server without smart routing."
+        )
+        options = replace(options, launch_smart_routing=False)
     if options.launch_smart_routing:
         agents.ensure_minimum_version(
             "codex", lambda: minimum_version_error(smart_routing_enabled=True)
