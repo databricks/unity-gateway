@@ -7702,29 +7702,34 @@ class TestPooledRedirectErrors:
     """httpx errors urllib's opener would have surfaced as HTTP errors keep their shape, so
     callers see a status-shaped reason instead of a network failure."""
 
-    @staticmethod
-    def _client_raising(monkeypatch, exc):
-        from unittest.mock import MagicMock
-
-        import httpx
-
-        client = MagicMock()
-        client.send.side_effect = exc
-        _force_pooled(monkeypatch)
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
-        return httpx
-
-    def test_too_many_redirects_maps_to_http_error(self, monkeypatch):
+    def test_too_many_redirects_maps_to_http_error_with_the_last_real_status(self, monkeypatch):
+        """Exceeding the redirect budget raises the LAST 3xx, like urllib's redirect handler
+        does — not a made-up status. The response hook on the pooled client tracks it."""
         from urllib.error import HTTPError
 
         import httpx
 
-        self._client_raising(monkeypatch, httpx.TooManyRedirects("too many redirects"))
+        sent = []
+
+        def always_redirect(request):
+            sent.append(request)
+            return httpx.Response(302, headers={"Location": "https://x/next"}, content=b"moved")
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(always_redirect),
+            event_hooks={"response": [db_mod._remember_redirect]},
+        )
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+        _force_pooled(monkeypatch)
 
         with pytest.raises(HTTPError) as raised:
             db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
 
-        assert raised.value.code == 310
+        assert raised.value.code == 302
+        assert raised.value.reason == "Found"
+        assert raised.value.read() == b"moved"
+        # httpx's default budget is 20 redirects; the loop stopped there, not later.
+        assert len(sent) == 21
 
 
 class TestPooledRedirectPolicies:

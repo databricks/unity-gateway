@@ -4,6 +4,7 @@ discovery, Unity Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextvars
 import functools
 import io
 import json
@@ -387,6 +388,18 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
         return False
 
 
+# The most recent 3xx response seen by this request, via a client response hook. A context
+# variable keeps concurrent callers on the shared client from seeing each other's redirects.
+_LAST_REDIRECT: contextvars.ContextVar[httpx.Response | None] = contextvars.ContextVar(
+    "pooled_last_redirect", default=None
+)
+
+
+def _remember_redirect(response: httpx.Response) -> None:
+    if 300 <= response.status_code < 400:
+        _LAST_REDIRECT.set(response)
+
+
 POOLED_HTTP_DISABLE_ENV_VAR = "UG_NO_POOLED_HTTP"
 
 
@@ -439,6 +452,7 @@ def _get_http_client() -> httpx.Client:
                 # httpx never mounts ALL_PROXY (and socks proxies needing socksio) behind
                 # our back.
                 trust_env=False,
+                event_hooks={"response": [_remember_redirect]},
                 follow_redirects=True,
                 limits=limits,
                 cookies=CookieJar(policy=_RejectCookiesPolicy()),
@@ -507,8 +521,18 @@ def _http_open(request: urllib_request.Request, *, timeout: float):
             response = client.send(response.next_request, follow_redirects=True)
     except httpx.TooManyRedirects as exc:
         # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
-        # callers see a status-shaped failure, not a network one. httpx drops the last response,
-        # so report the generic 310 (Too Many Redirects) status.
+        # callers see a status-shaped failure, not a network one — carrying the LAST 3xx's
+        # real code, reason, headers, and body, not a made-up status.
+        last = _LAST_REDIRECT.get()
+        if last is not None:
+            pooled = _PooledResponse(last)
+            raise urllib_error.HTTPError(
+                request.full_url,
+                pooled.status,
+                last.reason_phrase,
+                pooled.headers,
+                io.BytesIO(pooled.read()),
+            ) from exc
         raise urllib_error.HTTPError(
             request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
         ) from exc
