@@ -4760,11 +4760,8 @@ def _launch_tool(
         # Claude Code's own discovery lists them without it, so they would run at 200K.
         # launch_only_auto_picker was settled above, where the speculative catalog started.
         if unmanaged_picker_catalog:
-            discovered = None
-            if cached_picker_catalog is not None:
-                discovered = cached_picker_catalog
-            else:
-                discovered = _speculative_picker_catalog()
+            # AnthropicModelCatalog is a plain dataclass, so only None is falsy here.
+            discovered = cached_picker_catalog or _speculative_picker_catalog()
             if discovered is None:
                 discovered = list_anthropic_model_catalog(
                     state["workspace"],

@@ -238,6 +238,13 @@ class TestHelperArgv:
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
+    def test_launch_cache_refresher(self, selected):
+        from ucode import launch_cache
+
+        identity = {"workspace": SHARED, "workspace_id": WSID}
+        argv = launch_cache.build_refresher_argv(identity)
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+
     def test_otel_headers(self, selected):
         argv = db_mod.build_otel_headers_argv(SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID

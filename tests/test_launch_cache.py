@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -295,7 +297,7 @@ class TestConfigureIsolation:
 class TestRefresher:
     @staticmethod
     def _patch_lookups(monkeypatch, *, catalog=CATALOG):
-        monkeypatch.setattr(lc, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", lambda *_a, **_k: "token")
         monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE)
         monkeypatch.setattr(lc, "list_model_service_entries", lambda *_a, **_k: (SERVICES, None))
         monkeypatch.setattr(lc, "list_anthropic_model_catalog", lambda *_a, **_k: catalog)
@@ -340,7 +342,7 @@ class TestRefresher:
         def boom(*_a, **_k):
             raise AssertionError("stale identity must not refetch")
 
-        monkeypatch.setattr(lc, "get_databricks_token", boom)
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", boom)
         identity = _identity()
         changed = {
             **identity,
@@ -348,6 +350,128 @@ class TestRefresher:
         }
         assert lc.main(refresh_args(identity=changed)) == 1
         assert lc.load_entry(_key()) is None
+
+    def test_refresh_never_reauths(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+        seen: dict = {}
+
+        def token(_workspace, _profile, **kwargs):
+            seen.update(kwargs)
+            return "token"
+
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
+        assert lc.main(refresh_args()) == 0
+        assert seen.get("allow_reauth") is False
+
+    def test_failed_token_fetch_invalidates(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+
+        def failing(*_a, **_k):
+            raise RuntimeError("auth expired")
+
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", failing)
+        key = _key()
+        _store(key, {}, checked_at=time.time() - 400)
+        assert lc.main(refresh_args()) == 1
+        assert lc.load_entry(key) is None
+
+    def test_custom_oauth_refresh_reuses_the_saved_login(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        fetched: list = []
+
+        def token(_workspace, profile, **_kwargs):
+            fetched.append(profile)
+            return "token"
+
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
+        monkeypatch.setattr(lc, "has_valid_databricks_auth", lambda *_a, **_k: True)
+        custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
+        identity = _identity(custom_oauth={**custom_oauth, "profile": "ug-oauth-p"})
+        assert lc.main(refresh_args(identity=identity)) == 0
+        assert fetched == ["ug-oauth-p"]
+
+    def test_custom_oauth_refresh_falls_back_to_the_derived_profile(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        fetched: list = []
+
+        def token(_workspace, profile, **_kwargs):
+            fetched.append(profile)
+            return "token"
+
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
+        monkeypatch.setattr(lc, "has_valid_databricks_auth", lambda *_a, **_k: True)
+        custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
+        identity = _identity(custom_oauth=custom_oauth)
+        assert lc.main(refresh_args(identity=identity)) == 0
+        assert fetched == ["ug-oauth-example.databricks.com-cid"]
+
+    def test_custom_oauth_refresh_without_a_saved_login_gives_up(self, monkeypatch):
+        self._patch_lookups(monkeypatch)
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.setattr(lc, "has_valid_databricks_auth", lambda *_a, **_k: False)
+
+        def boom(*_a, **_k):
+            raise AssertionError("the refresher must not fetch without a saved login")
+
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", boom)
+        custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
+        key = _key_custom(custom_oauth=custom_oauth)
+        _store(key, {}, checked_at=time.time() - 400)
+        assert lc.main(refresh_args(identity=_identity(custom_oauth=custom_oauth))) == 1
+        assert lc.load_entry(key) is None
+
+    def test_refresh_never_caches_an_empty_catalog(self, monkeypatch):
+        empty = db_mod.AnthropicModelCatalog(model_ids=[], model_id_to_display_name={})
+        self._patch_lookups(monkeypatch, catalog=empty)
+        assert lc.main(refresh_args()) == 0
+        entry = lc.load_entry(_key(), _identity())
+        assert entry is not None
+        assert lc.entry_catalog(entry) is None
+
+    def test_refresher_applies_tls_settings(self, monkeypatch):
+        applied: list = []
+
+        def apply():
+            applied.append(True)
+            return "os"
+
+        monkeypatch.setattr(lc.tls, "apply", apply)
+        self._patch_lookups(monkeypatch)
+        assert lc.main(refresh_args()) == 0
+        assert applied == [True]
+
+    def test_refresher_requests_carry_the_workspace_selector(self, monkeypatch):
+        class _Response(io.BytesIO):
+            def __init__(self, body: bytes):
+                super().__init__(body)
+                self.status = 200
+                self.headers = Message()
+
+            def geturl(self):
+                return WORKSPACE
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: False)
+        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", lambda *_a, **_k: "token")
+        monkeypatch.setattr(lc, "list_model_service_entries", lambda *_a, **_k: (SERVICES, None))
+        monkeypatch.setattr(lc, "list_anthropic_model_catalog", lambda *_a, **_k: CATALOG)
+        requests: list = []
+
+        def record(request, *, timeout=10):
+            requests.append(request)
+            return _Response(b'{"model_services": [{"id": "system.ai.claude-sonnet-5"}]}')
+
+        monkeypatch.setattr(db_mod, "_http_open", record)
+        assert lc.main([*refresh_args(), "--workspace-id", "123"]) == 0
+        assert requests
+        assert all(request.get_header("X-databricks-workspace-id") == "123" for request in requests)
 
     def test_spawn_is_detached_without_the_agent_stdio(self, monkeypatch):
         spawned: dict = {}

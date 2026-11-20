@@ -26,12 +26,13 @@ import sys
 import time
 from pathlib import Path
 
-from ucode import config_io
+from ucode import config_io, tls
 from ucode.databricks import (
     AnthropicModelCatalog,
     GatewayProbe,
     ModelServiceEntry,
-    get_databricks_token,
+    fetch_databricks_token_untimed,
+    has_valid_databricks_auth,
     list_anthropic_model_catalog,
     list_model_service_entries,
     prime_gateway_probe_cache,
@@ -39,6 +40,7 @@ from ucode.databricks import (
     probe_unity_gateway_capabilities,
 )
 from ucode.telemetry import ug_version
+from ucode.workspace import pin, workspace_id_args
 
 ENV_VAR = "UG_LAUNCH_CACHE"
 CACHE_DIR_NAME = "launch-cache"
@@ -226,6 +228,14 @@ def services_payload(services: list[ModelServiceEntry]) -> list[dict]:
     return [{"id": service.id, "api_types": list(service.api_types)} for service in services]
 
 
+def build_refresher_argv(identity: dict) -> list[str]:
+    """Argv for the detached refresher, with the launch's workspace selector on a shared host."""
+    encoded = base64.urlsafe_b64encode(json.dumps(identity).encode()).decode()
+    argv = [sys.executable, "-P", "-m", "ucode.launch_cache", "--refresh", "--identity", encoded]
+    argv += workspace_id_args(identity["workspace"])
+    return argv
+
+
 def spawn_refresher(identity: dict) -> None:
     """Detach a refresher that rewrites the cache for the next launch.
 
@@ -235,8 +245,7 @@ def spawn_refresher(identity: dict) -> None:
     credential set, and re-verifies the credentials file before writing."""
     from ucode.os_compatibility import subprocess_cross_os
 
-    encoded = base64.urlsafe_b64encode(json.dumps(identity).encode()).decode()
-    argv = [sys.executable, "-P", "-m", "ucode.launch_cache", "--refresh", "--identity", encoded]
+    argv = build_refresher_argv(identity)
     options = (
         {"creationflags": subprocess.CREATE_NO_WINDOW}
         if sys.platform == "win32"
@@ -264,6 +273,24 @@ def refresh_due(key: str) -> bool:
     )
 
 
+def _refresh_token(workspace: str, identity: dict) -> str:
+    """The token the launch would use, fetched without ever prompting.
+
+    The detached refresher has no terminal, so no re-auth and no custom-OAuth
+    login: an auth failure gives up, and the next launch falls back as designed."""
+    from ucode.custom_oauth import _custom_cli_profile, custom_oauth_cli_enabled
+
+    custom_oauth = identity.get("custom_oauth")
+    if isinstance(custom_oauth, dict) and custom_oauth_cli_enabled(custom_oauth):
+        profile = custom_oauth.get("profile") or _custom_cli_profile(
+            workspace, custom_oauth.get("client_id") or ""
+        )
+        if not has_valid_databricks_auth(workspace, profile):
+            raise RuntimeError("the custom-OAuth profile has no saved login")
+        return fetch_databricks_token_untimed(workspace, profile)
+    return fetch_databricks_token_untimed(workspace, identity.get("profile"), allow_reauth=False)
+
+
 def _refresh(identity: dict) -> int:
     from ucode.databricks import clear_model_services_cache
 
@@ -272,7 +299,6 @@ def _refresh(identity: dict) -> int:
     if config_fingerprint() != identity.get("config_fingerprint"):
         return 1
     workspace = identity.get("workspace") or ""
-    profile = identity.get("profile") or None
     key = cache_key(identity)
     entry = _read_entry(key)
     if entry is not None:
@@ -283,7 +309,7 @@ def _refresh(identity: dict) -> int:
             return 0
     clear_model_services_cache()
     try:
-        token = get_databricks_token(workspace, profile)
+        token = _refresh_token(workspace, identity)
         probe = probe_unity_gateway_capabilities(workspace, token)
         services, reason = list_model_service_entries(workspace, token)
         if not probe.resource_available or not services or reason is not None:
@@ -295,7 +321,9 @@ def _refresh(identity: dict) -> int:
             "probe": probe_payload(probe),
             "model_services": services_payload(services),
         }
-        if not catalog.error_msg:
+        # Only a non-empty catalog is cached, like the launch path: an empty one
+        # would suppress the picker for the entry's whole age with no fallback.
+        if not catalog.error_msg and catalog.model_ids:
             payload["catalog"] = catalog_payload(catalog)
         merge_entry(key, identity, payload)
     except Exception:
@@ -305,9 +333,11 @@ def _refresh(identity: dict) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    tls.apply()
     parser = argparse.ArgumentParser(prog="python -m ucode.launch_cache")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--identity", required=True, help="base64url JSON of the entry identity")
+    parser.add_argument("--workspace-id", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not args.refresh:
         parser.error("--refresh is required")
@@ -317,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not isinstance(identity, dict) or not identity.get("workspace"):
         return 2
+    if args.workspace_id:
+        pin(identity["workspace"], args.workspace_id)
     return _refresh(identity)
 
 
