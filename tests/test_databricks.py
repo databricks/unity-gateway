@@ -3859,10 +3859,21 @@ class TestGetDatabricksToken:
         with pytest.raises(RuntimeError, match="no access token"):
             get_databricks_token(WS, allow_reauth=False)
 
-        # The default fetch still attempts the non-interactive re-auth instead of raising the
-        # memoized failure, and the re-auth repairs the cache.
+        # The skipped re-auth made no `auth login` call at all — not even the --help probe.
+        calls_after_first_fetch = log.read_text().splitlines()
+        assert calls_after_first_fetch
+        assert not any("auth login" in call for call in calls_after_first_fetch)
+
+        # The default fetch still attempts the non-interactive re-auth (`auth login
+        # --no-browser`) instead of raising the memoized failure, and it repairs the cache.
         assert get_databricks_token(WS) == "after-reauth"
-        assert sum("auth login" in call for call in log.read_text().splitlines()) >= 1
+        assert (
+            sum(
+                "auth login" in call and "--no-browser" in call
+                for call in log.read_text().splitlines()
+            )
+            >= 1
+        )
 
     def test_force_refresh_retries_a_memoized_failure(self, tmp_path, monkeypatch):
         flag = tmp_path / "logged-in"
