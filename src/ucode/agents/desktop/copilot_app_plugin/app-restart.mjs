@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { connectApp, copilotHome, readAppPid, readEndpoint } from "./app-rows.mjs";
 
-export const RESTARTING_MESSAGE = "Restarting the GitHub Copilot app once to finish loading the Databricks models.";
+export const RESTARTING_MESSAGE =
+  "The GitHub Copilot app restarts once, as soon as no chat is running a turn, to finish loading the Databricks models.";
 export const RESTART_HINT = "Restart the GitHub Copilot app to show the Databricks model names and icons.";
 export const RESTART_LOG_FILE = "app-restart.log";
 export const QUIET_MS = 15_000;
@@ -41,12 +42,13 @@ export function createActivity(now = Date.now) {
 
 export async function waitForIdle(
   activity,
-  { quietMs = QUIET_MS, timeoutMs = IDLE_TIMEOUT_MS, now = Date.now, sleep = delay } = {},
+  { quietMs = QUIET_MS, timeoutMs = IDLE_TIMEOUT_MS, now = Date.now, sleep = delay, stopped = () => false } = {},
 ) {
   const deadline = now() + timeoutMs;
   for (;;) {
-    if (activity.idle(quietMs)) return true;
-    if (now() >= deadline) return false;
+    if (stopped()) return "stopped";
+    if (activity.idle(quietMs)) return "idle";
+    if (now() >= deadline) return "busy";
     await sleep(IDLE_POLL_MS);
   }
 }
@@ -105,37 +107,46 @@ export function startHelper(target, stateDir) {
   });
 }
 
-async function tryRestart(
-  activity,
-  say,
-  { home = copilotHome(), stateDir, plan = planRestart, start = startHelper, now, sleep, quietMs, timeoutMs, ...connect },
+// The app stops the extension process soon after its rows change, so the wait for idle and the
+// restart run in a detached helper, started as soon as the sync returns. Never throws.
+export async function launchRestart({ home = copilotHome(), stateDir, plan = planRestart, start = startHelper } = {}) {
+  try {
+    const target = await plan({ home });
+    if (!target) return "unsupported";
+    return (await start({ ...target, home }, stateDir)) ? "started" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+// Posts the line for ``launchRestart``'s result. Never throws.
+export async function tellRestart(session, result) {
+  try {
+    await session.log(result === "started" ? RESTARTING_MESSAGE : RESTART_HINT, { level: "info" });
+  } catch {}
+}
+
+// In the helper: waits until no chat in the app is running a turn, then restarts it. A turn is only
+// visible on the app's session channels, so without them, or once the app closes, it gives up.
+export async function restartWhenIdle(
+  target,
+  { now = Date.now, sleep = delay, quietMs, timeoutMs, WebSocketImpl, ...deps } = {},
 ) {
-  const target = await plan({ home });
-  if (!target) return "unsupported";
-  const endpoint = readEndpoint(home);
+  const endpoint = readEndpoint(target.home ?? copilotHome());
+  if (!endpoint) return "not_running";
+  const activity = createActivity(now);
   const onMessage = (message) => {
     if (message.type === "session_event") activity.note(message.session_id, message.event?.type);
   };
-  // Without this connection, only this session's own turns are known.
-  const watch = endpoint ? await connectApp(endpoint, { ...connect, onMessage }).catch(() => null) : null;
+  const watch = await connectApp(endpoint, { WebSocketImpl, onMessage }).catch(() => null);
+  if (!watch) return "no_session_events";
+  let waited;
   try {
-    if (!(await waitForIdle(activity, { quietMs, timeoutMs, now, sleep }))) return "busy";
+    waited = await waitForIdle(activity, { quietMs, timeoutMs, now, sleep, stopped: () => watch.closed });
   } finally {
-    watch?.close();
+    watch.close();
   }
-  await say(RESTARTING_MESSAGE);
-  return (await start(target, stateDir)) ? "restarting" : "failed";
-}
-
-// Restarts the app once no chat is running a turn, or asks the user to restart it. Never throws.
-export async function restartWhenIdle(session, activity, options = {}) {
-  const say = (message) =>
-    Promise.resolve()
-      .then(() => session.log(message, { level: "info" }))
-      .catch(() => {});
-  const result = await tryRestart(activity, say, options).catch(() => "failed");
-  if (result !== "restarting") await say(RESTART_HINT);
-  return result;
+  return waited === "idle" ? restartApp(target, { now, sleep, ...deps }) : waited;
 }
 
 // The extension has the Copilot runtime's environment, which adds the runtime's own settings and
@@ -240,7 +251,7 @@ export async function runHelper(argument, deps) {
     } catch {}
   };
   try {
-    log(await restartApp(target, deps));
+    log(await restartWhenIdle(target, deps));
   } catch (error) {
     log(`failed: ${error?.message ?? error}`);
   }

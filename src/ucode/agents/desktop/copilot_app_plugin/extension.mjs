@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { joinSession } from "@github/copilot-sdk/extension";
 
 import { removeInBackground } from "./app-remove.mjs";
-import { createActivity, restartWhenIdle } from "./app-restart.mjs";
+import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
 import {
   buildProviders,
@@ -30,6 +30,8 @@ if (config.remove) {
   if (retry(await firstRemove)) await removeInBackground(config, syncOptions, logSyncFailure);
 } else {
   const firstSync = syncInBackground(config, syncOptions, logSyncFailure);
+  const restartFor = (synced) => (synced === "changed" ? launchRestart(syncOptions) : null);
+  const firstRestart = firstSync.then(restartFor);
   let session;
   const tokenSource = createTokenSource(config);
   const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
@@ -42,15 +44,13 @@ if (config.remove) {
     providers: buildProviders(config, bearerTokenProvider),
     models: config.models,
   });
-  const activity = createActivity();
   session.on((event) => {
-    activity.note(session.sessionId, event.type);
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();
     // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
     if (event.type === "session.error") session.log(config.loginHint, { level: "error" });
   });
-  let synced = await firstSync;
-  if (retry(synced)) synced = await syncInBackground(config, syncOptions, logSyncFailure);
-  if (synced === "changed") await restartWhenIdle(session, activity, syncOptions);
+  let restart = await firstRestart;
+  if (retry(await firstSync)) restart = await restartFor(await syncInBackground(config, syncOptions, logSyncFailure));
+  if (restart) await tellRestart(session, restart);
 }

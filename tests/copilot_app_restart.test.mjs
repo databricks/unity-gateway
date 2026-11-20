@@ -11,11 +11,12 @@ import {
   QUIET_MS,
   RESTART_HINT,
   RESTARTING_MESSAGE,
-  createActivity,
+  launchRestart,
   planRestart,
   restartApp,
   restartWhenIdle,
   runHelper,
+  tellRestart,
   sessionEnv,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/app-restart.mjs";
 import { FakeApp } from "./copilot_app_fake.mjs";
@@ -32,11 +33,6 @@ function fakeClock() {
   return clock;
 }
 
-function fakeSession() {
-  const logs = [];
-  return { logs, log: async (message, options) => logs.push([message, options.level]) };
-}
-
 function emptyHome() {
   return mkdtempSync(join(tmpdir(), "ug-copilot-home-"));
 }
@@ -48,122 +44,132 @@ function homeWithPid(portFile) {
   return home;
 }
 
-function restartOptions(clock, overrides = {}) {
-  const started = [];
-  return {
-    started,
-    options: {
-      home: emptyHome(),
-      stateDir: mkdtempSync(join(tmpdir(), "ug-copilot-state-")),
-      plan: async () => TARGET,
-      start: async (target) => (started.push({ target, at: clock.t }), true),
-      now: clock.now,
-      sleep: clock.sleep,
-      ...overrides,
-    },
-  };
+const withWebSocket = { skip: typeof WebSocket === "function" ? false : "this Node has no global WebSocket" };
+
+function fakeSession() {
+  const logs = [];
+  return { logs, log: async (message, options) => logs.push([message, options.level]) };
 }
 
-test("an idle app restarts after a quiet period, with one line in the chat first", async () => {
-  const clock = fakeClock();
+test("the extension starts the helper with the app's target and says so in the chat", async () => {
+  const started = [];
+  const home = emptyHome();
+  const stateDir = mkdtempSync(join(tmpdir(), "ug-copilot-state-"));
+  const result = await launchRestart({
+    home,
+    stateDir,
+    plan: async () => TARGET,
+    start: async (target, dir) => (started.push([target, dir]), true),
+  });
+  assert.equal(result, "started");
+  assert.deepEqual(started, [[{ ...TARGET, home }, stateDir]]);
   const session = fakeSession();
-  const activity = createActivity(clock.now);
-  const { started, options } = restartOptions(clock);
-  assert.equal(await restartWhenIdle(session, activity, options), "restarting");
-  assert.deepEqual(started, [{ target: TARGET, at: QUIET_MS }]);
+  await tellRestart(session, result);
   assert.deepEqual(session.logs, [[RESTARTING_MESSAGE, "info"]]);
 });
 
-test("a running turn delays the restart until its session is idle", async () => {
-  const clock = fakeClock();
-  const session = fakeSession();
-  const activity = createActivity(clock.now);
-  activity.note("chat", "assistant.turn_start");
-  clock.onSleep = (t) => {
-    if (t === 60_000) activity.note("chat", "session.idle");
-  };
-  const { started, options } = restartOptions(clock);
-  assert.equal(await restartWhenIdle(session, activity, options), "restarting");
-  assert.deepEqual(
-    started.map(({ at }) => at),
-    [60_000 + QUIET_MS],
-  );
-});
-
-test("a session that never goes idle gives up after the bound and asks for a restart", async () => {
-  const clock = fakeClock();
-  const session = fakeSession();
-  const activity = createActivity(clock.now);
-  activity.note("chat", "user.message");
-  const { started, options } = restartOptions(clock);
-  assert.equal(await restartWhenIdle(session, activity, options), "busy");
-  assert.equal(clock.t, IDLE_TIMEOUT_MS);
-  assert.deepEqual(started, []);
-  assert.deepEqual(session.logs, [[RESTART_HINT, "info"]]);
-});
-
-test("events that keep coming hold the restart off even without a turn start", async () => {
-  const clock = fakeClock();
-  const activity = createActivity(clock.now);
-  clock.onSleep = () => activity.note("chat", "assistant.streaming_delta");
-  const { started, options } = restartOptions(clock);
-  assert.equal(await restartWhenIdle(fakeSession(), activity, options), "busy");
-  assert.deepEqual(started, []);
-});
-
-test("when the app can't be restarted here, the chat gets the restart hint", async () => {
-  const clock = fakeClock();
-  for (const overrides of [
+test("when the helper can't restart the app here, the chat gets the restart hint", async () => {
+  for (const options of [
     { plan: async () => null },
     { plan: async () => Promise.reject(new Error("boom")) },
-    { start: async () => false },
+    { plan: async () => TARGET, start: async () => false },
   ]) {
+    const result = await launchRestart({ home: emptyHome(), stateDir: emptyHome(), ...options });
+    assert.notEqual(result, "started");
     const session = fakeSession();
-    const { started, options } = restartOptions(clock, overrides);
-    const result = await restartWhenIdle(session, createActivity(clock.now), options);
-    assert.notEqual(result, "restarting");
-    assert.deepEqual(started, []);
-    assert.deepEqual(session.logs.at(-1), [RESTART_HINT, "info"]);
+    await tellRestart(session, result);
+    assert.deepEqual(session.logs, [[RESTART_HINT, "info"]]);
   }
+  await tellRestart({ log: () => { throw new Error("closed"); } }, "failed");
 });
 
-test("a session whose log fails doesn't make the restart throw", async () => {
-  const clock = fakeClock();
-  const { options } = restartOptions(clock, { plan: async () => null });
-  const session = {
-    log: () => {
-      throw new Error("closed");
-    },
+async function helperRun(t, script, overrides = {}, seen = () => {}) {
+  const app = new FakeApp();
+  await app.listen();
+  t.after(() => app.close());
+  const home = emptyHome();
+  app.writeRunFiles(home);
+  const fake = fakeProcess();
+  seen(fake);
+  const clock = fake.clock;
+  clock.onSleep = async (time) => {
+    await script(time, app);
+    await delay(2);
   };
-  assert.equal(await restartWhenIdle(session, createActivity(clock.now), options), "unsupported");
+  const result = await restartWhenIdle({ ...TARGET, home }, { ...fake.deps, ...overrides });
+  return { result, fake, clock, app };
+}
+
+test("the helper restarts an idle app after a quiet period", withWebSocket, async (t) => {
+  let restartAt;
+  const { result, fake } = await helperRun(t, async (time) => {
+    restartAt ??= time >= QUIET_MS ? time : undefined;
+  });
+  assert.equal(result, "relaunched");
+  assert.equal(restartAt, QUIET_MS);
+  assert.deepEqual(fake.calls[0], ["kill", 4242, "SIGTERM"]);
 });
 
-test(
-  "a turn in a chat the app's window runs delays the restart",
-  { skip: typeof WebSocket === "function" ? false : "this Node has no global WebSocket" },
-  async (t) => {
-    const app = new FakeApp();
-    await app.listen();
-    t.after(() => app.close());
-    const clock = fakeClock();
-    const activity = createActivity(clock.now);
-    const { started, options } = restartOptions(clock, { timeoutMs: 600_000 });
-    app.writeRunFiles(options.home);
-    let watchers;
-    clock.onSleep = async (time) => {
+test("a turn in any chat delays the restart until that chat is idle", withWebSocket, async (t) => {
+  let watchers;
+  let fake;
+  const kill = (pid, signal) => fake.deps.killAt.push(fake.clock.t);
+  const run = helperRun(
+    t,
+    async (time, app) => {
       if (time === 5_000) {
         watchers = app.watchers.size;
         app.emit("ui-chat", "assistant.turn_start");
       }
       if (time === 90_000) app.emit("ui-chat", "session.idle");
-      await delay(2);
-    };
-    assert.equal(await restartWhenIdle(fakeSession(), activity, options), "restarting");
-    assert.ok(started[0].at >= 90_000 + QUIET_MS, `restarted at ${started[0].at}`);
-    assert.ok(started[0].at <= 90_000 + QUIET_MS + 5_000, `restarted at ${started[0].at}`);
-    assert.equal(watchers, 1);
-  },
-);
+    },
+    { kill },
+    (process) => {
+      fake = process;
+      fake.deps.killAt = [];
+    },
+  );
+  const { result } = await run;
+  assert.equal(watchers, 1);
+  assert.equal(result, "still_running");
+  assert.ok(fake.deps.killAt[0] >= 90_000 + QUIET_MS, `killed at ${fake.deps.killAt[0]}`);
+  assert.ok(fake.deps.killAt[0] <= 90_000 + QUIET_MS + 5_000, `killed at ${fake.deps.killAt[0]}`);
+});
+
+test("a chat that never goes idle makes the helper give up", withWebSocket, async (t) => {
+  const { result, fake, clock } = await helperRun(t, async (time, app) => {
+    if (time === 1_000) app.emit("ui-chat", "user.message");
+  });
+  assert.equal(result, "busy");
+  assert.equal(clock.t, IDLE_TIMEOUT_MS);
+  assert.deepEqual(fake.calls, []);
+});
+
+test("events that keep coming hold the restart off even without a turn start", withWebSocket, async (t) => {
+  const { result, fake } = await helperRun(t, async (time, app) => app.emit("chat", "assistant.streaming_delta"));
+  assert.equal(result, "busy");
+  assert.deepEqual(fake.calls, []);
+});
+
+test("an app that closes while the helper waits isn't relaunched", withWebSocket, async (t) => {
+  const { result, fake } = await helperRun(t, async (time, app) => {
+    if (time === 1_000) {
+      app.emit("chat", "user.message");
+      app.close();
+    }
+  });
+  assert.equal(result, "stopped");
+  assert.deepEqual(fake.calls, []);
+});
+
+test("without the app's session events the helper gives up", async () => {
+  const fake = fakeProcess();
+  assert.equal(await restartWhenIdle({ ...TARGET, home: emptyHome() }, fake.deps), "not_running");
+  const home = homeWithPid("1");
+  writeFileSync(join(home, "run", "ws.token"), "t");
+  assert.equal(await restartWhenIdle({ ...TARGET, home }, fake.deps), "no_session_events");
+  assert.deepEqual(fake.calls, []);
+});
 
 test("planRestart takes the app's pid from its run file", async () => {
   const alive = (pid) => pid === 4242;
@@ -343,10 +349,12 @@ test("sessionEnv keeps the user's session variables and drops the runtime's", ()
 test("the helper logs the outcome and never throws", async () => {
   const log = join(mkdtempSync(join(tmpdir(), "ug-copilot-state-")), "app-restart.log");
   const fake = fakeProcess();
-  await runHelper(JSON.stringify({ ...TARGET, log }), fake.deps);
-  assert.match(readFileSync(log, "utf8"), /relaunched\n$/);
+  await runHelper(JSON.stringify({ ...TARGET, home: emptyHome(), log }), fake.deps);
+  assert.match(readFileSync(log, "utf8"), /not_running\n$/);
   await runHelper("not json", fake.deps);
-  const failing = { ...fake.deps, kill: () => {}, alive: () => true, sleep: () => Promise.reject(new Error("boom")) };
-  await runHelper(JSON.stringify({ ...TARGET, log }), failing);
-  assert.match(readFileSync(log, "utf8"), /failed: boom\n$/);
+  const home = homeWithPid("1");
+  writeFileSync(join(home, "run", "ws.token"), "t");
+  const failing = { ...fake.deps, WebSocketImpl: class { constructor() { throw new Error("boom"); } } };
+  await runHelper(JSON.stringify({ ...TARGET, home, log }), failing);
+  assert.match(readFileSync(log, "utf8"), /no_session_events\n$/);
 });
