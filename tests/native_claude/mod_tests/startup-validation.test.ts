@@ -60,7 +60,7 @@ function engine(on: On) {
 }
 
 const cases = [
-  // A failed check publishes the same silent result as a supported menu.
+  // A failed check publishes the same silent result as a supported model list.
   { name: 'supported or failed', result: { routing_disabled: false }, routed: true },
   { name: 'unsupported', result: { routing_disabled: true }, routed: false },
 ];

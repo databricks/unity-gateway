@@ -1,4 +1,4 @@
-"""Startup Smart Router menu check; an unsupported menu turns routing off for the session.
+"""Startup Smart Router model-list check; an unsupported model list turns routing off for the session.
 
 Nothing is shown to the user. A failed or timed-out check leaves routing on.
 """

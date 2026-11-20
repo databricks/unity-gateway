@@ -6,16 +6,10 @@ const BANNER = 'unity gateway smart router'
 
 // The band shows once the startup check finishes and after each toggle, and hides once the
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
-const band = { isVisible: true, isHideArmed: false }
-let validationWatchStarted = false
+export const band = { isVisible: true, isHideArmed: false }
 // Claude draws before session.start, so the band starts held until the startup check settles;
-// an unsupported menu turns routing off and must never flash ON.
-const validation = { isPending: true }
-
-export function skipStartupValidation(): void {
-  validationWatchStarted = true
-  validation.isPending = false
-}
+// an unsupported model list turns routing off and must never flash ON.
+export const validation = { isPending: true, isStarted: false }
 
 export function showStatusBand(): void {
   band.isVisible = true
@@ -61,20 +55,6 @@ async function readRoutingState($: any): Promise<RoutingState> {
     enabled: isRoutingEnabled({ [SMART_ROUTING_KEY]: full, [SUBAGENT_ONLY_KEY]: subagentOnly }),
     firstPrompt: full === '1' && subagentOnly !== '1',
   }
-}
-
-export function startStartupValidation(): boolean {
-  if (validationWatchStarted) return false
-  validationWatchStarted = true
-  return true
-}
-
-export function settleStartupValidation(): void {
-  validation.isPending = false
-}
-
-export function hideStatusBand(): void {
-  band.isVisible = false
 }
 
 export const registerStatusBand = (on: On): void => {
