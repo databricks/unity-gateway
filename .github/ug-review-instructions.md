@@ -22,6 +22,8 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
+   Check whether routing decisions such as provider cooldowns and canonical model-name parsing
+   belong on the server, where fixes reach older clients and policy is easier to debug.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
@@ -44,6 +46,13 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    do not establish inference or UI coverage.
    Keep focused component tests for distinct failures and boundary cases; request consolidation
    only when the same behavior is already protected, and name both overlapping tests.
+   For shared behavior, check the other affected agents and parameterize an existing journey
+   where the setup and assertions match. For relayed-auth smart routing, extend the existing
+   relayed-auth journey with a mixed relayed/hosted managed catalog: verify both in the native
+   model picker, then complete routed inference. An isolated routing mock cannot prove this flow.
+   Keep generated screenshots and recordings out of the source diff; link them in the PR.
+   Evidence publishers must preserve prior links and labels on upload failure, and mark evidence
+   available only after successful publication.
 4. **Preserve compatibility and avoid hard-blocking users.** Look for removed CLI options,
    changed config shapes, reliance on unreleased backend behavior, and regressions to existing
    agents, relayed authentication, non-interactive callers, or older installations. Favor behavior
@@ -51,12 +60,21 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    when possible, and reserve hard failures for cases where continuing would be unsafe or wrong.
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
    Reuse available backend canonical identifiers to avoid duplicating parsing rules across
-   installed client versions.
+   installed client versions. Avoid hardcoded copies of an upstream harness's CLI option schema;
+   check how forwarding handles options added, removed, or changed by a newer harness. Prefer
+   native parsing/forwarding when available; a necessary workaround needs a stated version limit.
+   For backend-dependent features, check deployment and flag state in the tested environment;
+   a client-only test cannot establish that users receive the new backend response.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
    modify only fields it owns, preserve caller/admin state, remove stale state it owns, and
    show errors that tell the user what they can do.
+   Check the effective merge across user and managed files, including skipped or declined
+   privileged writes: a stale native entry and a new stdio entry must not break agent startup.
+   Fallback config writers must retain required timeouts, environment, and auth settings or
+   report that they cannot represent them. Recheck expiring state after slow work before using
+   it to deny an operation.
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
