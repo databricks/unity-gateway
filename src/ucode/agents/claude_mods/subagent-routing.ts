@@ -265,7 +265,9 @@ export const registerSubagentRouting = (
       ...e,
       props: { ...e.props, tool: name },
     } : e)
-    if (!showModel || (!record && !pending.has(e.requestId))) return original
+    // The in-progress line names no model, so blind configs still show it; only the
+    // decided selection names the model and stays hidden when showModel is false.
+    if (record ? !showModel : !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
@@ -286,8 +288,9 @@ export const registerSubagentRouting = (
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
-  // also says routing is under way, timed from the oldest call still waiting.
-  if (showModel) on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+  // also says routing is under way, timed from the oldest call still waiting. Its text
+  // names no model, so blind configs show it too; only the decided selection is hidden.
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
     const seconds = starts.length ? await secondsSince($, Math.min(...starts)) : undefined

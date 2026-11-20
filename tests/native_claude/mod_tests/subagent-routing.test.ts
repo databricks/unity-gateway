@@ -50,12 +50,17 @@ for (const staticModel of [undefined, 'ug-auto-test']) {
     on('fs.write', () => ({ value: undefined }));
     on('tool.call', () => ({ result: 'ok' }));
     on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.component === 'Spinner' ? e.props.message ?? e.props.word : 'Native content'] }));
-    const hidden = /Selected Model|Launched Model|Reason:|glm-5-3-flash|Private routing reason|routed in|Selecting a model|Selecting models/;
+    const hidden = /Selected Model|Launched Model|Reason:|glm-5-3-flash|Private routing reason|routed in/;
     const spinner = { ...panel, component: 'Spinner' as const, requestId: 'auto-spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' as const } };
     const check = async (event: Parameters<typeof $.ui.mount>[0]) => {
       const ui = await $.ui.mount(event);
       expect(await ui.find({ type: 'Text', text: hidden })).toBeUndefined();
-      expect(await ui.find({ type: 'Text', text: event.component === 'Spinner' ? 'Working' : 'Native content' })).toBeDefined();
+      if (event.component === 'Spinner') {
+        // The in-progress indicator names no model, so blind configs still show it.
+        expect(await ui.find({ type: 'Text', text: /Selecting a model|Selecting models for/ })).toBeDefined();
+      } else {
+        expect(await ui.find({ type: 'Text', text: 'Native content' })).toBeDefined();
+      }
       await ui.unmount();
     };
     for (const ids of [['lone'], ['parallel-a', 'parallel-b']]) {
@@ -94,12 +99,25 @@ for (const [show, auto] of [['0', false], ['1', true], ['1', false]] as const) {
     on('session.id', () => ({ value: 'session-display' }));
     on('session.model', () => ({ value: 'ug-auto-test' }));
     on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI' ? show : e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined }));
-    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: 'system.ai.glm-5-3-flash', rationale: 'Display flag reason',
-    }) } }));
+    let release = () => {};
+    const routing = new Promise<void>(resolve => { release = resolve; });
+    on('process.run', async () => {
+      await routing;
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: 'system.ai.glm-5-3-flash', rationale: 'Display flag reason',
+      }) } };
+    });
     on('tool.call', () => ({ result: 'ok' }));
-    on('ui.render', () => ({ type: 'Text', props: {}, children: ['Native content'] }));
-    await $.tool.call({ tool: 'Agent', tool_use_id: 'display-call', ...originalInput });
+    on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.component === 'Spinner' ? e.props.message ?? e.props.word : 'Native content'] }));
+    const call = $.tool.call({ tool: 'Agent', tool_use_id: 'display-call', ...originalInput });
+    // While routing is under way the spinner says so, whatever the display flag says;
+    // only the decided model details follow the flag.
+    const spinner = { ...panel, component: 'Spinner' as const, requestId: 'display-spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' as const } };
+    const spinnerUi = await $.ui.mount(spinner);
+    expect(await spinnerUi.find({ type: 'Text', text: 'Selecting a model' })).toBeDefined();
+    await spinnerUi.unmount();
+    release();
+    await call;
     const ui = await $.ui.mount(row('display-call'));
     expect(await ui.find({ type: 'Text', text: 'Native content' })).toBeDefined();
     for (const text of ['  ↳ Selected Model: ', 'glm-5-3-flash', 'Display flag reason']) {

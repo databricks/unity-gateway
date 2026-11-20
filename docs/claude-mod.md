@@ -80,8 +80,10 @@ Cards survive a turn that ends while the reply waits on a background agent and a
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
 Decisions are kept for the session; a plugin reload clears them from the screen, and the
 routing decision audit log is unchanged.
-`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides these routing spinners, selections, reasons,
-timers and parallel cards. It preserves native rows, animal names and routing behavior.
+`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides these selections, reasons,
+timers and parallel cards. The in-progress "Selecting a model…" spinner line and the
+turn spinner still say routing is under way; they name no model. The flag preserves
+native rows, animal names and routing behavior.
 Claude Auto's and the blind orch v0 config versions set it to `0`; other mappings set it
 to `1`.
 Without a version selector, an unset flag preserves the visible routing details.
