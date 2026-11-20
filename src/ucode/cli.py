@@ -4418,10 +4418,14 @@ def _launch_tool(
                 # The speculation is best effort: a failed background token or catalog fetch
                 # falls back to the serial fetch on the live token, never fails the launch.
                 return None
-            if speculative.error_msg:
-                # The speculative request rode a token fetched before configure's auth step, so
-                # its failure may be stale credentials that step repaired; refetch with the live
-                # token rather than failing the launch on it.
+            error = speculative.error_msg
+            if error and "401" not in error and "unauthorized" not in error.lower():
+                # A non-auth failure (a 403, say) would fail a live-token fetch the same way,
+                # so use the speculative result instead of doubling the request.
+                return speculative
+            if error:
+                # An auth-shaped failure may be stale pre-auth credentials that configure's
+                # auth step repaired; refetch with the live token.
                 return None
             return speculative
 
