@@ -10,10 +10,60 @@ from types import SimpleNamespace
 import pytest
 
 from ucode import agents, codex_config, custom_oauth
-from ucode.agents import LaunchOptions, codex
+from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
+
+
+@pytest.fixture(autouse=True)
+def native_catalog(monkeypatch):
+    monkeypatch.setattr(
+        codex_catalog,
+        "prepare_codex_catalog",
+        lambda binary, names: {
+            "models": [{"slug": name, "multi_agent_version": "v2"} for name in names]
+        },
+    )
+
+
+def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
+    source = tmp_path / "user.json"
+    original = {
+        "models": [
+            {"slug": "gpt-6-luna", "multi_agent_version": "v2", "future": {"x": 1}},
+            {"slug": "glm-5-3-flash", "multi_agent_version": None},
+            {"slug": "hidden-alias", "multi_agent_version": "v2", "visibility": "hide"},
+        ]
+    }
+    source.write_text(json.dumps(original))
+    before = source.read_bytes()
+    output = tmp_path / "session.json"
+    assert v2._codex_plaintext_catalog("codex", str(source), [], output) == str(output)
+    expected = json.loads(before)
+    expected["models"][0]["multi_agent_version"] = "v1"
+    expected["models"][2]["multi_agent_version"] = "v1"
+    assert json.loads(output.read_text()) == expected
+    assert source.read_bytes() == before
+
+
+def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path, monkeypatch):
+    calls = []
+
+    def prepare(binary, names):
+        calls.append((binary, names))
+        return {"models": [{"slug": names[0], "multi_agent_version": "v2"}]}
+
+    monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", prepare)
+    output = tmp_path / "session.json"
+    v2._codex_plaintext_catalog("/native/codex", None, ["model-a"], output)
+    assert calls == [("/native/codex", ["model-a"])]
+    assert json.loads(output.read_text())["models"][0]["multi_agent_version"] == "v1"
+
+
+def test_plaintext_catalog_rejects_unreadable_source(tmp_path):
+    with pytest.raises(RuntimeError, match="Cannot load the Codex model catalog"):
+        v2._codex_plaintext_catalog("codex", str(tmp_path / "missing"), [], tmp_path / "out")
 
 
 def test_smart_routing_switch_message_is_boxed():
@@ -848,7 +898,10 @@ class TestCustomCatalogModels:
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
-        assert catalog_override == "model_catalog_json=" + json.dumps(str(tmp_path / "cli.json"))
+        session_catalog = Path(json.loads(catalog_override.split("=", 1)[1]))
+        source_catalog = tmp_path / "cli.json"
+        assert session_catalog != source_catalog
+        assert json.loads(session_catalog.read_text()) == json.loads(source_catalog.read_text())
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override

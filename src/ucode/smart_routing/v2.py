@@ -1084,6 +1084,27 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
+def _codex_plaintext_catalog(
+    binary: str, catalog_path: str | None, models: list[str], output: Path
+) -> str:
+    from ucode.agents.codex_catalog import prepare_codex_catalog
+
+    catalog = (
+        read_json_safe(Path(catalog_path))
+        if catalog_path
+        else prepare_codex_catalog(binary, models)
+    )
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError("Cannot load the Codex model catalog for plaintext task routing.")
+    # Native v2 encrypts assignments before PreToolUse can send them to the router.
+    for model in entries:
+        if model.get("multi_agent_version") == "v2":
+            model["multi_agent_version"] = "v1"
+    write_json_file(output, catalog)
+    return str(output)
+
+
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -1145,6 +1166,12 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    overlay["model_catalog_json"] = _codex_plaintext_catalog(
+        binary,
+        overlay.get("model_catalog_json"),
+        list(dict.fromkeys([*available_models, start_model])),
+        session_env_path.with_suffix(".models.json"),
+    )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
