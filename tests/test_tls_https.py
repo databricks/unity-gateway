@@ -69,6 +69,8 @@ def with_databricks_sdk():
     client.do("GET", "/api/2.0/preview/scim/v2/Me")
 
 def with_ug():
+    # The pooled httpx client _http_open builds: httpx's default SSL contexts, but through
+    # ug's own transport (urllib-style proxy routing) and error mapping.
     from ucode.databricks import _http_get_json
     payload, reason = _http_get_json(url + "/api/anything", "test-token", max_retries=0)
     results["ug_reason"] = reason

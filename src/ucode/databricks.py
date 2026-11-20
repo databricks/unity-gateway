@@ -468,6 +468,9 @@ def _get_http_client() -> httpx.Client:
             # Before any SSL context is built — the client's and the transports' — so httpx's
             # default contexts verify against the trust store tls.apply() selected for the
             # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
+            # Under the `python` store those defaults trust certifi, or SSL_CERT_FILE /
+            # SSL_CERT_DIR when set, rather than the OpenSSL paths urllib reads; the
+            # certificate-failure hint already tells python-mode users to set SSL_CERT_FILE.
             tls.apply()
             limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
             proxies = _urllib_proxies()
