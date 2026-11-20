@@ -598,14 +598,8 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-native hook tests cover rate-limit candidate exclusions, cooldown expiry before and during
-routing, the exact expiry boundary, unavailable clocks, preserved non-cooldown denials,
-optional request IDs, notices received during failed routing, rejected-card removal, and
-launch-model reporting using fixtures.
-Python component tests check the filtered router request, custom-deployment context hints,
-malformed exclusions and missing routing decisions. Native process coverage verifies the
-explicit disabled response.
-These checks do not establish live gateway quota recovery. The
+native hook and Python component tests cover rate-limit cooldown using fixtures;
+they do not establish live gateway quota recovery. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's native off-feedback selector has component coverage in
 `../test_smart_router_feedback.py` and `../test_codex_metadata.py`: native tool binding,
