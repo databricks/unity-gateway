@@ -63,10 +63,13 @@ const shortModel = (model: string): string => {
 // The selected model is only a prediction until the spawn receipt names the launched one.
 const differs = (selected: string, launched: string): boolean =>
   canonicalModel(launched) !== canonicalModel(selected)
+// Flags a launch that is not the model the heading named.
+const mismatchNote = (selected: string, launched: string): string =>
+  differs(selected, launched) ? ` ⚠ heading said ${shortModel(selected)}` : ''
 const taskLabel = (record: RoutingRecord): string => {
   const launched = record.spawned?.model
   if (!launched) return `${record.name} — ${shortModel(record.model)} (selected, launch pending)`
-  return `${record.name} — ${shortModel(launched)}${differs(record.model, launched) ? ` ⚠ heading said ${shortModel(record.model)}` : ''}`
+  return `${record.name} — ${shortModel(launched)}${mismatchNote(record.model, launched)}`
 }
 // The heading the parent's call is given before launch: the predicted model, checked at spawn.
 const heading = (record: RoutingRecord): string =>
@@ -82,8 +85,7 @@ type RoutedDisplay = {
 }
 // The receipt-backed label: the launched model, flagged when the heading predicted another.
 const receiptLabel = (d: Pick<RoutedDisplay, 'animal' | 'title' | 'selected' | 'launched'>): string =>
-  `${d.animal} · ${shortModel(d.launched)} · ${d.title}`
-  + (differs(d.selected, d.launched) ? ` ⚠ heading said ${shortModel(d.selected)}` : '')
+  `${d.animal} · ${shortModel(d.launched)} · ${d.title}${mismatchNote(d.selected, d.launched)}`
 export const routedDisplays: {
   sessionId?: string; root?: string; records: Map<string, RoutedDisplay>
 } = { records: new Map() }
@@ -172,6 +174,8 @@ const pending = new Map<string, number | undefined>()
 // A lone call keeps its decision under its own row.
 const grouped = new Set<string>()
 const records = new Map<string, RoutingRecord>()
+// Calls the router has already been asked about, so a failed answer is not asked for again.
+const attempted = new Set<string>()
 // The reply each batch is drawn above.
 const anchors = new Map<string, string[]>()
 // Replies already drawn before a batch was routed are never its anchor.
@@ -193,13 +197,14 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
 async function routeCall($: any, e: any): Promise<void> {
   const { options, autoModels } = routing
   const command = options!.routeCommand as readonly string[]
-  if (e.tool_use_id && records.has(e.tool_use_id)) return
+  if (e.tool_use_id && (records.has(e.tool_use_id) || attempted.has(e.tool_use_id))) return
   if (!command.length || e.subagent_type === 'fork' || e.resume) return
   const selected = autoModels ? await $.session.model() : ''
   if (autoModels && (
     !autoModels.some(model => matchesAutoModel(model, selected)) || !await $.routingEnabled()
   )) return
   const { tool, tool_use_id, agentId, ...input } = e
+  if (tool_use_id) attempted.add(tool_use_id)
   let route
   let spinner: { cancel: () => void } | undefined
   if (tool_use_id) {
@@ -315,7 +320,7 @@ export const registerSubagentRouting = (
   routing.options = options
   routing.autoModels = autoModels
   for (const state of [names, pending, records, anchors]) state.clear()
-  for (const state of [grouped, seen]) state.clear()
+  for (const state of [grouped, seen, attempted]) state.clear()
   unusedNames.splice(0, unusedNames.length, ...ANIMALS)
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     await routeCall({
@@ -407,7 +412,7 @@ export const registerSubagentRouting = (
         ...(record && input !== null && typeof input === 'object' && !Array.isArray(input)
           && record.spawned?.model
           ? { input: { ...input, description: shortModel(record.spawned.model)
-            + (differs(record.model, record.spawned.model) ? ` ⚠ heading said ${shortModel(record.model)}` : '') } } : {}),
+            + mismatchNote(record.model, record.spawned.model) } } : {}),
       },
     } : e)
     if (!record && !pending.has(e.requestId)) return original

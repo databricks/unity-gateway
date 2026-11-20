@@ -1055,3 +1055,21 @@ test('a server-side auto-mode review keeps the reply as the model wrote it', asy
   expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
   expect(routerCalls).toHaveLength(0);
 });
+
+test('a routing failure while the reply streams is not retried at tool.call', async ($, on) => {
+  const routerCalls: any[] = [];
+  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, event) => { routerCalls.push(event); return { value: { exitCode: 1, stderr: '', stdout: '' } }; });
+  on('tool.call', () => ({ result: 'launched' }));
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'tool', index: 0, id: 'retry-0', name: 'Agent' };
+    yield { kind: 'input', index: 0, json: JSON.stringify(call) };
+    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
+  });
+  const turn = await collectParentTurn($, 'retry', 0);
+  expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'retry-0', ...call });
+  expect(routerCalls).toHaveLength(1);
+});
