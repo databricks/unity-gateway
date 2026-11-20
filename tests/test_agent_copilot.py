@@ -6,6 +6,10 @@ import contextlib
 import json
 import os
 import signal
+import subprocess
+import sys
+import textwrap
+import time
 import uuid
 from pathlib import Path
 
@@ -2282,6 +2286,50 @@ class TestSeatRelay:
         assert seen["env"]["COPILOT_API_URL"].startswith("http://127.0.0.1:")
         assert seen["unsigned_status"] == 401
         assert capsys.readouterr().out == ""
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="only Windows leaves a terminated process's children up"
+    )
+    def test_windows_runtime_stops_when_the_wrapper_is_terminated(self, tmp_path):
+        stopped = tmp_path / "stopped"
+        ug = textwrap.dedent(
+            f"""
+            import subprocess, sys
+            from ucode.agents import copilot
+            runtime = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            copilot._stop_with_wrapper(runtime)
+            runtime.wait()
+            open({str(stopped)!r}, "w").close()
+            """
+        )
+        # The `ug.exe` launcher between the wrapper and ug's Python, which outlives the wrapper.
+        launcher = (
+            f"import subprocess, sys; sys.exit(subprocess.call([sys.executable, '-c', {ug!r}]))"
+        )
+        wrapper = textwrap.dedent(
+            f"""
+            import os, subprocess, sys, time
+            env = {{**os.environ, {copilot.RUNTIME_WRAPPER_PID_ENV!r}: str(os.getpid())}}
+            subprocess.Popen([sys.executable, "-c", {launcher!r}], env=env)
+            time.sleep(120)
+            """
+        )
+        process = subprocess.Popen([sys.executable, "-c", wrapper])
+        time.sleep(5)
+
+        # How VS Code stops the runtime: it terminates the process it started.
+        process.kill()
+        process.wait()
+
+        deadline = time.monotonic() + 30
+        while not stopped.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert stopped.exists()
+
+    def test_a_wrapper_pid_that_isnt_a_number_is_ignored(self, monkeypatch):
+        monkeypatch.setenv(copilot.RUNTIME_WRAPPER_PID_ENV, "not-a-pid")
+
+        copilot._stop_with_wrapper(object())
 
     def test_vscode_runtime_that_cant_start_reports_it_on_stderr(
         self, tmp_path, monkeypatch, capsys
