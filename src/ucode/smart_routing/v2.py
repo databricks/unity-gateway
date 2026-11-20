@@ -67,7 +67,6 @@ from ucode.skills import (
 )
 from ucode.smart_routing import (
     claude_routing,
-    codex_routing,
     orchestrator,
     routing,
     session_log,
@@ -1176,15 +1175,6 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
-    if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
-        startup_validation.start(
-            workspace,
-            os.environ[OAUTH_TOKEN_ENV_VAR],
-            codex_routing.codex_route_options(available_models),
-            router_name=routing.configured_router_name(),
-            session_controls=session_env_path,
-            provider=state.get("_codex_launch_provider"),
-        )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
