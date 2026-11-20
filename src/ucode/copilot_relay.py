@@ -243,6 +243,7 @@ class _CopilotRelayHandler(_ProxyHandler):
     copilot_host: Callable[[str], str | None]
     direct_base_url: Callable[[str], str]
     on_direct_request: Callable[[str, str], None]
+    request_headers_adder: Callable[[Any, bytes | None], Mapping[str, str]] | None = None
 
     _api_host = ""
     _gateway_call = False
@@ -344,6 +345,16 @@ class _CopilotRelayHandler(_ProxyHandler):
             return AUTHORIZATION_HEADER, strip, "copilot-otel"
         return AI_GATEWAY_TOKEN_HEADER, self._databricks_headers(), "copilot-gateway"
 
+    def _request_headers(self, body: bytes | None) -> Mapping[str, str]:
+        if self.request_headers_adder is None:
+            return {}
+        try:
+            return self.request_headers_adder(self.headers, body)
+        except Exception as exc:
+            # The headers only label the request, so a failure must not cost the request.
+            log_proxy_diagnostic("request_headers_failed", error=type(exc).__name__)
+            return {}
+
     def _added_headers(self, body: bytes | None) -> dict[str, str]:
         extra = {
             name: value
@@ -352,8 +363,15 @@ class _CopilotRelayHandler(_ProxyHandler):
         }
         if self._is_otel_export():
             return extra
+        launched = {name.lower() for name in extra}
+        per_request = {
+            name: value
+            for name, value in self._request_headers(body).items()
+            if name.lower() not in _RESERVED_ADDED_HEADERS and name.lower() not in launched
+        }
         return {
             **extra,
+            **per_request,
             MODEL_PROVIDER_SERVICE_HEADER: self.provider_service,
             GITHUB_COPILOT_API_HOST_HEADER: self._api_host,
         }

@@ -63,6 +63,15 @@ def test_set_refuses_a_duplicate_key_instead_of_guessing_which_one_counts():
         jsonc.set_member('{\n    "k": 1,\n    "k": 2\n}', "k", 3)
 
 
+def test_remove_takes_a_comma_on_the_next_line_too():
+    text = f'{{\n    "{KEY}": "/w"\n    ,\n    "a": 1\n}}'
+
+    edited = jsonc.remove_member(text, KEY)
+
+    assert jsonc.get_member(edited, KEY) is None
+    assert jsonc.get_member(edited, "a") == 1
+
+
 def test_get_member_of_an_absent_key_is_none():
     assert jsonc.get_member('{"a": 1}', "k") is None
     assert jsonc.get_member("", "k") is None

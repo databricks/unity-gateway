@@ -161,14 +161,17 @@ def remove_member(text: str, key: str) -> str:
     line_start = text.rfind("\n", 0, member.key_start) + 1
     line_end = text.find("\n", member.value_end)
     line_end = len(text) if line_end < 0 else line_end
-    own_line = not text[line_start : member.key_start].strip() and not text[
-        member.value_end : line_end
-    ].strip(" \t,")
+    comma = _comma_after(text, member.value_end)
+    own_line = (
+        not text[line_start : member.key_start].strip()
+        and not text[member.value_end : line_end].strip(" \t,")
+        and (comma is None or comma < line_end)
+    )
     if own_line:
         deletions = [(line_start, min(line_end + 1, len(text)))]
     else:
         deletions = [(member.key_start, member.value_end)]
-        if (comma := _comma_after(text, member.value_end)) is not None:
+        if comma is not None:
             deletions.append((comma, comma + 1))
     if position > 0 and position == len(members) - 1:
         previous = _comma_after(text, members[position - 1].value_end)

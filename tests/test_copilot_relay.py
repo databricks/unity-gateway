@@ -171,6 +171,17 @@ class TestGatewayRoutes:
         assert "x-databricks-org-id" not in sent["headers"]
         assert sent["names"].count("x-databricks-ai-gateway-token") == 1
 
+    def test_a_request_header_adder_labels_gateway_calls(self, gateway, github):
+        with _relay(
+            gateway,
+            github,
+            request_headers_adder=lambda headers, body: {"thread-id": "sub-1"},
+        ) as (http, _port, _direct):
+            http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["thread-id"] == "sub-1"
+
     def test_adds_the_launch_headers_without_replacing_its_own(self, gateway, github):
         added = {
             "User-Agent": "ucode/1 copilot/2",
