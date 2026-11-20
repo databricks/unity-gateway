@@ -842,6 +842,16 @@ class TestEarlierBuildsTracing:
         assert not record.parent.exists()
         assert _settings() == {"theme": "dark"}
 
+    def test_unreadable_or_unclosed_profiles_are_left_alone(self, home, monkeypatch):
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
+        (home / ".profile").write_bytes(b"export A=\xff\n")
+        unclosed = "export A=1\n\n" + self.BLOCK.split("# <<<")[0]
+        (home / ".zshenv").write_text(unclosed)
+
+        assert desktop_setup.revert_copilot_app() == "not set up"
+        assert (home / ".profile").read_bytes() == b"export A=\xff\n"
+        assert (home / ".zshenv").read_text() == unclosed
+
     def test_revert_of_it_alone_reports_it(self, home, monkeypatch):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
         (home / ".profile").write_text(self.BLOCK)

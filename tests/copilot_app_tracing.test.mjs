@@ -297,7 +297,7 @@ test("a rejected export isn't retried", async () => {
 });
 
 test("an export that may have been written is never sent again", async () => {
-  for (const outcome of [500, new Error("The operation was aborted due to timeout")]) {
+  for (const outcome of [500, 408, 502, 504, new Error("The operation was aborted due to timeout")]) {
     const { exporter, requests, logs } = exporterWith([outcome, 200]);
     exporter.add({ name: "a" });
     await exporter.flush();

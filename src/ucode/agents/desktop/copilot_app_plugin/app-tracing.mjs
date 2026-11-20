@@ -332,7 +332,8 @@ export function exportBody(spans) {
   };
 }
 
-const RETRYABLE_STATUSES = new Set([408, 429, 502, 503, 504]);
+// A 429 or 503 turns the export away; a 408, 502 or 504 may come after the spans were written.
+const RETRYABLE_STATUSES = new Set([429, 503]);
 
 // Spans wait in memory, at most MAX_BUFFERED_SPANS, and go out in one export at a time. An export
 // that keeps failing is dropped and logged; nothing here throws or holds up a turn.
