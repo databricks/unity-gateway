@@ -3370,6 +3370,17 @@ def otel_proxy_cmd(
         raise typer.Exit(1) from None
 
 
+@app.command("copilot-app-restart", hidden=True)
+def copilot_app_restart_cmd(
+    target: Annotated[str, typer.Argument(help="The app to restart, as JSON from ug's plugin.")],
+) -> None:
+    """Restart the GitHub Copilot app once no chat in it is running a turn. ug's plugin for the
+    app starts this, detached, after it changed the app's Databricks models."""
+    from ucode.agents.desktop import copilot_app_restart
+
+    copilot_app_restart.main(target)
+
+
 @app.command("otel-headers", hidden=True)
 def otel_headers_cmd(
     host: Annotated[

@@ -41,6 +41,7 @@ class FakeApp:
         self.secrets: dict[str, str] = {}
         self.received: list[dict] = []
         self.handshakes: list[dict] = []
+        self.paths: list[str] = []
         self.busy = 0
         self.busy_kinds: tuple[str, ...] = ("upsert",)
         self.fail: str | None = None
@@ -56,6 +57,7 @@ class FakeApp:
 
     def _check(self, connection, request):
         self.handshakes.append(dict(request.headers.raw_items()))
+        self.paths.append(request.path)
         if request.headers.get("Origin"):
             return connection.respond(http.HTTPStatus.FORBIDDEN, "origin")
         if parse_qs(urlparse(request.path).query).get("token") != [self.token]:

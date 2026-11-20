@@ -271,7 +271,7 @@ def state_providers(
 class _AppConnection:
     """One connection to the app's WebSocket API, matching each reply to its request."""
 
-    def __init__(self, home: Path) -> None:
+    def __init__(self, home: Path, *, session_channels: bool = False) -> None:
         from websockets.exceptions import InvalidHandshake, InvalidStatus
         from websockets.sync.client import connect
 
@@ -287,7 +287,15 @@ class _AppConnection:
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
         if pid is not None and not process_running(pid):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.")
-        query = urlencode({"token": token, "requester_id": "ug", "session_channels": "false"})
+        # With session channels, the app also sends every session's events, its window's chats
+        # included.
+        query = urlencode(
+            {
+                "token": token,
+                "requester_id": "ug",
+                "session_channels": "true" if session_channels else "false",
+            }
+        )
         url = f"ws://127.0.0.1:{port}/?{query}"
         try:
             # No Origin: the app refuses any origin but its own window.
@@ -328,6 +336,11 @@ class _AppConnection:
             if isinstance(message, dict):
                 return message
         return None
+
+    def next_message(self, timeout: float) -> dict[str, Any] | None:
+        """The app's next message within ``timeout`` seconds, or None. Raises
+        ``CopilotAppNotRunning`` once the app closes the connection."""
+        return self._next(time.monotonic() + timeout)
 
     def _wait(self, matches, timeout: float = _REQUEST_TIMEOUT_S) -> dict[str, Any] | None:
         deadline = time.monotonic() + timeout
