@@ -10733,7 +10733,7 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         # The definitive auth failure was reported as handled before the refetch.
         [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
         assert count == 1
-        assert labels["operation"] == "models_list"
+        assert labels["operation"] == metrics_mod.MODELS_LIST_OPERATION
         assert labels["continued_with_fallback"] is True
 
     def test_speculative_token_failure_falls_back_to_the_serial_fetch(
