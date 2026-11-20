@@ -235,6 +235,7 @@ class TestWritePlugin:
             "extension.mjs",
             "ug-plugin.mjs",
             "app-rows.mjs",
+            "app-remove.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (
@@ -391,6 +392,122 @@ class TestSettings:
         assert root.exists()
 
 
+def _extension_config(root: Path) -> dict:
+    return json.loads(
+        (root / "plugins" / "databricks" / "extensions" / "databricks" / "config.json").read_text()
+    )
+
+
+def _remove_keys_as_the_extension_does(home: Path) -> None:
+    settings = json.loads(_settings(home).read_text())
+    del settings["extraKnownMarketplaces"]["unity-gateway"]
+    del settings["enabledPlugins"]["databricks@unity-gateway"]
+    _settings(home).write_text(json.dumps({k: v for k, v in settings.items() if v}))
+
+
+class TestDeferredRemove:
+    def test_defer_remove_marks_the_config_and_keeps_the_plugin_enabled(self, home):
+        root = plugin.install(_config(owned_provider_ids=("p",)))
+        settings = _settings(home).read_text()
+        assert plugin.defer_remove() is True
+        config = _extension_config(root)
+        assert config["remove"] is True
+        assert config["pluginRoot"] == str(root)
+        assert config["app"]["ownedProviderIds"] == ["p"]
+        assert _settings(home).read_text() == settings
+        assert plugin.status() == "removal_pending"
+
+    def test_defer_remove_without_a_plugin(self, home):
+        assert plugin.defer_remove() is False
+        assert not plugin.plugin_root().exists()
+        plugin.write_plugin(_config())
+        assert plugin.defer_remove() is False
+        assert "remove" not in _extension_config(plugin.plugin_root())
+
+    @pytest.mark.parametrize("content", ["{not json", "[]"])
+    def test_defer_remove_refuses_invalid_settings(self, home, content):
+        root = plugin.install(_config())
+        _settings(home).write_text(content)
+        with pytest.raises(plugin.SettingsError):
+            plugin.defer_remove()
+        assert "remove" not in _extension_config(root)
+
+    def test_defer_remove_refuses_a_symlinked_settings_file(self, home, tmp_path):
+        root = plugin.install(_config())
+        target = tmp_path / "real-settings.json"
+        target.write_text(_settings(home).read_text())
+        _settings(home).unlink()
+        _settings(home).symlink_to(target)
+        with pytest.raises(plugin.SettingsError, match="symlink"):
+            plugin.defer_remove()
+        assert "remove" not in _extension_config(root)
+
+    def test_install_cancels_a_deferred_remove(self, home):
+        plugin.install(_config())
+        plugin.defer_remove()
+        plugin.install(_config())
+        assert plugin.status() == "installed"
+
+    def test_a_disabled_plugin_is_not_pending(self, home):
+        plugin.install(_config())
+        plugin.defer_remove()
+        settings = json.loads(_settings(home).read_text())
+        settings["enabledPlugins"]["databricks@unity-gateway"] = False
+        _settings(home).write_text(json.dumps(settings))
+        assert plugin.status() == "disabled"
+
+    def test_cleanup_leftover_waits_for_the_extension(self, home):
+        root = plugin.install(_config())
+        plugin.defer_remove()
+        assert plugin.cleanup_leftover() is False
+        assert root.exists()
+        _remove_keys_as_the_extension_does(home)
+        assert plugin.status() == "not_installed"
+        assert plugin.cleanup_leftover() is True
+        assert not root.exists()
+        assert plugin.cleanup_leftover() is False
+
+    def test_cleanup_leftover_keeps_a_plugin_without_a_deferred_remove(self, home):
+        root = plugin.install(_config())
+        _remove_keys_as_the_extension_does(home)
+        assert plugin.cleanup_leftover() is False
+        assert root.exists()
+
+    def test_cleanup_leftover_keeps_the_directory_while_a_key_is_left(self, home):
+        root = plugin.install(_config())
+        plugin.defer_remove()
+        settings = json.loads(_settings(home).read_text())
+        del settings["extraKnownMarketplaces"]
+        _settings(home).write_text(json.dumps(settings))
+        assert plugin.cleanup_leftover() is False
+        assert root.exists()
+
+    def test_cleanup_leftover_with_invalid_settings_changes_nothing(self, home):
+        root = plugin.install(_config())
+        plugin.defer_remove()
+        _settings(home).write_text("{oops")
+        assert plugin.cleanup_leftover() is False
+        assert root.exists()
+
+    def test_remove_after_the_extension_deletes_the_directory_at_once(self, home):
+        root = plugin.install(_config())
+        plugin.defer_remove()
+        _remove_keys_as_the_extension_does(home)
+        waits = []
+        assert plugin.remove(wait=waits.append) is True
+        assert waits == []
+        assert not root.exists()
+
+    def test_remove_while_pending_still_drops_the_keys_first(self, home):
+        root = plugin.install(_config())
+        plugin.defer_remove()
+        waits = []
+        assert plugin.remove(wait=waits.append) is True
+        assert waits == [plugin.UNLOAD_WAIT_S]
+        assert json.loads(_settings(home).read_text()) == {}
+        assert not root.exists()
+
+
 class TestStatus:
     def test_not_installed(self, home):
         assert plugin.status() == "not_installed"
@@ -415,11 +532,20 @@ class TestStatus:
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestExtensionSource:
-    @pytest.mark.parametrize("name", ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs"])
+    @pytest.mark.parametrize(
+        "name", ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs"]
+    )
     def test_syntax(self, name):
         subprocess.run([NODE, "--check", str(PLUGIN_SOURCE / name)], check=True)
 
-    @pytest.mark.parametrize("name", ["copilot_app_plugin.test.mjs", "copilot_app_rows.test.mjs"])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "copilot_app_plugin.test.mjs",
+            "copilot_app_rows.test.mjs",
+            "copilot_app_remove.test.mjs",
+        ],
+    )
     def test_node_unit_tests(self, name):
         result = subprocess.run(
             [NODE, "--test", str(Path(__file__).with_name(name))],
@@ -427,3 +553,32 @@ class TestExtensionSource:
             text=True,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_the_extension_finishes_a_deferred_remove_for_ug(self, home, tmp_path):
+        root = plugin.install(_config())
+        plugin.defer_remove()
+        extension = root / "plugins" / "databricks" / "extensions" / "databricks"
+        script = (
+            "import { readFileSync } from 'node:fs';"
+            f"import {{ removeOnce }} from {json.dumps((extension / 'app-remove.mjs').as_uri())};"
+            "const [config, home, stateDir] = process.argv.slice(1);"
+            "console.log(await removeOnce(JSON.parse(readFileSync(config, 'utf8')), { home, stateDir }));"
+        )
+        result = subprocess.run(
+            [
+                NODE,
+                "--input-type=module",
+                "-e",
+                script,
+                str(extension / "config.json"),
+                str(_settings(home).parent),
+                str(extension),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "removed"
+        assert json.loads(_settings(home).read_text()) == {}
+        assert plugin.cleanup_leftover() is True
+        assert not root.exists()

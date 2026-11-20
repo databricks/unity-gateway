@@ -4,6 +4,9 @@ ug writes a local plugin marketplace it owns and turns it on in Copilot's ``sett
 plugin's extension writes ug's providers and model rows to the app's model picker over the app's
 local WebSocket API and serves them straight from the AI Gateway under the same ids. It gets each
 request's Databricks token from ``ug auth-token``, reusing it until shortly before it expires.
+
+With the app closed, ug can't delete its rows, so ``defer_remove`` leaves that and the settings keys
+to the extension's next start, and ``cleanup_leftover`` deletes the directory afterwards.
 """
 
 from __future__ import annotations
@@ -28,11 +31,11 @@ EXTENSION = "databricks"
 VERSION = "0.1.0"
 
 Wire = Literal["anthropic", "responses", "completions"]
-Status = Literal["installed", "disabled", "not_installed", "invalid_settings"]
+Status = Literal["installed", "removal_pending", "disabled", "not_installed", "invalid_settings"]
 
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
-_SOURCE_FILES = ("extension.mjs", "ug-plugin.mjs", "app-rows.mjs")
+_SOURCE_FILES = ("extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs")
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
 UNLOAD_WAIT_S = 5.0
@@ -302,6 +305,33 @@ def _owns_marketplace(settings: dict, root: Path) -> bool:
     return isinstance(source, dict) and source.get("path") == str(root)
 
 
+def _installed(settings: dict, root: Path) -> bool:
+    return _owns_marketplace(settings, root) and (_extension_dir(root) / "extension.mjs").exists()
+
+
+def _has_ug_keys(settings: dict, root: Path) -> bool:
+    if _owns_marketplace(settings, root):
+        return True
+    marketplaces = settings.get(_MARKETPLACES_KEY)
+    if isinstance(marketplaces, dict) and MARKETPLACE in marketplaces:
+        return False
+    enabled = settings.get(_ENABLED_KEY)
+    return isinstance(enabled, dict) and PLUGIN_KEY in enabled
+
+
+def _read_extension_config(root: Path) -> dict | None:
+    try:
+        config = json.loads((_extension_dir(root) / "config.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _removal_requested(root: Path) -> bool:
+    config = _read_extension_config(root)
+    return config is not None and config.get("remove") is True
+
+
 def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     """Add ug's marketplace and turn its plugin on, keeping every other setting."""
     root = root or plugin_root()
@@ -360,17 +390,51 @@ def remove(
     return changed
 
 
+def defer_remove(root: Path | None = None, settings_path: Path | None = None) -> bool:
+    """Ask the extension to remove ug's rows from the app and then ug's settings keys the next time
+    it starts, for when the app isn't running. The plugin stays enabled so that the extension runs.
+    Returns whether there was an installed plugin to mark."""
+    root = root or plugin_root()
+    path = settings_path or copilot_settings_path()
+    settings = read_settings(path)
+    # The extension rewrites settings.json under the same rules, so ug refuses what it would.
+    _check_writable(path)
+    if not _installed(settings, root):
+        return False
+    config = _read_extension_config(root)
+    if config is None:
+        return False
+    config["remove"] = True
+    config["pluginRoot"] = str(root)
+    atomic_write_json(_extension_dir(root) / "config.json", config)
+    return True
+
+
+def cleanup_leftover(root: Path | None = None, settings_path: Path | None = None) -> bool:
+    """Delete the plugin directory once the extension has finished a deferred remove, which leaves
+    it behind. Returns whether it was deleted."""
+    root = root or plugin_root()
+    if not _removal_requested(root):
+        return False
+    try:
+        settings = read_settings(settings_path)
+    except SettingsError:
+        return False
+    if _has_ug_keys(settings, root):
+        return False
+    shutil.rmtree(root)
+    return True
+
+
 def status(root: Path | None = None, settings_path: Path | None = None) -> Status:
     root = root or plugin_root()
     try:
         settings = read_settings(settings_path)
     except SettingsError:
         return "invalid_settings"
-    if not (
-        _owns_marketplace(settings, root) and (_extension_dir(root) / "extension.mjs").exists()
-    ):
+    if not _installed(settings, root):
         return "not_installed"
     enabled = settings.get(_ENABLED_KEY)
     if isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is True:
-        return "installed"
+        return "removal_pending" if _removal_requested(root) else "installed"
     return "disabled"

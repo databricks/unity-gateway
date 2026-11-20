@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 export const REQUEST_TIMEOUT_MS = 15_000;
 export const LOCK_STALE_MS = 60_000;
+export const LOCK_FILE = "app-sync.lock";
+export const SYNC_STAMP_FILE = "app-sync.json";
 
 export function copilotHome(env = process.env) {
   return env.COPILOT_HOME || join(homedir(), ".copilot");
@@ -137,12 +139,23 @@ async function deleteProvider(app, providerId) {
   });
 }
 
+async function listProviders(app) {
+  const { providers } = await app.request({ type: "list_model_providers" }, "model_providers_list");
+  if (!Array.isArray(providers)) throw new AppError("The GitHub Copilot app listed its providers in a new shape.");
+  return new Map(providers.filter((p) => p && typeof p.id === "string").map((p) => [p.id, p]));
+}
+
+export async function deleteProviders(app, providerIds) {
+  const existing = await listProviders(app);
+  for (const id of providerIds) {
+    if (existing.has(id)) await deleteProvider(app, id);
+  }
+}
+
 // Writes ``rows`` (config.app) to the app, and deletes the providers and models of ug's that
 // aren't in it. Upserts with fixed ids, so running it again changes nothing.
 export async function syncRows(app, rows) {
-  const { providers } = await app.request({ type: "list_model_providers" }, "model_providers_list");
-  if (!Array.isArray(providers)) throw new AppError("The GitHub Copilot app listed its providers in a new shape.");
-  const existing = new Map(providers.filter((p) => p && typeof p.id === "string").map((p) => [p.id, p]));
+  const existing = await listProviders(app);
   const wanted = new Set(rows.providers.map((entry) => entry.provider.id));
   for (const id of rows.ownedProviderIds) {
     if (existing.has(id) && !wanted.has(id)) await deleteProvider(app, id);
@@ -165,7 +178,7 @@ export async function syncRows(app, rows) {
   }
 }
 
-function tryLock(path, now) {
+export function tryLock(path, now) {
   try {
     closeSync(openSync(path, "wx"));
     return true;
@@ -198,9 +211,9 @@ export async function syncOnce(config, { home = copilotHome(), stateDir, now = D
   const endpoint = readEndpoint(home);
   if (!endpoint) return "not_running";
   const digest = createHash("sha256").update(JSON.stringify(rows)).update("\0").update(endpoint.token).digest("hex");
-  const stampPath = join(stateDir, "app-sync.json");
+  const stampPath = join(stateDir, SYNC_STAMP_FILE);
   if (readStamp(stampPath) === digest) return "current";
-  const lockPath = join(stateDir, "app-sync.lock");
+  const lockPath = join(stateDir, LOCK_FILE);
   if (!tryLock(lockPath, now)) return "busy";
   try {
     const app = await connectApp(endpoint, connect);

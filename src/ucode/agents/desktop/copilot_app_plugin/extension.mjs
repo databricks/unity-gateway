@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 
+import { removeInBackground } from "./app-remove.mjs";
 import { syncInBackground } from "./app-rows.mjs";
 import {
   buildProviders,
@@ -15,26 +16,36 @@ import {
 const config = loadConfig(new URL("./config.json", import.meta.url));
 const syncOptions = { stateDir: fileURLToPath(new URL(".", import.meta.url)) };
 const logSyncFailure = (message) => console.error(message);
-const firstSync = syncInBackground(config, syncOptions, logSyncFailure);
-let session;
-const tokenSource = createTokenSource(config);
-const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
-  const hint = hintFor(error, config);
-  if (!session || !hint) return false;
-  session.log(hint, { level: "error" });
-  return true;
-});
-session = await joinSession({
-  providers: buildProviders(config, bearerTokenProvider),
-  models: config.models,
-});
-session.on((event) => {
-  if (!isAuthRejection(event)) return;
-  tokenSource.invalidate();
-  // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
-  if (event.type === "session.error") session.log(config.loginHint, { level: "error" });
-});
 // The extension can start before the app publishes its WebSocket endpoint.
-if (["not_running", "failed"].includes(await firstSync)) {
-  await syncInBackground(config, syncOptions, logSyncFailure);
+const retry = (result) => ["not_running", "failed"].includes(result);
+
+if (config.remove) {
+  const firstRemove = removeInBackground(config, syncOptions, logSyncFailure);
+  try {
+    await joinSession();
+  } catch (error) {
+    logSyncFailure(`Databricks models: couldn't join the session: ${error?.message ?? error}`);
+  }
+  if (retry(await firstRemove)) await removeInBackground(config, syncOptions, logSyncFailure);
+} else {
+  const firstSync = syncInBackground(config, syncOptions, logSyncFailure);
+  let session;
+  const tokenSource = createTokenSource(config);
+  const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
+    const hint = hintFor(error, config);
+    if (!session || !hint) return false;
+    session.log(hint, { level: "error" });
+    return true;
+  });
+  session = await joinSession({
+    providers: buildProviders(config, bearerTokenProvider),
+    models: config.models,
+  });
+  session.on((event) => {
+    if (!isAuthRejection(event)) return;
+    tokenSource.invalidate();
+    // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
+    if (event.type === "session.error") session.log(config.loginHint, { level: "error" });
+  });
+  if (retry(await firstSync)) await syncInBackground(config, syncOptions, logSyncFailure);
 }
