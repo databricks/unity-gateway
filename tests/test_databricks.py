@@ -7675,6 +7675,7 @@ class TestPooledClientDispatch:
 
     def test_https_proxy_env_uses_urlopen(self, monkeypatch):
         _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
         monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
         opened = self._urlopen_sentinel(monkeypatch)
 
@@ -7685,6 +7686,7 @@ class TestPooledClientDispatch:
 
     def test_system_proxy_uses_urlopen(self, monkeypatch):
         _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
         monkeypatch.setattr(
             db_mod.urllib_request, "getproxies", lambda: {"https": "http://system-proxy:8080"}
         )
