@@ -51,6 +51,9 @@ export const host = {
   remoteName: undefined as string | undefined,
   showNotice: (): Promise<string | undefined> => Promise.resolve(host.choice),
   chatModels: [] as { vendor: string; id: string; family: string }[],
+  /** Ids of the copies VS Code's agent host lists; only the chat's own model selector finds them. */
+  agentHostModels: [] as string[],
+  modelListeners: [] as (() => void)[],
   commandArgs: [] as unknown[],
   reset(): void {
     this.copilotChat = undefined;
@@ -62,12 +65,18 @@ export const host = {
     this.choice = undefined;
     this.remoteName = undefined;
     this.chatModels = [];
+    this.agentHostModels = [];
+    this.modelListeners = [];
     this.commandArgs = [];
   },
 };
 export const lm = {
   selectChatModels: async (selector: { vendor?: string; id?: string }) =>
     host.chatModels.filter((model) => model.vendor === selector.vendor && (!selector.id || model.id === selector.id)),
+  onDidChangeChatModels: (listener: () => void) => {
+    host.modelListeners.push(listener);
+    return { dispose: () => (host.modelListeners = host.modelListeners.filter((other) => other !== listener)) };
+  },
 };
 export const env = {
   get remoteName() {
@@ -88,6 +97,10 @@ export const commands = {
   executeCommand: async (id: string, ...args: unknown[]) => {
     if (!host.commands.includes(id)) {
       throw new Error(`command '${id}' not found`);
+    }
+    const selector = (args[0] as { modelSelector?: { vendor?: string; id?: string } } | undefined)?.modelSelector;
+    if (selector && !selector.vendor && !host.agentHostModels.includes(selector.id ?? "")) {
+      throw new Error(`No language models found matching selector: ${JSON.stringify(selector)}.`);
     }
     host.executed.push(id);
     host.commandArgs.push(...args);
