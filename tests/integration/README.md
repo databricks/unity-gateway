@@ -813,6 +813,9 @@ command, the Claude and GPT test models on the Anthropic Messages and Responses 
 bearer is on disk, then requires `ug revert` to remove the extension and leave the settings file
 byte-identical. The chat journeys launch the pinned VS Code on a private Xvfb display with
 its DevTools port open, and Playwright reads and clicks the real window (`utils/vscode.py`).
+The model picker opens through its visible primary button's native Enter handler, avoiding
+pointer interception by a neighboring control's tooltip. Other controls retain mouse clicks,
+and the short action timeout still lets the harness resample a changing screen.
 Nothing is seeded: each journey answers the first-launch onboarding with "Continue without Signing
 In", closes the Welcome editor, trusts the folder from the model picker, turns on the bundled
 Copilot Chat with the picker's "Add Models..." or ug's "Turn On Copilot Chat" notice, whichever
