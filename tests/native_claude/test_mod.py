@@ -972,7 +972,9 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
 """
     route_command = [sys.executable, "-c", route_script, child_model]
 
-    def run_case(label, env, model=parent_model, *, routed=False, managed_header_mod=True):
+    def run_case(
+        label, env, model=parent_model, *, routed=False, managed_header_mod=True, route_model=None
+    ):
         server.requests = []
         server.message_count = 0
         server.spawn_agent = routed
@@ -996,7 +998,11 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             tmp_path / label,
             env,
             api=base_url,
-            route_command=route_command if routed else (),
+            route_command=(
+                [sys.executable, "-c", route_script, route_model] if route_model else route_command
+            )
+            if routed
+            else (),
             model=model,
             managed_settings=(
                 _enable_header_mod({}, tmp_path / label / "managed-mod")
@@ -1088,6 +1094,27 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             and request["headers"].get("x-claude-code-request-class") == "subagent"
             for request in active
         ), active
+
+        # Live routed sessions carry deployment-qualified model IDs on the wire
+        # (anthropic-aigw-<id>-system.ai.…); the router's choice must still qualify.
+        qualified_child = "anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol"
+        qualified = run_case(
+            "cache-boundary-qualified-child",
+            {**active_env, "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},
+            routed=True,
+            route_model=qualified_child,
+        )
+        qualified_request = request_for_model(qualified, qualified_child)
+        assert (
+            request_for_model(qualified, qualified_child)["headers"].get(
+                "x-claude-code-request-class"
+            )
+            == "subagent"
+        ), qualified
+        assert qualified_request["body"]["messages"] == moved_messages, qualified_request["body"]
+        assert qualified_request["body"].get("cache_control") == eligible_control
+        assert latest_user_controls(qualified_request) == [], qualified_request["body"]
+        assert qualified_request["body"].get("caller_field") == "keep"
 
         gate_cases = [
             (

@@ -92,8 +92,10 @@ export function preserveGptCacheBoundary(path: string, body: string): string {
     return body;
   }
   if (!isRecord(payload) || 'cache_control' in payload || typeof payload.model !== 'string') return body;
+  // Live routed requests carry the deployment-qualified form (anthropic-aigw-<id>-system.ai.…);
+  // accept exactly the two GPT models in bare and qualified forms.
   const model = payload.model.replace(/\[1m\]$/, '');
-  if (model !== 'system.ai.gpt-6-1-terra' && model !== 'system.ai.gpt-6-1-sol') return body;
+  if (!/^(anthropic-aigw-[0-9a-f][0-9a-f-]*-)?system\.ai\.gpt-6-1-(terra|sol)$/.test(model)) return body;
   if (!Array.isArray(payload.messages) || !payload.messages.length) return body;
   const latest = payload.messages[payload.messages.length - 1];
   if (!isRecord(latest) || latest.role !== 'user' || !Array.isArray(latest.content) || !latest.content.length) return body;

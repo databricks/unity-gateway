@@ -435,9 +435,12 @@ These controlled-provider checks establish instruction delivery, not generated-l
 The same managed mod supports opt-in GPT cache-boundary preservation on routed launches with
 `UG_CLAUDE_GPT_CACHE_BOUNDARY=1` and Claude Code 2.1.321 or newer. It moves one eligible Terra/Sol
 Messages cache marker to the request root through native `http.fetch`, without a local proxy.
+Live routed requests carry deployment-qualified model IDs (`anthropic-aigw-<id>-system.ai.…`);
+the gate accepts exactly the two GPT models in bare and qualified forms.
 Launch tests cover version, installed-source, relay and routing-fallback guards. Native tests use
 an explicit eligible request fixture and controlled provider responses to exercise parent and routed
-child requests, disabled/untrusted mods, other models, origin guards and existing root controls.
+child requests (bare and deployment-qualified child models), disabled/untrusted mods, other models,
+origin guards and existing root controls.
 The managed-mod test uses Linux bubblewrap to isolate `/etc/claude-code`; the host policy is untouched.
 It skips before 2.1.321, where the launcher unit tests cover the unsupported-version guard.
 Claude 2.1.325 rejects rewritten authenticated requests when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`

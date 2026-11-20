@@ -249,11 +249,15 @@ test('allowed Messages paths move cache controls and reject other paths', () => 
   }
 });
 
-test('only the exact GPT 6.1 Terra and Sol model IDs, with optional 1m suffix, qualify', () => {
+test('only the exact GPT 6.1 Terra and Sol model IDs, bare or deployment-qualified, with optional 1m suffix, qualify', () => {
   const control = { type: 'ephemeral', ttl: '5m' };
   for (const model of [
     'system.ai.gpt-6-1-terra', 'system.ai.gpt-6-1-terra[1m]',
     'system.ai.gpt-6-1-sol', 'system.ai.gpt-6-1-sol[1m]',
+    'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
+    'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[1m]',
+    'anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol',
+    'anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol[1m]',
   ]) {
     const result = JSON.parse(preserveGptCacheBoundary('/messages', userRequestBody(model, control)));
     expect(result.model).toBe(model);
@@ -262,6 +266,15 @@ test('only the exact GPT 6.1 Terra and Sol model IDs, with optional 1m suffix, q
   for (const model of [
     'system.ai.gpt-6-sol', 'system.ai.gpt-6-1-sol[5m]',
     'system.ai.gpt-6-1-sol[1m][1m]', 'system.ai.gpt-6-1-terra-extra', 42, null,
+    'anthropic-aigw-77df06ea-system.ai.glm-5-3-flash',
+    'anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol[1m]',
+    'anthropic-aigw-2b40afe0-system.ai.gpt-6-2-astra[1m]',
+    'xanthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
+    'anthropic-aigw-77df06ea-system.ai.gpt-6-1-terra-extra',
+    'anthropic-aigw--system.ai.gpt-6-1-terra',
+    'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[5m]',
+    'prefix-anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
+    'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra-suffix',
   ]) {
     const body = userRequestBody(model, control);
     expect(preserveGptCacheBoundary('/messages', body)).toBe(body);
