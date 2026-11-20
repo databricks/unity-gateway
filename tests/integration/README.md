@@ -383,7 +383,8 @@ After managed configure,
 `ug mcp add --agents codex --names system.ai.web_search` registers the real search service.
 A user-authored skill in the session's `$CODEX_HOME/skills` points to a reference file containing a fresh query
 and completion token. Windows completes sandbox setup through the visible Continue button.
-It reads the elevated mode saved by the app after success, without writing native settings or
+It waits through a missing or partially written config within the same setup deadline, then
+reads the elevated mode saved by the app after success, without writing native settings or
 depending on the transient success banner, and retains early MCP/setup diagnostics in evidence.
 After setup's app-server restart, a visible readiness error gets one Try again recheck before
 Send. A persistent error fails; this does not resubmit a task or change sandbox permissions.

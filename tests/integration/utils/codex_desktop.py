@@ -62,7 +62,10 @@ def wait_for_windows_sandbox(app, timeout: float = 180) -> None:
     deadline = time.monotonic() + timeout
     path = app.session.home / ".codex/config.toml"
     while True:
-        mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get("sandbox")
+        try:
+            mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get("sandbox")
+        except (FileNotFoundError, tomllib.TOMLDecodeError):
+            mode = None
         if mode == "elevated":
             app.session.record("windows-sandbox.json", {"mode": mode})
             return

@@ -123,6 +123,37 @@ def test_windows_setup_requires_the_native_elevated_mode(tmp_path, mode):
         assert "chatgpt-tree.json" in evidence
 
 
+@pytest.mark.parametrize("initial", [None, "[windows"])
+@pytest.mark.parametrize("recovers", [False, True])
+def test_windows_setup_waits_for_missing_or_partial_config(
+    tmp_path, monkeypatch, initial, recovers
+):
+    config = tmp_path / ".codex/config.toml"
+    config.parent.mkdir()
+    if initial is not None:
+        config.write_text(initial)
+    elapsed = [0]
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+        if recovers:
+            config.write_text('[windows]\nsandbox = "elevated"\n')
+
+    monkeypatch.setattr(codex_desktop.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(codex_desktop.time, "sleep", sleep)
+    app = SimpleNamespace(
+        read_tree=lambda: [],
+        session=SimpleNamespace(home=tmp_path, record=lambda *args: None),
+    )
+    if recovers:
+        codex_desktop.wait_for_windows_sandbox(app, timeout=2)
+        assert elapsed[0] == 1
+    else:
+        with pytest.raises(AssertionError, match="never completed elevated Windows sandbox setup"):
+            codex_desktop.wait_for_windows_sandbox(app, timeout=2)
+        assert elapsed[0] == 2
+
+
 @pytest.mark.parametrize(
     ("text_role", "button_role"),
     [("AXStaticText", "AXButton"), ("ControlType.Text", "ControlType.Button")],

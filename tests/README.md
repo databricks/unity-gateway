@@ -1464,7 +1464,8 @@ parser checks; live desktop coverage requires the native CI jobs.
 Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
 in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;
-the tests only read that native setting. Windows artifacts retain early MCP/setup diagnostics.
+the tests only read that native setting. Missing or partial TOML is polled until the setup
+deadline; component checks cover recovery and deadline failure. Windows artifacts retain early MCP/setup diagnostics.
 If the app's setup restart leaves a sandbox-readiness error, the journey uses the visible
 Try again control once before sending the prompt; a persistent error fails. No task is resubmitted.
 Offline submission checks reject assistant echoes, unrelated prompts and non-message events.
