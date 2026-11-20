@@ -4456,15 +4456,14 @@ def _launch_tool(
                     routing_unavailable = codex_agent.minimum_version_error(
                         smart_routing_enabled=True
                     )
-                except RuntimeError as exc:
-                    routing_unavailable = str(exc)
-                else:
                     if routing_unavailable:
                         ensure_minimum_version(
                             "codex",
                             lambda: codex_agent.minimum_version_error(smart_routing_enabled=True),
                         )
                         routing_unavailable = None
+                except RuntimeError as exc:
+                    routing_unavailable = str(exc)
             if routing_unavailable:
                 print_warning(f"{routing_unavailable} Running without smart routing.")
                 smart_routing_enabled = False
