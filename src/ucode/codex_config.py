@@ -203,6 +203,44 @@ def codex_config_args(config: dict) -> list[str]:
     return args
 
 
+def is_codex_interactive_launch(tool_args: list[str]) -> bool:
+    """Whether native options leave no positional prompt or subcommand."""
+    value_options = {
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "-i",
+        "--image",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "-a",
+        "--ask-for-approval",
+    }
+    index = 0
+    while index < len(tool_args):
+        arg = tool_args[index]
+        if arg == "--":
+            return index == len(tool_args) - 1
+        if not arg.startswith("-") or arg == "-":
+            return False
+        if arg in value_options:
+            if index + 1 == len(tool_args):
+                return False
+            index += 2
+        else:
+            index += 1
+    return True
+
+
 def is_codex_app_server_launch(tool_args: list[str]) -> bool:
     """Whether the arguments run Codex's app-server, after any leading ``-c`` settings."""
     index = 0

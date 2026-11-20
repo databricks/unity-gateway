@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode import claude_answer_delivery, config_io, metrics
+from ucode.agents.args import has_explicit_model_arg
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -773,7 +774,6 @@ def launch_claude(
     default_model: str | None = None,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
-    from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
 
@@ -1202,8 +1202,9 @@ def launch_codex(
                     if key in overlay
                 }
             )
+        model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, *model_args, *tool_args]
         )
         try:
             returncode = tui.wait()

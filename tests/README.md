@@ -1090,13 +1090,22 @@ label and link indicator, trailing blank line, URL color, and intact long URLs. 
 checks do not establish native Windows console behavior or live dashboard navigation.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
-gateway provider on Windows while Unix launch arguments stay unchanged and routing
+gateway provider on Windows, injects a default model only when no native model argument
+is supplied, and preserves split, equals and short model options on both platforms. Routing
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
+`test_cli.py` covers forwarded model arguments under explicit enable/disable, managed
+defaults and routing presets for Claude and Codex, including pinned-root bypass of
+first-prompt routing and Isaac's config-only Codex launch arguments.
+`test_codex_config.py` distinguishes native options and their
+values from positional prompts and utility subcommands, preserving the exclusion
+of existing remote attachments.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 on Codex 0.164.0 or newer:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
+The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;
+explicit variants enable routing through the CLI and override the saved root model.
 The audit's SHA-256 digest and character count identify that exact assignment without
 persisting its text. Native hook and child assertions still compare the full text.
 The production launcher supplies the native configuration, and user settings and

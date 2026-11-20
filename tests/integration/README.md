@@ -1324,6 +1324,14 @@ selection are unchanged. Codex toggles and the direct hook journeys remain requi
 Explicit-model selection, command forwarding, app-server initialization, and catalog fallback
 retain their original legacy flags and on/off coverage; preset-specific behavior there is not
 covered.
+`test_ug_codex_v2_routing.py` also launches the real Codex TUI with
+`--enable-smart-routing -- --model VALUE` and `--enable-smart-routing -- --model=VALUE`.
+Both variants must override the saved root model, complete the delegated file task
+with a correlated router decision, and preserve user-owned configuration and catalog.
+The existing saved-model variant remains. Component tests cover short `-m`, launch
+policy for both agents, Isaac's config-only Codex arguments, and native
+utility-subcommand and remote-attachment exclusion;
+these are not live coverage.
 
 The Claude route-subagent-mod journey checks that the response contains only the
 selected model and rationale and matches the decision log. The native mod applies

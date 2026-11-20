@@ -7,6 +7,7 @@ from ucode.agents import codex
 from ucode.codex_config import (
     codex_config_args,
     is_codex_app_server_launch,
+    is_codex_interactive_launch,
     strip_hook_trust_state,
 )
 
@@ -101,6 +102,36 @@ args = ["codex-token"]
         pre_tool_override = next(arg for arg in args if arg.startswith("hooks.PreToolUse="))
         assert "route-subagent" in pre_tool_override
         assert 'model_provider="Databricks"' in args
+
+
+class TestIsCodexInteractiveLaunch:
+    @pytest.mark.parametrize(
+        "tool_args,expected",
+        [
+            ([], True),
+            (["--search"], True),
+            (["--model", "gpt-6.2-astra"], True),
+            (["--model=gpt-6.2-astra"], True),
+            (["-m", "gpt-6.2-astra"], True),
+            (["--model", "exec"], True),
+            (["-c", "a=1", "--search", "--model", "gpt-6.2-astra"], True),
+            (["--profile", "app-server", "--sandbox", "workspace-write"], True),
+            (["--search", "--"], True),
+            (["exec", "fix this"], False),
+            (["-c", "a=1", "exec", "fix this"], False),
+            (["--model", "gpt-6.2-astra", "review"], False),
+            (["--model=gpt-6.2-astra", "app"], False),
+            (["--remote", "ws://127.0.0.1:1"], False),
+            (["app-server", "--listen", "ws://127.0.0.1:1"], False),
+            (["app-server", "generate-ts"], False),
+            (["--search", "--", "exec"], False),
+            (["fix this"], False),
+            (["-m"], False),
+            (["-"], False),
+        ],
+    )
+    def test_distinguishes_options_from_positionals(self, tool_args, expected):
+        assert is_codex_interactive_launch(tool_args) is expected
 
 
 class TestIsCodexAppServerLaunch:
