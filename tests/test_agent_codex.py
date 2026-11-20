@@ -2446,7 +2446,7 @@ class TestCodexManagedConfig:
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         catalog_path.write_text(json.dumps(previous), encoding="utf-8")
         managed_path.write_text(
-            f'model_catalog_json = "{catalog_path}"\n'
+            f"model_catalog_json = {json.dumps(str(catalog_path))}\n"
             '\n[custom]\nkeep = "value"\n'
             '\n[mcp_servers.admin]\nurl = "https://admin.example/mcp"\n',
             encoding="utf-8",

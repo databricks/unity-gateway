@@ -26,7 +26,6 @@ from utils.request_recorder import TuiRequestRecorder
 from utils.terminal import AgentTerminal
 
 pytestmark = [
-    pytest.mark.live,
     pytest.mark.tui,
     pytest.mark.codex,
     pytest.mark.codex_smart_routing,
@@ -76,21 +75,28 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
 
 
 @pytest.mark.parametrize(
-    ("model_option", "managed_catalog"),
+    ("model_args", "managed_catalog"),
     [
-        pytest.param(None, False, id="saved"),
-        pytest.param("--model", False, id="split"),
-        pytest.param(None, True, id="managed", marks=pytest.mark.managed_fixture),
+        pytest.param((), False, id="saved", marks=pytest.mark.live),
+        pytest.param(
+            ("--model", CODEX_NATIVE_CATALOG_MODELS[1]), False, id="split", marks=pytest.mark.live
+        ),
+        pytest.param(
+            ("--model=system.ai.gpt-6-luna",),
+            True,
+            id="managed-equals",
+            marks=pytest.mark.managed_fixture,
+        ),
     ],
 )
 def test_ug_codex_native_v2_plain_assignment_routing(
-    live_session, workspace, model_option, managed_catalog
+    live_session, workspace, model_args, managed_catalog
 ):
     """Scenario: configure ug with a user-owned native v2 catalog that disables tools
     in code mode and an observer hook, then delegate one multiline file task with
     subagent-only routing. The managed variant configures UG's static catalog through
     the normal managed-fixture input. UG must expose the plaintext tool path. Launch with
-    the saved model or explicitly enable routing and forward split `--model VALUE` syntax.
+    the saved model, split `--model VALUE`, or managed equals-form `--model=VALUE` syntax.
 
     Expected: every routing request has a paired HTTP 200 response and matching decision.
     The request for the complete assignment selects the model used by completed native
@@ -147,9 +153,9 @@ def test_ug_codex_native_v2_plain_assignment_routing(
             assert all(m.get("multi_agent_tools_in_code_mode") is not False for m in models)
             start_model = "system.ai.gpt-5-6-sol"
         launch_args = []
-        if model_option:
-            start_model = CODEX_NATIVE_CATALOG_MODELS[1]
-            launch_args = ["--enable-smart-routing", "--", model_option, start_model]
+        if model_args:
+            start_model = model_args[-1].removeprefix("--model=")
+            launch_args = ["--enable-smart-routing", "--", *model_args]
         session.record("launch-model.json", {"model": start_model, "args": launch_args})
         request_checkpoint = recorder.checkpoint()
         with AgentTerminal(
@@ -296,6 +302,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(
     )
 
     child_paths = []
+    child_ids = set()
     for records, metadata in child_sessions:
         child_path = metadata["source"]["subagent"]["thread_spawn"]["agent_path"]
         received_assignment = any(
@@ -318,6 +325,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(
         )
         assert task_complete, child_path
         child_paths.append(child_path)
+        child_ids.add(metadata["id"])
     assert child_paths, "No native child received the complete assignment"
     assert all(path == f"/root/{task_name}__sr_on" for path in child_paths)
-    assert_subagent_routed(session, "codex", task, decision_ids=decision_ids)
+    assert_subagent_routed(session, "codex", task, decision_ids=decision_ids, child_ids=child_ids)

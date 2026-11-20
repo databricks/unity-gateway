@@ -13,7 +13,8 @@ Codex routing uses the full plaintext assignment and records its digest. Smart-r
 launches expose native collaboration tools through code mode in a session-owned catalog,
 without changing the model's protocol or user catalog. The native v2 assignment journey
 starts with code-mode tools disabled in the user's catalog, then verifies the exact
-assignment reaches the router and child. Encrypted or missing assignments must never
+assignment reaches the router and child, and that same child completes on the routed model.
+Encrypted or missing assignments must never
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
 Component checks also cover catalog precedence, authenticated model-service metadata,
 and a warning with continued launch if the optional session catalog cannot be built or written.
@@ -23,7 +24,10 @@ Existing UG-managed catalogs refresh current native metadata through `ug configu
 For a published agent configuration, an administrator must instead run
 `sudo ug configure --global`; ordinary configure leaves its machine-wide files unchanged.
 Launches never rewrite managed catalogs; an old catalog that disables code mode produces
-a refresh warning. Component checks cover both refresh instructions and preserve the source
+a refresh warning. If current bundled metadata still disables code mode, configure preserves
+that capability: use a Codex version with code-mode support and refresh again. Until then,
+launch preserves the managed catalog and skips routing encrypted assignments.
+Component checks cover both refresh instructions and preserve the source
 catalog when a TUI session-copy write fails. Claude checks cover blank-prompt fallback and label-only input.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
@@ -1143,6 +1147,7 @@ the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
 The saved-model and `--model VALUE` variants cover native TUI launch;
 the explicit variant enables routing through the CLI and overrides the saved root model.
+The managed variant covers `--model=VALUE` with an offered model, only in the managed CI lane.
 Launcher tests retain split, equals, and short option syntax coverage.
 The audit's SHA-256 digest and character count identify that exact assignment without
 persisting its text. The request recorder correlates each routing request with its

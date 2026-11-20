@@ -1130,7 +1130,10 @@ def _codex_routing_catalog(
                 "an administrator must update a separately managed catalog."
             )
             raise RuntimeError(
-                f"The managed catalog at {catalog_path} disables code-mode collaboration. {refresh}"
+                f"The managed catalog at {catalog_path} disables code-mode collaboration. {refresh} "
+                "If the bundled metadata still disables code mode, use a Codex version with "
+                "code-mode support and refresh again; configure preserves native capabilities. "
+                "Launch will preserve the managed catalog and skip routing encrypted assignments."
             )
         return str(catalog_path)
     # Native model metadata otherwise overrides the launch's code-mode setting.

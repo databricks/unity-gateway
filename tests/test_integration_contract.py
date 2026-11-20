@@ -96,6 +96,12 @@ def test_managed_integration_ci_is_blocking():
     assert baseline | routing == _collect_integration_cases(
         "(managed_fixture or workspace_switch) and codex and not soft_fail"
     )
+    equals_model_case = (
+        "test_ug_codex_v2_routing.py::"
+        "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+    )
+    assert equals_model_case not in baseline
+    assert equals_model_case in routing
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
     )
@@ -273,7 +279,16 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         routing = _collect_integration_cases(
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
+        managed_routing = _collect_integration_cases(
+            _ci_marker_expression(jobs["managed"], agent, smart_routing=True)
+        )
         assert not (smoke | full) & routing
+        equals_model_case = (
+            "test_ug_codex_v2_routing.py::"
+            "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+        )
+        assert equals_model_case not in routing
+        assert equals_model_case in managed_routing
         for model_option in ("saved", "split"):
             assert (
                 "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"

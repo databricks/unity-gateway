@@ -137,6 +137,9 @@ def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mo
         if published:
             assert "administrator" in str(error.value)
             assert "ug configure --agents codex" not in str(error.value)
+        assert "use a Codex version with code-mode support" in str(error.value)
+        assert "configure preserves native capabilities" in str(error.value)
+        assert "skip routing encrypted assignments" in str(error.value)
     else:
         assert v2._codex_routing_catalog(
             "codex",
@@ -659,41 +662,17 @@ class TestLaunchCodex:
         }
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
-    @pytest.mark.parametrize(
-        ("source_model", "catalog_source", "launch_source", "failure", "rendered_overlay"),
-        [
-            (None, None, None, None, False),
-            ("mps-primary", None, None, None, False),
-            (None, "managed", None, None, False),
-            (None, "user", None, None, False),
-            (None, "managed", "explicit", None, False),
-            (None, None, None, "builder", False),
-            (None, "managed", "explicit", "write", False),
-            (None, "user", None, "write", False),
-            (None, "user", None, "write", True),
-        ],
-        ids=[
-            "default-model",
-            "explicit-model",
-            "managed-catalog",
-            "user-catalog",
-            "launch-catalog-wins",
-            "builder-failure-keeps-launch",
-            "write-failure-keeps-catalog",
-            "write-failure-keeps-configured-catalog",
-            "write-failure-keeps-rendered-catalog",
-        ],
-    )
-    def test_app_server_launch_keeps_the_source_launch_model(
+    def _run_app_server_launch_case(
         self,
         tmp_path,
         monkeypatch,
+        native_catalog,
+        *,
         source_model,
         catalog_source,
         launch_source,
-        failure,
-        rendered_overlay,
-        native_catalog,
+        failure=None,
+        rendered_overlay=False,
     ):
         launches = []
         token_calls = []
@@ -780,32 +759,47 @@ class TestLaunchCodex:
         assert argv[-1] == "app-server"
         config = tomllib.loads("\n".join(argv[1:-1][1::2]))
         assert config.get("model") == source_model
+        return {
+            "builder_calls": builder_calls,
+            "catalogs": catalogs,
+            "config": config,
+            "empty_discovery": empty_discovery,
+            "output": session_env_path.with_suffix(".models.json"),
+            "token_calls": token_calls,
+            "warnings": warnings,
+        }
 
-        output = session_env_path.with_suffix(".models.json")
-        if empty_discovery:
-            assert Path(config["model_catalog_json"]) == output
-            assert json.loads(output.read_text(encoding="utf-8")) == {
-                "models": [
-                    {"slug": name, "multi_agent_tools_in_code_mode": True}
-                    for name in ("gpt-start", "gpt-alternative")
-                ]
-            }
-        elif failure == "builder":
-            assert "model_catalog_json" not in config
-            assert not output.exists()
-            assert token_calls == [True]
-            assert builder_calls == [(WS, "token")]
-        elif failure == "write":
-            expected_source = launch_source or catalog_source
-            assert config["model_catalog_json"] == str(catalogs[expected_source])
-            assert not output.exists()
-            assert json.loads(catalogs[expected_source].read_text(encoding="utf-8")) == {
-                "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
-            }
-        elif catalog_source or launch_source:
-            expected_source = launch_source or catalog_source
-            assert Path(config["model_catalog_json"]) == output
-            assert json.loads(output.read_text(encoding="utf-8")) == {
+    @pytest.mark.parametrize(
+        ("source_model", "catalog_source", "launch_source", "expected_source"),
+        [
+            pytest.param(None, None, None, None, id="default-model"),
+            pytest.param("mps-primary", None, None, None, id="explicit-model"),
+            pytest.param(None, "user", None, "user", id="user-catalog"),
+            pytest.param(None, "managed", "explicit", "explicit", id="launch-catalog-wins"),
+        ],
+    )
+    def test_app_server_launch_catalog_precedence(
+        self,
+        tmp_path,
+        monkeypatch,
+        native_catalog,
+        source_model,
+        catalog_source,
+        launch_source,
+        expected_source,
+    ):
+        result = self._run_app_server_launch_case(
+            tmp_path,
+            monkeypatch,
+            native_catalog,
+            source_model=source_model,
+            catalog_source=catalog_source,
+            launch_source=launch_source,
+        )
+
+        if expected_source:
+            assert Path(result["config"]["model_catalog_json"]) == result["output"]
+            assert json.loads(result["output"].read_text(encoding="utf-8")) == {
                 "models": [
                     {
                         "slug": f"{expected_source}-model",
@@ -814,19 +808,81 @@ class TestLaunchCodex:
                     }
                 ]
             }
-            assert json.loads(catalogs[expected_source].read_text(encoding="utf-8")) == {
+            assert json.loads(result["catalogs"][expected_source].read_text(encoding="utf-8")) == {
                 "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
             }
 
-        if failure:
-            assert len(warnings) == 1
-            assert "Could not enable plaintext Codex task routing" in warnings[0]
-            assert f"catalog {failure} failed" in warnings[0]
-        elif empty_discovery:
-            assert len(warnings) == 1
-            assert "model metadata is unavailable" in warnings[0]
+        if result["empty_discovery"]:
+            assert Path(result["config"]["model_catalog_json"]) == result["output"]
+            assert json.loads(result["output"].read_text(encoding="utf-8")) == {
+                "models": [
+                    {"slug": name, "multi_agent_tools_in_code_mode": True}
+                    for name in ("gpt-start", "gpt-alternative")
+                ]
+            }
+            assert len(result["warnings"]) == 1
+            assert "model metadata is unavailable" in result["warnings"][0]
         else:
-            assert warnings == []
+            assert result["warnings"] == []
+
+    def test_app_server_launch_builder_failure_keeps_launch_config(
+        self, tmp_path, monkeypatch, native_catalog
+    ):
+        result = self._run_app_server_launch_case(
+            tmp_path,
+            monkeypatch,
+            native_catalog,
+            source_model=None,
+            catalog_source=None,
+            launch_source=None,
+            failure="builder",
+        )
+
+        assert "model_catalog_json" not in result["config"]
+        assert not result["output"].exists()
+        assert result["token_calls"] == [True]
+        assert result["builder_calls"] == [(WS, "token")]
+        assert len(result["warnings"]) == 1
+        assert "Could not enable plaintext Codex task routing" in result["warnings"][0]
+        assert "catalog builder failed" in result["warnings"][0]
+
+    @pytest.mark.parametrize(
+        ("catalog_source", "launch_source", "rendered_overlay", "expected_source"),
+        [
+            pytest.param("managed", "explicit", False, "explicit", id="launch-catalog"),
+            pytest.param("user", None, False, "user", id="configured-catalog"),
+            pytest.param("user", None, True, "user", id="rendered-catalog"),
+        ],
+    )
+    def test_app_server_launch_write_failure_keeps_source_catalog(
+        self,
+        tmp_path,
+        monkeypatch,
+        native_catalog,
+        catalog_source,
+        launch_source,
+        rendered_overlay,
+        expected_source,
+    ):
+        result = self._run_app_server_launch_case(
+            tmp_path,
+            monkeypatch,
+            native_catalog,
+            source_model=None,
+            catalog_source=catalog_source,
+            launch_source=launch_source,
+            failure="write",
+            rendered_overlay=rendered_overlay,
+        )
+
+        assert result["config"]["model_catalog_json"] == str(result["catalogs"][expected_source])
+        assert not result["output"].exists()
+        assert json.loads(result["catalogs"][expected_source].read_text(encoding="utf-8")) == {
+            "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
+        }
+        assert len(result["warnings"]) == 1
+        assert "Could not enable plaintext Codex task routing" in result["warnings"][0]
+        assert "catalog write failed" in result["warnings"][0]
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
