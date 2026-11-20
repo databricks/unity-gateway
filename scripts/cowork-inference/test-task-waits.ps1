@@ -35,7 +35,7 @@ foreach ($script:failSnapshot in @($false, $true)) {
     try { Wait-Control -Names @('missing') -Seconds 0 -Root $script:expectedRoot }
     catch { $message = $_.Exception.Message }
     if ($message -ne 'Control not ready: missing') { throw "Timeout replaced by: $message" }
-    $failure = $report.waitFailure
+    $failure = ($report | ConvertTo-Json -Depth 8 | ConvertFrom-Json).waitFailure
     if ($failure.names[0] -ne 'missing' -or $failure.budgetSeconds -ne 0 -or $failure.scans -ne 1 -or
         $failure.elapsedMilliseconds -lt 0 -or $failure.snapshotCompletedMilliseconds -lt $failure.elapsedMilliseconds) {
         throw 'Missing or inconsistent wait evidence'
