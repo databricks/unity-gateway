@@ -236,6 +236,7 @@ jobs:
       # every other failure fails on the first attempt. `-rfER` lists reruns in the summary.
       - run: |
           uv run --no-sync pytest tests/test_e2e.py -v -rfER -k "$TEST_KEYWORD" \
+            --tb=short --junitxml=e2e-results.xml \
             --reruns 1 --reruns-delay 5 \
             --only-rerun TimeoutExpired \
             --only-rerun 'timed out after [0-9]+s' \
@@ -243,6 +244,27 @@ jobs:
             --only-rerun TEMPORARILY_UNAVAILABLE \
             --only-rerun REQUEST_LIMIT_EXCEEDED \
             < /dev/null
+      - name: Redact e2e test results
+        if: ${{ always() }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.run_integration import redact_junit_report
+
+          redact_junit_report(
+              Path("e2e-results.xml"), Path("e2e-results-redacted.xml"),
+              (os.environ.get("DATABRICKS_BEARER", ""), os.environ.get("UCODE_TEST_WORKSPACE", "")),
+          )
+          PY
+      - name: Upload e2e test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: e2e-results-${{ matrix.group }}-${{ matrix.os }}-${{ github.run_attempt }}
+          path: e2e-results-redacted.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   e2e:
     name: All agent tests

@@ -1,5 +1,6 @@
 import base64
 import io
+import runpy
 import urllib.error
 from pathlib import Path
 
@@ -86,6 +87,110 @@ def test_m2m_token_redacts_before_truncating_error_body(monkeypatch):
 
     detail = str(error.value).split("(HTTP 403): ", 1)[1]
     assert detail == "x" * 1990 + "<redacted>"
+
+
+def test_m2m_token_recovers_from_temporary_unavailability(monkeypatch, capsys):
+    responses = [
+        urllib.error.HTTPError("https://workspace.example", 503, "Unavailable", {}, io.BytesIO()),
+        urllib.error.HTTPError("https://workspace.example", 503, "Unavailable", {}, io.BytesIO()),
+        io.BytesIO(b'{"access_token":"workspace-token"}'),
+    ]
+    attempts = []
+    delays = []
+
+    def token_response(request, timeout):
+        response = responses[len(attempts)]
+        attempts.append(request)
+        if isinstance(response, urllib.error.HTTPError):
+            raise response
+        return response
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+    monkeypatch.setattr(runner.time, "sleep", delays.append)
+
+    assert (
+        runner.mint_m2m_token("https://workspace.example", "client", "secret") == "workspace-token"
+    )
+    assert len(attempts) == 3
+    assert delays == [1, 2]
+    assert all(response.closed for response in responses)
+    assert capsys.readouterr().err == (
+        "Service-principal OAuth token request failed (HTTP 503), attempt 1/3; retrying in 1s.\n"
+        "Service-principal OAuth token request failed (HTTP 503), attempt 2/3; retrying in 2s.\n"
+    )
+
+
+@pytest.mark.parametrize("status, expected_attempts", [(503, 3), (401, 1), (403, 1)])
+def test_m2m_token_retry_exhaustion_and_permanent_errors(
+    monkeypatch, capsys, status, expected_attempts
+):
+    attempts = []
+    delays = []
+
+    def unavailable(request, timeout):
+        response = urllib.error.HTTPError(
+            request.full_url,
+            status,
+            "Unavailable",
+            {},
+            io.BytesIO(b'{"message":"secret Y2xpZW50OnNlY3JldA== TraceId: ci-trace"}'),
+        )
+        attempts.append(response)
+        raise response
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", unavailable)
+    monkeypatch.setattr(runner.time, "sleep", delays.append)
+
+    with pytest.raises(RuntimeError, match=f"HTTP {status}") as error:
+        runner.mint_m2m_token("https://workspace.example", "client", "secret")
+
+    assert len(attempts) == expected_attempts
+    assert delays == list(range(1, expected_attempts))
+    assert all(response.closed for response in attempts)
+    assert "TraceId: ci-trace" in str(error.value)
+    diagnostics = str(error.value) + capsys.readouterr().err
+    assert "secret" not in diagnostics
+    assert "Y2xpZW50OnNlY3JldA==" not in diagnostics
+
+
+def test_desktop_credential_helper_uses_shared_oauth_recovery(monkeypatch, capsys, tmp_path):
+    responses = [
+        urllib.error.HTTPError("https://workspace.example", 503, "Unavailable", {}, io.BytesIO()),
+        io.BytesIO(b'{"access_token":"workspace-token"}'),
+    ]
+    attempts = []
+    delays = []
+
+    def token_response(request, timeout):
+        assert timeout == 10
+        assert request.full_url == "https://workspace.example/oidc/v1/token"
+        response = responses[len(attempts)]
+        attempts.append(request)
+        if isinstance(response, urllib.error.HTTPError):
+            raise response
+        return response
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+    monkeypatch.setattr(runner.time, "sleep", delays.append)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as exit_status:
+        runpy.run_path(
+            str(runner.ROOT / "scripts/cowork-inference/bearer-token.py"), run_name="__main__"
+        )
+
+    assert exit_status.value.code is None
+    assert len(attempts) == 2
+    assert delays == [1]
+    assert all(response.closed for response in responses)
+    output = capsys.readouterr()
+    assert output.out == "workspace-token\n"
+    assert "HTTP 503" in output.err
+    assert "secret" not in output.err
 
 
 def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
