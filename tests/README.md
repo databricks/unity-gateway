@@ -1219,9 +1219,11 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 `test_claude_pty_replay.py` uses fake TUIs to check delayed replay, manual cancellation,
 unrelated slash commands and default restoration. `test_claude_smart_routing_v2.py`
 covers concurrent recovery, file access controls and failures, including exit while another
-session has a pending manual choice. A matching temporary model still requires manual
-confirmation or cancellation. `test_config_io.py` checks preserving writes with a nonstandard
-`cp` location, shorter JSON and an explicit mode. These are component checks;
+session has a pending manual choice, with exit guidance that preserves its recovery state,
+and a stalled permission copy that must respect the cleanup retry window.
+A matching temporary model still requires manual confirmation or cancellation.
+`test_config_io.py` checks preserving writes with an absolute nonstandard `cp` location,
+rejected relative PATH entries, shorter JSON and an explicit mode. These are component checks;
 native picker/history choices and live concurrent recovery remain unverified.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported

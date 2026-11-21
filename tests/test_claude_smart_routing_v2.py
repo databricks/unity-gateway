@@ -1355,6 +1355,42 @@ class TestSubagentRouting:
 
 
 class TestModelSettingRecovery:
+    @pytest.mark.skipif(os.name != "posix", reason="requires a POSIX copier executable")
+    def test_exit_bounds_a_stalled_permission_copy(self, tmp_path, monkeypatch, capsys):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        guard = v2._ClaudeModelSettingGuard(settings)
+        assert guard.begin("sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        snapshot = recovery.read_bytes()
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        marker = tmp_path / "copy-started"
+        copier = binaries / "cp"
+        # The external copier stalls; recovery and its file writes remain real.
+        copier.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
+            f"Path({str(marker)!r}).touch()\ntime.sleep(30)\n"
+        )
+        copier.chmod(0o700)
+        try:
+            with monkeypatch.context() as copier_env:
+                copier_env.setenv("PATH", str(binaries))
+                started = time.monotonic()
+                assert guard.finish(timeout=0.2) is False
+                elapsed = time.monotonic() - started
+            assert marker.exists()
+            assert elapsed < 1
+            assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+            assert recovery.read_bytes() == snapshot
+            assert not list(tmp_path.glob(".settings.json.*"))
+            warning = " ".join(capsys.readouterr().out.split())
+            assert "could not restore" in warning and "haiku" in warning
+        finally:
+            guard.finish(timeout=0)
+
     def test_confirmed_manual_choice_survives_registration_lock_contention(
         self, tmp_path, monkeypatch
     ):
@@ -1760,7 +1796,11 @@ finally:
 
         assert pending("finish", timeout=0) is False
 
-        assert capsys.readouterr().out == ""
+        output = " ".join(capsys.readouterr().out.split())
+        assert "another session's /model choice is unresolved" in output
+        assert "Complete that choice or exit that session" in output
+        assert "then send a prompt in a new Smart Routing session" in output
+        assert "Set its model back" not in output
         assert recovery.read_bytes() == snapshot
         pending("crash")
         if confirmed:

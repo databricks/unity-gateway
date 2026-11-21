@@ -1028,7 +1028,7 @@ class _ClaudeModelSettingGuard:
     def restore(self) -> bool:
         return self._restore() is True
 
-    def _restore(self) -> bool | Literal["manual_pending"]:
+    def _restore(self, *, deadline: float | None = None) -> bool | Literal["manual_pending"]:
         if self._cancelled:
             if self._manual_confirmed is not None:
                 return self._finish_manual_choice(confirmed=self._manual_confirmed)
@@ -1055,11 +1055,15 @@ class _ClaudeModelSettingGuard:
                         write_json_file(self.settings_path, current)
                     else:
                         target = self.settings_path.resolve()
+                        copy_timeout = 5.0
+                        if deadline is not None:
+                            copy_timeout = min(copy_timeout, max(0.0, deadline - time.monotonic()))
                         config_io.atomic_write_json(
                             target,
                             current,
                             mode=stat.S_IMODE(target.stat().st_mode),
                             preserve_permissions=os.name == "posix",
+                            copy_timeout=copy_timeout,
                         )
                 del recovery["pending"][self._token]
                 self._write_recovery(recovery)
@@ -1079,11 +1083,17 @@ class _ClaudeModelSettingGuard:
                         if self._finish_manual_choice(confirmed=self._manual_confirmed is True):
                             return True
                     else:
-                        restored = self._restore()
+                        restored = self._restore(deadline=deadline)
                         if restored is True:
                             return True
                         if restored == "manual_pending":
                             # Keep recovery until the other session settles its choice.
+                            print_warning(
+                                "Smart Routing left model recovery pending because another "
+                                "session's /model choice is unresolved. Complete that choice "
+                                "or exit that session, then send a prompt in a new "
+                                "Smart Routing session to retry recovery."
+                            )
                             return False
                 except (OSError, ValueError, RuntimeError):
                     pass
