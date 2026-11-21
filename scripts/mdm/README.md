@@ -9,9 +9,11 @@ MDM deployment runs `ug configure` as root on each machine.
 Linux and Windows scripts will follow.
 
 On macOS, `macos-provision.sh` is an MDM policy script (written for JAMF), run as root on each
-machine. It installs `ug` (with its own Python), the Databricks CLI, Claude Code and Codex under
-`/usr/local`, where every user can run them, then runs `ug configure` as root, which installs the
-workspace policy at `/etc/unitygateway/managed-settings.json`. It also adds `claude` and `codex`
+machine. It installs `ug` (with its own Python), the Databricks CLI and Node.js/npm under
+`/usr/local`, where every user can run them, then runs `ug configure --global --mdm` as root.
+Unity Gateway's built-in npm installer supplies missing Claude Code and Codex binaries in the same
+shared prefix. Configure installs the workspace policy and `mdm_os: Mac` at
+`/etc/unitygateway/managed-settings.json`. The script also adds `claude` and `codex`
 aliases (for `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex`) to `/etc/zshrc` and `/etc/bashrc`, so
 developers launch with `claude` or `codex` in a new terminal: no sudo, and inference uses their own
 OAuth.

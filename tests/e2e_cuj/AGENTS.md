@@ -55,10 +55,10 @@ records; neither routing banners nor native records alone prove an applied decis
 `Workspace.agent_configs` splits a published config by agent.
 `helpers/mcp.py` names the dashed server a managed MCP service registers as.
 
-`test_cuj2_mps_mcp.py` runs three independently collected cases against a permanently
-preconfigured workspace: configuration, Codex inference, and Claude inference. `test_cuj2_skills.py`
+`test_cuj2_mps_mcp.py` runs independently collected cases against a permanently
+preconfigured workspace: configuration, Codex, Copilot and Claude inference, and a Claude routing case. `test_cuj2_skills.py`
 adds the named-skill cases against the same workspace. Each case
-reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
+reads and validates the exact three-agent MPS/MCP shape. No case creates, updates, deletes,
 or restores CodingAgentConfig. The fixture's final read-only equality check is the only
 workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
 `TuiRequestRecorder`, `AgentTerminal` (via `helpers/terminal.py`), and integration

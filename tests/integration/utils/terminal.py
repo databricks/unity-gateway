@@ -25,6 +25,11 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def claude_workspace_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
+    """Match the disposable project's full path even when the terminal wraps it."""
+    return "Accessing workspace:" in screen and "".join(str(cwd).split()) in "".join(screen.split())
+
+
 def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
     """Whether Codex 0.156+ is asking to trust exactly the test project, with Trust selected."""
     return (
@@ -97,7 +102,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
-        r"^[ \t]*↑/↓ to select · Enter to view · Esc to close[ \t]*\s*\Z",
+        r"^[ \t]*↑/↓ to (?:select|navigate) · Enter to view · Esc to close[ \t]*\s*\Z",
         text,
     )
 
@@ -121,12 +126,17 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    # 2.1.322 adds a collapsed history heading after the current task rows.
+    # Newer versions omit the Completed count; every current row must still be done.
+    if rows and re.fullmatch(r"Earlier in this session \([0-9]+\)", rows[-1]):
+        rows.pop()
     if not rows:
         return False
-    completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
+    completed = re.fullmatch(r"Completed(?: \(([1-9][0-9]*)\))?", rows[0])
     return (
         completed is not None
-        and len(rows) - 1 == int(completed[1])
+        and len(rows) > 1
+        and (completed[1] is None or len(rows) - 1 == int(completed[1]))
         and all(re.fullmatch(r"(?:❯\s*)?✔\s+.+\s+done\s+·\s+.+", row) for row in rows[1:])
     )
 
@@ -371,27 +381,28 @@ class TerminalProcess:
                 since = None
         raise AssertionError(f"TUI did not show {description} within {timeout}s:\n{self.visible}")
 
-    def selected_line(self):
+    def selected_line(self, *, after=None):
+        # Prior submitted prompts also begin with ❯. Once a menu is open, only
+        # its rows can identify the current selection.
+        text = self.visible if after is None else self.visible.rpartition(after)[2]
         return next(
-            (
-                line.strip()
-                for line in self.visible.splitlines()
-                if re.match(rf"^\s*{SELECTED}", line)
-            ),
+            (line.strip() for line in text.splitlines() if re.match(rf"^\s*{SELECTED}", line)),
             "",
         )
 
     def choose(self, prompt, label):
         """Navigate the visible menu with arrow keys; never write its saved state."""
-        self.wait_for(lambda text: prompt in text and self.selected_line(), prompt, timeout=120)
+        self.wait_for(
+            lambda text: prompt in text and self.selected_line(after=prompt), prompt, timeout=120
+        )
         visited = set()
         for _ in range(100):
-            current = self.selected_line()
+            current = self.selected_line(after=prompt)
             if label in current:
                 self.send("\r", f"choose {label}")
                 self.wait_for(
                     lambda text, before=current: (
-                        prompt not in text or self.selected_line() != before
+                        prompt not in text or self.selected_line(after=prompt) != before
                     ),
                     f"confirmation of {label}",
                 )
@@ -400,7 +411,8 @@ class TerminalProcess:
             visited.add(current)
             self.send("\x1b[B", f"move towards {label}")
             self.wait_for(
-                lambda text, before=current: self.selected_line() != before, "next menu option"
+                lambda text, before=current: self.selected_line(after=prompt) != before,
+                "next menu option",
             )
         raise AssertionError(f"Could not select {label}")
 
@@ -473,10 +485,8 @@ class AgentTerminal(TerminalProcess):
                         return
                     continue
                 ready_since = None
-            if (
-                self.agent != "antigravity"
-                and "Accessing workspace:" in text
-                and self.session.cwd.name in text
+            if self.agent != "antigravity" and claude_workspace_trust_dialog_shown(
+                text, self.session.cwd
             ):
                 ready_since = None
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
@@ -593,6 +603,7 @@ class AgentTerminal(TerminalProcess):
             }.get(self.agent, "Codex")
             if (
                 title in text
+                and "Accessing workspace:" not in text
                 and "Confirm folder trust" not in text
                 and "loading" not in text.lower()
                 and not re.search(r"(?m)^\s*>\s+You are in\b", text)

@@ -375,12 +375,13 @@ def test_cuj_task_inference_only_allows_claude_child_transport_newline(agent, af
             _task_inference_request([request], agent, prompt, after=after)
 
 
-def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
+@pytest.mark.parametrize("suffix", ["", "__sr_on"])
+def test_cuj_codex_encrypted_child_inference_matches_routed_task_name(suffix):
     request = _inference_request(CODEX, 3, "parent prompt", [{"name": "exec"}])
     message = {
         "type": "agent_message",
         "author": "/root",
-        "recipient": "/root/read_file",
+        "recipient": "/root/read_file" + suffix,
         "content": [{"type": "encrypted_content", "encrypted_content": "gAAAAAopaque"}],
     }
     request.payload["input"].append(message)
@@ -391,6 +392,8 @@ def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
     for change in (
         {"type": "message", "role": "user"},
         {"recipient": "/root/another_task"},
+        {"recipient": "/root/read_file__sr_off"},
+        {"recipient": "/root/read_file_other"},
         {"content": [{"type": "input_text", "text": "read_file"}]},
         {"content": [{"type": "encrypted_content", "encrypted_content": ""}]},
     ):

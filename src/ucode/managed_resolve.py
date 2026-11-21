@@ -114,6 +114,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_otel_tracing"] = True
     if tool == "copilot" and _agent_entry(managed, tool).get("vscode_integration_enabled") is False:
         overrides["copilot_vscode_integration"] = False
+    if tool == "copilot" and _agent_entry(managed, tool).get("app_integration_enabled") is False:
+        overrides["copilot_app_integration"] = False
     settings = _as_dict(_agent_entry(managed, tool).get("agent_native_settings"))
     if tool in SETTINGS_PASSTHROUGH_TOOLS and settings:
         overrides[f"{tool}_settings_passthrough"] = settings

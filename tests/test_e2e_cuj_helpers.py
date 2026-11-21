@@ -17,6 +17,7 @@ from tests.e2e_cuj.helpers.constants import (
     CLAUDE,
     CLAUDE_HAIKU_MODEL,
     CODEX,
+    COPILOT,
     INFERENCE_PATHS,
     CodingAgent,
 )
@@ -283,6 +284,14 @@ time.sleep(30)
     [
         "empty",
         "completed",
+        "completed_empty_history",
+        "completed_latest",
+        "running_latest",
+        "mixed_latest",
+        "scheduled_latest",
+        "partial_latest",
+        "empty_latest",
+        "transcript_latest",
         "detail",
         "routed_detail",
         "resumed",
@@ -291,8 +300,11 @@ time.sleep(30)
         "routed_detail_running",
         "detail_transcript",
         "mixed",
+        "mixed_empty_history",
         "scheduled",
         "partial",
+        "partial_empty_history",
+        "nonempty_history",
         "transcript",
     ],
 )
@@ -344,8 +356,38 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
             "agent ›", "ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 ›"
         )
     views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
+    for name in ("completed", "mixed", "partial"):
+        views[f"{name}_empty_history"] = views[name].replace(
+            "↑/↓ to select", "  Earlier in this session (0)\n\n↑/↓ to select"
+        )
+    views["nonempty_history"] = views["completed_empty_history"].replace(
+        "Earlier in this session (0)", "Earlier in this session (1)"
+    )
+    for name in ("completed", "running", "mixed", "scheduled", "partial", "transcript"):
+        views[f"{name}_latest"] = (
+            views[name]
+            .replace("Completed (2)", "Completed")
+            .replace("Completed (1)", "Completed")
+            .replace("↑/↓ to select", "↑/↓ to navigate")
+        )
+    views["completed_latest"] = views["completed_latest"].replace(
+        "↑/↓ to navigate", "  Earlier in this session (0)\n\n↑/↓ to navigate"
+    )
+    views["partial_latest"] = views["partial_latest"].replace("done · Sonnet 5", "")
+    views["empty_latest"] = (
+        "Background\n\nCompleted\n\n↑/↓ to navigate · Enter to view · Esc to close"
+    )
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "detail", "routed_detail", "resumed")
+    complete = view in (
+        "empty",
+        "completed",
+        "completed_empty_history",
+        "completed_latest",
+        "nonempty_history",
+        "detail",
+        "routed_detail",
+        "resumed",
+    )
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -400,7 +442,12 @@ def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     healthy = "\n".join(
         rows[0] for rows in mcp_registration._expected_fixture_server_rows().values()
     )
-    failed = healthy.replace(f"{CLAUDE}, {CODEX} connected", f"{CLAUDE}:failed {CODEX}:enabled", 1)
+    failed = healthy.replace(
+        f"{CLAUDE}, {COPILOT}, {CODEX} connected",
+        f"{CLAUDE}:failed {COPILOT}:enabled {CODEX}:enabled",
+        1,
+    )
+    assert failed != healthy
     outputs = [failed, failed, healthy, "unused"]
     session = SimpleNamespace(
         run=lambda *args, timeout: SimpleNamespace(stdout=outputs.pop(0), stderr="")
@@ -979,12 +1026,14 @@ def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
     suffix = ".EXE" if sys.platform == "win32" else ""
-    for agent in (CLAUDE, CODEX):
+    for agent in (CLAUDE, CODEX, COPILOT):
         (tmp_path / f"{agent}{suffix}").write_text("#!/bin/sh\n")
         (tmp_path / f"{agent}{suffix}").chmod(0o755)
     banner = "Checking MCP server health…\n\n\n"
-    rows = f"{cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)}: ug mcp-proxy - ✓ Connected\n"
-    outputs = {CLAUDE: [banner, rows], CODEX: [rows]}
+    name = cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)
+    rows = f"{name}: ug mcp-proxy - ✓ Connected\n"
+    copilot_rows = f"User servers:\n  {name} (http)\n"
+    outputs = {CLAUDE: [banner, rows], CODEX: [rows], COPILOT: [copilot_rows]}
     calls = []
 
     def run(*args, binary, timeout):
@@ -995,7 +1044,7 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
-    assert calls == [CLAUDE, CLAUDE, CODEX]
+    assert calls == [CLAUDE, CLAUDE, CODEX, COPILOT]
 
 
 def _codex_events(*events):

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -22,13 +23,15 @@ from xml.sax.saxutils import escape
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import metrics
+from ucode import agents, metrics
 from ucode.codex_config import (
+    CODEX_MODEL_PROVIDER_NAME,
     catalog_slugs,
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
     custom_catalog_models,
+    is_codex_app_server_launch,
     strip_hook_trust_state,
 )
 from ucode.config_io import (
@@ -101,7 +104,7 @@ from ucode.smart_routing.codex_hooks import (
     routing_models,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.smart_routing.codex_routing import codex_model_id, prioritize_gpt_models
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -122,7 +125,6 @@ CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 MANAGED_MODEL_CATALOG_NAME = "ug-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
 CODEX_APP_RELAY_PROVIDER_NAME = "DatabricksRelay"
@@ -145,8 +147,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 # older releases ignore it and would leave developers free to bypass the gateway.
 MINIMUM_CODEX_VERSION = (0, 156, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
-MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
-MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
+MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 171, 0)
+MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.171.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -189,6 +191,14 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
+def _smart_routing_version_supported(version: str) -> bool:
+    parsed = _parse_version(version)
+    return parsed is not None and (
+        parsed > MINIMUM_SMART_ROUTING_CODEX_VERSION
+        or (parsed == MINIMUM_SMART_ROUTING_CODEX_VERSION and "-" not in version.partition("+")[0])
+    )
+
+
 def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
@@ -204,11 +214,11 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
                 "or newer. Run `codex --version` to check the installation, "
                 "or launch with --disable-smart-routing."
             )
-        if parsed >= MINIMUM_SMART_ROUTING_CODEX_VERSION:
+        if _smart_routing_version_supported(version):
             return None
         return (
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
-            f"or newer for readable delegated assignments; found {version}. "
+            f"or newer for native delegation and status-line provider support; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
         )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
@@ -581,7 +591,12 @@ def write_tool_config(
     # catalog enabled or partially rewrite the user's configuration.
     try:
         catalog = (
-            prepare_codex_catalog(SPEC["binary"], static_models)
+            prepare_codex_catalog(
+                SPEC["binary"],
+                static_models,
+                workspace=workspace,
+                get_token=lambda: launch_token(state, workspace),
+            )
             if static_models and not provider
             else None
         )
@@ -1944,6 +1959,18 @@ def _run_codex(
         exec_or_spawn([*base_argv, *tool_args])
 
 
+def _app_server_needs_newer_codex(tool_args: list[str]) -> bool:
+    """Whether an app-server launch runs on a Codex too old to route.
+
+    The app-server's stdin is its client's protocol stream, so it can't answer the upgrade prompt
+    a routed launch offers.
+    """
+    if not is_codex_app_server_launch(tool_args):
+        return False
+    version = agent_version(SPEC["binary"])
+    return _parse_version(version) is not None and not _smart_routing_version_supported(version)
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -1951,14 +1978,21 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     relayed = bool(state.get("codex_relayed"))
+    if options.launch_smart_routing and relayed:
+        raise RuntimeError(
+            "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
+            "`--disable-smart-routing` or pick another provider."
+        )
+    if options.launch_smart_routing and _app_server_needs_newer_codex(tool_args):
+        print_warning_err(
+            f"Smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} or newer; "
+            f"found {agent_version(SPEC['binary'])}. Running the app-server without smart routing."
+        )
+        options = replace(options, launch_smart_routing=False)
     if options.launch_smart_routing:
-        if relayed:
-            raise RuntimeError(
-                "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
-                "`--disable-smart-routing` or pick another provider."
-            )
-        _launch_smart_routing(state, tool_args)
-        return
+        agents.ensure_minimum_version(
+            "codex", lambda: minimum_version_error(smart_routing_enabled=True)
+        )
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -1979,6 +2013,9 @@ def launch(
     provider = transient_provider or (
         None if parent_schema else get_provider_service(state, "codex")
     )
+    if options.launch_smart_routing and not (provider or parent_schema):
+        _launch_smart_routing(state, tool_args)
+        return
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
     token = None
@@ -2021,6 +2058,7 @@ def launch(
         profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
+    source_models = None
     if workspace and token and (provider or parent_schema) and not updating and not relayed:
         try:
             if provider is not None:
@@ -2042,6 +2080,10 @@ def launch(
             validate_codex_catalog(binary, catalog)
         except CodexMpsModelCatalogUnavailable:
             detach_app_model_catalog()
+            if options.launch_smart_routing:
+                raise RuntimeError(
+                    "Smart routing needs the selected source's Codex model catalog."
+                ) from None
         except RuntimeError:
             # A failed discovery/validation must not leave a previous workspace's
             # catalog active in independently launched app servers.
@@ -2052,14 +2094,23 @@ def launch(
             _write_model_catalog(catalog_path, catalog)
             sync_app_model_catalog(catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
+            source_models = catalog_slugs(catalog)
             # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
             # which an MPS's allowlist doesn't route, so the first request 403s. Pin
             # the MPS's primary (first) target unless the user chose a model or a
             # managed default already applies.
             if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
                 slugs = catalog_slugs(catalog)
+                if options.launch_smart_routing:
+                    slugs = prioritize_gpt_models(slugs)
                 if slugs:
                     profile_doc["model"] = slugs[0]
+    if options.launch_smart_routing:
+        routing_state = {**state, "_codex_launch_provider": provider}
+        _launch_smart_routing(
+            routing_state, tool_args, launch_config=profile_doc, available_models=source_models
+        )
+        return
     relay = None
     if relayed and workspace and not updating:
         _ensure_chatgpt_login(binary)
@@ -2087,16 +2138,26 @@ def launch(
     )
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_smart_routing(
+    state: dict,
+    tool_args: list[str],
+    *,
+    launch_config: dict | None = None,
+    available_models: list[str] | None = None,
+) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
-    from ucode.agents import ensure_minimum_version
-
     binary = SPEC["binary"]
-    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
-
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
-    models = custom_catalog_models() or routing_models(state)
+    models = (
+        available_models
+        if available_models is not None
+        else custom_catalog_models() or routing_models(state)
+    )
+    if launch_config is not None:
+        configured_model = (
+            configured_model if configured_model in models else launch_config.get("model")
+        )
     start_model = (
         configured_model
         or (codex_model_id(models[0]) if models else None)
@@ -2108,6 +2169,11 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
+        **(
+            {"launch_config": launch_config, "available_models": models}
+            if launch_config is not None
+            else {}
+        ),
     )
 
 

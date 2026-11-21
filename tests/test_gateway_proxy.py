@@ -179,11 +179,15 @@ class _BrokenPipeWriter(io.RawIOBase):
         raise BrokenPipeError(32, "Broken pipe")
 
 
-def _relay_handler(wfile) -> gateway_proxy._ProxyHandler:
+def _relay_handler(wfile, handler_class=gateway_proxy._ProxyHandler) -> gateway_proxy._ProxyHandler:
     # Bypass BaseHTTPRequestHandler.__init__ (which would service a socket);
     # we only exercise _relay_response's write path. Set the few attributes the
     # send_response/send_header machinery reads (normally populated by __init__).
-    handler = object.__new__(gateway_proxy._ProxyHandler)
+    handler = object.__new__(handler_class)
+    handler._metric_labels = {}
+    handler._metric_bytes = 0
+    handler._metric_disconnected = False
+    handler._metric_error = None
     handler.wfile = wfile
     handler.request_version = "HTTP/1.1"
     handler.requestline = "POST /v1/messages HTTP/1.1"
@@ -1001,3 +1005,123 @@ class TestCodexRelayProxy:
         assert sent["ChatGPT-Account-ID"] == "acct"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
+
+
+class TestProxyMetrics:
+    def test_auth_retry_records_both_headers_and_only_forwarded_body(self, metrics_recorder):
+        from ucode import metrics
+
+        metrics.set_context(agent="codex")
+        client = _FakeClient([_FakeResp(401, b"rejected"), _FakeResp(200, b"answer")])
+        handler = _handle_handler(client, _FakeCache(), _Collect())
+        handler.metrics_workspace = "https://example.databricks.com"
+        handler.metrics_proxy_mode = "relay"
+        handler._handle()
+        rows = list(metrics_recorder.pending)
+        headers = [a for _, n, _, a in rows if n == "proxy_upstream_headers_duration_ms"]
+        assert [(a["attempt"], a["http_status_code"]) for a in headers] == [(1, 401), (2, 200)]
+        assert all(a["agent"] == "codex" and a["proxy_mode"] == "relay" for a in headers)
+        assert sum(v for _, n, v, _ in rows if n == "proxy_auth_retry_count") == 1
+        assert [v for _, n, v, _ in rows if n == "proxy_response_bytes"] == [6]
+        assert sum(n == "proxy_first_byte_duration_ms" for _, n, _, _ in rows) == 1
+        assert not any(n == "ug_cli_error" for _, n, _, _ in rows)
+
+    def test_terminal_rejection_emits_one_error_after_retry(self, metrics_recorder):
+        client = _FakeClient([_FakeResp(401), _FakeResp(403, b"denied")])
+        handler = _handle_handler(client, _FakeCache(), _Collect())
+        handler._handle()
+        errors = [a for _, n, _, a in metrics_recorder.pending if n == "ug_cli_error"]
+        assert len(errors) == 1
+        assert errors[0]["phase"] == "agent_session"
+        assert errors[0]["http_status_code"] == 403
+        assert errors[0]["error_code"] == "http_403"
+
+    def test_disconnect_marks_request_and_counts_only_written_body(self, metrics_recorder):
+        class Cancelled(_Collect):
+            def write(self, data):
+                if data == b"answer":
+                    raise BrokenPipeError()
+                return super().write(data)
+
+        handler = _handle_handler(
+            _FakeClient([_FakeResp(200, b"answer")]), _FakeCache(), Cancelled()
+        )
+        handler._handle()
+        rows = list(metrics_recorder.pending)
+        labels = next(a for _, n, _, a in rows if n == "proxy_request_duration_ms")
+        assert labels["client_disconnected"] is True
+        assert [v for _, n, v, _ in rows if n == "proxy_response_bytes"] == [0]
+        assert not any(n == "ug_cli_error" for _, n, _, _ in rows)
+
+    @pytest.mark.parametrize("retry", [False, True])
+    def test_transport_failure_records_the_502_sent_to_client(self, metrics_recorder, retry):
+        from ucode import metrics
+
+        attempts = []
+
+        def upstream(request):
+            attempts.append(request)
+            if retry and len(attempts) == 1:
+                return httpx.Response(401, content=b"rejected")
+            raise httpx.ConnectError("upstream unavailable", request=request)
+
+        output = _Collect()
+        with httpx.Client(
+            base_url="https://example.databricks.com", transport=httpx.MockTransport(upstream)
+        ) as client:
+            handler = _handle_handler(client, _FakeCache(), output)
+            handler._handle()
+        assert output.data.split(b"\r\n", 1)[0].split()[1] == b"502"
+        assert len(attempts) == (2 if retry else 1)
+        rows = list(metrics_recorder.pending)
+        for name in (
+            metrics.PROXY_REQUEST_DURATION_MS,
+            metrics.PROXY_RESPONSE_BYTES,
+            metrics.UG_CLI_ERROR,
+        ):
+            labels = [a for _, n, _, a in rows if n == name]
+            assert len(labels) == 1
+            assert labels[0]["http_status_code"] == 502
+
+    def test_stream_failure_preserves_already_sent_200(self, metrics_recorder):
+        from ucode import metrics
+
+        class InterruptedResponse(_FakeResp):
+            def iter_raw(self, _n=None):
+                yield b"partial"
+                raise httpx.ReadError("stream interrupted")
+
+        output = _Collect()
+        handler = _handle_handler(_FakeClient([InterruptedResponse(200)]), _FakeCache(), output)
+        handler._handle()
+        assert b"200 OK" in output.data
+        assert output.data.endswith(b"partial")
+        assert b"502" not in output.data
+        rows = list(metrics_recorder.pending)
+        assert [v for _, n, v, _ in rows if n == metrics.PROXY_RESPONSE_BYTES] == [7]
+        errors = [a for _, n, _, a in rows if n == metrics.UG_CLI_ERROR]
+        assert len(errors) == 1
+        assert errors[0]["http_status_code"] == 200
+
+    @pytest.mark.parametrize("disconnect", [False, True])
+    def test_rewritten_response_counts_only_delivered_body(self, metrics_recorder, disconnect):
+        from ucode import metrics
+
+        class Writer(_Collect):
+            def write(self, data):
+                if disconnect and data == b"rewritten":
+                    raise BrokenPipeError()
+                return super().write(data)
+
+        handler = _relay_handler(Writer(), gateway_proxy._GatewayAuthProxyHandler)
+        handler.bad_request_rewriter = lambda body: b"rewritten"
+        handler._relay_response(httpx.Response(400, content=b"original"))
+        assert handler._metric_bytes == (0 if disconnect else len(b"rewritten"))
+        assert handler._metric_disconnected is disconnect
+        assert handler._metric_error == "HTTP 400"
+        assert (
+            sum(
+                n == metrics.PROXY_FIRST_BYTE_DURATION_MS for _, n, _, _ in metrics_recorder.pending
+            )
+            == 1
+        )

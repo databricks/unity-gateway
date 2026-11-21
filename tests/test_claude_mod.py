@@ -21,6 +21,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     # The entry point imports these, so they ship beside it unmodified.
     filenames = (
         "register.ts",
+        "auto-model.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
@@ -104,6 +105,26 @@ def test_native_subagent_statusline_command(tmp_path):
             "content": "Otter · Latestprogress[31m · 2,345 tokens · 0s",
         }
     ]
+    display_label = "Otter — selected-model"
+    (names / "agent-child-a.json").write_text(
+        json.dumps(
+            {"session_id": "s1", "name": display_label, "description": "Otter — prelaunch-model"}
+        )
+    )
+    for label, suffix in (
+        (display_label, ""),
+        ("Otter — prelaunch-model", ""),
+        ("Reading files", " · Reading files"),
+        (None, ""),
+    ):
+        task["description"] = "Otter — prelaunch-model"
+        payload["tasks"] = [{**task, "id": "child-a", "label": label}]
+        assert render(payload) == [
+            {
+                "id": "child-a",
+                "content": f"{display_label}{suffix} · 1,234 tokens · 0s",
+            }
+        ]
     for invalid in (None, [], {}, {"session_id": "s1", "tasks": None}):
         assert render(invalid) == []
 
@@ -115,6 +136,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
@@ -142,7 +164,12 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "unset": [
+            key
+            for key in SMART_ROUTING_ENV_KEYS
+            if key not in ("ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTER_AUTO_MODE")
+        ],
         "recipe": "stable",
         "routeCommand": [],
         "logsCommand": [],
@@ -150,3 +177,17 @@ def test_launch_options_preserve_empty_and_absent_values():
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
+
+
+@pytest.mark.parametrize("version", [None, "", "unknown_v99", *config._VERSIONS])
+def test_mod_auto_flag_is_derived_only_from_version(version):
+    env = {"ENABLE_SMART_ROUTER_AUTO_MODE": "1"}
+    if version is not None:
+        env["SMART_ROUTER_CONFIG_VERSION"] = version
+    before = env.copy()
+    options = v2._claude_mod_launch_options(env)
+    assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == (
+        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY else "0"
+    )
+    assert "ENABLE_SMART_ROUTER_AUTO_MODE" not in options["unset"]
+    assert env == before

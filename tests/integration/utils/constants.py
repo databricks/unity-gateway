@@ -11,6 +11,9 @@ COPILOT_GLM_TEST_MODEL = "system.ai.glm-5-2"
 COPILOT_KIMI_TEST_MODEL = "system.ai.kimi-k3"
 COPILOT_DEEPSEEK_TEST_MODEL = "system.ai.deepseek-v4-1-flash-1017"
 
+# A ChatGPT-supported model for the relay inference check.
+CODEX_RELAYED_MODEL = "gpt-6-luna"
+
 COPILOT_HEADLESS_FLAGS = (
     "--allow-all-tools",
     "--output-format",

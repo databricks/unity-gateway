@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import signal
 import uuid
 from pathlib import Path
 
@@ -769,9 +770,30 @@ class TestProviderCatalog:
             copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
 
-def _stub_location(monkeypatch, model_ids, error=None):
+def _model_service(*models):
+    """A UC model service whose routing has one live pay-per-token destination per model."""
+    return {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {"traffic_percentage": 100, "pay_per_token_config": {"model": f"models/{m}"}}
+                    for m in models
+                ]
+            }
+        }
+    }
+
+
+def _stub_location(monkeypatch, model_ids, error=None, services=None):
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
-    seen = {}
+    seen = {"looked_up": []}
+
+    def model_service(name, workspace, token, *, timeout):
+        seen["looked_up"].append(name)
+        service = (services or {}).get(name)
+        return (service, None) if service else (None, "not found")
+
+    monkeypatch.setattr(copilot, "get_model_service", model_service)
 
     def anthropic_catalog(workspace, token, *, parent_schema):
         seen["parent_schema"] = parent_schema
@@ -803,6 +825,46 @@ class TestLocationCatalog:
             ("main.ucode.gpt-5-6-luna", "responses"),
         ]
         assert seen["parent_schema"] == "main.ucode"
+
+    def test_a_service_named_like_no_model_takes_its_claude_settings_from_the_model_behind_it(
+        self, monkeypatch
+    ):
+        seen = _stub_location(
+            monkeypatch,
+            [
+                "anthropic-aigw-1a2b3c4d-main.ucode.claude_sonnet",
+                "main.ucode.gpt_luna",
+                "main.ucode.claude-haiku-4-5",
+            ],
+            services={
+                "main.ucode.claude_sonnet": _model_service(
+                    "system.ai.databricks-claude-sonnet-4-6"
+                ),
+                "main.ucode.gpt_luna": _model_service("system.ai.databricks-gpt-6-luna"),
+            },
+        )
+
+        models = copilot.location_catalog({"workspace": WS}, "main.ucode")
+        entries = {
+            entry["wireModel"]: entry
+            for entry in copilot.render_providers_config(models, PROXY, "secret")["models"]
+        }
+
+        # Copilot sends `temperature` to a model it can't place, which newer Claude models reject.
+        assert entries["main.ucode.claude_sonnet"]["modelId"] == "claude-sonnet-4.6"
+        assert entries["main.ucode.claude_sonnet"]["maxPromptTokens"] == 872_000
+        assert "modelId" not in entries["main.ucode.gpt_luna"]
+        assert entries["main.ucode.claude-haiku-4-5"]["modelId"] == "claude-haiku-4.5"
+        assert sorted(seen["looked_up"]) == ["main.ucode.claude_sonnet", "main.ucode.gpt_luna"]
+
+    def test_a_service_lookup_that_fails_keeps_the_service_as_listed(self, monkeypatch):
+        _stub_location(monkeypatch, ["main.ucode.claude_sonnet"])
+
+        [model] = copilot.location_catalog({"workspace": WS}, "main.ucode")
+
+        assert model.served_model is None
+        [entry] = copilot.render_providers_config([model], PROXY, "secret")["models"]
+        assert "modelId" not in entry
 
     def test_an_empty_schema_says_so(self, monkeypatch):
         _stub_location(monkeypatch, [], error="Unity Gateway returned no Anthropic model ids")
@@ -1114,13 +1176,18 @@ class TestBuildRuntimeEnv:
         assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in env
         assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
 
-    def test_without_tracing_keeps_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+    def test_without_tracing_drops_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer other")
+        monkeypatch.setenv("COPILOT_OTEL_ENABLED", "true")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ml")
 
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
 
-        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
+        assert "OTEL_EXPORTER_OTLP_HEADERS" not in env
         assert "COPILOT_OTEL_ENABLED" not in env
+        assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
 
 
 class TestSessionRegistry:
@@ -2049,3 +2116,210 @@ class TestWithSessionId:
             "User-Agent": "u",
         }
         assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}
+
+
+SEAT_MPS = "main.ai.copilot_seats"
+SEAT_SERVICE = {"provider_type": "github_copilot", "targets": ["gpt-5.5"], "relayed": True}
+
+
+def _stub_seat_launch(monkeypatch, *, returncode=0, host="api.business.githubcopilot.com"):
+    from ucode import copilot_relay
+
+    seen: dict = {}
+    monkeypatch.setattr(copilot_relay, "cached_copilot_api_host", lambda *_a: host)
+
+    def popen(argv, *, env):
+        seen["argv"] = argv
+        seen["env"] = env
+        # The relay is live while Copilot runs, and refuses a call without a GitHub token.
+        seen["unsigned_status"] = httpx.get(f"{env['COPILOT_API_URL']}/meta", timeout=5).status_code
+        return _ExitedProcess(returncode)
+
+    monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+    return seen
+
+
+class TestSeatRelay:
+    def test_env_signs_copilot_in_and_sends_its_calls_to_the_relay(self, monkeypatch):
+        for key in ("COPILOT_OFFLINE", "COPILOT_MODEL", "COPILOT_PROVIDERS_CONFIG"):
+            monkeypatch.setenv(key, "x")
+        monkeypatch.setenv("COPILOT_PROVIDER_API_KEY", "byok")
+        monkeypatch.setenv("GITHUB_MCP_URL_OVERRIDE", "https://elsewhere/mcp")
+
+        env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host="api.githubcopilot.com")
+
+        assert env["COPILOT_API_URL"] == "http://127.0.0.1:9/s"
+        assert env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] == "true"
+        assert env["GITHUB_MCP_URL_OVERRIDE"] == "https://api.githubcopilot.com/mcp/readonly"
+        for key in ("COPILOT_OFFLINE", "COPILOT_MODEL", "COPILOT_PROVIDERS_CONFIG"):
+            assert key not in env
+        assert "COPILOT_PROVIDER_API_KEY" not in env
+        assert "GITHUB_MCP_URL_OVERRIDE" not in copilot.seat_relay_env("u", mcp_host=None)
+
+    def test_a_service_lookup_error_is_raised_not_read_as_no_seat_relay(self, monkeypatch):
+        _stub_provider_service(monkeypatch, None)
+
+        with pytest.raises(RuntimeError, match="was not found"):
+            copilot.uses_seat_relay(dict(STATE), SEAT_MPS)
+
+    def test_launch_runs_copilot_signed_in_through_the_relay(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        seen = _stub_seat_launch(monkeypatch, returncode=3)
+        state = dict(STATE)
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = SEAT_MPS
+
+        with pytest.raises(SystemExit) as exit_info:
+            copilot.launch(state, ["--model", "gpt-5.5"], options=copilot.LaunchOptions())
+
+        assert exit_info.value.code == 3
+        env = seen["env"]
+        assert env["COPILOT_API_URL"].startswith("http://127.0.0.1:")
+        assert "COPILOT_OFFLINE" not in env and "COPILOT_PROVIDERS_CONFIG" not in env
+        assert (
+            env["GITHUB_MCP_URL_OVERRIDE"] == "https://api.business.githubcopilot.com/mcp/readonly"
+        )
+        assert "dbx-token" not in env.values()
+        assert seen["argv"][:2] == [copilot.SPEC["binary"], *copilot.MCP_LAUNCH_ARGS]
+        assert seen["argv"][2] == "--session-id"
+        assert seen["argv"][4:] == ["--model", "gpt-5.5"]
+        assert seen["unsigned_status"] == 401
+        assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
+
+    def test_env_traces_to_the_relay_when_the_workspace_traces_copilot(self, monkeypatch):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer other")
+        monkeypatch.setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", "/tmp/spans")
+
+        traced = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None, tracing=True)
+        untraced = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
+
+        assert traced["COPILOT_OTEL_ENABLED"] == "true"
+        assert traced["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:9/s/ai-gateway/otel"
+        assert traced["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+        # The secret is already in the endpoint's path.
+        assert "OTEL_EXPORTER_OTLP_HEADERS" not in traced
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in traced
+        assert "COPILOT_OTEL_ENABLED" not in untraced
+        assert not any(key.startswith(copilot._INHERITED_OTEL_PREFIXES) for key in untraced)
+
+    def test_keep_inherited_otel_is_exclusive_with_tracing(self):
+        with pytest.raises(ValueError):
+            copilot.seat_relay_env("u", mcp_host=None, tracing=True, keep_inherited_otel=True)
+
+    def test_relay_serves_copilots_otel_path(self):
+        from ucode import copilot_relay
+
+        assert copilot_relay.OTEL_PATH == copilot.OTEL_PATH
+
+    def test_traced_launch_exports_to_the_live_relay(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        from ucode import copilot_relay
+
+        monkeypatch.setattr(copilot_relay, "cached_copilot_api_host", lambda *_a: None)
+        seen: dict = {}
+
+        def popen(argv, *, env):
+            seen["env"] = env
+            endpoint = env["OTEL_EXPORTER_OTLP_ENDPOINT"]
+            seen["metrics_status"] = httpx.post(
+                f"{endpoint}/v1/metrics", content=b"points", timeout=5
+            ).status_code
+            return _ExitedProcess(0)
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        state = {
+            **STATE,
+            "copilot_otel_tracing": True,
+            copilot.LAUNCH_PROVIDER_SERVICE_KEY: SEAT_MPS,
+        }
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        env = seen["env"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"{env['COPILOT_API_URL']}/ai-gateway/otel"
+        assert seen["metrics_status"] == 200
+
+    def test_launch_warns_about_copilots_own_api_url_setting(self, tmp_path, monkeypatch, capsys):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        home = tmp_path / "copilot-home"
+        home.mkdir()
+        (home / "settings.json").write_text(json.dumps({"copilotUrl": "https://example.test"}))
+        monkeypatch.setenv("COPILOT_HOME", str(home))
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        _stub_seat_launch(monkeypatch)
+        state = {**STATE, copilot.LAUNCH_PROVIDER_SERVICE_KEY: SEAT_MPS}
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        printed = " ".join(capsys.readouterr().out.split())
+        assert "`copilotUrl` setting (https://example.test)" in printed
+
+    def test_a_service_that_doesnt_relay_a_seat_launches_offline(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        _stub_provider_service(
+            monkeypatch, {"provider_type": "anthropic", "targets": ["claude-sonnet-5"]}
+        )
+        state = {**STATE, copilot.LAUNCH_PROVIDER_SERVICE_KEY: MPS}
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        assert seen["env"]["COPILOT_OFFLINE"] == "true"
+
+    def test_vscode_runtime_runs_through_the_relay_and_keeps_stdout_clear(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+        seen = _stub_seat_launch(monkeypatch, returncode=5)
+        sigterm = signal.getsignal(signal.SIGTERM)
+
+        returncode = copilot.run_seat_runtime(
+            dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", ["--stdio", "--headless"]
+        )
+
+        assert returncode == 5
+        assert signal.getsignal(signal.SIGTERM) is sigterm
+        assert seen["argv"] == ["/vscode/copilot-runtime", "--stdio", "--headless"]
+        assert seen["env"]["COPILOT_API_URL"].startswith("http://127.0.0.1:")
+        assert seen["unsigned_status"] == 401
+        assert capsys.readouterr().out == ""
+
+    def test_vscode_runtime_keeps_the_otel_settings_vscode_gave_it(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+        monkeypatch.setenv("COPILOT_OTEL_ENABLED", "true")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318/vscode")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:4318/t")
+        monkeypatch.setenv("COPILOT_PROVIDER_BASE_URL", "https://byok.example")
+        seen = _stub_seat_launch(monkeypatch)
+
+        copilot.run_seat_runtime(dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", [])
+
+        assert seen["env"]["COPILOT_OTEL_ENABLED"] == "true"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:4318/vscode"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://127.0.0.1:4318/t"
+        assert "COPILOT_PROVIDER_BASE_URL" not in seen["env"]
+
+    def test_vscode_runtime_that_cant_start_reports_it_on_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+
+        def popen(argv, *, env):
+            raise FileNotFoundError(argv[0])
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+
+        assert copilot.run_seat_runtime(dict(STATE), SEAT_MPS, "/missing", []) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Couldn't start the Copilot runtime /missing" in captured.err

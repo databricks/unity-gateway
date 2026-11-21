@@ -108,3 +108,25 @@ def test_proxy_missing_workspace_reports_error(monkeypatch):
     assert result.exit_code == 1
     assert "No workspace configured" in result.stderr
     assert result.stdout == ""
+
+
+def test_proxy_drops_the_app_runtimes_trace_exporter_env(monkeypatch):
+    import os
+
+    from ucode import mcp_proxy_runtime
+
+    for name in ("OTEL_EXPORTER_OTLP_ENDPOINT", "COPILOT_OTEL_ENABLED", "UG_KEEP"):
+        monkeypatch.setenv(name, "1")
+    seen = []
+    monkeypatch.setattr(
+        mcp_proxy_runtime, "load_proxy_state", lambda **_: {"workspace": "https://saved"}
+    )
+    monkeypatch.setattr(
+        mcp_proxy_runtime, "serve", lambda *args, **kwargs: seen.append(dict(os.environ))
+    )
+
+    mcp_proxy_runtime.run_proxy("https://endpoint")
+
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in seen[0]
+    assert "COPILOT_OTEL_ENABLED" not in seen[0]
+    assert seen[0]["UG_KEEP"] == "1"

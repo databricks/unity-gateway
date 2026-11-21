@@ -41,6 +41,7 @@ _RUNTIME_ENV_KEYS = {
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    "UG_TLS_TRUST_STORE",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
@@ -285,6 +286,10 @@ def run_proxy(
     use_pat: bool = False,
     workspace_id: str | None = None,
 ) -> None:
+    # The GitHub Copilot app starts MCP servers with its runtime's trace exporter settings, which
+    # would send this process's and the Databricks CLI's spans to the gateway without a token.
+    for name in [name for name in os.environ if name.startswith(("OTEL_", "COPILOT_OTEL_"))]:
+        del os.environ[name]
     state = load_proxy_state()
     workspace = host or state.get("workspace")
     if not workspace:

@@ -33,10 +33,14 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from ucode import metrics
+from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    AGENT_COPILOT,
+    AGENT_VSCODE,
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
@@ -297,6 +301,19 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
+def _network_error_reason(error: object) -> str:
+    """``network error: ...``, with what to do when it is a failed certificate verification."""
+    if not tls.is_certificate_failure(error):
+        return f"network error: {error}"
+    # The OS store's verifier raises with a bare message, which prints as a tuple.
+    args = getattr(error, "args", ())
+    detail = str(args[0] if len(args) == 1 else error).rstrip(".")
+    return (
+        f"network error: certificate verification failed: {detail}. "
+        f"{tls.certificate_failure_hint()}"
+    )
+
+
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -422,7 +439,7 @@ def _http_get_bytes(
             retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
         except urllib_error.URLError as exc:
             _debug(f"GET {url}", f"URLError: {exc.reason}")
-            reason = f"network error: {exc.reason}"
+            reason = _network_error_reason(exc.reason)
             if attempt == max_retries:
                 return None, reason
             retry_after = None
@@ -554,7 +571,7 @@ def _http_send_json(
         return None, reason
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
+        return None, _network_error_reason(exc.reason)
     except OSError as exc:
         # See `_http_get_json`: a bare socket timeout is an OSError, not a
         # URLError, and would otherwise escape the caller's error handling.
@@ -874,6 +891,12 @@ def _iter_databricks_executables() -> list[str]:
         search_groups.append(
             ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
         )
+    from ucode.state import recorded_databricks_cli
+
+    # The GitHub Copilot app starts `ug auth-token` and `ug otel-headers` with a PATH that may
+    # lack the CLI's directory.
+    if recorded := recorded_databricks_cli():
+        search_groups.append([os.path.dirname(recorded)])
 
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
@@ -3128,6 +3151,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "openai",
         "azure_openai",
         "microsoft_foundry",
+        "github_copilot",
     ),
 }
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
@@ -3139,8 +3163,32 @@ _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
+ANTHROPIC_PROVIDER_TYPE = "anthropic"
+OPENAI_PROVIDER_TYPE = "openai"
+GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
 # Provider types the gateway serves on its Anthropic Messages route.
-ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
+ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
+
+
+def is_copilot_seat_relay(service: dict) -> bool:
+    """True for a GitHub Copilot service that relays each developer's own Copilot seat."""
+    return (
+        bool(service.get("relayed"))
+        and service.get("provider_type") == GITHUB_COPILOT_PROVIDER_TYPE
+    )
+
+
+# Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
+# agent named in the refusal. The fallback for an unknown relayed type keeps the Claude entry.
+_SUBSCRIPTION_RELAYS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    ANTHROPIC_PROVIDER_TYPE: ((AGENT_CLAUDE,), "Claude", "Claude Code"),
+    OPENAI_PROVIDER_TYPE: ((AGENT_CODEX,), "ChatGPT", "Codex"),
+    GITHUB_COPILOT_PROVIDER_TYPE: (
+        (AGENT_COPILOT, AGENT_VSCODE),
+        "GitHub Copilot",
+        "GitHub Copilot",
+    ),
+}
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -3174,8 +3222,9 @@ def list_model_provider_services(
     "allow_all_targets": bool, "relayed": bool}``.
     ``targets`` is the provider-side model ids the service exposes (used to pin
     Bedrock model names); ``target_api_types`` holds the APIs each target declares
-    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less Anthropic
-    service (Claude Max/Team/Enterprise subscription relay). A non-None
+    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less
+    Anthropic, OpenAI or GitHub Copilot service (a Claude, ChatGPT or GitHub Copilot subscription
+    relay). A non-None
     ``reason`` means the listing call itself failed.
 
     Pages through the endpoint: a metastore with more services than fit on one page used to have the
@@ -3266,12 +3315,12 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
-    # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
-    # server-side, so both launch identically.
+    # Relayed = credential-less Anthropic, OpenAI or GitHub Copilot (subscription relay). Only
+    # whether it's relayed matters here; the tier (Max vs Team/Enterprise, or the Copilot plan) is
+    # governed server-side, so they launch identically.
     relayed = any(
         isinstance(cfg, dict) and "relayed" in cfg
-        for cfg in (config.get("anthropic"), config.get("openai"))
+        for cfg in (config.get("anthropic"), config.get("openai"), config.get("github_copilot"))
     )
     raw_type = config.get("provider_type")
     return {
@@ -3316,11 +3365,10 @@ def get_model_service(
     return payload, None
 
 
-def model_service_primary_providers(service: dict) -> list[str]:
-    """The Model Provider Services behind ``service``'s live primary destinations."""
+def model_service_backing_model(service: dict) -> str | None:
+    """The foundation model behind ``service``'s first live primary destination, if it has one."""
     routing = (service.get("config") or {}).get("routing") or {}
     destinations = routing.get("destinations")
-    providers: list[str] = []
     for destination in destinations if isinstance(destinations, list) else []:
         if (
             not isinstance(destination, dict)
@@ -3328,10 +3376,91 @@ def model_service_primary_providers(service: dict) -> list[str]:
             or not (destination.get("traffic_percentage") or 0) > 0
         ):
             continue
+        model = (destination.get("pay_per_token_config") or {}).get("model")
+        if isinstance(model, str) and model:
+            return model.removeprefix("models/")
+    return None
+
+
+def model_service_primary_providers(service: dict) -> list[str]:
+    """The Model Provider Services behind ``service``'s live primary destinations."""
+    providers: list[str] = []
+    for destination in _model_service_primary_destinations(service, strict=False) or []:
         provider = (destination.get("external_model_config") or {}).get("model_provider_service")
         if isinstance(provider, str) and provider:
             providers.append(provider.removeprefix("model-provider-services/"))
     return providers
+
+
+def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
+        return None
+    primary = routing.get("destinations")
+    if not isinstance(primary, list) or not primary:
+        return None
+    destinations = []
+    for destination in primary:
+        if not isinstance(destination, dict):
+            if strict:
+                return None
+            continue
+        if destination.get("is_deleted"):
+            continue
+        traffic = destination.get("traffic_percentage")
+        if traffic is None:
+            traffic = 100 if len(primary) == 1 else 0
+        if not isinstance(traffic, (int, float)):
+            if strict:
+                return None
+            continue
+        if traffic > 0:
+            destinations.append(destination)
+    return destinations
+
+
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    destinations = _model_service_primary_destinations(service)
+    if destinations is None:
+        return None
+    routing = service["config"]["routing"]
+    fallback = routing.get("fallback") or {}
+    if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
+        return None
+    destinations.extend(fallback.get("destinations", []))
+    budget_fallbacks = routing.get("budget_fallbacks") or []
+    if not isinstance(budget_fallbacks, list):
+        return None
+    for entry in budget_fallbacks:
+        if not isinstance(entry, dict):
+            return None
+        destinations.append(entry.get("destination"))
+    models = []
+    for destination in destinations:
+        if not isinstance(destination, dict):
+            return None
+        if destination.get("is_deleted"):
+            continue
+        configs = [
+            destination[key]
+            for key in (
+                "external_model_config",
+                "pay_per_token_config",
+            )
+            if key in destination
+        ]
+        if len(configs) != 1 or not isinstance(configs[0], dict):
+            return None
+        target = configs[0]
+        if "external_model_config" in destination:
+            target = target.get("target")
+        model = target.get("model") if isinstance(target, dict) else None
+        if not isinstance(model, str) or not model:
+            return None
+        models.append(model.removeprefix("models/"))
+    return list(dict.fromkeys(models)) or None
 
 
 class RelayLookup(Enum):
@@ -3351,9 +3480,9 @@ _RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
 _RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
 
 
-def relay_candidate_model_services(models: list[str]) -> list[str]:
+def custom_model_services(models: list[str]) -> list[str]:
     """The entries of ``models`` that name a customer model service (``catalog.schema.name``,
-    not ``system.*``), the only kind that can route to a subscription relay."""
+    not ``system.*``). Preserve context suffixes used by the caller."""
     candidates: list[str] = []
     for model in models:
         if not isinstance(model, str):
@@ -3373,7 +3502,7 @@ def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayL
     credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
     lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
     """
-    if not relay_candidate_model_services([model]):
+    if not custom_model_services([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
     key = (workspace, name)
@@ -3475,34 +3604,62 @@ def list_tool_provider_services(
 
     Returns ``(names, reason)``; ``reason`` is non-None when the listing failed.
     """
+    choices, reason = tool_provider_service_choices(tool, workspace, token)
+    return [name for name, _label in choices], reason
+
+
+def tool_provider_service_choices(
+    tool: str, workspace: str, token: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Like :func:`list_tool_provider_services`, as ``(name, picker label)`` pairs."""
     services, reason = list_model_provider_services(workspace, token)
     if reason is not None:
         return [], reason
-    names = [s["name"] for s in services if service_usable_for_tool(tool, s)]
-    return names, None
+    choices = [
+        (s["name"], provider_service_label(s)) for s in services if service_usable_for_tool(tool, s)
+    ]
+    return choices, None
+
+
+def provider_service_label(service: dict) -> str:
+    """A service's name, marked when it relays a GitHub Copilot subscription: Copilot lists those
+    beside API-key services, and each developer signs in to them with their own seat."""
+    name = service.get("name", "")
+    if is_copilot_seat_relay(service):
+        return f"{name} (GitHub Copilot subscription)"
+    return name
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
     """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
-        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
+        # A GitHub Copilot service only works as a subscription relay, not as a provider to route to.
+        routable = [
+            name
+            for name in _TOOL_PROVIDER_TYPES.get(tool, ())
+            if name != GITHUB_COPILOT_PROVIDER_TYPE
+        ]
+        supported = ", ".join(routable) or "none"
         return (
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
     if service.get("relayed"):
-        relay_tool, subscription, display = (
-            ("codex", "ChatGPT", "Codex")
-            if provider_type == "openai"
-            else ("claude", "Claude", "Claude Code")
+        relay_tools, subscription, display = _SUBSCRIPTION_RELAYS.get(
+            provider_type, _SUBSCRIPTION_RELAYS[ANTHROPIC_PROVIDER_TYPE]
         )
-        if tool != relay_tool:
+        if tool not in relay_tools:
             return (
                 f"Model provider service '{service_name}' relays a {subscription} subscription, "
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
+    elif provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
+        return (
+            f"Model provider service '{service_name}' is a GitHub Copilot provider that doesn't "
+            "relay a subscription, which ug can't route to."
+        )
     if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
             f"Model provider service '{service_name}' exposes no compatible models for {tool} — "

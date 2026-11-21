@@ -13,6 +13,7 @@ import {
   SESSION_ID_HEADER,
   sessionHeaders,
   SWITCHED_KEY,
+  switchToAgentHostCopy,
   switchToDefaultModel,
   userAgent,
   whenCopilotChatIsOn,
@@ -428,6 +429,8 @@ describe("whenCopilotChatIsOn", () => {
   });
 });
 
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
 describe("switchToDefaultModel", () => {
   const CHANGE = "workbench.action.chat.open";
   const selector = (model: { vendor: string; id: string }) => ({ modelSelector: { vendor: model.vendor, id: model.id } });
@@ -491,6 +494,17 @@ describe("switchToDefaultModel", () => {
     assert.equal(ctx.globalState.get(SWITCHED_KEY), undefined);
   });
 
+  it("also opens the chat on the agent host's copy when new chats are Copilot sessions", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    host.settings = { "chat.defaultToCopilotHarness": true };
+    host.agentHostModels = [`${VENDOR}/${luna.id}`];
+    await switchToDefaultModel(context(), settings(luna.id), "config-1", () => {});
+    await tick();
+    assert.deepEqual(host.commandArgs, [selector(luna), { modelSelector: { id: `${VENDOR}/${luna.id}` } }]);
+    assert.deepEqual(host.modelListeners, []);
+  });
+
   it("logs, and doesn't retry, when VS Code has no command to switch", async () => {
     host.chatModels = [sonnet];
     const lines: string[] = [];
@@ -498,6 +512,55 @@ describe("switchToDefaultModel", () => {
     await switchToDefaultModel(ctx, settings(sonnet.id), "config-1", (line) => lines.push(line));
     assert.match(lines[0] ?? "", /Couldn't switch the chat to system.ai.claude-sonnet-5-5/);
     assert.equal(ctx.globalState.get(SWITCHED_KEY), "config-1");
+  });
+});
+
+describe("switchToAgentHostCopy", () => {
+  const CHANGE = "workbench.action.chat.open";
+  const copy = "databricks-unity-gateway/system.ai.gpt-6-luna";
+  const context = () => ({ subscriptions: [] as vscode.Disposable[] }) as unknown as vscode.ExtensionContext;
+  const models = () => (host.commandArgs as { modelSelector: { id: string } }[]).map((arg) => arg.modelSelector.id);
+  afterEach(() => host.reset());
+
+  it("waits for the agent host to list its copy, then stops", async () => {
+    host.commands = [CHANGE];
+    switchToAgentHostCopy(context(), "system.ai.gpt-6-luna", () => {});
+    await tick();
+    assert.deepEqual(models(), []);
+    host.agentHostModels = [copy];
+    for (const listener of [...host.modelListeners]) {
+      listener();
+    }
+    await tick();
+    assert.deepEqual(models(), [copy]);
+    assert.deepEqual(host.modelListeners, []);
+  });
+
+  it("runs one attempt at a time and retries once for changes during it", async () => {
+    host.commands = [CHANGE];
+    switchToAgentHostCopy(context(), "system.ai.gpt-6-luna", () => {});
+    for (const listener of [...host.modelListeners]) {
+      listener();
+      listener();
+    }
+    await tick();
+    await tick();
+    assert.deepEqual(models(), []);
+    assert.equal(host.openAttempts, 2);
+    host.agentHostModels = [copy];
+    host.modelListeners[0]?.();
+    await tick();
+    assert.deepEqual(models(), [copy]);
+  });
+
+  it("gives up and says so when the copy never shows", async () => {
+    host.commands = [CHANGE];
+    const lines: string[] = [];
+    switchToAgentHostCopy(context(), "system.ai.gpt-6-luna", (line) => lines.push(line), 10);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(models(), []);
+    assert.deepEqual(host.modelListeners, []);
+    assert.match(lines[0] ?? "", /never listed system.ai.gpt-6-luna/);
   });
 });
 
