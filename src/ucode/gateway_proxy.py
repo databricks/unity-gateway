@@ -942,8 +942,13 @@ class _CodexProxyHandler(_ProxyHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(local)))
         self.end_headers()
-        self.wfile.write(local)
-        self.wfile.flush()
+        try:
+            self.wfile.write(local)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            self._metric_disconnected = True
+            return self.prepared.body, True
+        self._metric_first_byte(self._metric_started)
         self._metric_bytes = len(local)
         self._metric_labels["http_status_code"] = 200
         return self.prepared.body, True

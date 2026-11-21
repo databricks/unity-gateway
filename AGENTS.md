@@ -145,7 +145,7 @@ Proxy instrumentation uses these constants (all in `metrics`):
 | `PROXY_REQUEST_OPERATION` | `failure()` once for a terminal proxy failure with `phase="agent_session"`; a recovered auth rejection or ordinary client disconnect does not emit an error. |
 
 Proxy observations use `workspace=metrics_workspace` and labels `proxy_mode`
-(`gateway_auth`, `relay`, or `otel`), `api_operation`, and `http_method`, plus
+(`gateway_auth`, `relay`, `codex_runtime`, or `otel`), `api_operation`, and `http_method`, plus
 `http_status_code` once upstream headers arrive. Reuse the proxy's existing token
 with `metrics.bind()`; never fetch credentials solely for metrics. Duration names
 are registered in `DURATION_METRICS`, the retry counter in `COUNTER_METRICS`, and
