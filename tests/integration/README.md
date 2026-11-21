@@ -52,7 +52,8 @@ failed TOML updates, failed rollback/revert, and later catalog edits. These comp
 exercise live sudo or Codex startup.
 
 The macOS Jamf npm-provisioning path has component coverage in
-`../test_macos_provision.py`, using redirected paths and stubbed installers. A real Jamf policy
+`../test_macos_provision.py`, and the Linux script in `../test_linux_provision.py`, using
+redirected paths and stubbed installers. A real Jamf policy
 run, npm agent installation and standard-user launch remain manual validation steps; these
 component checks are not integration coverage.
 
