@@ -1,10 +1,9 @@
 import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
-import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
+import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
-const UNSUPPORTED_WARNING = "⚠ This session's model list isn't supported by smart router"
 
 // The band shows once the startup check finishes and after each toggle, and hides once the
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
@@ -121,7 +120,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
       : Text({ bold: true, color: 'black', backgroundColor: band.isUnsupported ? 'yellow' : 'gray', children: [' OFF '] })
     const trailer = band.isUnsupported
-      ? Text({ color: 'yellow', children: [UNSUPPORTED_WARNING] })
+      ? Text({ color: 'yellow', children: [UNSUPPORTED_MODEL_LIST_WARNING] })
       : enabled
       ? Text({
           dimColor: true,

@@ -1980,5 +1980,5 @@ unsupported model list turns routing off for the session; HTTP errors, malformed
 exceptions and a result past the 4 s deadline leave routing on; result-write failures are
 isolated. The smart-routing launch
 tests cover the resolved Claude model/harness list and provider.
-Claude's native mod tests cover the band hold, the result handling, the unsupported warning and its one-turn hide, and the 5 s fallback.
+Claude's native mod tests cover the band hold, the result handling, the unsupported warning and its one-turn hide, the 5 s fallback, and the two transcript log lines (`Smart Router is off` and the warning) logged only when `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
 These component tests do not establish live Gateway or classifier compatibility.

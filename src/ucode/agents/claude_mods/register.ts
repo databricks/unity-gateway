@@ -21,6 +21,8 @@ import {
   RECIPE_FIELD,
   SMART_ROUTER_OFF_REPLY,
   SMART_ROUTER_ON_REPLY,
+  OMNI_LAUNCH_MODE,
+  UNSUPPORTED_MODEL_LIST_WARNING,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
@@ -316,6 +318,10 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
         try {
           await setRouting($, options, false, false);
         } catch {}
+        if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) {
+          $.ui.log(SMART_ROUTER_OFF_REPLY);
+          $.ui.log(UNSUPPORTED_MODEL_LIST_WARNING);
+        }
       }
       finish();
     };

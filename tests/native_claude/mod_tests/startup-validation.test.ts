@@ -1,6 +1,8 @@
 import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
-import { DISABLED_RECIPE, RECIPE_FIELD } from '../hooks/constants.ts';
+import {
+  DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING,
+} from '../hooks/constants.ts';
 
 const ROUTED = {
   ENABLE_SMART_ROUTING_V2: '0',
@@ -98,6 +100,28 @@ for (const { name, result, routed } of cases) {
     const reads = state.reads;
     await clock.advance(2000);
     expect(state.reads).toBe(reads);
+    await ui.unmount();
+  });
+}
+
+const omniLogCases = [
+  { name: 'an unsupported result in Omnigent logs the off reply and the warning', launchMode: 'omni', disabled: true },
+  { name: 'an unsupported result outside Omnigent logs nothing', launchMode: undefined, disabled: true },
+  { name: 'a supported result in Omnigent logs nothing', launchMode: 'omni', disabled: false },
+];
+
+for (const { name, launchMode, disabled } of omniLogCases) {
+  test(name, { options: VALIDATED }, async ($, on) => {
+    const { clock, env, files } = engine(on);
+    const logs: string[] = [];
+    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    env.ISAAC_LAUNCH_MODE = launchMode;
+    const ui = await $.ui.mount(abovePrompt);
+    await $.session.start(start);
+    if (disabled) files['/session/env.json'] = OFF;
+    files['/session/env.validation.json'] = JSON.stringify({ routing_disabled: disabled });
+    await clock.advance(100);
+    expect(logs).toEqual(launchMode && disabled ? [SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING] : []);
     await ui.unmount();
   });
 }
