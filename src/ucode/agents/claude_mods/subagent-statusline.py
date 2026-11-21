@@ -1,4 +1,4 @@
-"""Render animal labels in Claude's native subagent panel (stdlib only)."""
+"""Render routed agent labels in Claude's native subagent panel (stdlib only)."""
 
 import json
 import math
@@ -32,7 +32,10 @@ def rows(payload, root):
         name = saved.get("name")
         if not isinstance(name, str) or not name:
             continue
-        parts = [name, task.get("label") or task.get("description") or ""]
+        activity = task.get("label") or task.get("description") or ""
+        parts = [name]
+        if activity not in (name, saved.get("description")):
+            parts.append(activity)
         tokens = task.get("tokenCount")
         if isinstance(tokens, (int, float)) and math.isfinite(tokens) and tokens >= 0:
             parts.append(f"{int(tokens):,} tokens")

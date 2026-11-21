@@ -126,6 +126,9 @@ def test_cli_reason_toggles_without_capturing_or_uploading(
     repeated = off(agent=agent)
     assert repeated.exit_code == 0, repeated.output
     assert "already off" in repeated.output
+    repeated_with_reason = off(REASON, agent=agent)
+    assert repeated_with_reason.exit_code == 0, repeated_with_reason.output
+    assert "already off" in repeated_with_reason.output
     run.assert_not_called()
     popen.assert_not_called()
     assert not session_env.session_routing_enabled(controls)

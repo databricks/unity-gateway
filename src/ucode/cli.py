@@ -3760,9 +3760,8 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if feedback_required and len((reason or "").strip()) < 16:
         print_err(
             "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Reuse the user's explanation if already supplied. "
-            "Use the Smart Router skill to collect and submit feedback, or pass their exact "
-            "reason with --smart-router-feedback to toggle routing directly. "
+            "surrounding whitespace. Use the Smart Router skill to collect and submit feedback, "
+            "or pass a reason with --smart-router-feedback to toggle routing directly. "
             "The direct CLI command does not submit feedback."
         )
         raise typer.Exit(2)

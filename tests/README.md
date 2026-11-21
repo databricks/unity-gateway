@@ -9,15 +9,26 @@ update that leaves the client too old; explicit routing remains gated. Routing C
 These are component checks; the installed-version journeys are documented in the
 [integration guide](integration/README.md).
 
-Codex calculation routing evidence supports plaintext assignments and native encrypted
-delivery. Plaintext must match the audited assignment digest. For encrypted delivery,
-the original spawn's ciphertext must match the child's NEW_TASK receipt, and its task
-name must match the audited fallback digest. Component checks reject mismatched names,
-ciphertexts, missing delivery, and non-spawn calls. This does not establish plaintext
-routing for encrypted tasks; the dedicated native v2 assignment journey checks that separately.
-The encrypted-request matcher accepts the exact enabled-attribution suffix on a child
-task name, rejecting disabled and arbitrary suffixes. Toggle evidence still requires a
-successful state change; only an explicitly denied duplicate after that success is tolerated.
+Codex routing uses the full plaintext assignment and records its digest. Smart-routed
+launches expose native collaboration tools through code mode in a session-owned catalog,
+without changing the model's protocol or user catalog. The native v2 assignment journey
+starts with code-mode tools disabled in the user's catalog, then verifies the exact
+assignment reaches the router and child, and that same child completes on the routed model.
+Encrypted or missing assignments must never
+route on a task name: the hook leaves the caller's model unchanged and writes no decision.
+Component checks also cover catalog precedence, authenticated model-service metadata,
+and a warning with continued launch if the optional session catalog cannot be built or written.
+Catalog construction preserves native collaboration settings for ordinary launches. Without
+a scoped catalog, smart routing keeps the native menu and adds only missing router models.
+Existing UG-managed catalogs refresh current native metadata through `ug configure --agents codex`.
+For a published agent configuration, an administrator must instead run
+`sudo ug configure --global`; ordinary configure leaves its machine-wide files unchanged.
+Launches never rewrite managed catalogs; an old catalog that disables code mode produces
+a refresh warning. If current bundled metadata still disables code mode, configure preserves
+that capability: use a Codex version with code-mode support and refresh again. Until then,
+launch preserves the managed catalog and skips routing encrypted assignments.
+Component checks cover both refresh instructions and preserve the source
+catalog when a TUI session-copy write fails. Claude checks cover blank-prompt fallback and label-only input.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
@@ -171,6 +182,16 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
+Native routing components check the streamed parent reply: parallel Agent calls are routed
+once, before they are recorded, and only their `description` becomes
+`<animal> · <model> · <task>` while other arguments, chunk order and non-Agent calls are
+unchanged. Spawn receipts are compared with that heading; cards, lone rows, the agent list
+and completed-task notices show the launched model and flag a mismatch, a missing launch model
+is not persisted, and saved receipts are restored per child on resume. The agent-list
+assertions run only where Claude has that row (2.1.328 and later). Native auto-mode cases
+retain their approval/denial and zero fallback-classification assertions.
+The native status command checks old animal-only mappings, model labels with unchanged
+live progress and counters, and identical activity labels without duplication.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
@@ -1141,14 +1162,17 @@ The launch-policy matrix uses one native model spelling per tool; shared parser,
 classifier and routed-launch tests retain the split, equals and short-form checks.
 
 `integration/test_ug_codex_v2_routing.py` checks native v2 through code mode on Codex 0.171.0 or newer.
-Its pre-existing user-owned catalog opts native tools into code mode, overriding the
-bundled model's direct-only preference. This transport exposes plaintext assignments:
+Its pre-existing user-owned catalog disables code mode; the production launcher enables it
+in a session copy while preserving the original catalog. This exposes plaintext assignments:
 the exact multiline assignment reaches the real hook, router, and native
 child; the child completes on the routed model while the parent stays pinned.
-The saved-model, `--model VALUE` and `--model=VALUE` variants cover native TUI launch;
-explicit variants enable routing through the CLI and override the saved root model.
+The saved-model and `--model VALUE` variants cover native TUI launch;
+the explicit variant enables routing through the CLI and overrides the saved root model.
+The managed variant covers `--model=VALUE` with an offered model, only in the managed CI lane.
+Launcher tests retain split, equals, and short option syntax coverage.
 The audit's SHA-256 digest and character count identify that exact assignment without
-persisting its text. Native hook and child assertions still compare the full text.
+persisting its text. The request recorder correlates each routing request with its
+HTTP response and selected model; native hook and child assertions compare the full text.
 The production launcher supplies the native configuration, and user settings and
 the Databricks provider are preserved. `test_agent_codex.py` covers the routing
 minimum version separately from ordinary launches.
@@ -1906,6 +1930,20 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+### Routing explanation coverage
+
+The decision-audit writer omits task text and explanations when task-text logging is
+disabled, retaining the task digest and length. Codex passes that privacy setting;
+Claude's session log retains its existing bounded preview. These choices never
+change the selected model. The existing `/smart-router logs`
+detail validates session and tool-call identity, the routed model, and the exact offered
+catalog before displaying comparisons. Native tests cover malformed and oversized
+metadata, dotted and gateway-wrapped model IDs, per-model selection, optional numeric
+estimates, and the default-hidden estimates control. Invalid explanation data leaves the
+selected route and rationale visible. These checks do not establish deployed-service
+explanation availability. See the Claude mod guide for the optional service response
+contract.
 
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed

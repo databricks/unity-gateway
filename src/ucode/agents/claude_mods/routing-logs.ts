@@ -1,4 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
+import { parseRoutingExplanation, type RoutingExplanation } from './subagent-routing.ts';
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
 type Decision = {
@@ -19,6 +20,9 @@ type Detail = {
   routing_ms: number;
   rationale: string | null;
   candidates: string[];
+  explanation?: RoutingExplanation;
+  explanationModel?: string;
+  showNumbers?: boolean;
 };
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '');
@@ -29,7 +33,8 @@ const isDecision = (d: Decision): boolean =>
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
 
-// A v1 decision record: ignores unknown keys (a later `explanation`, for one).
+// A v1 decision record. Optional explanation details are independently validated so
+// malformed metadata never hides the selected route.
 function parseDecision(raw: string, id: string): Detail {
   let data: { v?: unknown; decision?: unknown } | null;
   try { data = JSON.parse(raw); } catch { throw new Error('invalid decision JSON'); }
@@ -49,6 +54,14 @@ function parseDecision(raw: string, id: string): Detail {
     (d.rationale !== null && typeof d.rationale !== 'string') || !validCandidates) {
     throw new Error('invalid decision response');
   }
+  const offeredModels = candidates.map(candidate => (candidate as { model: string }).model);
+  const explanation = d.explanation === undefined ? undefined : parseRoutingExplanation(
+    d.explanation,
+    d.selected_model,
+    typeof d.session_id === 'string' ? d.session_id : undefined,
+    typeof d.tool_use_id === 'string' ? d.tool_use_id : undefined,
+    offeredModels,
+  );
   return {
     id,
     failed: false,
@@ -60,7 +73,10 @@ function parseDecision(raw: string, id: string): Detail {
     selected: d.selected_model,
     routing_ms: d.routing_ms,
     rationale: typeof d.rationale === 'string' ? d.rationale : null,
-    candidates: candidates.map(candidate => (candidate as { model: string }).model),
+    candidates: offeredModels,
+    explanation,
+    explanationModel: explanation?.selectedModel,
+    showNumbers: false,
   };
 }
 
@@ -214,6 +230,79 @@ async function refreshOpenPane($: any, options: PluginOptions): Promise<void> {
   await load($, options);
 }
 
+function estimatedCostText(value: number | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const amount = value > 0 && value < 1e-6 ? '<0.000001' : value.toFixed(6).replace(/\.?0+$/, '');
+  return `Est. cost: ${amount} USD`;
+}
+
+function breakdownText(label: string, values: Record<string, number> | undefined): string | undefined {
+  if (!values || !Object.keys(values).length) return undefined;
+  return `${label}: ${Object.entries(values).map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`;
+}
+
+function explanationSection(
+  $: any, e: any, current: Detail,
+  onCompare: (id: string) => void, onToggleNumbers: () => void,
+) {
+  const { Box, Text, Button, Select } = $.ui.resolve(e);
+  const children = [Text({ bold: true, children: ['Routing explanation'] })];
+  if (!current.explanation) {
+    children.push(Text({ children: ['No detailed routing explanation is available.'] }));
+  } else {
+    const explanation = current.explanation;
+    const chosen = explanation.models.find((model) => model.selected)!;
+    const compared = explanation.models.find((model) => model.id === current.explanationModel)
+      ?? chosen;
+    const numberText = (label: string, value: number | undefined) => value === undefined
+      ? undefined : Text({ children: [`${label}: ${value.toFixed(3)}`] });
+    const cost = estimatedCostText(compared.estimatedCostUsd);
+    const detailLines = [
+      numberText('Quality estimate', compared.qualityEstimate),
+      cost === undefined ? undefined : Text({ children: [cost] }),
+      numberText('Routing score', compared.routingScore),
+      ...[
+        breakdownText('Components', compared.components),
+        breakdownText('Vs. routed', compared.differenceFromWinner),
+      ].filter((text) => text !== undefined).map((text) => Text({ dimColor: true, children: [text] })),
+    ].filter(Boolean);
+    children.push(Text({ color: 'green', bold: true, children: [
+      `Chosen: ${chosen.name}`,
+    ] }));
+    children.push(Text({ children: [explanation.summary] }));
+    if (explanation.taskUnderstanding.length) {
+      children.push(Text({ bold: true, children: ['Task understanding'] }));
+      for (const item of explanation.taskUnderstanding) children.push(Text({ children: [item] }));
+    }
+    children.push(Box({ marginTop: 1, marginBottom: 1, children: [Select({
+      key: 'compare-model',
+      label: 'Compare model',
+      value: compared.id,
+      options: explanation.models.map((model) => ({
+        value: model.id,
+        label: `${model.name}${model.selected ? ' · chosen' : ''}`,
+      })),
+      onSelect: onCompare,
+    })] }));
+    children.push(Text({ bold: true, children: [
+      `${compared.name} — ${compared.considered ? 'considered' : 'not considered'}`,
+    ] }));
+    children.push(Text({ children: [compared.reason] }));
+    if (detailLines.length || explanation.formula) {
+      children.push(Button({
+        key: 'numbers',
+        label: current.showNumbers ? 'Hide numbers' : 'Show numbers',
+        onPress: onToggleNumbers,
+      }));
+      if (current.showNumbers) children.push(...detailLines);
+      if (current.showNumbers && explanation.formula) {
+        children.push(Text({ dimColor: true, children: [`Scoring formula: ${explanation.formula}`] }));
+      }
+    }
+  }
+  return children;
+}
+
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
@@ -286,6 +375,16 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
         for (const candidate of detail.candidates) {
           children.push(Text({ children: [`${candidate === detail.selected ? '● ' : '○ '}${shortModel(candidate)}`] }));
         }
+        const detailId = detail.id;
+        children.push(...explanationSection($, e, detail, (id) => {
+          if (!detail || detail.id !== detailId) return;
+          detail = { ...detail, explanationModel: id };
+          $.ui.invalidate('ui.render');
+        }, () => {
+          if (!detail || detail.id !== detailId) return;
+          detail = { ...detail, showNumbers: !detail.showNumbers };
+          $.ui.invalidate('ui.render');
+        }));
       }
       return Box({ flexDirection: 'column', children });
     }

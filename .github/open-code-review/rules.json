@@ -3,6 +3,6 @@
     ".github/**",
     "tests/**/*.py",
     "**/test_*.py",
-    "skills/**/SKILL.md"
+    "skills/**/*.md"
   ]
 }
