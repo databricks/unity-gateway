@@ -92,10 +92,12 @@ jobs:
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
           request = None
-          # The scan usually finishes within 90 s, so poll often; the deadline stays 20 minutes.
-          for attempt in range(121):
+          # Poll every 10 s while the scan usually finishes (p95 ~90 s), then every 2 minutes, so
+          # anonymous pull_request calls stay well under GitHub's 60/hour limit. 20 minutes total.
+          delays = [10] * 12 + [120] * 9
+          for attempt in range(len(delays) + 1):
               if attempt:
-                  time.sleep(10)
+                  time.sleep(delays[attempt - 1])
               if request is None:
                   requests = [run for run in workflow_runs(request_endpoint)
                               if run["event"] == "pull_request"
