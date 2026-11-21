@@ -1,4 +1,4 @@
-"""Loopback refresh proxy for Claude gateway requests.
+"""Loopback refresh proxies for Claude and opt-in Codex gateway requests.
 
 A relayed Model Provider Service authenticates the caller's own Anthropic
 subscription OAuth (which Claude Code owns in the `Authorization` header) and
@@ -6,6 +6,8 @@ carries a Databricks credential in the `X-Databricks-AI-Gateway-Token` swap
 header. Native gateway discovery instead carries the Databricks credential in
 `Authorization`. The proxy refreshes the applicable header and streams responses
 back verbatim.
+
+The launch-owned Codex relay also applies the enabled Codex orchestration policies.
 
 With relayed OSS-routing on, the proxy picks per request by the requested model:
 Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
@@ -39,7 +41,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
 
 import httpx
@@ -48,6 +50,9 @@ from ucode import metrics
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.workspace import workspace_headers
+
+if TYPE_CHECKING:
+    from ucode.smart_routing.codex_runtime import CodexRuntime, PreparedRequest
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -329,6 +334,33 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         log_token_refresh_failure(exc)
         return False
 
+    def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
+        return body, False
+
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._send_json_error(status, message)
+
+    def _send_json_error(self, status: int, message: str) -> None:
+        # Shaped like the upstream dialect so the agent shows the message instead of
+        # a generic transport failure.
+        if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
+            error_type = "authentication_error" if status == 401 else "not_found_error"
+            payload = {"type": "error", "error": {"type": error_type, "message": message}}
+        else:
+            payload = {"error": {"message": message, "type": "invalid_request_error"}}
+        body = json.dumps(payload).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+
     def _handle(self) -> None:
         self._metric_started = time.monotonic()
         self._metric_labels: dict[str, object] = {
@@ -393,6 +425,15 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self._request_body(self.rfile.read(length) if length else None)
+        try:
+            body, handled = self._prepare_request(body)
+        except ValueError as exc:
+            self._safe_send_error(400, str(exc))
+            return
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        if handled:
+            return
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
         added = self._added_headers(body)
@@ -743,30 +784,6 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                 return True
         return False
 
-    def _reject(self, status: int, message: str) -> None:
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        if length:
-            self.rfile.read(length)
-        self._send_json_error(status, message)
-
-    def _send_json_error(self, status: int, message: str) -> None:
-        # Shaped like the upstream dialect so the agent shows the message instead of
-        # a generic transport failure.
-        if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
-            error_type = "authentication_error" if status == 401 else "not_found_error"
-            payload = {"type": "error", "error": {"type": error_type, "message": message}}
-        else:
-            payload = {"error": {"message": message, "type": "invalid_request_error"}}
-        body = json.dumps(payload).encode()
-        try:
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except OSError:
-            pass
-
     def _handle(self) -> None:
         if not _is_allowed_gateway_path(self.path, self.allowed_path_prefixes):
             self._reject(404, "This path is not served by the Unity Gateway proxy.")
@@ -863,6 +880,150 @@ class _OtelProxyHandler(_ProxyHandler):
             super()._handle()
 
 
+# The launch-owned Codex relay serves only these Responses endpoints and accepts only
+# its launch's own session secret, so the workspace credential cannot be reached by
+# another local process, host, or workspace API.
+_CODEX_RELAY_PATHS = ("/responses", "/responses/compact")
+UG_SESSION_SECRET_HEADER = "X-UG-Session-Secret"
+# The secret travels to Codex through this environment variable, never on the command line.
+UG_SESSION_SECRET_ENV_VAR = "UG_SESSION_SECRET"
+
+
+def _is_exact_codex_relay_path(path: str) -> bool:
+    # The relay serves exactly the two Responses endpoints: decoded until stable so
+    # double-encoded dot segments cannot reach another API, no prefix matching.
+    decoded = path.split("?", 1)[0]
+    while (next_decoded := unquote(decoded)) != decoded:
+        decoded = next_decoded
+    if any(segment in (".", "..") for segment in decoded.split("/")):
+        return False
+    return decoded in _CODEX_RELAY_PATHS
+
+
+class _CodexProxyHandler(_ProxyHandler):
+    runtime: CodexRuntime
+    session_secret: str
+    prepared: PreparedRequest | None = None
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        # The session secret authenticates this relay only; the gateway never sees it.
+        return self.token_header, frozenset({UG_SESSION_SECRET_HEADER.lower()}), "codex_runtime"
+
+    def _handle(self) -> None:
+        # Same boundary as the gateway-auth proxy: only the launch's own client holding
+        # the per-launch session secret may reach the relay, and only the two Responses
+        # endpoints are served, so the workspace credential never leaves for another
+        # local process, host, or workspace API.
+        presented = self.headers.get(UG_SESSION_SECRET_HEADER, "")
+        if not hmac.compare_digest(presented.encode("utf-8"), self.session_secret.encode("utf-8")):
+            self._reject(401, "Missing or invalid Unity Gateway session credential.")
+            return
+        if self.command != "POST" or not _is_exact_codex_relay_path(self.path):
+            self._reject(404, "This path is not served by the Unity Gateway proxy.")
+            return
+        super()._handle()
+
+    def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
+        self.prepared = None
+        try:
+            self.prepared = self.runtime.prepare_request(body or b"", dict(self.headers.items()))
+        except ValueError as exc:
+            self._metric_error = exc
+            self._metric_labels["http_status_code"] = 400
+            self._send_json_error(400, str(exc))
+            return body, True
+        local = self.prepared.synthetic_response
+        if local is None:
+            return self.prepared.body, False
+        content_type = self.prepared.synthetic_content_type
+        if not isinstance(content_type, str):
+            raise ValueError("Codex synthetic response requires a content type")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(local)))
+        self.end_headers()
+        try:
+            self.wfile.write(local)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            self._metric_disconnected = True
+            return self.prepared.body, True
+        self._metric_first_byte(self._metric_started)
+        self._metric_bytes = len(local)
+        self._metric_labels["http_status_code"] = 200
+        return self.prepared.body, True
+
+    def _relay_response(
+        self,
+        resp: httpx.Response,
+        *,
+        diagnostic_id: str | None = None,
+        started: float | None = None,
+    ) -> None:
+        prepared = self.prepared
+        if prepared is None or not prepared.adapt_response or not resp.is_success:
+            super()._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
+            return
+        started = started if started is not None else time.monotonic()
+        content_type = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "text/event-stream":
+            try:
+                received = bytearray()
+                for chunk in resp.iter_bytes(chunk_size=64 * 1024):
+                    if len(received) + len(chunk) > self.runtime.max_response_bytes:
+                        raise ValueError("Codex JSON response exceeds the bounded limit")
+                    received.extend(chunk)
+                body = self.runtime.transform_json_response(bytes(received), prepared)
+            except ValueError:
+                self._metric_labels["http_status_code"] = 502
+                self._metric_error = "Codex runtime received an invalid Responses result"
+                self._safe_send_error(502, self._metric_error)
+                return
+            self.send_response(resp.status_code)
+            self._response_headers(resp)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self._metric_first_byte(started)
+            self.wfile.write(body)
+            self.wfile.flush()
+            self._metric_bytes = len(body)
+            return
+        transformer = self.runtime.response_transformer(prepared)
+        self.send_response(resp.status_code)
+        self._response_headers(resp)
+        self.end_headers()
+        try:
+            # iter_bytes decodes Content-Encoding; transformed lengths and encodings are dropped.
+            for chunk in resp.iter_bytes():
+                for frame in transformer.feed(chunk):
+                    if not self._metric_bytes:
+                        self._metric_first_byte(started)
+                    self._metric_bytes += len(frame)
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+            for frame in transformer.finish():
+                if not self._metric_bytes:
+                    self._metric_first_byte(started)
+                self._metric_bytes += len(frame)
+                self.wfile.write(frame)
+            self.wfile.flush()
+        except (ValueError, httpx.HTTPError) as exc:
+            self._metric_error = f"Codex runtime could not adapt the Responses stream: {exc}"
+            frame = (
+                b'event: error\ndata: {"type":"error","code":"codex_runtime_protocol_error",'
+                b'"message":"Codex runtime could not adapt the Responses stream"}\n\n'
+            )
+            self.wfile.write(frame)
+            self._metric_bytes += len(frame)
+            self.wfile.flush()
+
+    def _response_headers(self, resp: httpx.Response) -> None:
+        for key, value in resp.headers.items():
+            if key.lower() not in HOP_BY_HOP_HEADERS | {"content-encoding"}:
+                self.send_header(key, value)
+
+
 class _LoopbackHTTPServer(ThreadingHTTPServer):
     # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -881,6 +1042,7 @@ def _start_proxy(
     handler_attrs: Mapping[str, object] | None = None,
     metrics_proxy_mode: str = "gateway_auth",
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    upstream_base: str | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -894,7 +1056,11 @@ def _start_proxy(
     Returns (server, cache, client); the caller runs the server (e.g. in a
     thread) and calls shutdown()/cache.stop()/client.close() on exit.
     """
-    upstream_base = f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
+    upstream = (
+        upstream_base
+        if upstream_base is not None
+        else f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
+    )
     cache = TokenCache(
         token_provider,
         force_refresh_near_expiry=force_refresh_near_expiry,
@@ -903,7 +1069,7 @@ def _start_proxy(
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
-    client = httpx.Client(base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
+    client = httpx.Client(base_url=upstream, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
 
     handler = cast(
         type[_ProxyHandler],
@@ -1055,4 +1221,34 @@ def start_gateway_auth_proxy(
             "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
+    )
+
+
+def start_codex_proxy(
+    upstream_url: str,
+    token_provider: Callable[[bool], str],
+    runtime: CodexRuntime,
+    *,
+    workspace: str,
+    session_secret: str,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start a launch-owned Codex Responses relay without changing saved provider settings."""
+    handler = cast(
+        type[_ProxyHandler],
+        type(
+            "BoundCodexRuntimeHandler",
+            (_CodexProxyHandler,),
+            {"runtime": runtime, "session_secret": session_secret},
+        ),
+    )
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=handler,
+        force_refresh_near_expiry=True,
+        metrics_proxy_mode="codex_runtime",
+        upstream_base=upstream_url,
     )

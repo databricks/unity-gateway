@@ -512,7 +512,7 @@ def plan_agents(
 
 def _codex_version_warning() -> str | None:
     version = agent_version("codex")
-    parsed = codex_agent._parse_version(version)
+    parsed = codex_agent.parse_version(version)
     if parsed is None or parsed >= codex_agent.MINIMUM_CODEX_VERSION:
         return None
     return (
