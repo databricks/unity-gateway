@@ -2012,6 +2012,7 @@ def test_checks_run_exactly_the_just_lint_commands():
     assert "lint: ruff-check ruff-format-check ty\n" in justfile
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
 @pytest.mark.parametrize("coverage", ["success", "skipped", "failure"])
 @pytest.mark.parametrize("event", ["pull_request", "merge_group"])
 def test_merge_queue_requires_unit_shard_coverage(event, coverage):
