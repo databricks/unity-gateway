@@ -1591,7 +1591,7 @@ def enable_runtime(monkeypatch):
     monkeypatch.setattr(codex, "agent_version", lambda binary: "0.160.0")
     monkeypatch.setattr(codex, "ug_version", lambda: "test")
     monkeypatch.setattr(codex, "_launch_token", lambda state, workspace, **kwargs: "token")
-    monkeypatch.setattr(v2, "launch_token", lambda state, workspace: "token")
+    monkeypatch.setattr(v2, "launch_token", lambda state, workspace, **kwargs: "token")
 
 
 def test_runtime_launch_keeps_the_relay_alive_until_the_session_exits(monkeypatch):
@@ -1639,16 +1639,18 @@ def test_runtime_launch_keeps_the_relay_alive_until_the_session_exits(monkeypatc
 
 
 @pytest.mark.parametrize("version", ["0.145.0", "unknown"])
-def test_runtime_version_guard_does_not_start_a_process(version, monkeypatch):
+def test_runtime_version_guard_warns_and_launches_without_the_runtime(version, monkeypatch, capsys):
     enable_runtime(monkeypatch)
     monkeypatch.setattr(codex, "agent_version", lambda binary: version)
     session_env.start_session()
     overlay = codex.render_overlay("https://workspace.example", "test-model")
     original = json.loads(json.dumps(overlay))
-    with pytest.raises(RuntimeError, match="0.160.0"):
-        with v2._codex_runtime_proxy({"workspace": "https://workspace.example"}, overlay, "codex"):
-            pytest.fail("unsupported runtime became active")
+    with v2._codex_runtime_proxy({"workspace": "https://workspace.example"}, overlay, "codex") as (
+        runtime_active
+    ):
+        assert runtime_active is False
     assert overlay == original
+    assert "0.160.0" in capsys.readouterr().out
 
 
 def test_runtime_checks_current_session_controls(monkeypatch):
@@ -1717,8 +1719,10 @@ def test_first_prompt_path_cleans_up_relay_and_owned_processes(ready, monkeypatc
 @pytest.mark.parametrize("custom_enabled", [False, True])
 def test_proxy_auth_uses_the_same_custom_oauth_gate_as_the_launch(custom_enabled, monkeypatch):
     token_fn = codex._launch_token
+    launch_fn = v2.launch_token
     enable_runtime(monkeypatch)
     monkeypatch.setattr(codex, "_launch_token", token_fn)
+    monkeypatch.setattr(v2, "launch_token", launch_fn)
     monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1" if custom_enabled else "0")
     calls = []
     monkeypatch.setattr(

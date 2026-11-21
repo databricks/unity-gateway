@@ -365,15 +365,90 @@ def test_encrypted_collaboration_replay_stays_native_while_lite_schema_is_transl
     assert declarations[0]["name"] == "ucode_collaboration"
 
 
-def test_unsupported_await_schema_and_non_boolean_stream_fail_closed():
+def test_unsupported_await_schema_and_non_boolean_stream_forward_unchanged():
+    instance = runtime()
     bad = {"tools": collaboration_tools(), "input": [activation(truncated=False)]}
     bad["tools"][0]["tools"][0]["parameters"]["properties"]["await_completion"] = None
-    with pytest.raises(ValueError, match="unsupported existing"):
-        runtime().prepare_request(json.dumps(bad).encode(), {"thread-id": "root"})
+    bad_body = json.dumps(bad).encode()
+    prepared = instance.prepare_request(bad_body, {"thread-id": "root"})
+    assert prepared.body == bad_body
+    assert prepared.synthetic_response is None
 
     payload = root_payload(stream=1)
-    with pytest.raises(ValueError, match="stream option"):
-        runtime().prepare_request(json.dumps(payload).encode(), {"thread-id": "root"})
+    stream_body = json.dumps(payload).encode()
+    prepared = instance.prepare_request(stream_body, {"thread-id": "root"})
+    assert prepared.body == stream_body
+    assert prepared.synthetic_response is None
+
+
+def test_compaction_after_a_declared_spawn_returns_a_real_result():
+    instance = runtime()
+    first = instance.prepare_request(
+        json.dumps(root_payload(tools=collaboration_tools())).encode(), {"thread-id": "root"}
+    )
+    instance.transform_json_response(
+        json.dumps({"output": [_response_item(hint=True)], "usage": {"output_tokens": 5}}).encode(),
+        first,
+    )
+
+    followup = _wait_request(instance)
+    assert followup.synthetic_response is not None
+
+    compact = root_payload(
+        input_items=[activation(truncated=False), *_successful_spawn_history()],
+        tools=collaboration_tools(),
+    )
+    compact["client_metadata"] = {
+        "x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})
+    }
+    compact_prepared = instance.prepare_request(json.dumps(compact).encode(), {"thread-id": "root"})
+    # The compaction must receive a gateway result, not a synthesized wait.
+    assert compact_prepared.synthetic_response is None
+
+
+def test_unrecognized_wait_timeout_description_returns_none_instead_of_raising():
+    tools = collaboration_tools()
+    tools[0]["tools"][2]["parameters"]["properties"]["timeout_ms"]["description"] = (
+        "maximum,x of the wait"
+    )
+    payload = root_payload(
+        input_items=[activation(truncated=False), *_successful_spawn_history()],
+        tools=tools,
+    )
+    prepared = runtime().prepare_request(json.dumps(payload).encode(), {"thread-id": "root"})
+    assert prepared.synthetic_response is None
+
+
+def test_tracked_thread_maps_are_bounded():
+    instance = runtime()
+    last = None
+    for index in range(520):
+        last = instance.prepare_request(
+            json.dumps(root_payload(tools=collaboration_tools())).encode(),
+            {"thread-id": f"thread-{index}"},
+        )
+    assert last is not None
+    assert len(instance._threads) <= 512
+    assert len(instance._thread_roots) <= 512
+    assert len(instance._thread_parents) <= 512
+    # The current thread survived eviction.
+    assert "thread-519" in instance._threads
+
+
+def test_wait_binding_uses_the_verified_namespace_and_maximum():
+    instance = runtime()
+    first = instance.prepare_request(
+        json.dumps(root_payload(tools=collaboration_tools())).encode(), {"thread-id": "root"}
+    )
+    instance.transform_json_response(
+        json.dumps({"output": [_response_item(hint=True)], "usage": {"output_tokens": 5}}).encode(),
+        first,
+    )
+    prepared = _wait_request(instance)
+    assert prepared.synthetic_response is not None
+    item = json.loads(prepared.synthetic_response)["output"][0]
+    assert item["namespace"] == "collaboration"
+    assert json.loads(item["arguments"]) == {"timeout_ms": 3_600_000}
 
 
 @pytest.mark.parametrize("hint", [True, False, ...])
@@ -521,19 +596,25 @@ def test_wait_flags_are_isolated_by_native_thread_and_parent_mismatches_reject()
     second = instance.prepare_request(json.dumps(other).encode(), {"thread-id": "root-b"})
     assert second.synthetic_response is None
 
+    # A header/metadata identity mismatch is an unrecognized shape, not an unsafe one:
+    # the request is forwarded unchanged and no wait state is touched.
     mismatch = root_payload()
     mismatch["client_metadata"] = {"thread_id": "other"}
-    with pytest.raises(ValueError, match="thread identity"):
-        instance.prepare_request(json.dumps(mismatch).encode(), {"thread-id": "root-a"})
+    mismatch_body = json.dumps(mismatch).encode()
+    forwarded = instance.prepare_request(mismatch_body, {"thread-id": "root-a"})
+    assert forwarded.synthetic_response is None
+    assert forwarded.body == mismatch_body
     mismatch["client_metadata"] = {"thread_id": "root-a", "x-codex-parent-thread-id": "parent-a"}
-    with pytest.raises(ValueError, match="parent identity"):
-        instance.prepare_request(
-            json.dumps(mismatch).encode(),
-            {
-                "thread-id": "root-a",
-                "x-codex-parent-thread-id": "parent-b",
-            },
-        )
+    mismatch_body = json.dumps(mismatch).encode()
+    forwarded = instance.prepare_request(
+        mismatch_body,
+        {
+            "thread-id": "root-a",
+            "x-codex-parent-thread-id": "parent-b",
+        },
+    )
+    assert forwarded.synthetic_response is None
+    assert forwarded.body == mismatch_body
 
 
 def test_custom_cache_keys_are_untouched_and_default_keys_follow_tool_profile():
@@ -629,22 +710,41 @@ def test_sse_malformed_expected_event_and_truncated_final_frame_raise():
         truncated.finish()
 
 
-def test_active_malformed_json_duplicate_fields_and_reserved_wire_namespace_reject():
+def test_unrecognized_shapes_forward_unchanged_without_touching_state():
     instance = runtime()
-    for source in (b"not-json", b'{"model":"a","model":"b","input":[]}'):
-        with pytest.raises(ValueError):
-            instance.prepare_request(source, {"thread-id": "root"})
+    # Malformed JSON, duplicate fields, malformed tool lists, a reserved wire
+    # namespace, and unsupported schemas are unrecognized shapes, not unsafe ones:
+    # each is forwarded byte-for-byte with no policy applied.
+    sources = (
+        b"not-json",
+        b'{"model":"a","model":"b","input":[]}',
+    )
+    for source in sources:
+        prepared = instance.prepare_request(source, {"thread-id": "root"})
+        assert prepared.body == source
+        assert prepared.synthetic_response is None
+        assert prepared.adapt_response is False
     malformed_tools = root_payload()
     malformed_tools["tools"] = {"type": "namespace"}
-    with pytest.raises(ValueError, match="native tools must be a list"):
-        instance.prepare_request(json.dumps(malformed_tools).encode(), {"thread-id": "root"})
+    tools_body = json.dumps(malformed_tools).encode()
+    prepared = instance.prepare_request(tools_body, {"thread-id": "root"})
+    assert prepared.body == tools_body
     malformed_lite = root_payload(
         input_items=[activation(truncated=False), {"type": "additional_tools", "tools": None}]
     )
-    with pytest.raises(ValueError, match="additional_tools"):
-        instance.prepare_request(json.dumps(malformed_lite).encode(), {"thread-id": "root"})
+    lite_body = json.dumps(malformed_lite).encode()
+    prepared = instance.prepare_request(lite_body, {"thread-id": "root"})
+    assert prepared.body == lite_body
     payload = root_payload(
         tools=[{"type": "namespace", "name": "ucode_collaboration", "tools": []}]
     )
-    with pytest.raises(ValueError, match="reserved namespace"):
-        instance.prepare_request(json.dumps(payload).encode(), {"thread-id": "root"})
+    reserved_body = json.dumps(payload).encode()
+    prepared = instance.prepare_request(reserved_body, {"thread-id": "root"})
+    assert prepared.body == reserved_body
+    # Thread identity tracking is untouched by tolerated requests.
+    assert (
+        instance.prepare_request(
+            json.dumps(root_payload(tools=collaboration_tools())).encode(), {"thread-id": "root"}
+        ).adapt_response
+        is True
+    )

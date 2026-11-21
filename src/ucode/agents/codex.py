@@ -149,6 +149,9 @@ MINIMUM_CODEX_VERSION = (0, 156, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
 MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 171, 0)
 MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.171.0"
+# The orchestration runtime's own floor is lower than smart routing's global one.
+CODEX_ORCHESTRATOR_RUNTIME_MINIMUM_VERSION = (0, 160, 0)
+CODEX_ORCHESTRATOR_RUNTIME_MINIMUM_VERSION_TEXT = "0.160.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -181,6 +184,11 @@ LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+
+
+def parse_version(value: str) -> tuple[int, int, int] | None:
+    """The (major, minor, patch) triple in a tool version string, or None."""
+    return _parse_version(value)
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:

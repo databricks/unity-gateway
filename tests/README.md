@@ -1259,11 +1259,82 @@ command, and the replay must arrive unchanged after a switch, a switch timeout, 
 quiet window. These are component checks; live first-prompt routing on a pinned Claude Code
 version is not executed here.
 
+Codex version tests cover one longer probe after an inconclusive cached result. Supported
+versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
+the smart-routing gate. Plain launches retain their existing version rules.
+
 `test_smart_router.py` executes Claude's installed skill commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Codex's skill uses
 `ug_smart_router`, a session-bound native tool serviced by the UG app-server interposer.
 It never requests shell approval or falls back to a shell toggle. Disabling routing
 sets every registered flag, including the Codex orchestration runtime flag, to `0`.
+Launcher lifecycle
+checks isolate the developer machine's optional managed catalog. Existing CLI commands
+remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
+The shared CLI only validates the reason and toggles routing; neither harness's CLI
+prepares, captures, or uploads feedback. Native Codex owns that flow. CLI parity cases
+verify that valid reasons work without Isaac and that repeated off calls collect nothing.
+With Isaac's feedback rule on, an off outside Omnigent without a 16-character
+reason keeps routing on. Claude and Codex CLI controls share the
+`ISAAC_LAUNCH_MODE=omni` exemption. Native Codex uses that same rule; Omnigent off
+turns routing off without opening a prompt, preparing evidence, or uploading.
+Component cases cover both CLIs with Omni, direct, empty, and unset launch modes,
+and native Codex with feedback disabled or an Omni launch.
+`test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
+session binding, preserved user tools, rejection of child/foreign sessions and invalid
+arguments, original-task selection, exact reason text, and pre-toggle routing context.
+Caller-supplied `ug_smart_router` definitions keep ownership on thread start/resume;
+their calls and replies pass through unchanged, including alongside a UG-owned thread.
+Later resumes preserve caller ownership even when they omit the tool definitions.
+Unauthorized UG calls still return an error without changing routing.
+Only responses can bind ownership or authorize an off turn; server requests with
+matching IDs leave those pending replies intact.
+Like Claude, Codex starts `isaac feedback --with-evidence` in the background before
+turning routing off and reports the command's exit result. Delivery or process-start
+failure leaves routing off and is only reported, without a retry;
+preparation failure before collection leaves it on. A toggle failure does not cancel
+feedback that is already sending. Worker timeout kills and reaps the subprocess;
+closing Codex leaves the detached Isaac upload running. A real local child process
+checks that cancellation lets the upload finish without blocking launcher shutdown.
+These are component checks, not proof of backend delivery.
+The native selector offers Provide a reason or Cancel, accepts option notes or text
+entry, and ends a short attempt with a validation error rather than reopening it.
+Each explicit retry identifies the current task again. Cancel and interrupted collection
+send nothing. Native skill metadata authorizes only the matching off turn, once;
+plain prompts, quoted/appended commands, and model-provided reasons cannot start it.
+UG holds the selected task only in memory while the prompt is open. Target-file
+persistence/cleanup, receipt-schema validation, and custom status polling were removed
+to use Isaac's submission contract, as Claude does. Their tests were replaced by
+command/exit-result, re-enable/new-task, and native failure-boundary coverage.
+`test_codex_metadata.py` checks native request/response transport, unrelated-tool
+forwarding, locally consumed feedback replies (including stale replies), native
+prompt cancellation on interrupt, completed turn, or disconnect, responsive
+interrupts during preparation, and completion/failure notices
+after the originating turn ends, without another model turn. Overlapping pending
+deliveries retain each process and completion notice while the response transport stalls.
+A completed turn prunes its feedback turn state.
+Malformed tool calls and completion/interrupt notifications pass through without
+being handled locally; a subsequent native toggle and messages in both directions
+still complete. These checks include missing IDs, null parameters/turns, and invalid
+ID types, using controlled transport rather than malformed native-Codex output.
+`test_integration_evidence.py` validates native completed-tool
+receipts instead of treating shell output as Codex toggle evidence. These component
+checks do not establish live backend delivery or terminal rendering of prompts/notices.
+New threads receive the native tool at startup. Older resumed threads that never had
+it must report that an updated launch/new thread is needed; the skill must not silently
+restart the conversation or fall back to a shell command.
+`mod_tests/register.test.ts` checks that the mod skips the form there
+only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
+form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,
+and that the flag after `on` or with other text gets the usage reply. `native_claude/test_mod.py`
+runs the marked off through Claude, the mod and the real CLI.
+
+`test_integration_evidence.py` checks that the Codex approval driver accepts only the
+exact local command. Other commands or environments are rejected, and an incomplete
+dialog cannot borrow the confirmation footer from a previous dialog.
+Windows cases cover the ConPTY replacement selection marker and both the `-not`
+and `IsNullOrWhiteSpace` checks of the two session environment variables. Extra
+commands, substitutions, other variables, and different conditions remain rejected.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers

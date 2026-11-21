@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import re
 import threading
 from collections.abc import Callable, Mapping
@@ -25,8 +26,11 @@ _AWAIT_COMPLETION = {
     ),
 }
 _TASK_NAME = re.compile(r"(?:/root/|root/)?[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\Z")
-_DOCUMENTED_MAX = re.compile(r"\bmax(?:imum)?\s*(?::|=)?\s*([\d,]+)\b", re.IGNORECASE)
+_DOCUMENTED_MAX = re.compile(r"\bmax(?:imum)?\s*(?::|=)?\s*(\d[\d,]*)\b", re.IGNORECASE)
 _MAX_NATIVE_IDENTIFIER_LENGTH = 512
+# Bound the per-launch thread tracking so a long session cannot grow it without limit.
+_MAX_TRACKED_THREADS = 512
+_MAX_TRACKED_CALLS_PER_THREAD = 256
 _MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
 _ACTIVATION_SENTENCE = "Smart Router Orchestrator is on for this session."
 _ACTIVATION_HEADER = "---\nname: smart-router-orchestrator"
@@ -60,6 +64,15 @@ _EXPECTED_RESPONSE_EVENTS = frozenset(
         "response.completed",
     }
 )
+
+
+class _UnrecognizedRequest(ValueError):
+    """A Codex payload shape this policy set does not recognize, which is not unsafe.
+
+    The request is forwarded unchanged instead of failing the turn; a plain
+    ``ValueError`` still rejects the request because forwarding it would bypass a
+    consistency or safety check.
+    """
 
 
 @dataclass
@@ -103,13 +116,31 @@ class CodexRuntime:
     def prepare_request(self, body: bytes, headers: Mapping[str, str]) -> PreparedRequest:
         if not self._enabled():
             return PreparedRequest(body=body)
+        try:
+            return self._apply(body, headers)
+        except _UnrecognizedRequest as exc:
+            # An unrecognized Codex shape is not unsafe: forward it unchanged rather
+            # than failing every turn of the session.
+            logging.getLogger(__name__).warning(
+                "Codex runtime forwarded an unrecognized Responses request unchanged: %s", exc
+            )
+            return PreparedRequest(body=body)
+
+    def _apply(self, body: bytes, headers: Mapping[str, str]) -> PreparedRequest:
         if not isinstance(body, bytes):
-            raise ValueError("active Codex Responses request body must be bytes")
-        payload = _load_json_object(body, "active Codex Responses request")
+            raise _UnrecognizedRequest("active Codex Responses request body must be bytes")
+        try:
+            payload = _load_json_object(body, "active Codex Responses request")
+        except _UnrecognizedRequest:
+            raise
+        except ValueError as exc:
+            raise _UnrecognizedRequest(str(exc)) from exc
         if not isinstance(payload.get("input"), list):
-            raise ValueError("active Codex Responses request requires a native input list")
+            raise _UnrecognizedRequest(
+                "active Codex Responses request requires a native input list"
+            )
         if "stream" in payload and type(payload["stream"]) is not bool:
-            raise ValueError("active Codex Responses stream option must be a boolean")
+            raise _UnrecognizedRequest("active Codex Responses stream option must be a boolean")
         thread_id, parent_thread_id = _native_thread_identity(headers, payload)
         request_kind = _request_kind(payload)
 
@@ -130,7 +161,13 @@ class CodexRuntime:
             wait_enabled = root_activated
             if wait_enabled:
                 changed = extend_collaboration_schema(payload) or changed
-                wait_binding = eligible_wait(payload, state.wait_flags)
+                # A compaction carries the spawn's output item too, so the eligible-wait
+                # shape alone cannot distinguish it; compaction must return a real result.
+                wait_binding = (
+                    None
+                    if request_kind == "compaction"
+                    else eligible_wait(payload, state.wait_flags)
+                )
                 if wait_binding is not None:
                     response, content_type = _controller_wait(wait_binding, thread_id, payload)
                     return PreparedRequest(
@@ -145,7 +182,7 @@ class CodexRuntime:
             if is_root and payload.get("prompt_cache_key") == thread_id:
                 model = payload.get("model")
                 if not isinstance(model, str) or not model:
-                    raise ValueError("default Codex prompt cache key requires a model")
+                    raise _UnrecognizedRequest("default Codex prompt cache key requires a model")
                 profile = _cache_profile(payload, model, self._skill_sha256)
                 payload["prompt_cache_key"] = hashlib.sha256(
                     json.dumps(
@@ -217,11 +254,27 @@ class CodexRuntime:
         if state is None:
             state = _ThreadState(root_id=root_id)
             self._threads[thread_id] = state
+            self._evict_oldest_threads(thread_id)
         elif state.root_id is None:
             state.root_id = root_id
         elif root_id is not None and state.root_id != root_id:
             raise ValueError("native Codex thread state belongs to another root")
         return state
+
+    def _evict_oldest_threads(self, current: str) -> None:
+        # Insertion order evicts the longest-idle thread, from all three maps at once so
+        # a thread's identity entries can never outlive (or lose) its state.
+        while len(self._threads) > _MAX_TRACKED_THREADS:
+            oldest = next(iter(self._threads))
+            if oldest == current:
+                break
+            self._threads.pop(oldest, None)
+            self._thread_roots.pop(oldest, None)
+            self._thread_parents.pop(oldest, None)
+        while len(self._thread_roots) > _MAX_TRACKED_THREADS:
+            self._thread_roots.pop(next(iter(self._thread_roots)))
+        while len(self._thread_parents) > _MAX_TRACKED_THREADS:
+            self._thread_parents.pop(next(iter(self._thread_parents)))
 
 
 _UNSET = object()
@@ -251,7 +304,7 @@ def bound_owner_contract(binding: Mapping[str, Any]) -> str | None:
 def inject_owner_contract(payload: dict[str, Any], contract: str) -> bool:
     items = payload.get("input")
     if not isinstance(items, list):
-        raise ValueError("owner contract requires a native input list")
+        raise _UnrecognizedRequest("owner contract requires a native input list")
     existing = []
     for item in items:
         if not isinstance(item, dict) or item.get("role") != "developer":
@@ -265,7 +318,7 @@ def inject_owner_contract(payload: dict[str, Any], contract: str) -> bool:
                 existing.append(text)
     if existing:
         if existing != [contract]:
-            raise ValueError("stale or duplicate trusted owner contract")
+            raise _UnrecognizedRequest("stale or duplicate trusted owner contract")
         return False
     items.insert(
         0,
@@ -284,7 +337,7 @@ def restore_full_activation(payload: dict[str, Any], binding: Mapping[str, Any])
         return False
     items = payload.get("input")
     if not isinstance(items, list):
-        raise ValueError("full skill activation requires a native input list")
+        raise _UnrecognizedRequest("full skill activation requires a native input list")
     matches = []
     for item in items:
         if not isinstance(item, dict) or item.get("role") != "developer":
@@ -301,12 +354,14 @@ def restore_full_activation(payload: dict[str, Any], binding: Mapping[str, Any])
             if activation < 0 or header < 0:
                 continue
             if text.count(_ACTIVATION_SENTENCE) != 1 or text.count(_ACTIVATION_HEADER) != 1:
-                raise ValueError("native request contains an ambiguous trusted UG activation")
+                raise _UnrecognizedRequest(
+                    "native request contains an ambiguous trusted UG activation"
+                )
             matches.append((part, text, header))
     if not matches:
         return False
     if len(matches) != 1:
-        raise ValueError("native request contains duplicate trusted UG activations")
+        raise _UnrecognizedRequest("native request contains duplicate trusted UG activations")
     part, text, header = matches[0]
     prefix = text[:header]
     contract = bound_owner_contract(binding)
@@ -381,19 +436,19 @@ def _native_thread_identity(
     headers: Mapping[str, str], payload: dict[str, Any]
 ) -> tuple[str, str | None]:
     if not isinstance(headers, Mapping):
-        raise ValueError("active Codex Responses request has no native headers")
+        raise _UnrecognizedRequest("active Codex Responses request has no native headers")
     normalized = {}
     for name, value in headers.items():
         if not isinstance(name, str):
             continue
         key = name.lower()
         if key in normalized and normalized[key] != value:
-            raise ValueError(f"native Codex header {key!r} is ambiguous")
+            raise _UnrecognizedRequest(f"native Codex header {key!r} is ambiguous")
         normalized[key] = value
 
     metadata = payload.get("client_metadata", {})
     if not isinstance(metadata, dict):
-        raise ValueError("native Codex client_metadata must be an object")
+        raise _UnrecognizedRequest("native Codex client_metadata must be an object")
     header_thread = _identifier(normalized.get("thread-id"), "thread-id")
     metadata_thread = _identifier(metadata.get("thread_id"), "client_metadata.thread_id")
     if (
@@ -401,10 +456,10 @@ def _native_thread_identity(
         and metadata_thread is not None
         and header_thread != metadata_thread
     ):
-        raise ValueError("native Codex thread identity does not match its metadata")
+        raise _UnrecognizedRequest("native Codex thread identity does not match its metadata")
     thread_id = header_thread or metadata_thread
     if thread_id is None:
-        raise ValueError("active Codex request requires a stable native thread id")
+        raise _UnrecognizedRequest("active Codex request requires a stable native thread id")
 
     header_parent = _identifier(
         normalized.get("x-codex-parent-thread-id"), "x-codex-parent-thread-id"
@@ -417,7 +472,7 @@ def _native_thread_identity(
         and metadata_parent is not None
         and header_parent != metadata_parent
     ):
-        raise ValueError("native Codex parent identity does not match its metadata")
+        raise _UnrecognizedRequest("native Codex parent identity does not match its metadata")
     parent_thread_id = header_parent or metadata_parent
     header_subagent = _identifier(normalized.get("x-openai-subagent"), "x-openai-subagent")
     metadata_subagent = _identifier(
@@ -428,12 +483,12 @@ def _native_thread_identity(
         and metadata_subagent is not None
         and header_subagent != metadata_subagent
     ):
-        raise ValueError("native Codex subagent identity does not match its metadata")
+        raise _UnrecognizedRequest("native Codex subagent identity does not match its metadata")
     subagent = header_subagent or metadata_subagent
     if subagent is not None and parent_thread_id is None:
-        raise ValueError("native Codex subagent request has no parent thread id")
+        raise _UnrecognizedRequest("native Codex subagent request has no parent thread id")
     if parent_thread_id == thread_id:
-        raise ValueError("native Codex thread cannot be its own parent")
+        raise _UnrecognizedRequest("native Codex thread cannot be its own parent")
     return thread_id, parent_thread_id
 
 
@@ -441,37 +496,37 @@ def _identifier(value: Any, label: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError(f"native Codex {label} must be text")
+        raise _UnrecognizedRequest(f"native Codex {label} must be text")
     value = value.strip()
     if (
         not value
         or len(value) > _MAX_NATIVE_IDENTIFIER_LENGTH
         or any(character in value for character in "\r\n\x00")
     ):
-        raise ValueError(f"native Codex {label} is invalid")
+        raise _UnrecognizedRequest(f"native Codex {label} is invalid")
     return value
 
 
 def _request_kind(payload: dict[str, Any]) -> str | None:
     metadata = payload.get("client_metadata", {})
     if not isinstance(metadata, dict):
-        raise ValueError("native Codex client_metadata must be an object")
+        raise _UnrecognizedRequest("native Codex client_metadata must be an object")
     encoded = metadata.get("x-codex-turn-metadata")
     if encoded is None:
         return None
     if not isinstance(encoded, str):
-        raise ValueError("native Codex turn metadata must be text")
+        raise _UnrecognizedRequest("native Codex turn metadata must be text")
     try:
         context = json.loads(
             encoded, object_pairs_hook=_unique_object, parse_constant=_reject_constant
         )
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise ValueError("native Codex turn metadata is malformed") from exc
+        raise _UnrecognizedRequest("native Codex turn metadata is malformed") from exc
     if not isinstance(context, dict):
-        raise ValueError("native Codex turn metadata must be an object")
+        raise _UnrecognizedRequest("native Codex turn metadata must be an object")
     kind = context.get("request_kind")
     if kind is not None and not isinstance(kind, str):
-        raise ValueError("native Codex request kind must be text")
+        raise _UnrecognizedRequest("native Codex request kind must be text")
     return kind
 
 
@@ -481,11 +536,11 @@ def _cache_profile(payload: dict[str, Any], model: str, skill_sha256: str) -> di
         if isinstance(item, dict) and item.get("type") == "additional_tools":
             tools = item.get("tools")
             if not isinstance(tools, list):
-                raise ValueError("Responses Lite additional_tools must contain a list")
+                raise _UnrecognizedRequest("Responses Lite additional_tools must contain a list")
             additional.append(tools)
     tools = payload.get("tools", [])
     if not isinstance(tools, list):
-        raise ValueError("native tools must be a list")
+        raise _UnrecognizedRequest("native tools must be a list")
     return {
         "model": model,
         "skill_sha256": skill_sha256,
@@ -529,13 +584,13 @@ def _request_tool_sets(payload: dict[str, Any]) -> list[list[Any]]:
     if "tools" in payload:
         tools = payload["tools"]
         if not isinstance(tools, list):
-            raise ValueError("native tools must be a list")
+            raise _UnrecognizedRequest("native tools must be a list")
         sets.append(tools)
     for item in payload.get("input", []):
         if isinstance(item, dict) and item.get("type") == "additional_tools":
             additional = item.get("tools")
             if not isinstance(additional, list):
-                raise ValueError("Responses Lite additional_tools must contain a list")
+                raise _UnrecognizedRequest("Responses Lite additional_tools must contain a list")
             sets.append(additional)
     return sets
 
@@ -566,6 +621,8 @@ def _controller_wait(
     binding: dict[str, Any], thread_id: str, payload: dict[str, Any]
 ) -> tuple[bytes, str]:
     source_call_id = binding["source_call_id"]
+    namespace = binding["wait_namespace"]
+    timeout_ms = binding["wait_timeout_ms"]
     action_id = hashlib.sha256(
         json.dumps({"thread": thread_id, "source": source_call_id}, sort_keys=True).encode("utf-8")
     ).hexdigest()[:32]
@@ -574,8 +631,8 @@ def _controller_wait(
         "type": "function_call",
         "call_id": "call_controller_" + action_id,
         "name": "wait_agent",
-        "namespace": "collaboration",
-        "arguments": '{"timeout_ms":3600000}',
+        "namespace": namespace,
+        "arguments": json.dumps({"timeout_ms": timeout_ms}, separators=(",", ":")),
         "status": "completed",
     }
     response = {
@@ -800,8 +857,7 @@ class _ResponseTransformer:
         cleaned, hint = _strip_wait_hint(arguments)
         if cleaned != arguments:
             item["arguments"] = cleaned
-        if final:
-            self._record_final(item_id, call_id, cleaned, hint)
+        self._record_final(item_id, call_id, cleaned, hint)
 
     def _record_final(self, item_id: str, call_id: str, arguments: str, hint: bool | None) -> None:
         signature = (call_id, arguments, hint)
@@ -818,6 +874,8 @@ class _ResponseTransformer:
                 self._state.wait_flags.pop(call_id, None)
                 raise ValueError("Codex delegation reused a call id for another response item")
             self._state.call_items[call_id] = item_id
+            while len(self._state.call_items) > _MAX_TRACKED_CALLS_PER_THREAD:
+                self._state.call_items.pop(next(iter(self._state.call_items)))
             if hint is True:
                 self._state.wait_flags[call_id] = True
             else:
@@ -925,7 +983,9 @@ def _check_wire_namespace(item: dict[str, Any]) -> None:
     if item.get("namespace") == WIRE_NAMESPACE or (
         item.get("type") == "namespace" and item.get("name") == WIRE_NAMESPACE
     ):
-        raise ValueError(f"request already contains reserved namespace {WIRE_NAMESPACE!r}")
+        raise _UnrecognizedRequest(
+            f"request already contains reserved namespace {WIRE_NAMESPACE!r}"
+        )
 
 
 def _rewrite_tool_list(tools: Any) -> bool:
@@ -1049,7 +1109,7 @@ def extend_collaboration_schema(payload: dict[str, Any]) -> bool:
             else:
                 continue
             if not isinstance(namespace_tools, list):
-                raise ValueError(f"{namespace} tool namespace must contain a list")
+                raise _UnrecognizedRequest(f"{namespace} tool namespace must contain a list")
             for tool in namespace_tools:
                 if (
                     not isinstance(tool, dict)
@@ -1060,18 +1120,20 @@ def extend_collaboration_schema(payload: dict[str, Any]) -> bool:
                 parameters = tool.get("parameters")
                 properties = parameters.get("properties") if isinstance(parameters, dict) else None
                 if not isinstance(properties, dict):
-                    raise ValueError("collaboration delegation tool has no parameter properties")
+                    raise _UnrecognizedRequest(
+                        "collaboration delegation tool has no parameter properties"
+                    )
                 if (
                     "await_completion" in properties
                     and properties["await_completion"] != _AWAIT_COMPLETION
                 ):
-                    raise ValueError("unsupported existing await_completion schema")
+                    raise _UnrecognizedRequest("unsupported existing await_completion schema")
                 if "await_completion" not in properties:
                     properties["await_completion"] = dict(_AWAIT_COMPLETION)
                     changed = True
                 required = parameters.get("required")
                 if required is not None and not isinstance(required, list):
-                    raise ValueError("collaboration tool required fields must be a list")
+                    raise _UnrecognizedRequest("collaboration tool required fields must be a list")
                 if isinstance(required, list) and "await_completion" in required:
                     parameters["required"] = [
                         name for name in required if name != "await_completion"
@@ -1248,7 +1310,8 @@ def eligible_wait(
     return {
         "owner": owner,
         "source_call_id": source_call_id,
-        "verified_tool_binding": {"namespace": wait_namespace, "tool": wait_tool},
+        "wait_namespace": wait_namespace,
+        "wait_timeout_ms": maximum if maximum is not None else documented_max,
     }
 
 
@@ -1257,16 +1320,16 @@ def _tool_sets(payload: dict[str, Any]) -> list[list[Any]]:
     if "tools" in payload:
         tools = payload["tools"]
         if not isinstance(tools, list):
-            raise ValueError("native tools must be a list")
+            raise _UnrecognizedRequest("native tools must be a list")
         result.append(tools)
     items = payload.get("input")
     if items is not None and not isinstance(items, list):
-        raise ValueError("native input must be a list")
+        raise _UnrecognizedRequest("native input must be a list")
     for item in items or []:
         if isinstance(item, dict) and item.get("type") == "additional_tools":
             tools = item.get("tools")
             if not isinstance(tools, list):
-                raise ValueError("Responses Lite additional_tools must contain a list")
+                raise _UnrecognizedRequest("Responses Lite additional_tools must contain a list")
             result.append(tools)
     return result
 
