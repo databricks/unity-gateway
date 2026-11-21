@@ -28,15 +28,14 @@ def pytest_collection_modifyitems(config, items):
     from tests import shard
 
     units = shard.units_for(spec)
-    # A shard can own several chunks of one file.
-    owned = {(path, chunk) for path, chunk, _ in units}
-    count = {path: chunks for path, _, chunks in units}
-    keep, drop, position = [], [], {}
+    slow = set(shard.load_times()["slow"])
+    owned = shard.owned_tests(units, [item.nodeid for item in items], slow)
+    keep = [item for item, mine in zip(items, owned, strict=True) if mine]
+    drop = [item for item, mine in zip(items, owned, strict=True) if not mine]
+    position = {}
     for item in items:
-        path = item.nodeid.split("::", 1)[0]
-        index = position[path] = position.get(path, -1) + 1
-        mine = path in count and (path, index % count[path] + 1) in owned
-        (keep if mine else drop).append(item)
+        path = shard.file_of(item.nodeid)
+        position[path] = position.get(path, -1) + 1
     config.hook.pytest_deselected(items=drop)
     items[:] = keep
     report = os.environ.get("UG_TEST_SHARD_REPORT")
