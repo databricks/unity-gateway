@@ -1677,7 +1677,10 @@ CI_SELECT = runpy.run_path(str(Path(__file__).parent.parent / "scripts/ci_select
     [
         (["docs/smart-routing.md", "README.md", "tests/README.md"], False),
         (["tests/test_cli.py", "tests/copilot_app_rows.test.mjs", "hk.pkl"], False),
-        (["tests/integration/README.md", "AGENTS.md", "docs/guides/setup.md"], False),
+        (["tests/integration/README.md", "docs/guides/setup.md"], False),
+        # Live launches run in the checkout and read its agent instructions.
+        (["AGENTS.md"], True),
+        (["CLAUDE.md"], True),
         # `*` stays within one directory, so new helpers below tests/ rerun everything.
         (["tests/test_helpers/live_driver.py"], True),
         (["tests/drivers/live.mjs"], True),
@@ -1732,8 +1735,13 @@ def test_merge_queue_runs_every_live_suite():
     integration = _workflow("integration.yml")
     assert "merge_group" not in integration.split("\njobs:\n", 1)[1]
     selection = ci.split("\n  changes:\n", 1)[1].split("\n  e2e-shards:\n", 1)[0]
-    assert 'if [ "$EVENT_NAME" = pull_request ]; then' in selection
-    assert 'echo "live=true" >> "$GITHUB_OUTPUT"' in selection
+    assert 'pull_request) python3 scripts/ci_select.py pull-request "$BASE_SHA" "$HEAD_SHA" ;;' in (
+        selection
+    )
+    assert (
+        'merge_group) python3 scripts/ci_select.py merge-group "$MERGE_GROUP_REF" "$REPOSITORY" ;;'
+    ) in selection
+    assert '*) echo "live=true" >> "$GITHUB_OUTPUT" ;;' in selection
     for job in ("e2e-shards", "integration"):
         body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
         assert "needs.changes.outputs.live == 'true'" in body
@@ -1767,3 +1775,60 @@ def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("head_repo", "live"),
+    [
+        ({"full_name": "databricks/unity-gateway"}, True),
+        # Fork code gets no CI secrets in the merge queue, as on its own PR runs.
+        ({"full_name": "someone/unity-gateway"}, False),
+        (None, False),
+    ],
+)
+def test_merge_group_runs_live_suites_only_for_same_repo_prs(monkeypatch, head_repo, live):
+    requested = []
+
+    def fetch(url, timeout):
+        requested.append(url)
+        return io.StringIO(json.dumps({"head": {"repo": head_repo}}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fetch)
+    ref = "gh-readonly-queue/main/pr-1824-" + "a" * 40
+    assert CI_SELECT["queued_pr_is_from"](ref, "databricks/unity-gateway") is live
+    assert requested == ["https://api.github.com/repos/databricks/unity-gateway/pulls/1824"]
+
+
+def test_merge_group_selection_fails_closed(monkeypatch):
+    with pytest.raises(SystemExit, match="Unrecognized merge group ref"):
+        CI_SELECT["queued_pr_is_from"]("main", "databricks/unity-gateway")
+
+    def unavailable(url, timeout):
+        raise urllib.error.HTTPError(url, 403, "rate limited", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    with pytest.raises(urllib.error.HTTPError):
+        CI_SELECT["queued_pr_is_from"](
+            "gh-readonly-queue/main/pr-7-" + "b" * 40, "databricks/unity-gateway"
+        )
+
+
+def test_pr_selection_reads_whole_paths_from_git(tmp_path):
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py hk.pkl").write_text("")
+    git("add", "-A")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "spaced")
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        changed = CI_SELECT["changed_paths"]("HEAD~1", "HEAD")
+    finally:
+        os.chdir(cwd)
+    assert changed == ["tests/test_a.py hk.pkl"]
+    # Split on whitespace, this one path would read as two skip-listed paths.
+    assert CI_SELECT["reaches_live"](changed) is True
