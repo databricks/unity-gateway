@@ -48,7 +48,12 @@ def ensure_parent_dir(path: Path) -> None:
 
 
 def atomic_write_json(
-    path: Path, payload: object, *, mode: int | None = None, preserve_permissions: bool = False
+    path: Path,
+    payload: object,
+    *,
+    mode: int | None = None,
+    preserve_permissions: bool = False,
+    copy_timeout: float = 5.0,
 ) -> None:
     """Write ``payload`` as indented JSON to ``path`` atomically (temp file + ``os.replace``).
 
@@ -57,6 +62,7 @@ def atomic_write_json(
     ``write_json_file`` it does not honor dry-run, so callers that should be skipped under dry-run
     must guard the call themselves. An explicit ``mode`` is applied before publishing the file.
     ``preserve_permissions`` retains an existing POSIX file's ownership and ACLs.
+    ``copy_timeout`` bounds the permission-copy subprocess.
     """
     ensure_parent_dir(path)
     # Isolate the staged file while its access rules and ownership are changing.
@@ -71,16 +77,20 @@ def atomic_write_json(
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 if preserve_permissions:
                     before = path.stat()
-                    copier = shutil.which("cp")
+                    # Relative PATH entries could select a copier from the user's project.
+                    search_path = os.pathsep.join(
+                        directory for directory in os.get_exec_path() if os.path.isabs(directory)
+                    )
+                    copier = shutil.which("cp", path=search_path) if search_path else None
                     if copier is None:
                         raise OSError("The cp utility is required to preserve file permissions")
                     # copystat omits ownership and macOS ACLs.
                     subprocess_cross_os.run(
-                        [str(Path(copier).absolute()), "-p", str(path), tmp_name],
+                        [copier, "-p", str(path), tmp_name],
                         check=True,
                         capture_output=True,
                         stdin=subprocess.DEVNULL,
-                        timeout=5,
+                        timeout=copy_timeout,
                     )
                     copied = os.stat(tmp_name)
                     # Reject a copier that replaced the inode behind our writable descriptor.
