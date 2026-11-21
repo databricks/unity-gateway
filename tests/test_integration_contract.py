@@ -1944,7 +1944,7 @@ def test_unit_shards_run_every_test_exactly_once():
 def test_unit_shard_loads_stay_balanced():
     from tests import shard
 
-    for system, total in (("Linux", 20), ("Windows", 40)):
+    for system, total in (("Linux", 20), ("Windows", 48)):
         times = shard.load_times(system)
         assert all(seconds >= shard.SLOW_SECONDS for seconds in times["slow"].values())
         plan = shard.plan(shard.test_files(), total, times)
