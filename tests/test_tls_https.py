@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import ssl
 import subprocess
 import sys
@@ -109,17 +110,32 @@ def ca_directory(tmp_path) -> Path:
     return directory
 
 
+class _IPv6Server(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+
 def _serve(certificate: Path):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certificate)
-    with ThreadingHTTPServer(("127.0.0.1", 0), _Handler) as server:
+    servers = [ThreadingHTTPServer(("127.0.0.1", 0), _Handler)]
+    port = servers[0].server_port
+    # Clients resolve `localhost` to ::1 first where IPv6 exists. Without a listener there,
+    # Windows spends about 2 s per client on the refused connection before trying 127.0.0.1.
+    try:
+        servers.append(_IPv6Server(("::1", port), _Handler))
+    except OSError:
+        pass  # No IPv6 loopback, so `localhost` resolves to 127.0.0.1 only.
+    threads = []
+    for server in servers:
         server.socket = context.wrap_socket(server.socket, server_side=True)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            yield f"https://localhost:{server.server_port}"
-        finally:
+        threads.append(threading.Thread(target=server.serve_forever, daemon=True))
+        threads[-1].start()
+    try:
+        yield f"https://localhost:{port}"
+    finally:
+        for server, thread in zip(servers, threads, strict=True):
             server.shutdown()
+            server.server_close()
             thread.join(timeout=5)
 
 
