@@ -1856,7 +1856,7 @@ def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers
 )
 def test_pytest_discovers_the_serial_live_hook(args, parallel):
     # The child run must not inherit this CI shard or overwrite its coverage report.
-    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT"}
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
     env = {key: value for key, value in os.environ.items() if key not in skip}
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
