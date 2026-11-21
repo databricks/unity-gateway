@@ -903,7 +903,8 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # One lane at a time: the Codex lanes on this service principal share one model quota.
+      max-parallel: 1
       matrix:
         agent: [claude, codex]
         smart_routing: [false]
@@ -1073,8 +1074,7 @@ jobs:
   # OpenAI's appcast keeps every versioned macOS build, so the desktop app can be pinned by hash.
   codex-desktop-macos:
     name: Codex desktop inference · macOS
-    # Codex lanes on the managed service principal share one model quota. Starting after the
-    # managed matrix keeps each run to two concurrent Codex callers on it instead of four.
+    # Codex lanes on the managed service principal share one model quota; see the Windows lane.
     needs: managed
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
@@ -1137,9 +1137,10 @@ jobs:
   # OpenAI keeps, so the Windows app can be pinned by hash too.
   codex-desktop-windows:
     name: Codex desktop inference · Windows
-    # Codex lanes on the managed service principal share one model quota. Starting after the
-    # managed matrix keeps each run to two concurrent Codex callers on it instead of four.
-    needs: managed
+    # After the macOS desktop lane, so each run has one Codex caller on the managed service
+    # principal at a time: five merge-queue entries stay under the ~10 concurrent callers at which
+    # that quota returned 429s.
+    needs: [managed, codex-desktop-macos]
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 30

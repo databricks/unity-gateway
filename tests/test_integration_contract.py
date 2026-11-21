@@ -1681,10 +1681,17 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
 
 
-@pytest.mark.parametrize("job_name", ["codex-desktop-macos", "codex-desktop-windows"])
-def test_codex_desktop_lanes_start_after_the_managed_matrix(job_name):
-    # The managed service principal's Codex lanes share one model quota; 429s appeared only
-    # when ten or more of them overlapped, so each run keeps at most two in flight.
-    job = _integration_jobs()[job_name]
-    assert "\n    needs: managed\n" in job
-    assert "    if: ${{ !cancelled() && " in job
+@pytest.mark.parametrize(
+    ("job_name", "needs"),
+    [
+        ("codex-desktop-macos", "managed"),
+        ("codex-desktop-windows", "[managed, codex-desktop-macos]"),
+    ],
+)
+def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
+    # These lanes share one model quota; 429s appeared only when ten or more overlapped across
+    # runs, and the merge queue builds up to five entries at once.
+    jobs = _integration_jobs()
+    assert f"\n    needs: {needs}\n" in jobs[job_name]
+    assert "    if: ${{ !cancelled() && " in jobs[job_name]
+    assert "      max-parallel: 1\n" in jobs["managed"]
