@@ -3492,6 +3492,68 @@ class TestStatus:
             assert result.exit_code == 0, result.output
             assert ("VS Code: off (workspace-managed)" in output) is shown
 
+    def test_status_shows_the_copilot_app_row_and_its_warnings(self, monkeypatch):
+        from ucode.agents.desktop.setup import CopilotAppStatus
+
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        seen = []
+
+        def app_status(effective_state, *, provider, location):
+            seen.append(effective_state)
+            return CopilotAppStatus(
+                "plugin disabled, models registered", ("their turns fail without it",)
+            )
+
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.agents.desktop.setup.copilot_app_status", side_effect=app_status),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app: plugin disabled, models registered" in output
+        assert "their turns fail without it" in output
+        assert seen[0]["workspace"] == state["workspace"]
+
+    def test_status_shows_the_copilot_app_turned_off_by_managed_config(self, monkeypatch):
+        monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        managed = {"enabled_agents": {"copilot": {"app_integration_enabled": False}}}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=managed),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app: off (workspace-managed)" in output
+
+    def test_status_shows_a_pending_copilot_app_removal_after_revert(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.agents.desktop.setup.copilot_app_unconfigured_status",
+                return_value="removal pending: soon",
+            ),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app" in output
+        assert "removal pending: soon" in output
+
     def test_status_labels_self_configured_setup(self, monkeypatch):
         with (
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
@@ -4790,6 +4852,27 @@ class TestRevert:
         assert "VS Code extension: failed" in output
         assert restore_file.called
         clear_state.assert_called_once()
+
+    @pytest.mark.parametrize("result", ["removed", "not set up", "failed: x"])
+    def test_reports_the_copilot_app(self, result):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.agents.desktop.setup.revert_copilot_app", return_value=result),
+            patch("ucode.cli.clear_state"),
+        ):
+            outcome = runner.invoke(app, ["revert"])
+
+        output = " ".join(outcome.output.split())
+        assert outcome.exit_code == 0, outcome.output
+        assert f"GitHub Copilot app: {result}" in output
+        assert "keep the Databricks models" not in output
 
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])

@@ -100,6 +100,9 @@ class AppConnection {
   async request(message, reply, match = {}) {
     for (let attempt = 0; ; attempt++) {
       const requestId = `ug-${randomUUID()}`;
+      // Requests run one at a time, so nothing received before this send answers it; an id-less
+      // error left over from earlier would otherwise read as a refusal.
+      this._backlog.length = 0;
       this._ws.send(JSON.stringify({ ...message, request_id: requestId }));
       // The app echoes request_id on its replies, but not on errors about the message's format,
       // which then answer the pending request.

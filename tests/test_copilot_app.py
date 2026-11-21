@@ -41,11 +41,13 @@ class FakeApp:
         self.secrets: dict[str, str] = {}
         self.received: list[dict] = []
         self.handshakes: list[dict] = []
+        self.paths: list[str] = []
         self.busy = 0
         self.busy_kinds: tuple[str, ...] = ("upsert",)
         self.fail: str | None = None
         self.drop: str | None = None
         self.before_reply: dict[str, list[dict]] = {}
+        self.before_hello: list[dict] = []
         self._server = serve(self._handle, "127.0.0.1", 0, process_request=self._check)
         port = self._server.socket.getsockname()[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -56,6 +58,7 @@ class FakeApp:
 
     def _check(self, connection, request):
         self.handshakes.append(dict(request.headers.raw_items()))
+        self.paths.append(request.path)
         if request.headers.get("Origin"):
             return connection.respond(http.HTTPStatus.FORBIDDEN, "origin")
         if parse_qs(urlparse(request.path).query).get("token") != [self.token]:
@@ -99,6 +102,8 @@ class FakeApp:
         return {"type": "error", "message": f"unknown variant `{kind}`"}
 
     def _handle(self, websocket):
+        for frame in self.before_hello:
+            websocket.send(json.dumps(frame))
         websocket.send(json.dumps({"type": "server_hello", "connection_id": 1}))
         websocket.send(json.dumps({"type": "keep_awake_changed"}))
         for text in websocket:
@@ -297,15 +302,15 @@ class TestDesiredProviders:
 
         calls = []
 
-        def models(state, provider, location):
-            calls.append((provider, location))
+        def models(state, provider, location, *, agent):
+            calls.append((provider, location, agent))
             return CATALOG
 
         monkeypatch.setattr(vscode, "copilot_models", models)
 
         desired = copilot_app.state_providers({"workspace": WORKSPACE}, provider="my-mps")
 
-        assert calls == [("my-mps", None)]
+        assert calls == [("my-mps", None, "the GitHub Copilot app")]
         assert desired == copilot_app.desired_providers(
             WORKSPACE, CATALOG, provider_service="my-mps"
         )
@@ -407,6 +412,11 @@ class TestStatus:
 
         newer = _app_providers([*CATALOG, CopilotModel("system.ai.gpt-6", WIRE_RESPONSES)])
         assert copilot_app.status(newer) == "outdated"
+
+        keyed = next(p.id for p in providers if p.secret is not None)
+        app.providers[keyed]["hasSecret"] = False
+        assert copilot_app.status(providers) == "outdated"
+        app.providers[keyed]["hasSecret"] = True
 
         copilot_app.unregister()
         assert copilot_app.status(providers) == "not_registered"
@@ -519,6 +529,14 @@ def test_an_error_without_a_request_id_answers_the_pending_request(app):
         copilot_app.unregister()
 
 
+def test_an_error_from_before_a_request_does_not_answer_it(app, capsys):
+    app.before_hello = [{"type": "error", "message": "Invalid message format"}]
+    seed(app, _app_providers())
+
+    assert copilot_app.unregister() is True
+    assert "hasn't been verified" not in capsys.readouterr().out
+
+
 def test_an_app_without_the_healthcheck_is_an_unknown_version(app, capsys):
     app.fail = "get_healthcheck"
     seed(app, _app_providers())
@@ -577,6 +595,30 @@ def test_a_port_file_of_an_exited_app_is_not_running(app, monkeypatch):
     assert app.handshakes == []
 
 
+def _app_1_4_2_run_files(pid_file):
+    run = copilot_app.copilot_home() / "run"
+    (run / "ws.port").write_text((run / "ws.port").read_text().split()[0])
+    (run / "app-owner.pid").write_text(pid_file)
+
+
+def test_an_exited_app_named_by_app_owner_pid_is_not_running(app, monkeypatch):
+    _app_1_4_2_run_files("4242")
+    checked = []
+    monkeypatch.setattr(copilot_app, "process_running", lambda pid: checked.append(pid) or False)
+
+    with pytest.raises(copilot_app.CopilotAppNotRunning):
+        copilot_app.unregister()
+    assert checked == [4242]
+    assert app.handshakes == []
+
+
+def test_an_unreadable_app_owner_pid_still_connects(app, monkeypatch):
+    _app_1_4_2_run_files("not a pid")
+    monkeypatch.setattr(copilot_app, "process_running", lambda pid: False)
+
+    assert copilot_app.unregister() is False
+
+
 def test_the_token_is_url_encoded(app):
     app.token = "a+b&c=d"
     (copilot_app.copilot_home() / "run" / "ws.token").write_text(f"{app.token}\n4242\n")
@@ -589,3 +631,23 @@ def test_a_rejected_token_is_an_app_error(app):
 
     with pytest.raises(copilot_app.CopilotAppError, match="refused ug"):
         copilot_app.unregister()
+
+
+def test_status_skips_the_healthcheck(app):
+    copilot_app.status(_app_providers())
+
+    assert app.sent("get_healthcheck") == []
+
+
+def test_status_waits_only_briefly_for_a_hung_app(app, monkeypatch):
+    waits = []
+    real_next = copilot_app._AppConnection._next
+
+    def next_message(self, deadline):
+        waits.append(deadline - copilot_app.time.monotonic())
+        return real_next(self, deadline)
+
+    monkeypatch.setattr(copilot_app._AppConnection, "_next", next_message)
+    copilot_app.status(copilot_app.desired_providers(WORKSPACE, CATALOG).app)
+
+    assert waits and max(waits) <= copilot_app._STATUS_TIMEOUT_S

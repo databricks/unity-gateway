@@ -43,12 +43,15 @@ Status = Literal["installed", "removal_pending", "disabled", "not_installed", "i
 
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
+_TELEMETRY_KEY = "telemetry"
+_HEADERS_PROVIDER_KEY = "headersProvider"
 _SOURCE_FILES = (
     "extension.mjs",
     "ug-plugin.mjs",
     "app-rows.mjs",
     "app-remove.mjs",
     "app-restart.mjs",
+    "app-tracing.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -115,6 +118,9 @@ class PluginConfig:
     # Every provider id ug may have written to the app; the extension deletes those not in
     # ``app_providers``.
     owned_provider_ids: tuple[str, ...] = ()
+    # Where the extension exports the spans it builds from the session's events; None turns
+    # tracing off.
+    traces_endpoint: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -228,12 +234,22 @@ def extension_config(config: PluginConfig) -> dict:
             "providers": [_app_entry(rows) for rows in config.app_providers],
             "ownedProviderIds": list(config.owned_provider_ids),
         },
+        "tracing": (
+            {"endpoint": config.traces_endpoint, "headers": dict(config.headers)}
+            if config.traces_endpoint
+            else None
+        ),
     }
 
 
 # What the extension keeps between runs, in its own directory; a reinstall carries them over, so
 # an unchanged configure neither resyncs nor restarts the app.
-_EXTENSION_STATE_FILES = ("app-sync.json", "app-restart.json", "app-restart.log")
+_EXTENSION_STATE_FILES = (
+    "app-sync.json",
+    "app-restart.json",
+    "app-restart.log",
+    "tracing-exports.json",
+)
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
 # Older leftovers are from a run that crashed, never from one still writing.
@@ -465,6 +481,37 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     }
     _object(settings, _ENABLED_KEY, path)[PLUGIN_KEY] = True
     _write_settings(path, settings)
+
+
+def tracing_on(root: Path | None = None) -> bool:
+    """Whether the installed extension exports spans."""
+    config = _read_extension_config(root or plugin_root())
+    return config is not None and isinstance(config.get("tracing"), dict)
+
+
+def remove_headers_provider(settings_path: Path | None = None) -> bool:
+    """Remove the ``telemetry.headersProvider`` running ``ug otel-headers`` that earlier builds
+    wrote; another one stays. Returns whether it was removed."""
+    path = settings_path or copilot_settings_path()
+    if not path.exists():
+        return False
+    settings = read_settings(path)
+    telemetry = settings.get(_TELEMETRY_KEY)
+    provider = telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
+    args = provider.get("args") if isinstance(provider, dict) else None
+    # ug wrote ``<ug> otel-headers --host <workspace> ...``; a user's own helper stays.
+    if (
+        not isinstance(telemetry, dict)
+        or not isinstance(args, list)
+        or args[:1] != ["otel-headers"]
+        or "--host" not in args
+    ):
+        return False
+    del telemetry[_HEADERS_PROVIDER_KEY]
+    if not telemetry:
+        del settings[_TELEMETRY_KEY]
+    _write_settings(path, settings)
+    return True
 
 
 def _created_settings_marker(root: Path) -> Path:
