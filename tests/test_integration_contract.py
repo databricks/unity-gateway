@@ -1768,20 +1768,19 @@ def test_merge_queue_runs_every_live_suite():
     assert "    if: ${{ github.event_name != 'pull_request' }}\n" in claude_mod
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
-@pytest.mark.parametrize(
-    "failing",
-    [
-        None,
-        "LINT_RESULT",
-        "RESULT",
-        "WINDOWS_RESULT",
-        "PROVISIONING_RESULT",
-        "VSCODE_EXTENSION_RESULT",
-    ],
-)
-@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
-def test_required_tests_enforces_lint_result(failing, bad):
+REQUIRED_TESTS_RESULTS = {
+    "GATE_RESULT": "success",
+    "LINT_RESULT": "success",
+    "RESULT": "success",
+    "VSCODE_EXTENSION_RESULT": "success",
+    # Pull requests skip the Windows jobs and the coverage proof; the merge queue runs them.
+    "WINDOWS_RESULT": {"pull_request": "skipped", "merge_group": "success"},
+    "PROVISIONING_RESULT": {"pull_request": "skipped", "merge_group": "success"},
+    "COVERAGE_RESULT": {"pull_request": "skipped", "merge_group": "success"},
+}
+
+
+def _required_tests(event, **results):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
@@ -1789,32 +1788,46 @@ def test_required_tests_enforces_lint_result(failing, bad):
         "    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, "
         "windows-provisioning, vscode-extension]\n" in required
     )
-    script = required.split("        run: |", 1)[1]
-    names = [
-        "LINT_RESULT",
-        "RESULT",
-        "WINDOWS_RESULT",
-        "PROVISIONING_RESULT",
-        "VSCODE_EXTENSION_RESULT",
-    ]
-    env = {
-        **os.environ,
-        **dict.fromkeys(names, "success"),
-        "COVERAGE_RESULT": "skipped",
-        "EVENT_NAME": "pull_request",
-        "GATE_RESULT": "success",
-    }
-    if failing:
-        env[failing] = bad
-    result = subprocess.run(
-        ["/bin/bash", "-c", textwrap.dedent(script)],
-        env=env,
+    env = {"EVENT_NAME": event}
+    for name, value in REQUIRED_TESTS_RESULTS.items():
+        env[name] = value[event] if isinstance(value, dict) else value
+    env.update(results)
+    return subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(required.split("        run: |", 1)[1])],
+        env={**os.environ, **env},
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
-    )
-    assert (result.returncode == 0) is (failing is None), result.stderr
+    ).returncode
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+def test_required_tests_passes_when_every_required_job_does(event):
+    assert _required_tests(event) == 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+@pytest.mark.parametrize("job", list(REQUIRED_TESTS_RESULTS))
+@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
+def test_required_tests_requires_every_unit_job(event, job, bad):
+    expected = REQUIRED_TESTS_RESULTS[job]
+    if (expected[event] if isinstance(expected, dict) else expected) == bad:
+        pytest.skip("that is this event's normal result")
+    assert _required_tests(event, **{job: bad}) != 0
+
+
+def test_windows_unit_shards_run_everywhere_but_pull_requests():
+    ci = _workflow("ci.yml")
+    job = re.split(r"\n  [a-z0-9-]+:\n", ci.split("\n  unit-windows:\n", 1)[1], maxsplit=1)[0]
+    assert "    if: ${{ github.event_name != 'pull_request' }}\n" in job
+    assert "needs:" not in job
+    provisioning = re.split(
+        r"\n  [a-z0-9-]+:\n", ci.split("\n  windows-provisioning:\n", 1)[1], maxsplit=1
+    )[0]
+    assert "    if: ${{ github.event_name != 'pull_request' }}\n" in provisioning
 
 
 def _git_repo(path):
@@ -2010,40 +2023,6 @@ def test_checks_run_exactly_the_just_lint_commands():
         assert f"{recipe}:\n    uv run {command}\n" in justfile, recipe
         assert f'"$VENV_BIN/{command.split()[0]}" {command.split(" ", 1)[1]}' in checks, recipe
     assert "lint: ruff-check ruff-format-check ty\n" in justfile
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
-@pytest.mark.parametrize("coverage", ["success", "skipped", "failure"])
-@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
-def test_merge_queue_requires_unit_shard_coverage(event, coverage):
-    required = (
-        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
-    )
-    script = required.split("        run: |", 1)[1]
-    names = [
-        "LINT_RESULT",
-        "RESULT",
-        "WINDOWS_RESULT",
-        "PROVISIONING_RESULT",
-        "VSCODE_EXTENSION_RESULT",
-    ]
-    env = {
-        **os.environ,
-        **dict.fromkeys(names, "success"),
-        "EVENT_NAME": event,
-        "COVERAGE_RESULT": coverage,
-        "GATE_RESULT": "success",
-    }
-    result = subprocess.run(
-        ["/bin/bash", "-c", textwrap.dedent(script)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    passes = coverage == "success" or (coverage == "skipped" and event == "pull_request")
-    assert (result.returncode == 0) is passes, result.stderr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the rollups run bash on Linux")
