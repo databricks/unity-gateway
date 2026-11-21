@@ -179,6 +179,10 @@ Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct 
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
 and parallel calls as cards above the parent's next reply in call order.
+The same suite exercises GPT cache-boundary rewriting through the real Claude engine
+against a controlled HTTP endpoint. Naturally generated parent, ordinary-child and routed-child
+requests exercise automatic activation for GPT models beyond Terra/Sol. Separate explicit Messages
+fixtures retain cache-marker and pass-through controls without starting a gateway proxy. This is component coverage; live cache reuse and benchmark savings are not measured.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live

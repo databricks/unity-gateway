@@ -331,6 +331,20 @@ def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_
     assert not claude.header_mod_active(require_current=True)
 
 
+def test_header_mod_active_rejects_retargeted_marketplace_with_current_files(tmp_path, monkeypatch):
+    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch, {})
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    for path, text in claude._header_mod_files(root).items():
+        assert path.read_text(encoding="utf-8") == text
+
+    doc = json.loads(managed_path.read_text(encoding="utf-8"))
+    doc["extraKnownMarketplaces"]["ucode-managed"]["source"]["path"] = str(tmp_path / "retargeted")
+    managed_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    assert claude.header_mod_active()
+    assert not claude.header_mod_active(require_current=True)
+
+
 def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
     managed_path, _root, _writes = _managed_env(
         tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": False}}
@@ -443,3 +457,129 @@ def test_launch_without_ug_headers_or_with_an_active_mod_says_nothing(monkeypatc
     monkeypatch.setattr(claude, "header_mod_active", lambda: True)
     claude._warn_if_launch_headers_dropped()
     assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("flag", "workspace", "relayed", "version", "current_mod", "expected"),
+    [
+        (None, WS, False, "2.1.325", True, "active"),
+        ("", WS, False, "2.1.325", True, "active"),
+        ("0", WS, False, "2.1.325", True, "off"),
+        ("1", None, False, "2.1.325", True, "off"),
+        (None, WS, True, "2.1.325", True, "off"),
+        (None, WS, False, "2.1.290", True, "version"),
+        (None, WS, False, "2.1.320", True, "version"),
+        (None, WS, False, "unknown", True, "unknown_version"),
+        (None, WS, False, "2.1.325", False, "mod"),
+        ("1", WS, False, "2.1.321", True, "active"),
+        ("1", WS, False, "2.1.325", True, "active"),
+    ],
+)
+def test_cache_boundary_launch_guard(
+    monkeypatch, flag, workspace, relayed, version, current_mod, expected
+):
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
+    monkeypatch.setenv("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", "https://inherited.invalid")
+    if flag is None:
+        monkeypatch.delenv("UG_CLAUDE_GPT_CACHE_BOUNDARY", raising=False)
+    else:
+        monkeypatch.setenv("UG_CLAUDE_GPT_CACHE_BOUNDARY", flag)
+    version_check = Mock(return_value=version)
+    mod_check = Mock(return_value=current_mod)
+    warnings = []
+    diagnostics = []
+    monkeypatch.setattr(claude, "agent_version", version_check)
+    monkeypatch.setattr(claude, "header_mod_active", mod_check)
+    monkeypatch.setattr(claude, "print_warning", warnings.append)
+    monkeypatch.setattr(claude, "_debug", lambda _label, detail: diagnostics.append(detail))
+
+    claude._configure_gpt_cache_boundary({"workspace": workspace, "claude_relayed": relayed})
+
+    assert claude.os.environ.get("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL") == (
+        f"{WS}/ai-gateway/anthropic" if expected == "active" else ""
+    )
+    assert warnings == []
+    if expected in {"version", "unknown_version"}:
+        reason = "2.1.321" if expected == "version" else "could not determine Claude Code version"
+        assert len(diagnostics) == 1 and reason in diagnostics[0]
+        mod_check.assert_not_called()
+    elif expected == "mod":
+        assert len(diagnostics) == 1 and "current UG managed mod" in diagnostics[0]
+        mod_check.assert_called_once_with(require_current=True)
+    else:
+        assert diagnostics == []
+    if expected == "off":
+        version_check.assert_not_called()
+        mod_check.assert_not_called()
+
+
+@pytest.mark.parametrize("routing", [False, True])
+def test_launch_keeps_cache_base_for_plain_launch_and_routing_fallback(
+    tmp_path, monkeypatch, routing
+):
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
+    _managed_path, _root, writes = _managed_env(tmp_path, monkeypatch, {})
+    state = {"workspace": WS, "codex_models": []}
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    assert claude.header_mod_active(require_current=True)
+    writes.clear()
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    monkeypatch.setattr(claude, "_explicit_configure", False)
+    monkeypatch.delenv("UG_CLAUDE_GPT_CACHE_BOUNDARY", raising=False)
+    monkeypatch.setenv("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", "https://inherited.invalid")
+    monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.325")
+    monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+    monkeypatch.setattr(claude, "_external_web_search_args", lambda _state, args: args)
+    monkeypatch.setattr(claude, "_use_server_side_web_search", lambda _state: False)
+    monkeypatch.setattr(claude, "_resolve_launch_binary", lambda _binary: "native-claude")
+    monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+    routed = Mock(side_effect=claude.smart_routing_v2.ClaudeRoutingSetupError("setup failed"))
+    spawn_base_urls = []
+
+    def observe_plain_spawn(_argv):
+        spawn_base_urls.append(claude.os.environ.get("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"))
+
+    plain = Mock(side_effect=observe_plain_spawn)
+    monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", routed)
+    monkeypatch.setattr(claude, "exec_or_spawn", plain)
+    monkeypatch.setattr(
+        claude, "_claude_launch_argv", lambda binary, args, **_kwargs: nullcontext([binary, *args])
+    )
+
+    claude.launch(
+        state, ["-p", "Inspect this task"], options=LaunchOptions(launch_smart_routing=routing)
+    )
+
+    if routing:
+        routed.assert_called_once()
+    else:
+        routed.assert_not_called()
+    plain.assert_called_once_with(["native-claude", "-p", "Inspect this task"])
+    assert spawn_base_urls == [f"{WS}/ai-gateway/anthropic"]
+    assert (
+        claude.os.environ["UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+    )
+    assert writes == []
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("policy", ["1", "0"])
+def test_cache_boundary_preserves_nonessential_traffic_policy(monkeypatch, policy):
+    monkeypatch.setenv("UG_CLAUDE_GPT_CACHE_BOUNDARY", "1")
+    monkeypatch.setenv("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", "https://inherited.invalid")
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", policy)
+    version = Mock()
+    warnings = []
+    diagnostics = []
+    monkeypatch.setattr(claude, "agent_version", version)
+    monkeypatch.setattr(claude, "print_warning", warnings.append)
+    monkeypatch.setattr(claude, "_debug", lambda _label, detail: diagnostics.append(detail))
+
+    claude._configure_gpt_cache_boundary({"workspace": WS})
+
+    assert claude.os.environ["UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"] == ""
+    assert claude.os.environ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == policy
+    assert warnings == []
+    assert len(diagnostics) == 1 and "nonessential-traffic policy" in diagnostics[0]
+    version.assert_not_called()
