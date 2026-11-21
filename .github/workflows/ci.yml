@@ -75,21 +75,21 @@ jobs:
           fi
           test ${#failed[@]} -eq 0
 
-  # Each shard collects the whole suite and runs its time-balanced slice (tests/shard.py), so the
-  # shards together run every collected test once. Main uploads JUnit reports and coverage counts
+  # Each shard runs its time-balanced files and chunks of the slow files (tests/shard.py), so the
+  # shards together run every unit test once. Main uploads JUnit reports and coverage counts
   # so `Unit test times` can record fresh timings and prove nothing was missed.
   unit-linux:
-    name: Unit tests · Linux · ${{ matrix.shard }}/12
+    name: Unit tests · Linux · ${{ matrix.shard }}/16
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
-      UG_TEST_SHARD: ${{ matrix.shard }}/12
+      UG_TEST_SHARD: ${{ matrix.shard }}/16
     steps:
       - *checkout
       - *setup-uv
@@ -98,9 +98,11 @@ jobs:
       - &unit-run
         name: Run this shard
         shell: bash
+        # Only this shard's files, so it imports and collects only what it runs.
         run: |
+          mapfile -t files < <(uv run --no-sync python -m tests.shard files "$UG_TEST_SHARD" | tr -d '\r')
           UG_TEST_SHARD_REPORT="$RUNNER_TEMP/shard-report.json" \
-            uv run --no-sync pytest --ignore=tests/test_e2e.py --junitxml="$RUNNER_TEMP/junit.xml"
+            uv run --no-sync pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
       - &unit-report
         name: Upload this shard's timings
         if: ${{ github.event_name == 'push' }}
@@ -112,17 +114,18 @@ jobs:
             ${{ runner.temp }}/shard-report.json
 
   unit-windows:
-    name: Unit tests · Windows · ${{ matrix.shard }}/16
+    name: Unit tests · Windows · ${{ matrix.shard }}/32
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
-      UG_TEST_SHARD: ${{ matrix.shard }}/16
+      UG_TEST_SHARD: ${{ matrix.shard }}/32
     steps:
       - *checkout
       - *setup-uv
