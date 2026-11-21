@@ -3,9 +3,9 @@
 A shard runs a set of whole test files plus chunks of the files too slow for one shard: chunk
 ``j`` of ``k`` keeps every ``k``-th test of the file, starting at test ``j``. Each shard is given
 only its own files, so it imports and collects only what it runs, and the shards together cover
-every unit test file and every chunk exactly once. Weights come from tests/unit_test_times.json;
-main records fresh measurements on every full run (the `unit-test-times` artifact). Commit them
-here when shards drift past their budget.
+every unit test file and every chunk exactly once. Weights come from tests/unit_test_times.json,
+measured on hosted runners for each OS; main records fresh measurements on every full run (the
+`unit-test-times` artifact). Commit them here when shards drift past their budget.
 
 ``python -m tests.shard files <index>/<total>`` prints the shard's test files.
 """
@@ -59,8 +59,13 @@ def plan(files: list[str], total: int, times: dict[str, list[float]]) -> list[li
     return shards
 
 
-def load_times() -> dict[str, list[float]]:
-    return json.loads(TIMES.read_text(encoding="utf-8"))
+def runner_os() -> str:
+    return "Windows" if sys.platform == "win32" else "Linux"
+
+
+def load_times(system: str | None = None) -> dict[str, list[float]]:
+    """Per-file ``[seconds, tests]`` measured on this OS's hosted runners."""
+    return json.loads(TIMES.read_text(encoding="utf-8"))[system or runner_os()]
 
 
 def units_for(spec: str) -> list[Unit]:
