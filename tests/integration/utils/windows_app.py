@@ -28,8 +28,11 @@ def _installed_package(package: str) -> tuple[str, str]:
         names = [
             winreg.EnumKey(packages, index) for index in range(winreg.QueryInfoKey(packages)[0])
         ]
-        # Full names are <name>_<version>_<architecture>_<resource id>_<publisher id>.
-        matches = [name for name in names if name.split("_")[0] == package]
+        # Full names are <name>_<version>_<architecture>_<resource id>_<publisher id>. Resource and
+        # split packages share the name and version but have a resource id and no executable.
+        matches = [
+            name for name in names if name.split("_")[0] == package and name.split("_")[3:4] == [""]
+        ]
         assert matches, f"{package} is not installed"
         full_name = max(
             matches, key=lambda name: tuple(int(part) for part in name.split("_")[1].split("."))
