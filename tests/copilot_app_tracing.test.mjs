@@ -533,6 +533,37 @@ test("on SIGTERM the extension finishes its exports, then ends as the signal wou
   assert.equal(proc.listenerCount("SIGTERM"), 0);
 });
 
+test("on SIGTERM the last export's outcome is recorded before the process ends", async () => {
+  const { sessionId, events } = fixture("gpt");
+  const recorded = [];
+  let releaseWrite;
+  const write = new Promise((resolve) => {
+    releaseWrite = resolve;
+  });
+  const record = async (outcome) => {
+    await write;
+    recorded.push(outcome.outcome);
+  };
+  const tracer = createTracer({ tracing: { endpoint: ENDPOINT, headers: {} } }, tokenSource(["t"]), {
+    sessionId,
+    log: () => {},
+    record,
+    fetchImpl: async () => new Response(null, { status: 200 }),
+  });
+  const proc = fakeProcess();
+  exportBeforeTerminating(tracer, proc, 5_000);
+  for (const event of events.filter((event) => event.type !== "session.idle")) tracer.handle(event);
+
+  proc.emit("SIGTERM");
+  await settle();
+  assert.deepEqual(proc.kills, []);
+  releaseWrite();
+  await settle();
+
+  assert.ok(recorded.length > 0 && recorded.every((outcome) => outcome === "sent"));
+  assert.deepEqual(proc.kills, [[4242, "SIGTERM"]]);
+});
+
 test("a hung export doesn't hold SIGTERM past its bound", async () => {
   const tracer = createTracer({ tracing: { endpoint: ENDPOINT, headers: {} } }, tokenSource(["t"]), {
     sessionId: "s",
