@@ -859,8 +859,11 @@ class TestEarlierBuildsTracing:
         assert desktop_setup.revert_copilot_app() == "removed"
         assert (home / ".profile").read_text() == ""
 
-    def test_a_users_own_headers_provider_stays(self):
-        own = {"path": "/usr/bin/my-headers", "args": []}
+    @pytest.mark.parametrize(
+        "args", [[], ["--format", "otel-headers"]], ids=["no-args", "otel-headers-not-a-command"]
+    )
+    def test_a_users_own_headers_provider_stays(self, args):
+        own = {"path": "/usr/bin/my-headers", "args": args}
         _settings_path().parent.mkdir(parents=True, exist_ok=True)
         _settings_path().write_text(json.dumps({"telemetry": {"headersProvider": own}}))
 

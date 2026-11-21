@@ -1,7 +1,6 @@
-"""Removes what earlier builds wrote to have the GitHub Copilot app's runtime export its own
-traces: a guarded block in login-shell profiles, Windows user environment variables, and
-``telemetry.headersProvider`` in Copilot's settings. ug's extension now builds the app's spans
-itself, so none of them is written any more."""
+"""Removes ug's setup for the GitHub Copilot app runtime's own trace export: a guarded block in
+login-shell profiles, Windows user environment variables, and ``telemetry.headersProvider`` in
+Copilot's settings."""
 
 from __future__ import annotations
 
