@@ -14,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from ucode import custom_oauth, gateway_proxy, managed_files
-from ucode.agents import LaunchOptions, codex
+from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
 from ucode.telemetry import client_platform
@@ -2424,6 +2424,45 @@ class TestCodexManagedConfig:
         codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
 
         assert json.loads(catalog_path.read_text()) == self.CATALOG
+
+    def test_configure_refreshes_same_slug_managed_catalog_and_preserves_mcp(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        previous = {
+            "models": [
+                {
+                    "slug": "gpt-5",
+                    "visibility": "list",
+                    "multi_agent_tools_in_code_mode": False,
+                }
+            ]
+        }
+        prepared = codex_catalog.build_codex_catalog(
+            [{"slug": "gpt-5", "display_name": "GPT 5", "visibility": "list"}], ["gpt-5"]
+        )
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        catalog_path.write_text(json.dumps(previous), encoding="utf-8")
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(catalog_path))}\n"
+            '\n[custom]\nkeep = "value"\n'
+            '\n[mcp_servers.admin]\nurl = "https://admin.example/mcp"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: prepared)
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+        monkeypatch.setattr(codex, "_sync_desktop_relay", lambda *a, **kw: False)
+        monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a, **kw: False)
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert json.loads(catalog_path.read_text()) == prepared
+        managed = read_toml_safe(managed_path)
+        assert managed["model_catalog_json"] == str(catalog_path)
+        assert managed["custom"] == {"keep": "value"}
+        assert managed["mcp_servers"]["admin"] == {"url": "https://admin.example/mcp"}
 
     def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

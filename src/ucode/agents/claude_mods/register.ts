@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand, startStatusBandTurn } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
+import { routeAgentStream, endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   MODEL_SET_PREFIX,
@@ -322,6 +322,29 @@ export function register(on: On, options: PluginOptions): void {
   }
 
   on('session.start', async ($, e, next) => {
+    routedDisplays.records.clear();
+    try {
+      const session_id = await $.session.id();
+      routedDisplays.sessionId = session_id;
+      const root = await $.env.get('UCODE_AGENT_LABELS_DIR');
+      // Only smart-routed launches save display files.
+      routedDisplays.root = root;
+      const directory = `${root}/${encodeURIComponent(session_id)}`;
+      if (root && await $.fs.exists(directory)) for (const entry of await $.fs.list(directory)) {
+        if (entry.kind !== 'file' || entry.isLink || !entry.name.startsWith('agent-') || !entry.name.endsWith('.json')) continue;
+        try {
+          const saved = savedRoutedDisplay(JSON.parse(await $.fs.read(`${directory}/${entry.name}`)), session_id);
+          if (!saved || entry.name !== `agent-${encodeURIComponent(saved.agent_id)}.json`) continue;
+          routedDisplays.records.set(saved.agent_id, saved);
+          await $.fs.write(`${$.plugin.root}/agent-names/${entry.name}`, JSON.stringify(saved));
+        } catch {
+          $.ui.log('Could not restore a subagent display label; native labels remain where unavailable.');
+        }
+      }
+    } catch {
+      $.ui.log('Could not restore subagent display labels; native labels remain where unavailable.');
+    }
+    $.ui.invalidate('ui.render');
     sessionActive = true;
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
@@ -425,7 +448,20 @@ export function register(on: On, options: PluginOptions): void {
     const model = routedModels.model(e.agentId)
       ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined)
       ?? (auto ? autoTarget(auto, e.model) : undefined);
-    return yield* next(model ? {...e, model} : e);
+    // The stream router takes the few calls it needs, as the validator follows `$` no further.
+    const routing = {
+      session: {id: () => $.session.id(), model: () => $.session.model()},
+      // A server-side auto-mode verdict covers the call as the model wrote it.
+      serverReview: async () => await $.env.get('CLAUDE_CODE_AUTO_MODE_SERVER') === '1',
+      routingEnabled: async () => isRoutingEnabled({
+        ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
+        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+      }),
+      process: {run: (command: readonly string[], init: {stdin: string; timeoutMs: number}) => $.process.run(command, init)},
+      clock: {now: () => $.clock.now(), every: (ms: number, tick: () => void) => $.clock.every(ms, tick)},
+      ui: {invalidate: (name: 'ui.render') => $.ui.invalidate(name), log: (text: string) => $.ui.log(text)},
+    };
+    return yield* routeAgentStream(routing, e, next(model ? {...e, model} : e));
   });
 
   if (auto) {
@@ -896,7 +932,7 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
-  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
+  // External integrations match the "smart-router" command name exactly.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
     try {
@@ -949,7 +985,7 @@ type Entry = {
   usage: Totals;
 };
 // The pricer's segment: a saving, or a cost increase when routing chose pricier models.
-type Estimate = { saved: boolean; amount: string; percent: string };
+type Estimate = { saved: boolean; amount: string; percent: string; expiresAt: number };
 
 const num = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -1106,16 +1142,39 @@ async function savingsPromptSubmit($: EngineInterface, e: any): Promise<void> {
   } catch {}
 }
 
-function estimateOf(value: any): Estimate | null {
+async function savingsNow($: EngineInterface): Promise<number | undefined> {
+  try {
+    const current = await $.clock.now();
+    return Number.isFinite(current) ? current : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function estimateOf(output: any, startedAt: number | undefined): Estimate | null {
+  const value = output?.savings;
+  const validForMs = num(output?.valid_for_ms);
+  if (startedAt === undefined || validForMs <= 0) return null;
   if (!value || typeof value !== 'object' || typeof value.saved !== 'boolean') return null;
   const amount = str(value.amount);
   const percent = str(value.percent);
-  return amount && percent ? { saved: value.saved, amount, percent } : null;
+  const expiresAt = startedAt + validForMs;
+  return amount && percent && Number.isFinite(expiresAt)
+    ? { saved: value.saved, amount, percent, expiresAt } : null;
+}
+
+async function expireEstimate($: EngineInterface): Promise<void> {
+  const current = estimate;
+  if (current === null) return;
+  const now = await savingsNow($);
+  if (estimate === current && (now === undefined || now >= current.expiresAt)) setEstimate($, null);
 }
 
 async function writeAndPrice($: any): Promise<void> {
   dirty = false;
   try {
+    // Starting before the subprocess makes its remaining lifetime conservative.
+    const startedAt = await savingsNow($);
     const run = await $.process.run([...pricer, '--usage', usagePath, '--write-usage'], {
       timeoutMs: PRICER_TIMEOUT_MS,
       stdin: JSON.stringify({
@@ -1131,7 +1190,9 @@ async function writeAndPrice($: any): Promise<void> {
     });
     if (run?.exitCode !== 0) throw new Error('Could not persist savings usage.');
     const out = JSON.parse(String(run.stdout ?? '').trim().split('\n').pop() ?? '');
-    setEstimate($, incompleteUsage ? null : estimateOf(out?.savings));
+    const next = estimateOf(out, startedAt);
+    const now = next === null ? undefined : await savingsNow($);
+    setEstimate($, !incompleteUsage && next !== null && now !== undefined && now < next.expiresAt ? next : null);
   } catch (error) {
     // Retry at the next turn.complete rather than pricing a file that is not there.
     dirty = true;
@@ -1147,6 +1208,7 @@ function markUsageIncomplete($: EngineInterface): void {
 }
 
 function setEstimate($: EngineInterface, next: Estimate | null): void {
+  if (next === null) stopSavingsRefresh();
   if (JSON.stringify(next) !== JSON.stringify(estimate)) {
     estimate = next;
     // Claude Code only redraws the band when its props change, not when module state does.
@@ -1220,13 +1282,15 @@ function registerSavings(on: On, options: PluginOptions): void {
       savingsShown = false;
       return next(e);
     }
+    await expireEstimate($);
     savingsActive = await readSavingsState($);
-    // Only an existing estimate needs redraws for file-based off/on toggles.
+    // Only an existing estimate needs refreshes for expiry and file-based off/on toggles.
     if (!sessionActive || estimate === null) {
       stopSavingsRefresh();
     } else if (!savingsRefresh) {
       try {
         savingsRefresh = $.clock.every(1000, async () => {
+          await expireEstimate($);
           if (!sessionActive || estimate === null) {
             stopSavingsRefresh();
             return;

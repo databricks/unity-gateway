@@ -86,10 +86,21 @@ def cost_more(amount: str, percent: str) -> dict:
     return {"saved": False, "amount": amount, "percent": percent}
 
 
+def decoded_savings(line: str | bytes) -> dict | None:
+    output = json.loads(line)
+    if output["savings"] is None:
+        assert output == {"savings": None}
+    else:
+        assert set(output) == {"savings", "valid_for_ms"}
+        assert type(output["valid_for_ms"]) is int
+        assert 0 < output["valid_for_ms"] <= 24 * 60 * 60 * 1000
+    return output["savings"]
+
+
 def priced(usage: Path, price_cache: Path, *, first_prompt: bool = False) -> dict | None:
     line = savings.usage_output(usage, price_cache=price_cache, baseline_session_start=first_prompt)
     assert "\n" not in line
-    return json.loads(line)["savings"]
+    return decoded_savings(line)
 
 
 class TestUsageSavings:
@@ -279,9 +290,11 @@ def test_unrouted_children_add_cost_without_attributed_savings(tmp_path, price_c
         ),
     ]
     usage = write_usage(tmp_path, entries)
-    assert savings.usage_savings(
+    computed = savings.usage_savings(
         usage, price_cache=price_cache, baseline_session_start=first_prompt
-    ) == (Decimal("0.183"), Decimal("0.50205"))
+    )
+    assert computed is not None
+    assert computed[:2] == (Decimal("0.183"), Decimal("0.50205"))
     assert priced(usage, price_cache, first_prompt=first_prompt) == saved("$0.18", "36%")
 
 
@@ -374,7 +387,7 @@ class TestPricerCommand:
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.count(b"\n") == 1
-        assert json.loads(result.stdout.decode("utf-8")) == {"savings": saved("$0.18", "60%")}
+        assert decoded_savings(result.stdout.decode("utf-8")) == saved("$0.18", "60%")
         if snapshot is not None:
             assert json.loads(usage.read_bytes()) == json.loads(snapshot)
 
@@ -417,7 +430,7 @@ class TestPricerCommand:
             previous = usage.read_bytes()
             result = self.run(price_cache, usage, controls=controls, snapshot=snapshot)
             assert result.returncode == (1 if persist and expected is None else 0), result.stderr
-            assert json.loads(result.stdout) == {"savings": expected}
+            assert decoded_savings(result.stdout) == expected
             if snapshot is not None:
                 if expected is None:
                     assert usage.read_bytes() == previous
@@ -427,5 +440,38 @@ class TestPricerCommand:
         controls.write_text("invalid JSON")
         fallback = self.run(price_cache, usage, controls=controls)
         assert fallback.returncode == 0, fallback.stderr
-        assert json.loads(fallback.stdout) == {"savings": saved("$0.18", "60%")}
+        assert decoded_savings(fallback.stdout) == saved("$0.18", "60%")
         assert fallback.stderr == b""
+
+
+@pytest.mark.parametrize("earlier_model", [OPUS_ID, SONNET_ID])
+def test_estimate_validity_uses_only_the_models_it_prices(tmp_path, monkeypatch, earlier_model):
+    clock = [100.0]
+    monkeypatch.setattr(pricing.time, "time", lambda: clock[0])
+    cache = tmp_path / "prices.json"
+    pricing.write_price_cache(cache, {"unused-model": PRICES[OPUS_ID]})
+    clock[0] = 200.0
+    pricing.write_price_cache(cache, {earlier_model: PRICES[earlier_model]})
+    clock[0] = 300.0
+    pricing.write_price_cache(
+        cache, {key: value for key, value in PRICES.items() if key != earlier_model}
+    )
+    usage = write_usage(tmp_path, [entry("child", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+    original = usage.read_bytes()
+
+    def output():
+        return json.loads(
+            savings.usage_output(usage, price_cache=cache, baseline_session_start=False)
+        )
+
+    assert output() == {"savings": saved("$0.18", "60%"), "valid_for_ms": 86_300_000}
+    clock[0] = 200.0 + 24 * 60 * 60 - 1
+    assert output() == {"savings": saved("$0.18", "60%"), "valid_for_ms": 1000}
+    clock[0] += 1
+    assert output() == {"savings": None}
+    assert usage.read_bytes() == original
+
+    clock[0] += 1
+    pricing.write_price_cache(cache, {earlier_model: PRICES[earlier_model]})
+    assert output() == {"savings": saved("$0.18", "60%"), "valid_for_ms": 99_000}
+    assert usage.read_bytes() == original

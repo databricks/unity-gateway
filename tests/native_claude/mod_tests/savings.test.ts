@@ -66,7 +66,7 @@ async function savingsRow($: any, on: On, incompleteUsage = false, legacyChild =
     priceBarrier: null as Promise<void> | null,
     stepBarrier: null as Promise<void> | null,
     stepStarted: null as (() => void) | null,
-    controlReads: 0, showEstimate: true,
+    controlReads: 0, showEstimate: true, validForMs: 24 * 60 * 60 * 1000,
     routeModel: null as string | null, routeExitCode: 0,
     stepError: null as Error | null, emitPartial: false, responseAnswer: 'done',
   };
@@ -113,6 +113,7 @@ async function savingsRow($: any, on: On, incompleteUsage = false, legacyChild =
     if (state.priceBarrier) await state.priceBarrier;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       savings: state.showEstimate ? { saved: true, amount: '$0.18', percent: '60%' } : null,
+      valid_for_ms: state.validForMs,
     }) } };
   });
   on('session.start', () => ({ cwd: '/session' }));
@@ -146,7 +147,7 @@ async function spawnChild($: any, id: string, parent: string, model?: string) {
   });
 }
 
-test('saved off/on controls hide and restore a mounted savings row', { options }, async ($, on) => {
+test('saved off/on controls restore a mounted savings row only while its rates are valid', { options }, async ($, on) => {
   const { state, clock, row } = await savingsRow($, on);
   state.controls = { ENABLE_SMART_ROUTING_SAVINGS: '0' };
   await clock.advance(1000);
@@ -154,6 +155,46 @@ test('saved off/on controls hide and restore a mounted savings row', { options }
   state.controls = {};
   await clock.advance(1000);
   expect(JSON.stringify(await row.drawn())).toContain('$0.18');
+
+  state.validForMs = 1000;
+  await $.turn.step({ turnId: 'expiring', index: 0, messageCount: 1, model: 'claude-opus-4-8' }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(JSON.stringify(await row.drawn())).toContain('$0.18');
+  const usage = JSON.stringify(state.usage);
+  const prices = state.prices;
+  await clock.advance(2000);
+  expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
+  expect(JSON.stringify(state.usage)).toBe(usage);
+  expect(state.prices).toBe(prices);
+  const reads = state.controlReads;
+  await clock.advance(3000);
+  expect(state.controlReads).toBe(reads);
+
+  state.validForMs = 10000;
+  await $.turn.step({ turnId: 'fresh', index: 0, messageCount: 1, model: 'claude-opus-4-8' }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(JSON.stringify(await row.drawn())).toContain('$0.18');
+  expect(state.usage.entries.find((entry: any) => entry.agent === 'main').usage.input_tokens).toBe(2);
+});
+
+test('a delayed price result cannot display an estimate past its validity', { options }, async ($, on) => {
+  const { state, clock, row } = await savingsRow($, on);
+  state.validForMs = 1000;
+  let release!: () => void;
+  state.priceBarrier = new Promise<void>(resolve => { release = resolve; });
+  await $.turn.step({ turnId: 'delayed', index: 0, messageCount: 1, model: 'claude-opus-4-8' }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.writes).toBe(2);
+  const usage = JSON.stringify(state.usage);
+  await clock.advance(2000);
+  release();
+  state.priceBarrier = null;
+  await clock.advance(1);
+  expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
+  expect(JSON.stringify(state.usage)).toBe(usage);
 });
 
 test('a request model override keeps the selected main model and child baseline', { options }, async ($, on) => {

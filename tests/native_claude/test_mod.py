@@ -132,39 +132,10 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         assert not (a.plugin / "hooks/launch.json").exists()
 
 
-def test_savings_mod_records_the_start_model(native_binary, tmp_path):
-    root = tmp_path / "session"
-    options = _savings_options(root)
-    usage = Path(options["savings_usage"])
-    with Session(
-        native_binary, root, {"ENABLE_SMART_ROUTING_SAVINGS": "1"}, options=options
-    ) as session:
-        session.observe()
-        # The mod writes its sums off the session.start critical path.
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                recorded = json.loads(usage.read_text(encoding="utf-8"))
-                break
-            except (OSError, ValueError):
-                assert time.monotonic() < deadline, "the savings mod never wrote its usage file"
-                time.sleep(0.1)
-
-    assert recorded == {
-        "version": 1,
-        "start_model": "claude-sonnet-4-6",
-        "main_model": None,
-        "first_main_model": None,
-        "first_prompt_seen": False,
-        "user_switched": False,
-        "incomplete_usage": False,
-        "entries": [],
-    }
-
-
 @pytest.mark.parametrize(
     ("alias", "family", "model"),
     [
+        ("claude-sonnet-4-6", None, "claude-sonnet-4-6"),
         ("sonnet", "SONNET", "system.ai.claude-sonnet-4-6"),
         ("opus[1m]", "OPUS", "system.ai.claude-opus-4-8"),
     ],
@@ -177,7 +148,7 @@ def test_savings_mod_resolves_the_starting_alias(native_binary, tmp_path, alias,
         root,
         {
             "ENABLE_SMART_ROUTING_SAVINGS": "1",
-            f"ANTHROPIC_DEFAULT_{family}_MODEL": model,
+            **({f"ANTHROPIC_DEFAULT_{family}_MODEL": model} if family is not None else {}),
         },
         model=alias,
         options=options,
@@ -188,6 +159,16 @@ def test_savings_mod_resolves_the_starting_alias(native_binary, tmp_path, alias,
     # Claude 2.1.290 retains the context selector; newer builds omit it.
     expected_models = (model, model + "[1m]") if alias.endswith("[1m]") else (model,)
     assert recorded["start_model"] in expected_models
+    assert recorded == {
+        "version": 1,
+        "start_model": recorded["start_model"],
+        "main_model": None,
+        "first_main_model": None,
+        "first_prompt_seen": False,
+        "user_switched": False,
+        "incomplete_usage": False,
+        "entries": [],
+    }
 
 
 @pytest.mark.parametrize("routed", [False, True])
