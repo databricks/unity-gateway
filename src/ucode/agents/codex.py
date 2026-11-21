@@ -149,9 +149,6 @@ MINIMUM_CODEX_VERSION = (0, 156, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
 MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 171, 0)
 MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.171.0"
-# The orchestration runtime's own floor is lower than smart routing's global one.
-CODEX_ORCHESTRATOR_RUNTIME_MINIMUM_VERSION = (0, 160, 0)
-CODEX_ORCHESTRATOR_RUNTIME_MINIMUM_VERSION_TEXT = "0.160.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -187,11 +184,6 @@ LEGACY_MANAGED_KEYS: list[list[str]] = [
 
 
 def parse_version(value: str) -> tuple[int, int, int] | None:
-    """The (major, minor, patch) triple in a tool version string, or None."""
-    return _parse_version(value)
-
-
-def _parse_version(value: str) -> tuple[int, int, int] | None:
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", value)
     if not match:
         return None
@@ -200,7 +192,7 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 
 def _smart_routing_version_supported(version: str) -> bool:
-    parsed = _parse_version(version)
+    parsed = parse_version(version)
     return parsed is not None and (
         parsed > MINIMUM_SMART_ROUTING_CODEX_VERSION
         or (parsed == MINIMUM_SMART_ROUTING_CODEX_VERSION and "-" not in version.partition("+")[0])
@@ -209,12 +201,12 @@ def _smart_routing_version_supported(version: str) -> bool:
 
 def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
-    parsed = _parse_version(version)
+    parsed = parse_version(version)
     if smart_routing_enabled:
         if parsed is None:
             # The short telemetry probe can time out on a cold npm wrapper.
             version = agent_version(SPEC["binary"], timeout=10)
-            parsed = _parse_version(version)
+            parsed = parse_version(version)
         if parsed is None:
             raise RuntimeError(
                 "Could not determine the installed Codex version. "
@@ -243,7 +235,7 @@ def _use_legacy_layout() -> bool:
     is unknown we keep the new layout (matches the prior "unknown does not
     block" semantic).
     """
-    parsed = _parse_version(agent_version(SPEC["binary"]))
+    parsed = parse_version(agent_version(SPEC["binary"]))
     if parsed is None:
         return False
     return parsed < LEGACY_LAYOUT_CODEX_VERSION
@@ -1976,7 +1968,7 @@ def _app_server_needs_newer_codex(tool_args: list[str]) -> bool:
     if not is_codex_app_server_launch(tool_args):
         return False
     version = agent_version(SPEC["binary"])
-    return _parse_version(version) is not None and not _smart_routing_version_supported(version)
+    return parse_version(version) is not None and not _smart_routing_version_supported(version)
 
 
 def launch(

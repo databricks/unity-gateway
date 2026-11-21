@@ -1425,8 +1425,8 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 648-case Cartesian oracle over the
-three legacy routing flags and the runtime flag (`None`, `0`, `1`) and eight selector forms
+The unit/component `../test_smart_routing_config.py` includes a 216-case Cartesian oracle over the
+three legacy routing flags (`None`, `0`, `1`) and eight selector forms
 (`None` and all seven presets, including the customer first-prompt-and-subagent mode). It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
