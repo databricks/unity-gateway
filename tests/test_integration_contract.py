@@ -1677,7 +1677,11 @@ CI_SELECT = runpy.run_path(str(Path(__file__).parent.parent / "scripts/ci_select
     [
         (["docs/smart-routing.md", "README.md", "tests/README.md"], False),
         (["tests/test_cli.py", "tests/copilot_app_rows.test.mjs", "hk.pkl"], False),
-        (["tests/integration/README.md", "AGENTS.md"], False),
+        (["tests/integration/README.md", "AGENTS.md", "docs/guides/setup.md"], False),
+        # `*` stays within one directory, so new helpers below tests/ rerun everything.
+        (["tests/test_helpers/live_driver.py"], True),
+        (["tests/drivers/live.mjs"], True),
+        (["tests/integration/notes/plan.md"], True),
         # Runtime code, packaged skills and the live suites' own inputs rerun everything.
         (["docs/a.md", "src/ucode/cli.py"], True),
         (["skills/smart-router/SKILL.md"], True),
@@ -1731,7 +1735,7 @@ def test_merge_queue_runs_every_live_suite():
     assert 'if [ "$EVENT_NAME" = pull_request ]; then' in selection
     assert 'echo "live=true" >> "$GITHUB_OUTPUT"' in selection
     for job in ("e2e-shards", "integration"):
-        body = ci.split(f"\n  {job}:\n", 1)[1].split("\n  e2e:\n", 1)[0]
+        body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
         assert "needs.changes.outputs.live == 'true'" in body
         assert "github.event_name != 'merge_group'" not in body
 

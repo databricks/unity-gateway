@@ -10,11 +10,12 @@ import fnmatch
 import subprocess
 import sys
 
-# Paths whose changes no live journey can observe. Keep this list short and literal.
+# Paths whose changes no live journey can observe. Keep this list short and literal. A trailing
+# `/**` covers a whole tree; every other `*` matches within one path segment only.
 CANNOT_REACH_LIVE = (
-    "docs/*",
-    "specs/*",
-    "bench/*",
+    "docs/**",
+    "specs/**",
+    "bench/**",
     "LICENSE.md",
     "NOTICE.md",
     "README.md",
@@ -36,9 +37,15 @@ def reaches_live(paths: list[str]) -> bool:
     for path in paths:
         if path in LIVE_EXCEPTIONS:
             return True
-        if not any(fnmatch.fnmatchcase(path, pattern) for pattern in CANNOT_REACH_LIVE):
+        if not any(_matches(path, pattern) for pattern in CANNOT_REACH_LIVE):
             return True
     return not paths
+
+
+def _matches(path: str, pattern: str) -> bool:
+    if pattern.endswith("/**"):
+        return path.startswith(pattern[:-2])
+    return path.count("/") == pattern.count("/") and fnmatch.fnmatchcase(path, pattern)
 
 
 def main() -> None:

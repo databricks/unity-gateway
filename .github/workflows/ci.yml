@@ -169,6 +169,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -o pipefail
           if [ "$EVENT_NAME" = pull_request ]; then
             python3 scripts/ci_select.py "$BASE_SHA" "$HEAD_SHA" | tee selection.txt
             tail -n 1 selection.txt >> "$GITHUB_OUTPUT"
