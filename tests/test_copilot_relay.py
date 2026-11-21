@@ -232,6 +232,34 @@ class TestGatewayRoutes:
         assert "session-id" not in direct["headers"]
         assert "x-team" not in direct["headers"]
 
+    def test_vscode_runtime_admin_session_and_user_agent_win_over_the_call_labels(
+        self, gateway, github, monkeypatch
+    ):
+        from ucode.agents import copilot
+
+        monkeypatch.setattr(copilot, "ug_version", lambda: "0.9.0")
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        runtime = {
+            "User-Agent": "copilot/1.0.111-0 (linux unknown) term/unknown client/vscode",
+            "x-client-session-id": "0b6f3a52-2c5e-4d1e-9a51-1f2b8e4c7d90",
+        }
+        admin = {
+            "copilot_http_headers": {"session-id": "admin-session", "User-Agent": "admin-agent"}
+        }
+        with _relay(
+            gateway,
+            github,
+            added_headers=copilot.proxy_headers(admin, user_agent=False),
+            request_headers_adder=copilot.seat_runtime_headers(copilot.managed_http_headers(admin)),
+        ) as (http, _port, _direct):
+            http.post(f"/{SECRET}/v1/messages", headers=_auth(**runtime), content=b"{}")
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["session-id"] == "admin-session"
+        assert sent["headers"]["user-agent"] == "admin-agent"
+        assert sent["names"].count("session-id") == 1
+        assert sent["names"].count("user-agent") == 1
+
     def test_a_dead_databricks_login_answers_with_the_sign_in_hint(self, gateway, github):
         gateway._status = 401
 

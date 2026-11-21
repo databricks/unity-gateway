@@ -39,7 +39,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -1306,17 +1306,22 @@ def seat_runtime_user_agent(runtime_user_agent: str | None) -> str:
     return ucode_user_agent(ug_version(), *tokens)
 
 
-def seat_runtime_headers() -> Callable[[Any, bytes | None], dict[str, str]]:
+def seat_runtime_headers(
+    admin_headers: Collection[str] = (),
+) -> Callable[[Any, bytes | None], dict[str, str]]:
     """Headers for each call of VS Code's Copilot runtime on the seat relay. One runtime serves
-    every chat of a VS Code window, so the session id is each call's own chat session."""
+    every chat of a VS Code window, so the session id is each call's own chat session. Names in
+    ``admin_headers`` are left to the admin's headers, which win by name as in ``proxy_headers``."""
     subagents = subagent_headers()
+    admin = {name.casefold() for name in admin_headers}
 
     def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
         added = {"User-Agent": seat_runtime_user_agent(request_headers.get("User-Agent"))}
         session_id = client_session_id(request_headers)
         if session_id:
             added[SESSION_ID_HEADER] = session_id
-        return {**added, **subagents(request_headers, body)}
+        per_call = {**added, **subagents(request_headers, body)}
+        return {name: value for name, value in per_call.items() if name.casefold() not in admin}
 
     return headers
 
@@ -1513,7 +1518,7 @@ def run_seat_runtime(
         provider_service,
         headers=proxy_headers(state, user_agent=False),
         sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
-        request_headers_adder=seat_runtime_headers(),
+        request_headers_adder=seat_runtime_headers(managed_http_headers(state)),
     )
     try:
         env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
