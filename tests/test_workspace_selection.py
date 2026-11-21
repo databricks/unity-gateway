@@ -170,7 +170,7 @@ class TestHttpChokepoints:
             sent.append(request)
             return response
 
-        with patch.object(db_mod.urllib_request, "urlopen", side_effect=urlopen):
+        with patch.object(db_mod, "_http_open", side_effect=urlopen):
             result = db_mod._http_get_json(url, "tok")
         return result, sent[0]
 
@@ -185,9 +185,7 @@ class TestHttpChokepoints:
         url = f"{SHARED}/api/ai-gateway/v2/usage-analytics-dashboard"
         dashboard_url = f"{SHARED}/dashboardsv3/dashboard/published?o={WSID}"
         body = json.dumps({"dashboard_url": dashboard_url}).encode()
-        with patch.object(
-            db_mod.urllib_request, "urlopen", return_value=_Response(body, url, WSID)
-        ) as urlopen:
+        with patch.object(db_mod, "_http_open", return_value=_Response(body, url, WSID)) as urlopen:
             assert db_mod.get_usage_dashboard_url(SHARED, "tok") == dashboard_url
 
         request = urlopen.call_args.args[0]
@@ -227,7 +225,7 @@ class TestHelperArgv:
     def test_model_service_metadata_lookup(self, selected):
         url = f"{SHARED}/api/2.1/unity-catalog/model-services/main.team.opaque"
         with patch.object(
-            db_mod.urllib_request, "urlopen", return_value=_Response(b"{}", url, WSID)
+            db_mod, "_http_open", return_value=_Response(b"{}", url, WSID)
         ) as urlopen:
             assert db_mod.get_model_service("main.team.opaque", SHARED, "tok") == ({}, None)
 
