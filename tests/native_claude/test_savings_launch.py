@@ -232,16 +232,22 @@ def test_savings_launch_completes_a_turn_before_rates_arrive(native_binary, tmp_
         _recorded_usage(usage, 1, output_tokens=11)
         _assert_rates_request(transport)
 
+        released_at = time.time()
         transport.release.set()
         deadline = time.monotonic() + 10
         while not _cache_path(root).exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         cache = json.loads(_cache_path(root).read_text())
-        assert cache["version"] == 1
-        assert cache["models"] == {
+        assert cache["version"] == 2
+        assert {
+            model: {key: value for key, value in price.items() if key != "fetched_at"}
+            for model, price in cache["models"].items()
+        } == {
             model.removeprefix("system.ai."): {"input": "1", "output": "5"}
             for model in MODEL_SERVICES
         }
+        for price in cache["models"].values():
+            assert released_at <= price["fetched_at"] <= time.time()
         assert session.send("Reply with after rates.")["result"] == "after rates"
         recorded = _recorded_usage(usage, 1, output_tokens=28)
         assert recorded["entries"][0]["usage"]["input_tokens"] == 20

@@ -166,7 +166,7 @@ class TestPriceCache:
             path, {"system.ai.claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}, now=100.0
         )
 
-        cached = pricing.read_price_cache(path)
+        cached = pricing.read_price_cache(path, now=100.0)
 
         assert cached is not None
         assert cached == {"claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}
@@ -190,6 +190,34 @@ class TestPriceCache:
         path = tmp_path / "model-prices.json"
         path.write_text(content)
 
+        assert pricing.read_price_cache(path) is None
+
+    def test_expires_models_independently(self, tmp_path, monkeypatch):
+        path = tmp_path / "prices.json"
+        clock = [100.0]
+        monkeypatch.setattr(pricing.time, "time", lambda: clock[0])
+        pricing.write_price_cache(path, {"opus": OPUS})
+        clock[0] += 12 * 60 * 60
+        pricing.write_price_cache(path, {"sonnet": SONNET_4})
+
+        clock[0] = 100.0 + 24 * 60 * 60 - 1
+        assert pricing.read_price_cache(path) == {"opus": OPUS, "sonnet": SONNET_4}
+        clock[0] += 1
+        assert pricing.read_price_cache(path) == {"sonnet": SONNET_4}
+        clock[0] += 12 * 60 * 60
+        assert pricing.read_price_cache(path) is None
+
+    def test_does_not_migrate_legacy_cache_with_unknown_model_ages(self, tmp_path):
+        path = tmp_path / "prices.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "fetched_at": pricing.time.time(),
+                    "models": {"opus": {"input": "5"}},
+                }
+            )
+        )
         assert pricing.read_price_cache(path) is None
 
     def test_missing_cache_reads_as_absent(self, tmp_path):
