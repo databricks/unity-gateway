@@ -257,6 +257,9 @@ test('GPT model families and discovery aliases qualify without changing the outg
     'system.ai.gpt-5-6-sol', 'system.ai.gpt-6-2-astra',
     'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
     'anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol',
+    'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol',
+    'anthropic-aigw-C442A48-system.ai.databricks-gpt-5-5',
+    'anthropic-aigw-c442a48-gpt-5.4.1',
     'anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol',
     'anthropic-aigw-2b40afe0-system.ai.gpt-6-2-astra',
   ]) {
@@ -274,6 +277,9 @@ test('GPT model families and discovery aliases qualify without changing the outg
     'anthropic-aigw-77df06ea-system.ai.glm-5-3-flash',
     'xanthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
     'anthropic-aigw--system.ai.gpt-6-1-terra',
+    'anthropic-aigw-123456-system.ai.gpt-6-1-sol',
+    'anthropic-aigw-123456789-system.ai.gpt-6-1-sol',
+    'anthropic-aigw-zzzzzzz-system.ai.gpt-6-1-sol',
     'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[5m]',
     'prefix-anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
   ]) {

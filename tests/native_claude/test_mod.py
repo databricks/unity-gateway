@@ -1234,7 +1234,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
 
         # Live routed sessions carry deployment-qualified model IDs on the wire
         # (anthropic-aigw-<id>-system.ai.…); the router's choice must still qualify.
-        qualified_child = "anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol"
+        qualified_child = "anthropic-aigw-c442a48-system.ai.gpt-6-1-sol"
         qualified = run_case(
             "cache-boundary-qualified-child",
             {**active_env, "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},

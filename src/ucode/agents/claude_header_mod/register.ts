@@ -89,7 +89,7 @@ export function preserveGptCacheBoundary(path: string, body: string): string {
   if (!isRecord(payload) || 'cache_control' in payload || typeof payload.model !== 'string') return body;
   // Match UG's GPT model forms, including discovery aliases; gpt-oss uses a different provider.
   const model = payload.model.replace(/\[1m\]$/, '');
-  if (!/^(?:anthropic-aigw-[0-9a-fA-F]{8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$/.test(model)) return body;
+  if (!/^(?:anthropic-aigw-[0-9a-fA-F]{7,8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$/.test(model)) return body;
   if (!Array.isArray(payload.messages) || !payload.messages.length) return body;
   const latest = payload.messages[payload.messages.length - 1];
   if (!isRecord(latest) || (latest.role !== 'user' && latest.role !== 'system') ||
