@@ -7289,7 +7289,12 @@ class TestConfigureScopeFlags:
                 assert mock_cfg.call_args.kwargs[key] == value
         assert ("writes only machine-wide settings" in output) == (extra[1] != "codex")
 
-    def test_global_flag_is_a_noop_when_managed_config_enables_only_per_user_agents(self):
+    @pytest.mark.parametrize(
+        ("enabled", "installs"), [(["gemini"], []), (["gemini", "copilot"], ["copilot"])]
+    )
+    def test_global_flag_writes_no_settings_when_managed_config_enables_only_per_user_agents(
+        self, enabled, installs
+    ):
         managed_files.set_machine_wide_only(True)
         with (
             patch(
@@ -7298,7 +7303,8 @@ class TestConfigureScopeFlags:
             ),
             patch("ucode.cli.save_state"),
             patch("ucode.cli.refresh_managed_config", return_value=({"enabled": True}, None)),
-            patch("ucode.cli.managed_enabled_tools", return_value=["gemini"]),
+            patch("ucode.cli.managed_enabled_tools", return_value=enabled),
+            patch("ucode.cli.install_tool_binary", return_value=True) as mock_install,
             patch("ucode.cli.configure_selected_tools") as mock_selected,
             patch("ucode.cli._configure_managed_mcp_servers") as mock_mcp,
         ):
@@ -7308,6 +7314,8 @@ class TestConfigureScopeFlags:
                 )
                 == 0
             )
+        # Copilot's binary is shared by every user, so --global installs it; it writes no settings.
+        assert [c.args[0] for c in mock_install.call_args_list] == installs
         mock_selected.assert_not_called()
         mock_mcp.assert_not_called()
 

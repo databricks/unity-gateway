@@ -35,12 +35,19 @@ def _wire(config: dict) -> dict:
     return config
 
 
-def _raw_config(*, claude_config: dict | None = None, codex_config: dict | None = None) -> dict:
+def _raw_config(
+    *,
+    claude_config: dict | None = None,
+    codex_config: dict | None = None,
+    copilot_config: dict | None = None,
+) -> dict:
     agents = []
     if claude_config is not None:
         agents.append({"agent": "CODING_AGENT_CLAUDE_CODE", "config": _wire(claude_config)})
     if codex_config is not None:
         agents.append({"agent": "CODING_AGENT_CODEX", "config": _wire(codex_config)})
+    if copilot_config is not None:
+        agents.append({"agent": "CODING_AGENT_GITHUB_COPILOT", "config": _wire(copilot_config)})
     return {"default_agent": "CODING_AGENT_CLAUDE_CODE", "enabled_agents": agents}
 
 
@@ -824,8 +831,36 @@ class TestGlobalCli:
         assert result.exit_code == 0, result.output
         assert installed == [("claude", {"strict": False})]
 
+    @pytest.mark.parametrize("agents", [["--agents", "claude,codex"], ["--agent", "claude"], []])
+    def test_installs_an_enabled_copilot_cli_for_every_user(
+        self, monkeypatch, writes, global_cli, installed, agents
+    ):
+        raw = _raw_config(claude_config={}, copilot_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure(*agents)
+        assert result.exit_code == 0, result.output
+        assert installed == [("claude", {"strict": False}), ("copilot", {"strict": False})]
+
+    def test_a_failed_copilot_install_warns_and_still_writes_the_files(
+        self, monkeypatch, writes, global_cli
+    ):
+        written, _ = writes
+        raw = _raw_config(claude_config={}, copilot_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+
+        def install(tool, **kwargs):
+            if tool == "copilot":
+                raise RuntimeError("GitHub Copilot CLI 1.0.1 is too old.")
+            return True
+
+        monkeypatch.setattr(cli_mod, "install_tool_binary", install)
+        result = _configure("--agents", "claude,codex")
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot CLI 1.0.1 is too old." in result.output
+        assert claude.managed_settings_path() in written
+
     def test_dry_run_installs_nothing(self, monkeypatch, writes, global_cli, installed):
-        raw = _raw_config(claude_config={}, codex_config={})
+        raw = _raw_config(claude_config={}, codex_config={}, copilot_config={})
         monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
         result = _configure("--dry-run", "--agents", "claude,codex")
         assert result.exit_code == 0, result.output
