@@ -966,6 +966,70 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
+  # The MDM scripts install the checkout and the latest Claude Code and Codex, so mdm-provision
+  # skips runs that pin ug, an agent or a dependency. Decided once for the job and the cujs gate;
+  # the versions must match the workflow_dispatch defaults.
+  mdm-plan:
+    name: Plan MDM provisioning
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+    steps:
+      - id: plan
+        env:
+          RUN: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.codex_version == '' || inputs.codex_version == '0.156.0') && inputs.dependency == '' }}
+        run: echo "run=$RUN" >> "$GITHUB_OUTPUT"
+
+  # Creates a user and writes /etc and /usr/local, which hosted runners (ephemeral, passwordless
+  # sudo) allow. Each OS runs its own script from scripts/mdm/.
+  mdm-provision:
+    name: MDM provisioning · ${{ matrix.os == 'macos-15' && 'macOS' || 'Linux' }}
+    needs: mdm-plan
+    if: ${{ needs.mdm-plan.result == 'success' && needs.mdm-plan.outputs.run == 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+          enable-cache: ${{ inputs.ref == '' }}
+      - name: Provision as an admin, demote the user, launch Claude and Codex
+        shell: bash
+        env:
+          UG_MDM_E2E: '1'
+          UG_MDM_E2E_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+          UG_MDM_E2E_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+          UG_MDM_E2E_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+          UG_INSTALL_SPEC: ${{ github.workspace }}
+          UG_MDM_E2E_ARTIFACTS: ${{ runner.temp }}/mdm-provision
+        run: |
+          uv run --no-project --python 3.12 --default-index "$PACKAGE_INDEX" --with pytest==9.1.1 \
+            pytest -c tests/e2e_mdm/pytest.ini --confcutdir=tests/e2e_mdm --rootdir=. tests/e2e_mdm -v \
+            --junitxml="$UG_MDM_E2E_ARTIFACTS/junit.xml"
+      - name: Installed versions
+        if: ${{ !cancelled() }}
+        run: |
+          for tool in ug claude codex; do
+            printf '%s: ' "$tool"; /usr/local/bin/"$tool" --version 2>&1 || true
+          done
+      - name: Upload MDM provisioning evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: mdm-provision-${{ matrix.os }}
+          path: ${{ runner.temp }}/mdm-provision/
+          if-no-files-found: ignore
+
   dedicated-cuj-plan:
     name: Plan E2E CUJs
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -1051,20 +1115,23 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, mdm-plan, mdm-provision, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
+          # mdm-provision is skipped on pinned runs, which it doesn't test.
+          MDM_RUN: ${{ needs.mdm-plan.outputs.run }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
+          allowed = {} if os.environ.get("MDM_RUN") == "true" else {"mdm-provision": "skipped"}
           failed = [job for job, result in results.items()
-                    if result["result"] != "success"]
+                    if result["result"] != "success" and allowed.get(job) != result["result"]]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
           print("All integration jobs passed: " + ", ".join(results))

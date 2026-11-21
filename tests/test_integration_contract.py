@@ -683,6 +683,8 @@ SKIPPED_ON_FORK_PRS = {
     "managed-opencode",
     "codex-desktop-macos",
     "codex-desktop-windows",
+    "mdm-plan",
+    "mdm-provision",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -719,6 +721,48 @@ def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
         assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
             f"{name} runs on fork PRs, which get no secrets or OIDC token"
         )
+
+
+def test_mdm_plan_matches_the_dispatch_defaults():
+    jobs = _integration_jobs()
+    assert "needs: mdm-plan" in jobs["mdm-provision"]
+    assert (
+        "if: ${{ needs.mdm-plan.result == 'success' && needs.mdm-plan.outputs.run == 'true' }}"
+        in jobs["mdm-provision"]
+    )
+    plan = jobs["mdm-plan"]
+    defaults = re.findall(
+        r"(?m)^      (\w+_version):\n.*\n        default: (\S+)$", _workflow("integration.yml")
+    )
+    for name, default in defaults:
+        if f"inputs.{name}" in plan:
+            assert f"inputs.{name} == '{default}'" in plan, name
+    for name in ("ug_version", "claude_version", "codex_version"):
+        assert f"inputs.{name}" in plan
+
+
+def test_cujs_accepts_only_the_mdm_skip_on_pinned_runs():
+    jobs = _integration_jobs()
+    assert "MDM_RUN: ${{ needs.mdm-plan.outputs.run }}" in jobs["cujs"]
+    script = textwrap.dedent(
+        jobs["cujs"].split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+    )
+
+    def gate(mdm_run, results):
+        env = {
+            **os.environ,
+            "MDM_RUN": mdm_run,
+            "RESULTS": json.dumps({job: {"result": result} for job, result in results.items()}),
+        }
+        return subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, check=False
+        ).returncode
+
+    passed = {"smoke": "success", "mdm-plan": "success"}
+    assert gate("false", {**passed, "mdm-provision": "skipped"}) == 0
+    assert gate("true", {**passed, "mdm-provision": "skipped"}) != 0
+    assert gate("false", {**passed, "mdm-provision": "failure"}) != 0
+    assert gate("false", {**passed, "smoke": "skipped", "mdm-provision": "skipped"}) != 0
 
 
 MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
