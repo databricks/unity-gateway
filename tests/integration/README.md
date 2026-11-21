@@ -899,6 +899,8 @@ also waits a few seconds with no such notice, and holds again from when the sess
 can open the second editor after the first hold. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`). Playwright connects once the
 window's DevTools page target exists, and connects again if that connection misses the workbench.
+On Windows the window runs in a job object, so closing it ends every VS Code process, including
+ones whose parent already exited, before the bearer check reads the home.
 An answer without the file's value also keeps the tool results and the last response of its turn
 (`missed-answer-<model>.json`).
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
