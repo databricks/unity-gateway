@@ -102,7 +102,7 @@ jobs:
         run: |
           mapfile -t files < <(uv run --no-sync python -m tests.shard files "$UG_TEST_SHARD" | tr -d '\r')
           UG_TEST_SHARD_REPORT="$RUNNER_TEMP/shard-report.json" \
-            uv run --no-sync pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
+            uv run --no-sync pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml" --durations=0 --durations-min=0
       - &unit-report
         name: Upload this shard's timings
         if: ${{ github.event_name == 'push' }}
