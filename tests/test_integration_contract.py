@@ -1894,3 +1894,12 @@ def test_required_tests_requires_unit_shard_coverage(coverage):
         check=False,
     )
     assert (result.returncode == 0) is (coverage == "success"), result.stderr
+
+
+@pytest.mark.parametrize("job_name", ["codex-desktop-macos", "codex-desktop-windows"])
+def test_codex_desktop_lanes_start_after_the_managed_matrix(job_name):
+    # The managed service principal's Codex lanes share one model quota; 429s appeared only
+    # when ten or more of them overlapped, so each run keeps at most two in flight.
+    job = _integration_jobs()[job_name]
+    assert "\n    needs: managed\n" in job
+    assert "    if: ${{ !cancelled() && " in job
