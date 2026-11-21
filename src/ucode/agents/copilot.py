@@ -435,7 +435,12 @@ def model_labels(
 
 
 def provider_service_catalog(
-    state: dict, service_name: str, requested: str | None, *, tool: str = "copilot"
+    state: dict,
+    service_name: str,
+    requested: str | None,
+    *,
+    tool: str = "copilot",
+    agent: str | None = None,
 ) -> list[CopilotModel]:
     """The models of Model Provider Service ``service_name`` that this launch registers.
 
@@ -447,7 +452,7 @@ def provider_service_catalog(
     service, error = resolve_provider_service(tool, service_name, workspace, token)
     if error or service is None:
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
-    agent = "Copilot" if tool == "copilot" else "VS Code"
+    agent = agent or ("Copilot" if tool == "copilot" else "VS Code")
     provider_type = service["provider_type"]
     named = list(service.get("targets") or [])
     listed: list[str] = []
