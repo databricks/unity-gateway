@@ -499,7 +499,13 @@ def remove_headers_provider(settings_path: Path | None = None) -> bool:
     telemetry = settings.get(_TELEMETRY_KEY)
     provider = telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
     args = provider.get("args") if isinstance(provider, dict) else None
-    if not isinstance(telemetry, dict) or not isinstance(args, list) or "otel-headers" not in args:
+    # ug wrote ``<ug> otel-headers --host <workspace> ...``; a user's own helper stays.
+    if (
+        not isinstance(telemetry, dict)
+        or not isinstance(args, list)
+        or args[:1] != ["otel-headers"]
+        or "--host" not in args
+    ):
         return False
     del telemetry[_HEADERS_PROVIDER_KEY]
     if not telemetry:
