@@ -1164,6 +1164,10 @@ def json_response(payload):
     )
 
 
+RELAY_SECRET = "relay-test-secret"
+RELAY_SERVER = None
+
+
 @contextmanager
 def relay(respond, *, enabled=lambda: True):
     runtime = CodexRuntime(CODEX_SKILL, enabled=enabled)
@@ -1173,7 +1177,11 @@ def relay(respond, *, enabled=lambda: True):
         {"thread-id": "root"},
     )
     server, cache, original_client = gateway_proxy.start_codex_proxy(
-        "https://workspace.example/ai-gateway/codex/v1", lambda force: "test-token", runtime
+        "https://workspace.example/ai-gateway/codex/v1",
+        lambda force: "test-token",
+        runtime,
+        workspace="https://workspace.example",
+        session_secret=RELAY_SECRET,
     )
     client = httpx.Client(
         base_url="https://workspace.example/ai-gateway/codex/v1/",
@@ -1182,6 +1190,8 @@ def relay(respond, *, enabled=lambda: True):
     server.RequestHandlerClass.client = client
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
+    global RELAY_SERVER
+    RELAY_SERVER = server
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"
     finally:
@@ -1235,6 +1245,7 @@ def test_relay_injects_contract_and_preserves_routing_headers_and_usage():
             url + "/responses",
             json=child_request(),
             headers={
+                "X-UG-Session-Secret": RELAY_SECRET,
                 "thread-id": "child",
                 "x-codex-parent-thread-id": "root",
                 "Databricks-Smart-Router-Recipe": "existing-recipe",
@@ -1265,7 +1276,11 @@ def test_disabled_runtime_is_byte_transparent():
         )
 
     with relay(respond, enabled=lambda: False) as url:
-        response = httpx.post(url + "/responses", content=source)
+        response = httpx.post(
+            url + "/responses",
+            content=source,
+            headers={"X-UG-Session-Secret": RELAY_SECRET},
+        )
 
     assert received == [source]
     assert response.content == upstream
@@ -1280,6 +1295,7 @@ def test_upstream_errors_keep_status_and_body(status):
             url + "/responses",
             json=child_request(),
             headers={
+                "X-UG-Session-Secret": RELAY_SECRET,
                 "thread-id": "child",
                 "x-codex-parent-thread-id": "root",
             },
@@ -1307,18 +1323,73 @@ def test_oversized_adapted_json_is_rejected_before_reading_the_whole_stream(monk
         response = httpx.post(
             url + "/responses",
             json=child_request(),
-            headers={"thread-id": "child", "x-codex-parent-thread-id": "root"},
+            headers={
+                "X-UG-Session-Secret": RELAY_SECRET,
+                "thread-id": "child",
+                "x-codex-parent-thread-id": "root",
+            },
         )
     assert response.status_code == 502
     assert reads == ["first"]
 
 
-def test_invalid_active_request_does_not_reach_gateway():
+def test_relay_requires_the_launch_session_secret():
+    with relay(lambda request: pytest.fail("unauthenticated request reached the gateway")) as url:
+        missing = httpx.post(url + "/responses", content=b"{}")
+        wrong = httpx.post(
+            url + "/responses", content=b"{}", headers={"X-UG-Session-Secret": "wrong"}
+        )
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+
+
+def test_relay_serves_only_the_responses_endpoints():
+    with relay(lambda request: pytest.fail("disallowed path reached the gateway")) as url:
+        for method, path in (
+            ("POST", "/chat/completions"),
+            ("GET", "/responses"),
+            ("POST", "/../ai-gateway/mlflow/v1/"),
+            ("POST", "/responses/../../api/2.0/workspace/list"),
+        ):
+            response = httpx.request(
+                method,
+                url + path,
+                content=b"{}",
+                headers={"X-UG-Session-Secret": RELAY_SECRET},
+            )
+            assert response.status_code == 404, (method, path)
+
+
+def test_relay_metrics_use_the_workspace_key_and_codex_runtime_mode():
+    with relay(lambda request: json_response({"object": "response"})) as url:
+        response = httpx.post(
+            url + "/responses",
+            json={"model": "test-model", "input": []},
+            headers={"X-UG-Session-Secret": RELAY_SECRET},
+        )
+        assert response.status_code == 200
+    handler_class = RELAY_SERVER.RequestHandlerClass
+    assert handler_class.metrics_workspace == "https://workspace.example"
+    assert handler_class.metrics_proxy_mode == "codex_runtime"
+    assert handler_class.session_secret == RELAY_SECRET
+
+
+def test_unrecognized_active_request_is_forwarded_unchanged():
     received = []
-    with relay(lambda request: received.append(request)) as url:
-        response = httpx.post(url + "/responses", content=b"not json")
-    assert response.status_code == 400
-    assert received == []
+
+    def respond(request):
+        received.append(request)
+        return json_response({"object": "response"})
+
+    with relay(respond) as url:
+        response = httpx.post(
+            url + "/responses",
+            content=b"not json",
+            headers={"X-UG-Session-Secret": RELAY_SECRET},
+        )
+    assert response.status_code == 200
+    assert len(received) == 1
+    assert received[0].read() == b"not json"
 
 
 def test_compaction_keeps_the_gateway_route_and_omits_child_contract():
@@ -1335,6 +1406,7 @@ def test_compaction_keeps_the_gateway_route_and_omits_child_contract():
             url + "/responses/compact",
             json=body,
             headers={
+                "X-UG-Session-Secret": RELAY_SECRET,
                 "thread-id": "child",
                 "x-codex-parent-thread-id": "root",
             },
@@ -1375,6 +1447,7 @@ def test_stream_translates_namespace_and_keeps_usage_and_reasoning():
             url + "/responses",
             json=child_request(),
             headers={
+                "X-UG-Session-Secret": RELAY_SECRET,
                 "thread-id": "child",
                 "x-codex-parent-thread-id": "root",
             },
@@ -1399,6 +1472,7 @@ def test_truncated_stream_is_an_explicit_error():
             url + "/responses",
             json=child_request(),
             headers={
+                "X-UG-Session-Secret": RELAY_SECRET,
                 "thread-id": "child",
                 "x-codex-parent-thread-id": "root",
             },
@@ -1457,7 +1531,7 @@ def test_bound_wait_avoids_a_second_gateway_request(stream):
         first = httpx.post(
             url + "/responses",
             json={"model": "test-model", "input": [activation], "tools": tools, "stream": False},
-            headers={"thread-id": "root"},
+            headers={"X-UG-Session-Secret": RELAY_SECRET, "thread-id": "root"},
         )
         assert first.status_code == 200
         returned = first.json()["output"][0]
@@ -1478,7 +1552,7 @@ def test_bound_wait_avoids_a_second_gateway_request(stream):
                 "tools": tools,
                 "stream": stream,
             },
-            headers={"thread-id": "root"},
+            headers={"X-UG-Session-Secret": RELAY_SECRET, "thread-id": "root"},
         )
 
     assert second.status_code == 200

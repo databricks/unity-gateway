@@ -880,16 +880,46 @@ class _OtelProxyHandler(_ProxyHandler):
             super()._handle()
 
 
+# The launch-owned Codex relay serves only these Responses endpoints and accepts only
+# its launch's own session secret, so the workspace credential cannot be reached by
+# another local process, host, or workspace API.
+_CODEX_RELAY_PATH_PREFIXES = ("/responses", "/responses/compact")
+UG_SESSION_SECRET_HEADER = "X-UG-Session-Secret"
+
+
 class _CodexProxyHandler(_ProxyHandler):
     runtime: CodexRuntime
+    session_secret: str
     prepared: PreparedRequest | None = None
+
+    def _handle(self) -> None:
+        # Same boundary as the gateway-auth proxy: only the launch's own client holding
+        # the per-launch session secret may reach the relay, and only the two Responses
+        # endpoints are served, so the workspace credential never leaves for another
+        # local process, host, or workspace API.
+        if not hmac.compare_digest(
+            self.headers.get(UG_SESSION_SECRET_HEADER, ""), self.session_secret
+        ):
+            self._reject(401, "Missing or invalid Unity Gateway session credential.")
+            return
+        if self.command != "POST" or not _is_allowed_gateway_path(
+            self.path, _CODEX_RELAY_PATH_PREFIXES
+        ):
+            self._reject(404, "This path is not served by the Unity Gateway proxy.")
+            return
+        super()._handle()
+
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._safe_send_error(status, message)
 
     def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
         self.prepared = None
-        if self.command != "POST" or self.path.split("?", 1)[0] not in {
-            "/responses",
-            "/responses/compact",
-        }:
+        if self.command != "POST" or not _is_allowed_gateway_path(
+            self.path, _CODEX_RELAY_PATH_PREFIXES
+        ):
             return body, False
         self.prepared = self.runtime.prepare_request(body or b"", dict(self.headers.items()))
         local = self.prepared.synthetic_response
@@ -904,6 +934,8 @@ class _CodexProxyHandler(_ProxyHandler):
         self.end_headers()
         self.wfile.write(local)
         self.wfile.flush()
+        self._metric_bytes = len(local)
+        self._metric_labels["http_status_code"] = 200
         return self.prepared.body, True
 
     def _relay_response(
@@ -917,6 +949,7 @@ class _CodexProxyHandler(_ProxyHandler):
         if prepared is None or not prepared.adapt_response or not resp.is_success:
             super()._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
             return
+        started = started if started is not None else time.monotonic()
         content_type = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if content_type != "text/event-stream":
             try:
@@ -927,14 +960,19 @@ class _CodexProxyHandler(_ProxyHandler):
                     received.extend(chunk)
                 body = self.runtime.transform_json_response(bytes(received), prepared)
             except ValueError:
-                self._safe_send_error(502, "Codex runtime received an invalid Responses result")
+                self._metric_labels["http_status_code"] = 502
+                self._metric_error = "Codex runtime received an invalid Responses result"
+                self._safe_send_error(502, self._metric_error)
                 return
             self.send_response(resp.status_code)
             self._response_headers(resp)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            if body:
+                self._metric_first_byte(started)
             self.wfile.write(body)
             self.wfile.flush()
+            self._metric_bytes = len(body)
             return
         transformer = self.runtime.response_transformer(prepared)
         self.send_response(resp.status_code)
@@ -944,15 +982,23 @@ class _CodexProxyHandler(_ProxyHandler):
             # iter_bytes decodes Content-Encoding; transformed lengths and encodings are dropped.
             for chunk in resp.iter_bytes():
                 for frame in transformer.feed(chunk):
+                    if not self._metric_bytes:
+                        self._metric_first_byte(started)
+                    self._metric_bytes += len(frame)
                     self.wfile.write(frame)
                     self.wfile.flush()
             for frame in transformer.finish():
+                if not self._metric_bytes:
+                    self._metric_first_byte(started)
+                self._metric_bytes += len(frame)
                 self.wfile.write(frame)
             self.wfile.flush()
-        except (ValueError, httpx.HTTPError):
+        except (ValueError, httpx.HTTPError) as exc:
+            self._metric_error = f"Codex runtime could not adapt the Responses stream: {exc}"
             self.wfile.write(
                 b'event: error\ndata: {"type":"error","code":"codex_runtime_protocol_error","message":"Codex runtime could not adapt the Responses stream"}\n\n'
             )
+            self._metric_bytes += 128
             self.wfile.flush()
 
     def _response_headers(self, resp: httpx.Response) -> None:
@@ -1160,18 +1206,26 @@ def start_codex_proxy(
     upstream_url: str,
     token_provider: Callable[[bool], str],
     runtime: CodexRuntime,
+    *,
+    workspace: str,
+    session_secret: str,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a launch-owned Codex Responses relay without changing saved provider settings."""
     handler = cast(
         type[_ProxyHandler],
-        type("BoundCodexRuntimeHandler", (_CodexProxyHandler,), {"runtime": runtime}),
+        type(
+            "BoundCodexRuntimeHandler",
+            (_CodexProxyHandler,),
+            {"runtime": runtime, "session_secret": session_secret},
+        ),
     )
     return _start_proxy(
-        upstream_url,
+        workspace,
         token_provider,
         0,
         upstream_path="",
         token_header=AUTHORIZATION_HEADER,
         handler_type=handler,
         force_refresh_near_expiry=True,
+        metrics_proxy_mode="codex_runtime",
     )

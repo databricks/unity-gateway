@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -1155,11 +1156,17 @@ def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bo
     from ucode.agents import codex
     from ucode.smart_routing.codex_runtime import CodexRuntime
 
-    version = codex._parse_version(codex.agent_version(binary))
-    if version is None or version < (0, 160, 0):
-        raise RuntimeError(
-            "Codex orchestration runtime requires a verified Codex 0.160.0 or newer."
+    parsed = codex.parse_version(codex.agent_version(binary))
+    if parsed is None or parsed < codex.CODEX_ORCHESTRATOR_RUNTIME_MINIMUM_VERSION:
+        # An old or unparseable Codex keeps its ordinary launch; only the runtime
+        # relay is skipped, so the session never blocks on this opt-in feature.
+        print_warning(
+            "Codex orchestration runtime requires Codex "
+            f"{codex.CODEX_ORCHESTRATOR_RUNTIME_MINIMUM_VERSION_TEXT} or newer; "
+            "launching without it."
         )
+        yield False
+        return
     provider = overlay["model_providers"][overlay["model_provider"]]
     upstream_url = provider["base_url"]
     skill = skills.skill_entrypoint(orchestrator.skill_directory(), AGENT_CODEX)
@@ -1169,13 +1176,19 @@ def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bo
         enabled=lambda: orchestrator.codex_runtime_enabled(launch_env),
     )
     workspace = state["workspace"]
+    session_secret = secrets.token_urlsafe(32)
+    # The relay accepts only this launch's client: Codex sends the secret on every
+    # request through the provider's http_headers.
+    provider.setdefault("http_headers", {})[gateway_proxy.UG_SESSION_SECRET_HEADER] = session_secret
     auth_state = dict(state)
     if not custom_oauth_cli_enabled(auth_state.get("custom_oauth")):
         auth_state.pop("custom_oauth", None)
     server, cache, client = gateway_proxy.start_codex_proxy(
         upstream_url,
-        lambda force: codex._launch_token(auth_state, workspace, force_refresh=force),
+        lambda force: launch_token(auth_state, workspace, force_refresh=force),
         runtime,
+        workspace=workspace,
+        session_secret=session_secret,
     )
     worker = threading.Thread(target=server.serve_forever, name="codex-runtime-proxy", daemon=True)
     try:
@@ -1184,6 +1197,7 @@ def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bo
         yield True
     finally:
         provider["base_url"] = upstream_url
+        provider["http_headers"].pop(gateway_proxy.UG_SESSION_SECRET_HEADER, None)
         cache.stop()
         if worker.ident is not None:
             server.shutdown()
