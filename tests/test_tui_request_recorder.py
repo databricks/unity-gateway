@@ -296,7 +296,8 @@ def _sse(block_type="tool_use", stop_reason="tool_use"):
             ["end_turn"],
         ),
         (
-            gzip.compress(json.dumps(_message()).encode()),
+            # mtime=0 keeps the bytes, and so the test id, identical across xdist workers.
+            gzip.compress(json.dumps(_message()).encode(), mtime=0),
             "application/json",
             "gzip",
             200,
@@ -323,7 +324,7 @@ def _sse(block_type="tool_use", stop_reason="tool_use"):
             ["end_turn"],
         ),
         (
-            gzip.compress(_sse()),
+            gzip.compress(_sse(), mtime=0),
             "text/event-stream",
             "gzip",
             200,
