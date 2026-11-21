@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
@@ -14,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from tests.conftest import metric_observations
-from ucode import custom_oauth, metrics
+from ucode import custom_oauth, databricks, metrics
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
@@ -2370,26 +2371,51 @@ def test_savings_refresh_removes_unpriced_models(tmp_path, monkeypatch, rates):
     assert pricing.read_price_cache(path) == {"other": old}
 
 
-@pytest.mark.parametrize("failure", ["reason", "exception"])
+@pytest.mark.parametrize("failure", ["http", "network", "exception", "malformed-rates"])
+@pytest.mark.parametrize("cached", [False, True], ids=["cold-cache", "prior-cache"])
 def test_savings_refresh_failure_preserves_cache_and_reports_fallback(
-    tmp_path, monkeypatch, metrics_recorder, failure
+    tmp_path, monkeypatch, metrics_recorder, failure, cached
 ):
     path = tmp_path / "prices.json"
-    pricing.write_price_cache(path, {"opus": pricing.ModelPrice(input=Decimal("5"))})
-    before = path.read_bytes()
+    if cached:
+        pricing.write_price_cache(path, {"opus": pricing.ModelPrice(input=Decimal("5"))})
+    before = path.read_bytes() if cached else None
 
-    def fetch(*_):
-        if failure == "exception":
+    def open_request(request, timeout):
+        if failure == "http":
+            raise databricks.urllib_error.HTTPError(
+                request.full_url, 404, "private response detail", {}, None
+            )
+        if failure == "network":
             raise OSError("private transport detail")
-        return [], "HTTP 404: private response detail"
+        if failure == "exception":
+            raise ValueError("private unexpected error")
+        return nullcontext(
+            Mock(status=200, headers={}, read=lambda: b'{"model_service_rates": null}')
+        )
 
-    monkeypatch.setattr(v2, "fetch_endpoint_rates", fetch)
+    # Control the network boundary so the real client, refresh and telemetry run together.
+    monkeypatch.setattr(databricks.urllib_request, "urlopen", open_request)
     v2._refresh_savings_prices("workspace.example", "test-token", ["system.ai.opus"], path)
 
-    assert path.read_bytes() == before
-    [(count, labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+    assert (path.read_bytes() if path.exists() else None) == before
+    [(duration, http_labels)] = metric_observations(
+        metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS
+    )
+    assert duration >= 0
+    assert http_labels["api_operation"] == "endpoint_rates_batch_get"
+    assert http_labels["http_method"] == "GET"
+    assert http_labels["attempt"] == 1
+    if failure in {"http", "malformed-rates"}:
+        assert http_labels["http_status_code"] == (404 if failure == "http" else 200)
+    else:
+        assert "http_status_code" not in http_labels
+    [(count, labels)] = [
+        observation
+        for observation in metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        if observation[1]["operation"] == "savings_price_refresh"
+    ]
     assert count == 1
-    assert labels["operation"] == "savings_price_refresh"
     assert labels["continued_with_fallback"] is True
     assert "private" not in json.dumps(list(metrics_recorder.pending))
     assert "test-token" not in json.dumps(list(metrics_recorder.pending))

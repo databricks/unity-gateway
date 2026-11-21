@@ -648,6 +648,7 @@ def api_operation(url: str) -> str:
         ("coding-agent-config", "coding_agent_config_fetch"),
         ("budget", "budget_spend_statuses"),
         ("routes:select", "routes_select"),
+        ("endpoint-rates:batchget", "endpoint_rates_batch_get"),
         ("model-provider-services", "model_provider_services_list"),
         ("model-services", "model_services_list"),
         ("/messages", "messages"),

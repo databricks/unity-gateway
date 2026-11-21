@@ -2401,7 +2401,8 @@ Clear/reload, compaction, and denied-write rollback are not independently checke
 
 Savings estimates and `subagent_orch_savings_v0` have offline component and native
 fixture coverage for child attribution, interrupted accounting, mounted estimate expiry, and refresh lifecycle in
-[the component test guide](../README.md). The integration suite does not yet cover live endpoint pricing, savings display,
+[the component test guide](../README.md). Refresh failure/cache combinations stay in component
+tests, with representative native fixture launches. The integration suite does not yet cover live endpoint pricing, savings display,
 or savings accumulation across session off/on.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;

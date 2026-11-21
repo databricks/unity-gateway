@@ -257,8 +257,13 @@ def test_savings_launch_completes_a_turn_before_rates_arrive(native_binary, tmp_
     assert other_cache.read_bytes() == other_bytes
 
 
-@pytest.mark.parametrize("disconnect", [False, True], ids=["http-error", "closed-connection"])
-@pytest.mark.parametrize("cached", [False, True], ids=["cold-cache", "prior-cache"])
+@pytest.mark.parametrize(
+    "disconnect,cached",
+    [
+        pytest.param(False, False, id="http-error-cold-cache"),
+        pytest.param(True, True, id="closed-connection-prior-cache"),
+    ],
+)
 def test_savings_launch_survives_failed_rate_refresh(native_binary, tmp_path, disconnect, cached):
     root = tmp_path / "session"
     cache = _cache_path(root)
