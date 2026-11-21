@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from unittest.mock import Mock
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -1338,6 +1339,22 @@ def test_relay_requires_the_launch_session_secret():
         )
     assert missing.status_code == 401
     assert wrong.status_code == 401
+
+
+def test_relay_rejects_a_non_ascii_session_secret_without_crashing():
+    # A raw socket bypasses the client's header encoding so the handler itself
+    # must compare bytes and answer 401.
+    with relay(lambda request: pytest.fail("unauthenticated request reached the gateway")) as url:
+        host, port = urlsplit(url).netloc.split(":")
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            sock.sendall(
+                b"POST /responses HTTP/1.1\r\n"
+                b"Host: " + host.encode() + b":" + port.encode() + b"\r\n"
+                b"X-UG-Session-Secret: s\xc3\xa9cret\r\n"
+                b"Content-Length: 2\r\n\r\n{}"
+            )
+            data = sock.recv(4096)
+    assert data.split(b"\r\n", 1)[0].split()[1] == b"401"
 
 
 def test_relay_serves_only_the_responses_endpoints():

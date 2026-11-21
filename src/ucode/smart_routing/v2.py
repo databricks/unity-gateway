@@ -1148,7 +1148,7 @@ def _codex_routing_catalog(
 
 
 @contextmanager
-def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bool]:
+def _codex_runtime_proxy(state: dict, overlay: dict) -> Iterator[bool]:
     if not orchestrator.codex_runtime_enabled():
         yield False
         return
@@ -1165,25 +1165,31 @@ def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bo
     )
     workspace = state["workspace"]
     session_secret = secrets.token_urlsafe(32)
-    # The relay accepts only this launch's client. Codex reads the secret from its
-    # environment per request; it never appears on the command line or in the config.
-    provider["env_http_headers"] = {
-        **provider.get("env_http_headers", {}),
-        gateway_proxy.UG_SESSION_SECRET_HEADER: gateway_proxy.UG_SESSION_SECRET_ENV_VAR,
-    }
-    os.environ[gateway_proxy.UG_SESSION_SECRET_ENV_VAR] = session_secret
     auth_state = dict(state)
     if not custom_oauth_cli_enabled(auth_state.get("custom_oauth")):
         auth_state.pop("custom_oauth", None)
-    server, cache, client = gateway_proxy.start_codex_proxy(
-        upstream_url,
-        lambda force: launch_token(auth_state, workspace, force_refresh=force),
-        runtime,
-        workspace=workspace,
-        session_secret=session_secret,
-    )
-    worker = threading.Thread(target=server.serve_forever, name="codex-runtime-proxy", daemon=True)
+    server = cache = client = None
+    worker = None
     try:
+        # The relay accepts only this launch's client. Codex reads the secret from
+        # its environment per request; it never appears on the command line or in
+        # the config. Both bindings land inside the try so a proxy start failure
+        # cannot leave them behind.
+        provider["env_http_headers"] = {
+            **provider.get("env_http_headers", {}),
+            gateway_proxy.UG_SESSION_SECRET_HEADER: gateway_proxy.UG_SESSION_SECRET_ENV_VAR,
+        }
+        os.environ[gateway_proxy.UG_SESSION_SECRET_ENV_VAR] = session_secret
+        server, cache, client = gateway_proxy.start_codex_proxy(
+            upstream_url,
+            lambda force: launch_token(auth_state, workspace, force_refresh=force),
+            runtime,
+            workspace=workspace,
+            session_secret=session_secret,
+        )
+        worker = threading.Thread(
+            target=server.serve_forever, name="codex-runtime-proxy", daemon=True
+        )
         worker.start()
         provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
         yield True
@@ -1191,21 +1197,45 @@ def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bo
         provider["base_url"] = upstream_url
         provider["env_http_headers"].pop(gateway_proxy.UG_SESSION_SECRET_HEADER, None)
         os.environ.pop(gateway_proxy.UG_SESSION_SECRET_ENV_VAR, None)
-        cache.stop()
-        if worker.ident is not None:
+        if cache is not None:
+            cache.stop()
+        if worker is not None and worker.ident is not None:
             server.shutdown()
             worker.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
-        server.server_close()
-        client.close()
+        if server is not None:
+            server.server_close()
+        if client is not None:
+            client.close()
 
 
 def _wait_codex_process(argv: list[str]) -> NoReturn:
     proc = subprocess_cross_os.popen(argv)
+    installed = []
+
+    def _forward(signum, _frame):
+        proc.send_signal(signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            installed.append((sig, signal.signal(sig, _forward)))
+        except (ValueError, OSError):
+            # Not the main thread (or unsupported platform): the launcher's own
+            # process-group teardown still reaches the child.
+            pass
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
         proc.send_signal(signal.SIGINT)
         returncode = proc.wait()
+    finally:
+        for sig, previous in installed:
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, OSError):
+                pass
     sys.exit(returncode)
 
 
@@ -1291,7 +1321,7 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    with _codex_runtime_proxy(state, overlay, binary) as runtime_active:
+    with _codex_runtime_proxy(state, overlay) as runtime_active:
         config_args = codex_config_args(overlay)
         if app_server_launch:
             # The caller owns this app-server's address, model and clients, so run its

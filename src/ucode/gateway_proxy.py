@@ -883,10 +883,21 @@ class _OtelProxyHandler(_ProxyHandler):
 # The launch-owned Codex relay serves only these Responses endpoints and accepts only
 # its launch's own session secret, so the workspace credential cannot be reached by
 # another local process, host, or workspace API.
-_CODEX_RELAY_PATH_PREFIXES = ("/responses", "/responses/compact")
+_CODEX_RELAY_PATHS = ("/responses", "/responses/compact")
 UG_SESSION_SECRET_HEADER = "X-UG-Session-Secret"
 # The secret travels to Codex through this environment variable, never on the command line.
 UG_SESSION_SECRET_ENV_VAR = "UG_SESSION_SECRET"
+
+
+def _is_exact_codex_relay_path(path: str) -> bool:
+    # The relay serves exactly the two Responses endpoints: decoded until stable so
+    # double-encoded dot segments cannot reach another API, no prefix matching.
+    decoded = path.split("?", 1)[0]
+    while (next_decoded := unquote(decoded)) != decoded:
+        decoded = next_decoded
+    if any(segment in (".", "..") for segment in decoded.split("/")):
+        return False
+    return decoded in _CODEX_RELAY_PATHS
 
 
 class _CodexProxyHandler(_ProxyHandler):
@@ -903,21 +914,24 @@ class _CodexProxyHandler(_ProxyHandler):
         # the per-launch session secret may reach the relay, and only the two Responses
         # endpoints are served, so the workspace credential never leaves for another
         # local process, host, or workspace API.
-        if not hmac.compare_digest(
-            self.headers.get(UG_SESSION_SECRET_HEADER, ""), self.session_secret
-        ):
+        presented = self.headers.get(UG_SESSION_SECRET_HEADER, "")
+        if not hmac.compare_digest(presented.encode("utf-8"), self.session_secret.encode("utf-8")):
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
-        if self.command != "POST" or not _is_allowed_gateway_path(
-            self.path, _CODEX_RELAY_PATH_PREFIXES
-        ):
+        if self.command != "POST" or not _is_exact_codex_relay_path(self.path):
             self._reject(404, "This path is not served by the Unity Gateway proxy.")
             return
         super()._handle()
 
     def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
         self.prepared = None
-        self.prepared = self.runtime.prepare_request(body or b"", dict(self.headers.items()))
+        try:
+            self.prepared = self.runtime.prepare_request(body or b"", dict(self.headers.items()))
+        except ValueError as exc:
+            self._metric_error = exc
+            self._metric_labels["http_status_code"] = 400
+            self._send_json_error(400, str(exc))
+            return body, True
         local = self.prepared.synthetic_response
         if local is None:
             return self.prepared.body, False

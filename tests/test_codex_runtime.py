@@ -617,6 +617,58 @@ def test_wait_flags_are_isolated_by_native_thread_and_parent_mismatches_reject()
     assert forwarded.body == mismatch_body
 
 
+def test_default_cache_key_is_rewritten_only_for_activated_roots():
+    instance = runtime()
+    plain = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+    not_activated = instance.prepare_request(
+        json.dumps(root_payload(input_items=plain, cache_key="root")).encode(),
+        {"thread-id": "root"},
+    )
+    # No activation yet: the default key is untouched.
+    assert json.loads(not_activated.body)["prompt_cache_key"] == "root"
+
+    first = instance.prepare_request(
+        json.dumps(root_payload(tools=collaboration_tools(), cache_key="root")).encode(),
+        {"thread-id": "root"},
+    )
+    assert json.loads(first.body)["prompt_cache_key"] != "root"
+
+    again = instance.prepare_request(
+        json.dumps(root_payload(tools=collaboration_tools(), cache_key="root")).encode(),
+        {"thread-id": "root"},
+    )
+    assert json.loads(again.body)["prompt_cache_key"] == json.loads(first.body)["prompt_cache_key"]
+
+
+def test_malformed_wait_hint_drops_the_hint_instead_of_failing():
+    instance = runtime()
+    first = instance.prepare_request(
+        json.dumps(root_payload(tools=collaboration_tools())).encode(), {"thread-id": "root"}
+    )
+    instance.transform_json_response(
+        json.dumps({"output": [_response_item(hint=True)], "usage": {"output_tokens": 5}}).encode(),
+        first,
+    )
+    # A non-boolean await_completion keeps the turn alive, forwards the arguments as
+    # the model emitted them, and never synthesizes a wait.
+    arguments = {"task_name": "worker", "message": "Inspect", "await_completion": "true"}
+    item = _response_item(arguments=arguments)
+    transformed = json.loads(
+        instance.transform_json_response(json.dumps({"output": [item]}).encode(), first)
+    )["output"][0]
+    assert json.loads(transformed["arguments"])["await_completion"] == "true"
+    followup = instance.prepare_request(
+        json.dumps(
+            root_payload(
+                input_items=[activation(truncated=False), *_successful_spawn_history()],
+                tools=collaboration_tools(),
+            )
+        ).encode(),
+        {"thread-id": "root"},
+    )
+    assert followup.synthetic_response is None
+
+
 def test_custom_cache_keys_are_untouched_and_default_keys_follow_tool_profile():
     instance = runtime()
     custom = root_payload(tools=collaboration_tools(), cache_key="caller-managed")
@@ -691,7 +743,7 @@ def test_sse_buffers_split_crlf_arguments_preserves_other_events_and_strips_hint
     assert output[6]["response"]["usage"] == {"output_tokens": 7}
 
 
-def test_sse_malformed_expected_event_and_truncated_final_frame_raise():
+def test_sse_malformed_event_forwards_and_truncated_final_frame_raises():
     transformer = _ResponseTransformer(None, None, False)
     assert transformer.feed(b"data: arbitrary passthrough\n\n")
 
@@ -701,11 +753,15 @@ def test_sse_malformed_expected_event_and_truncated_final_frame_raise():
         {"thread-id": "root"},
     )
     transformer = instance.response_transformer(adapted)
-    with pytest.raises(ValueError, match="malformed"):
-        transformer.feed(b"event: response.output_item.done\ndata: not-json\n\n")
+    # An unparseable payload has nothing to adapt; it is forwarded unchanged.
+    assert transformer.feed(b"event: response.output_item.done\ndata: not-json\n\n") == [
+        b"event: response.output_item.done\ndata: not-json\n\n"
+    ]
 
     truncated = instance.response_transformer(adapted)
     assert truncated.feed(b'event: response.completed\ndata: {"type":"response.completed"') == []
+    with pytest.raises(ValueError, match="mid-event"):
+        truncated.finish()
     with pytest.raises(ValueError, match="mid-event"):
         truncated.finish()
 

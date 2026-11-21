@@ -64,6 +64,21 @@ _EXPECTED_RESPONSE_EVENTS = frozenset(
         "response.completed",
     }
 )
+# High-frequency events the policies never touch; `output_text.delta` carries an
+# `item_id`, so the payload markers alone cannot skip it.
+_PASS_THROUGH_EVENTS = frozenset(
+    {
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.output_text.annotation.added",
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_part.done",
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_summary_text.done",
+        "response.reasoning_text.delta",
+        "response.reasoning_text.done",
+    }
+)
 
 
 class _UnrecognizedRequest(ValueError):
@@ -146,66 +161,107 @@ class CodexRuntime:
         request_kind = _request_kind(payload)
 
         with self._lock:
-            root_id = self._resolve_root(thread_id, parent_thread_id)
-            state = self._thread_state(thread_id, root_id)
-            is_root = parent_thread_id is None
-            changed = False
-            if is_root:
-                changed = restore_full_activation(payload, self._binding) or changed
-                if _has_bound_activation(payload, self._binding):
-                    self._activated_roots.add(thread_id)
-            elif root_id in self._activated_roots and self._owner_contract is not None:
-                if request_kind != "compaction":
-                    changed = inject_owner_contract(payload, self._owner_contract) or changed
-
-            root_activated = is_root and thread_id in self._activated_roots
-            wait_enabled = root_activated
-            if wait_enabled:
-                changed = extend_collaboration_schema(payload) or changed
-                # A compaction carries the spawn's output item too, so the eligible-wait
-                # shape alone cannot distinguish it; compaction must return a real result.
-                wait_binding = (
-                    None
-                    if request_kind == "compaction"
-                    else eligible_wait(payload, state.wait_flags)
+            snapshot = (
+                self._thread_parents.get(thread_id, _UNSET),
+                self._thread_roots.get(thread_id, _UNSET),
+                self._threads.get(thread_id),
+                thread_id in self._activated_roots,
+            )
+            try:
+                return self._apply_locked(
+                    payload, body, thread_id, parent_thread_id, request_kind, snapshot
                 )
-                if wait_binding is not None:
-                    response, content_type = _controller_wait(wait_binding, thread_id, payload)
-                    return PreparedRequest(
-                        body=body,
-                        synthetic_response=response,
-                        thread_id=thread_id,
-                        synthetic_content_type=content_type,
-                        _thread_state=state,
-                    )
-            _prune_wait_state(payload, state)
+            except _UnrecognizedRequest:
+                # Identity detection raises before any mutation; a later rejection
+                # in the payload walk rolls this call's writes back, so state is
+                # only committed when the full policy application succeeds.
+                self._restore_thread(thread_id, snapshot)
+                raise
 
-            if is_root and payload.get("prompt_cache_key") == thread_id:
-                model = payload.get("model")
-                if not isinstance(model, str) or not model:
-                    raise _UnrecognizedRequest("default Codex prompt cache key requires a model")
-                profile = _cache_profile(payload, model, self._skill_sha256)
-                payload["prompt_cache_key"] = hashlib.sha256(
-                    json.dumps(
-                        profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
-                ).hexdigest()
-                changed = True
+    def _restore_thread(self, thread_id: str, snapshot) -> None:
+        previous_parent, previous_root, previous_state, was_activated = snapshot
+        if previous_parent is _UNSET:
+            self._thread_parents.pop(thread_id, None)
+        else:
+            self._thread_parents[thread_id] = previous_parent
+        if previous_root is _UNSET:
+            self._thread_roots.pop(thread_id, None)
+        else:
+            self._thread_roots[thread_id] = previous_root
+        if previous_state is None:
+            self._threads.pop(thread_id, None)
+        else:
+            self._threads[thread_id] = previous_state
+        if not was_activated:
+            self._activated_roots.discard(thread_id)
 
-            forwarded = _encode_json(payload) if changed else body
-            forwarded, transport_changed = prepare_transport_request(forwarded)
-            adapt_response = (
-                transport_changed
-                or _has_collaboration_tools(payload)
-                or (wait_enabled and _has_delegation_tools(payload))
+    def _apply_locked(
+        self,
+        payload: dict[str, Any],
+        body: bytes,
+        thread_id: str,
+        parent_thread_id: str | None,
+        request_kind: str | None,
+        snapshot,
+    ) -> PreparedRequest:
+        root_id = self._resolve_root(thread_id, parent_thread_id)
+        state = self._thread_state(thread_id, root_id)
+        is_root = parent_thread_id is None
+        changed = False
+        if is_root:
+            changed = restore_full_activation(payload, self._binding) or changed
+            if _has_bound_activation(payload, self._binding):
+                self._activated_roots.add(thread_id)
+        elif root_id in self._activated_roots and self._owner_contract is not None:
+            if request_kind != "compaction":
+                changed = inject_owner_contract(payload, self._owner_contract) or changed
+
+        root_activated = is_root and thread_id in self._activated_roots
+        wait_enabled = root_activated
+        if wait_enabled:
+            changed = extend_collaboration_schema(payload) or changed
+            # A compaction carries the spawn's output item too, so the eligible-wait
+            # shape alone cannot distinguish it; compaction must return a real result.
+            wait_binding = (
+                None if request_kind == "compaction" else eligible_wait(payload, state.wait_flags)
             )
-            return PreparedRequest(
-                body=forwarded,
-                adapt_response=adapt_response,
-                thread_id=thread_id,
-                _thread_state=state,
-                _wait_enabled=wait_enabled,
-            )
+            if wait_binding is not None:
+                response, content_type = _controller_wait(wait_binding, thread_id, payload)
+                return PreparedRequest(
+                    body=body,
+                    synthetic_response=response,
+                    thread_id=thread_id,
+                    synthetic_content_type=content_type,
+                    _thread_state=state,
+                )
+        _prune_wait_state(payload, state)
+
+        if root_activated and payload.get("prompt_cache_key") == thread_id:
+            model = payload.get("model")
+            if not isinstance(model, str) or not model:
+                raise _UnrecognizedRequest("default Codex prompt cache key requires a model")
+            profile = _cache_profile(payload, model, self._skill_sha256)
+            payload["prompt_cache_key"] = hashlib.sha256(
+                json.dumps(
+                    profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            changed = True
+
+        forwarded = _encode_json(payload) if changed else body
+        forwarded, transport_changed = prepare_transport_request(forwarded)
+        adapt_response = (
+            transport_changed
+            or _has_collaboration_tools(payload)
+            or (wait_enabled and _has_delegation_tools(payload))
+        )
+        return PreparedRequest(
+            body=forwarded,
+            adapt_response=adapt_response,
+            thread_id=thread_id,
+            _thread_state=state,
+            _wait_enabled=wait_enabled,
+        )
 
     def response_transformer(self, prepared: PreparedRequest) -> _ResponseTransformer:
         if not prepared.adapt_response:
@@ -269,6 +325,8 @@ class CodexRuntime:
     def _evict_oldest_threads(self, current: str) -> None:
         # Evict from all the maps at once, so a thread's identity entries can never
         # outlive (or lose) its state; an evicted root's activation goes with it.
+        # The identity maps are never trimmed separately: a long-lived root must
+        # keep its entry while it is still tracked.
         while len(self._threads) > _MAX_TRACKED_THREADS:
             oldest = next(iter(self._threads))
             if oldest == current:
@@ -277,10 +335,6 @@ class CodexRuntime:
             self._thread_roots.pop(oldest, None)
             self._thread_parents.pop(oldest, None)
             self._activated_roots.discard(oldest)
-        while len(self._thread_roots) > _MAX_TRACKED_THREADS:
-            self._thread_roots.pop(next(iter(self._thread_roots)))
-        while len(self._thread_parents) > _MAX_TRACKED_THREADS:
-            self._thread_parents.pop(next(iter(self._thread_parents)))
 
 
 _UNSET = object()
@@ -556,7 +610,7 @@ def _cache_profile(payload: dict[str, Any], model: str, skill_sha256: str) -> di
 
 
 def _has_collaboration_tools(payload: dict[str, Any]) -> bool:
-    for tools in _request_tool_sets(payload):
+    for tools in _tool_sets(payload):
         for declaration in tools:
             if isinstance(declaration, dict) and (
                 declaration.get("name") in COLLABORATION_NAMESPACES
@@ -567,38 +621,17 @@ def _has_collaboration_tools(payload: dict[str, Any]) -> bool:
 
 
 def _has_delegation_tools(payload: dict[str, Any]) -> bool:
-    for tools in _request_tool_sets(payload):
+    for tools in _tool_sets(payload):
         for declaration in tools:
-            if not isinstance(declaration, dict):
-                continue
-            nested = (
-                declaration.get("tools", [])
-                if declaration.get("type") == "namespace"
-                else [declaration]
-            )
-            if not isinstance(nested, list):
+            binding = _namespace_tools(declaration)
+            if binding is None:
                 continue
             if any(
-                isinstance(tool, dict) and tool.get("name") in DELEGATION_TOOLS for tool in nested
+                isinstance(tool, dict) and tool.get("name") in DELEGATION_TOOLS
+                for tool in binding[1]
             ):
                 return True
     return False
-
-
-def _request_tool_sets(payload: dict[str, Any]) -> list[list[Any]]:
-    sets = []
-    if "tools" in payload:
-        tools = payload["tools"]
-        if not isinstance(tools, list):
-            raise _UnrecognizedRequest("native tools must be a list")
-        sets.append(tools)
-    for item in payload.get("input", []):
-        if isinstance(item, dict) and item.get("type") == "additional_tools":
-            additional = item.get("tools")
-            if not isinstance(additional, list):
-                raise _UnrecognizedRequest("Responses Lite additional_tools must contain a list")
-            sets.append(additional)
-    return sets
 
 
 def _prune_wait_state(payload: dict[str, Any], state: _ThreadState) -> None:
@@ -769,17 +802,19 @@ class _ResponseTransformer:
         data = b"\n".join(data_values)
         if data == b"[DONE]":
             return frame
-        if event_name not in _EXPECTED_RESPONSE_EVENTS and not any(
-            marker in data for marker in (b'"item"', b'"response"', b'"item_id"')
+        if event_name not in _EXPECTED_RESPONSE_EVENTS and (
+            event_name in _PASS_THROUGH_EVENTS
+            or not any(marker in data for marker in (b'"item"', b'"response"', b'"item_id"'))
         ):
-            # Events the policies never touch (text deltas and other unexpected
-            # names) skip the parse, copy, and comparison entirely.
+            # Events the policies never touch (text and reasoning deltas among
+            # them) skip the parse, copy, and comparison entirely.
             return frame
         try:
             event = _load_json_object(data, "Codex Responses SSE event")
         except ValueError:
-            if event_name in _EXPECTED_RESPONSE_EVENTS:
-                raise
+            # An unparseable payload has nothing to adapt; forward it unchanged so
+            # one odd event does not end the turn. The security invariants below
+            # (encrypted args, native namespaces, call bindings) still fail closed.
             return frame
         transformed = self.transform_event(event)
         if transformed == event:
@@ -879,7 +914,8 @@ class _ResponseTransformer:
                 raise ValueError("Codex delegation item has conflicting final arguments")
             return
         self._finalized[item_id] = signature
-        assert self._lock is not None and self._state is not None
+        if self._lock is None or self._state is None:
+            raise ValueError("Codex delegation response has no bound session state")
         with self._lock:
             previous_item = self._state.call_items.get(call_id)
             if previous_item is not None and previous_item != item_id:
@@ -900,13 +936,16 @@ def _strip_wait_hint(arguments: str) -> tuple[str, bool | None]:
         parsed = json.loads(
             arguments, object_pairs_hook=_unique_object, parse_constant=_reject_constant
         )
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise ValueError("Codex delegation arguments are malformed") from exc
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Model-emitted arguments are untrusted input: malformed JSON keeps the
+        # arguments as they are and simply never synthesizes a wait.
+        return arguments, None
     if not isinstance(parsed, dict) or "await_completion" not in parsed:
         return arguments, None
     hint = parsed.pop("await_completion")
     if type(hint) is not bool:
-        raise ValueError("Codex await_completion hint must be a boolean")
+        # A non-boolean hint is dropped, not a turn failure.
+        return arguments, None
     return _encode_json(parsed).decode("utf-8"), hint
 
 
