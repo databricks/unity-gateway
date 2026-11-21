@@ -80,18 +80,18 @@ jobs:
   # shards together run every unit test once. Main uploads JUnit reports and coverage counts
   # so `Unit test times` can record fresh timings and prove nothing was missed.
   unit-linux:
-    name: Unit tests · Linux · ${{ matrix.shard }}/16
+    name: Unit tests · Linux · ${{ matrix.shard }}/20
     needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
-      UG_TEST_SHARD: ${{ matrix.shard }}/16
+      UG_TEST_SHARD: ${{ matrix.shard }}/20
     steps:
       - *checkout
       - *setup-uv
@@ -116,19 +116,19 @@ jobs:
             ${{ runner.temp }}/shard-report.json
 
   unit-windows:
-    name: Unit tests · Windows · ${{ matrix.shard }}/32
+    name: Unit tests · Windows · ${{ matrix.shard }}/40
     needs: security-gate
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-                17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
-      UG_TEST_SHARD: ${{ matrix.shard }}/32
+      UG_TEST_SHARD: ${{ matrix.shard }}/40
     steps:
       - *checkout
       - *setup-uv
