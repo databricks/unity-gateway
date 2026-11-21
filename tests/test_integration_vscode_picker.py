@@ -21,8 +21,8 @@ PICKED = {"state": "picked", "modelsEditor": False, "picker": None}
 class ScriptedVSCode(VSCode):
     """A window whose screens follow the actions taken, as ``reactions`` lists them per state.
 
-    With ``starts_copilot_chat``, Copilot Chat starts while the picked screen shows: its toast
-    and that screen replace it after a number of reads."""
+    With ``starts_copilot_chat``, Copilot Chat starts while the picked screen shows: its Copilot
+    session and that screen replace it after a number of reads."""
 
     def __init__(
         self,
@@ -33,7 +33,7 @@ class ScriptedVSCode(VSCode):
         starts_copilot_chat: dict | None = None,
     ):
         self.actions, self.states, self.started = [], [], time.monotonic()
-        self.copilot_chat_ready = starts_copilot_chat is None
+        self.copilot_session_ready = starts_copilot_chat is None
         self.starts_copilot_chat, self.picked_reads = starts_copilot_chat, 0
         self.current = self._screen(screen, button)
         self.reactions = {state: list(screens) for state, screens in reactions.items()}
@@ -42,16 +42,21 @@ class ScriptedVSCode(VSCode):
 
     @staticmethod
     def _screen(screen: dict, button: str) -> dict:
-        return {"modelButton": button, "copilotChatOffNotice": False, "byokToast": False, **screen}
+        return {
+            "modelButton": button,
+            "copilotChatOffNotice": False,
+            "tour": None,
+            "sessionTarget": None,
+            "signedOutNotice": False,
+            **screen,
+        }
 
     def screen(self) -> dict:
         if self.starts_copilot_chat and self.current["state"] == "picked":
             self.picked_reads += 1
             if self.picked_reads == 20:
-                started = {**self.starts_copilot_chat, "byokToast": True}
+                started = {**self.starts_copilot_chat, "sessionTarget": "Copilot"}
                 self.current = self._screen(started, DEFAULT_BUTTON)
-        if self.current.get("byokToast"):
-            self.copilot_chat_ready = True
         return self.current
 
     def shot(self, name: str) -> None:

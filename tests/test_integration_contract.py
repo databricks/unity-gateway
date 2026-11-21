@@ -1646,7 +1646,7 @@ def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
     workflow = WORKFLOW.read_text()
     jobs = _integration_jobs()
     job = jobs["vscode"]
-    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}" in workflow
+    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}" in workflow
     assert (
         'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
         in workflow
