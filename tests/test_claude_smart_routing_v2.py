@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -1354,6 +1355,38 @@ class TestSubagentRouting:
 
 
 class TestModelSettingRecovery:
+    def test_confirmed_manual_choice_survives_registration_lock_contention(
+        self, tmp_path, monkeypatch
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        acquire = v2.acquire_exclusive_file_lock
+        busy_attempts = 2
+
+        def acquire_after_contention(file, *, timeout):
+            nonlocal busy_attempts
+            # The lock becomes available after abandonment and confirmation first encounter it.
+            if busy_attempts:
+                busy_attempts -= 1
+                raise TimeoutError("recovery lock is busy")
+            return acquire(file, timeout=timeout)
+
+        monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire_after_contention)
+        try:
+            assert chooser.abandon("opus") is False
+            if not chooser.confirm_manual_choice():
+                assert chooser.restore()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux POSIX ACL representation")
     def test_restore_preserves_access_control(self, guard_sessions):
         import struct
@@ -1373,7 +1406,12 @@ class TestModelSettingRecovery:
             (32, 0, 0xFFFFFFFF),
         ]
         acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
-        os.setxattr(settings, "system.posix_acl_access", acl)
+        try:
+            os.setxattr(settings, "system.posix_acl_access", acl)
+        except OSError as error:
+            if error.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                pytest.skip("The test filesystem does not support POSIX ACLs")
+            raise
         before = settings.stat()
 
         assert guard("restore")
@@ -1613,6 +1651,33 @@ finally:
         assert pending("restore")
         assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
 
+    @pytest.mark.parametrize(
+        "persisted_before", [False, True], ids=["late-write", "already-matching"]
+    )
+    @pytest.mark.parametrize("confirmed", [False, True], ids=["cancelled", "confirmed"])
+    def test_matching_temporary_model_still_requires_manual_confirmation(
+        self, guard_sessions, tmp_path, persisted_before, confirmed
+    ):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        if persisted_before:
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        pending("defer")
+        assert chooser("abandon", manual_model="sonnet") is False
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        assert json.loads(recovery.read_text())["before"] == {"model": "haiku"}
+
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore") is False
+        assert json.loads(recovery.read_text())["before"] == {"model": "haiku"}
+        assert chooser("confirm_manual_choice" if confirmed else "cancel_manual_choice")
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {
+            "model": "sonnet" if confirmed else "haiku",
+            "theme": "light",
+        }
+
     @pytest.mark.parametrize("persisted", [False, True], ids=["manual-pending", "manual-persisted"])
     def test_new_route_keeps_the_manual_restore_target(self, guard_sessions, persisted):
         settings, start = guard_sessions
@@ -1625,10 +1690,10 @@ finally:
         assert chooser("abandon", manual_model="haiku") is False
         if persisted:
             settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
-        else:
-            assert new("begin", routed_model="opus") is False
+        assert new("begin", routed_model="opus") is False
+        if not persisted:
             settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
-            assert chooser("confirm_manual_choice")
+        assert chooser("confirm_manual_choice")
         assert new("begin", routed_model="opus")
         settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
         assert new("restore")
@@ -1664,19 +1729,53 @@ finally:
             ),
         ],
     )
+    @pytest.mark.parametrize("manual_model", ["not-a-real-model", "sonnet"])
     def test_unconfirmed_manual_model_does_not_replace_the_default(
-        self, guard_sessions, exit_method
+        self, guard_sessions, exit_method, manual_model
     ):
         settings, start = guard_sessions
         pending, chooser = start(), start()
         assert pending("begin", routed_model="sonnet")
-        assert chooser("abandon", manual_model="not-a-real-model") is False
+        assert chooser("abandon", manual_model=manual_model) is False
         settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
         assert pending("restore") is False
         assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
         chooser(exit_method)
         assert pending("restore")
         assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @requires_pty
+    @pytest.mark.parametrize("confirmed", [False, True], ids=["cancelled", "confirmed"])
+    def test_exit_preserves_another_sessions_pending_manual_choice(
+        self, guard_sessions, tmp_path, capsys, confirmed
+    ):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        pending("defer")
+        assert chooser("abandon", manual_model="opus") is False
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        snapshot = recovery.read_bytes()
+
+        assert pending("finish", timeout=0) is False
+
+        assert capsys.readouterr().out == ""
+        assert recovery.read_bytes() == snapshot
+        pending("crash")
+        if confirmed:
+            settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+            assert chooser("confirm_manual_choice")
+        else:
+            assert chooser("cancel_manual_choice")
+        next_session = start()
+        assert next_session("begin", routed_model="fable")
+        settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+        assert next_session("restore")
+        assert json.loads(settings.read_text()) == {
+            "model": "opus" if confirmed else "haiku",
+            "theme": "light",
+        }
 
     @pytest.mark.skipif(
         os.name != "posix" or os.geteuid() == 0,
@@ -1702,6 +1801,9 @@ finally:
             recovery_dir.chmod(0o700)
         model = "sonnet" if failure_phase == "cancel" else "opus"
         settings.write_text(json.dumps({"model": model, "theme": "light"}))
+        if failure_phase == "register":
+            assert chooser("restore") is False
+            assert chooser("confirm_manual_choice")
         assert chooser("restore")
         settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
         assert pending("restore")

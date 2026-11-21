@@ -641,6 +641,26 @@ def test_antigravity_request_evidence_survives_test_outcome(tmp_path, failed):
     assert log.read_text() == f"Making Gateway streaming request to: {url}\n"
 
 
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-assertion"])
+def test_antigravity_capture_error_preserves_the_original_failure(tmp_path, failed):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+    # A directory in place of a log makes the real reader raise on every platform.
+    log = session.home / antigravity.STATE_DIRECTORY / "log" / "cli-unreadable.log"
+    log.mkdir(parents=True)
+    failure = AssertionError("native status ERROR")
+
+    with pytest.raises(AssertionError if failed else OSError) as captured:
+        with antigravity.record_requests(session):
+            if failed:
+                raise failure
+
+    if failed:
+        assert captured.value is failure
+        assert any("Antigravity request capture also failed:" in note for note in failure.__notes__)
+
+
 def test_antigravity_request_capture_omits_sessions_without_native_logs(tmp_path):
     session = UserSession(
         tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"

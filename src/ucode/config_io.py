@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from contextlib import nullcontext
@@ -70,15 +71,19 @@ def atomic_write_json(
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 if preserve_permissions:
                     before = path.stat()
+                    copier = shutil.which("cp")
+                    if copier is None:
+                        raise OSError("The cp utility is required to preserve file permissions")
                     # copystat omits ownership and macOS ACLs.
                     subprocess_cross_os.run(
-                        ["/bin/cp", "-p", str(path), tmp_name],
+                        [str(Path(copier).absolute()), "-p", str(path), tmp_name],
                         check=True,
                         capture_output=True,
                         stdin=subprocess.DEVNULL,
                         timeout=5,
                     )
                     copied = os.stat(tmp_name)
+                    # Reject a copier that replaced the inode behind our writable descriptor.
                     if (copied.st_uid, copied.st_gid, copied.st_mode) != (
                         before.st_uid,
                         before.st_gid,

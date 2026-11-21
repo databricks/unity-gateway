@@ -146,8 +146,7 @@ def session(request, installed_binary):
                     user.env[key] = value
             user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         try:
-            with antigravity.record_requests(user):
-                yield user
+            yield user
         finally:
             try:
                 # Restore machine-level settings through the same public CLI that
@@ -176,6 +175,15 @@ def session(request, installed_binary):
                 sudo = shutil.which("sudo")
                 if os.name == "posix" and policy.exists() and sudo:
                     user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
+
+
+@pytest.fixture(autouse=True)
+def antigravity_request_evidence(request):
+    if request.node.get_closest_marker("antigravity") is None:
+        yield
+        return
+    with antigravity.record_requests(request.getfixturevalue("session")):
+        yield
 
 
 @pytest.fixture
