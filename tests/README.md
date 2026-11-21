@@ -1957,6 +1957,10 @@ duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provi
 remain raw so regional target distinctions are preserved. Native picker and inference validation
 remain separate from these component checks.
 
+Configure loading indicators: skill download component coverage verifies the shared spinner
+starts before bundle requests and reports completed/total downloads. MCP and skill
+reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
+
 ## Security scan rollout
 
 1. Merge producer PR [#1653](https://github.com/databricks/unity-gateway/pull/1653)
