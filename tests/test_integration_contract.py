@@ -1904,8 +1904,8 @@ def test_unit_shards_run_every_test_exactly_once():
 def test_unit_shard_loads_stay_balanced():
     from tests import shard
 
-    times = shard.load_times()
-    for total in (16, 32):
+    for system, total in (("Linux", 20), ("Windows", 40)):
+        times = shard.load_times(system)
         plan = shard.plan(shard.test_files(), total, times)
         loads = [
             sum(times.get(path, [1.0])[0] / count for path, _, count in owned) for owned in plan

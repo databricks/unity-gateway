@@ -29,7 +29,7 @@ def main() -> None:
     units = collections.defaultdict(collections.Counter)
     collected = collections.defaultdict(dict)
     ran = collections.defaultdict(collections.Counter)
-    times = collections.defaultdict(lambda: [0.0, 0])
+    times = collections.defaultdict(lambda: collections.defaultdict(lambda: [0.0, 0]))
     for artifact in sorted(path for path in artifacts.iterdir() if path.is_dir()):
         system = artifact.name.split("-")[1]
         report = json.loads((artifact / "shard-report.json").read_text(encoding="utf-8"))
@@ -38,9 +38,8 @@ def main() -> None:
         for case in ElementTree.parse(artifact / "junit.xml").iter("testcase"):
             path = test_file(case.get("classname", ""))
             ran[system][path] += 1
-            if system == "Linux":
-                times[path][0] += float(case.get("time", 0))
-                times[path][1] += 1
+            times[system][path][0] += float(case.get("time", 0))
+            times[system][path][1] += 1
     problems = []
     for system in sorted(units):
         chunks = {path: count for path, _, count in units[system]}
@@ -61,8 +60,13 @@ def main() -> None:
         print(f"{system}: {sum(ran[system].values())} tests across {len(chunks)} files")
     if problems:
         raise SystemExit("::error::Unit shards did not cover the suite:\n" + "\n".join(problems))
-    rounded = {path: [round(seconds, 2), count] for path, (seconds, count) in sorted(times.items())}
-    output.write_text(json.dumps(rounded, indent=1) + "\n", encoding="utf-8")
+    rounded = {
+        system: {
+            path: [round(seconds, 2), count] for path, (seconds, count) in sorted(files.items())
+        }
+        for system, files in sorted(times.items())
+    }
+    output.write_text(json.dumps(rounded, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
