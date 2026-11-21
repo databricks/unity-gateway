@@ -56,7 +56,17 @@ class WindowsApp:
         finally:
             stop_process(self.proc)
             log = self.session.redact(self.log.read_text(errors="replace"))
-            self.session.record(f"{self.name}-log.json", {"log": log[-20000:]})
+            self.session.record(
+                f"{self.name}-log.json",
+                {
+                    "log": log[-20000:],
+                    "mcp_and_setup": "\n".join(
+                        line
+                        for line in log.splitlines()
+                        if "mcp" in line.lower() or "sandbox" in line.lower()
+                    )[-20000:],
+                },
+            )
 
     def uia(self, command: str, *args: str) -> str:
         assert self.proc.poll() is None, f"{self.name} exited with {self.proc.returncode}"
@@ -106,6 +116,6 @@ class WindowsApp:
         self.wait_for(control, name, timeout)
         self.uia("invoke", control, name or "")
 
-    def type_line(self, text: str) -> None:
-        """Type into the focused control with real keystrokes, then press Enter."""
-        self.uia("type", text)
+    def type_line(self, text: str, *, submit: bool = True) -> None:
+        """Type with real keystrokes, optionally pressing Enter."""
+        self.uia("type", text, "enter" if submit else "")

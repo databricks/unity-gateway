@@ -375,12 +375,13 @@ def test_cuj_task_inference_only_allows_claude_child_transport_newline(agent, af
             _task_inference_request([request], agent, prompt, after=after)
 
 
-def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
+@pytest.mark.parametrize("suffix", ["", "__sr_on"])
+def test_cuj_codex_encrypted_child_inference_matches_routed_task_name(suffix):
     request = _inference_request(CODEX, 3, "parent prompt", [{"name": "exec"}])
     message = {
         "type": "agent_message",
         "author": "/root",
-        "recipient": "/root/read_file",
+        "recipient": "/root/read_file" + suffix,
         "content": [{"type": "encrypted_content", "encrypted_content": "gAAAAAopaque"}],
     }
     request.payload["input"].append(message)
@@ -391,6 +392,8 @@ def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
     for change in (
         {"type": "message", "role": "user"},
         {"recipient": "/root/another_task"},
+        {"recipient": "/root/read_file__sr_off"},
+        {"recipient": "/root/read_file_other"},
         {"content": [{"type": "input_text", "text": "read_file"}]},
         {"content": [{"type": "encrypted_content", "encrypted_content": ""}]},
     ):
@@ -507,6 +510,27 @@ def test_cuj_uses_shared_file_task_without_exposing_answer(tmp_path):
     assert (tmp_path / task.filename).read_text().strip() == task.value
     assert task.value not in task.prompt
     assert "Do not delegate." in task.prompt
+
+
+@pytest.mark.parametrize("answer", ["complete", "truncated", "tool-only"])
+def test_copilot_file_task_requires_complete_hidden_answer(tmp_path, answer):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    assert len(task.value) == 6
+    content = task.value[:-1] if answer == "truncated" else task.value
+    message = (
+        {"type": "tool.execution_complete", "data": {"result": {"content": content}}}
+        if answer == "tool-only"
+        else {"type": "assistant.message", "data": {"content": content}}
+    )
+    result = SimpleNamespace(
+        returncode=0,
+        stdout="\n".join(json.dumps(row) for row in [message, {"type": "assistant.turn_end"}]),
+    )
+    if answer == "complete":
+        task.assert_headless_answer("copilot", result)
+    else:
+        with pytest.raises(AssertionError):
+            task.assert_headless_answer("copilot", result)
 
 
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])

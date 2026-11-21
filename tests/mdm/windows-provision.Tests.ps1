@@ -8,7 +8,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile(
 if ($errors.Count) { throw ($errors | Out-String) }
 
 # Load only helpers; never run the installer or modify machine settings in this test
-$helpers = @('Assert-Sha256', 'Get-Sha256Sum', 'Update-PathEntry', 'Get-AgentAliases', 'Update-AgentProfile')
+$helpers = @('Assert-Sha256', 'Get-Sha256Sum', 'Update-PathEntry', 'Set-SharedReadAccess', 'Get-AgentAliases', 'Update-AgentProfile')
 foreach ($node in $ast.FindAll({ param($n)
   $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
 }, $true)) {
@@ -76,6 +76,50 @@ if ($args -contains '--fail') { throw 'agent failed' }
   }
   Write-Output 'PASS: profiles are idempotent and preserve existing content'
   Write-Output 'PASS: both wrappers forward arguments and restore unset/set environment on success/failure'
+
+  if ($env:OS -eq 'Windows_NT') {
+    $shared = Join-Path $dir 'shared'
+    $nested = Join-Path $shared 'site-packages\ucode'
+    New-Item -ItemType Directory -Path $nested -Force | Out-Null
+    $resource = Join-Path $nested 'managed_replace.sh'
+    Set-Content -LiteralPath $resource -Value 'test package resource'
+    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $users = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')
+    $rootAcl = New-Object Security.AccessControl.DirectorySecurity
+    $rootAcl.SetAccessRuleProtection($true, $false)
+    $rootAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+      $owner, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    Set-Acl -LiteralPath $shared -AclObject $rootAcl
+    $privateAcl = Get-Acl -LiteralPath $resource
+    $privateAcl.SetAccessRuleProtection($true, $false)
+    $privateAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($owner, 'FullControl', 'Allow')))
+    Set-Acl -LiteralPath $resource -AclObject $privateAcl
+    Assert-Equal @((Get-Acl -LiteralPath $resource).GetAccessRules($true, $true,
+      [Security.Principal.SecurityIdentifier]) | Where-Object IdentityReference -eq $users).Count 0
+
+    Set-SharedReadAccess $shared | Out-Null
+    $readExecute = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $write = [Security.AccessControl.FileSystemRights]'Write,Delete,ChangePermissions,TakeOwnership,DeleteSubdirectoriesAndFiles'
+    foreach ($path in $shared, $nested, $resource) {
+      $rules = @((Get-Acl -LiteralPath $path).GetAccessRules($true, $true,
+        [Security.Principal.SecurityIdentifier]) | Where-Object {
+          $_.IdentityReference -eq $users -and $_.AccessControlType -eq 'Allow'
+        })
+      Assert-Equal ([bool]($rules | Where-Object { ($_.FileSystemRights -band $readExecute) -eq $readExecute })) $true
+      Assert-Equal ([bool]($rules | Where-Object { $_.FileSystemRights -band $write })) $false
+    }
+    $ownerRules = (Get-Acl -LiteralPath $resource).GetAccessRules($true, $true,
+      [Security.Principal.SecurityIdentifier]) | Where-Object IdentityReference -eq $owner
+    Assert-Equal ([bool]($ownerRules | Where-Object {
+      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq
+        [Security.AccessControl.FileSystemRights]::FullControl
+    })) $true
+    $failed = $false
+    try { Set-SharedReadAccess (Join-Path $dir 'missing') *> $null }
+    catch { $failed = $true }
+    Assert-Equal $failed $true
+    Write-Output 'PASS: shared runtime ACL repair grants Users RX, preserves owner access and fails on errors'
+  }
 } finally {
   $env:UG_SKIP_OS_SETTINGS = $oldSkip
   Remove-Item -Recurse -Force -LiteralPath $dir

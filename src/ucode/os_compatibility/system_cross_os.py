@@ -8,6 +8,7 @@ from pathlib import Path
 
 __all__ = [
     "is_admin",
+    "process_running",
     "user_profiles_dir",
     "windows_program_data_dir",
     "windows_program_files_dir",
@@ -23,6 +24,33 @@ def is_admin() -> bool:
 
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     return os.geteuid() == 0
+
+
+def process_running(pid: int) -> bool:
+    """Whether a process with ``pid`` exists. ``os.kill(pid, 0)`` would terminate it on Windows."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return kernel32.GetLastError() == 5  # ERROR_ACCESS_DENIED: it exists
+        try:
+            code = ctypes.c_ulong()
+            return (
+                bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def user_profiles_dir() -> Path | None:

@@ -13,6 +13,7 @@ import select
 import shutil
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 
 from .harness import process_group_options, stop_process
@@ -141,8 +142,7 @@ class VSCode:
                 "VS Code's DevTools port",
             )
             self.playwright = sync_playwright().start()
-            self.browser = self.playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-            self.page = self._wait(self._workbench_page, 60, "the VS Code workbench")
+            self.page = self._attach(port)
         except BaseException:
             self._stop()
             raise
@@ -192,6 +192,48 @@ class VSCode:
                 stop_process(proc)
         if log := getattr(self, "log", None):
             log.close()
+
+    def _attach(self, port: str):
+        """Connect Playwright to the window once its page target exists, and return the page.
+
+        A target created while Playwright attaches to the browser can be left out of its pages
+        for good, so connecting waits for the window, and a connection that still misses the
+        workbench is replaced."""
+        endpoint = f"http://127.0.0.1:{port}"
+        self._wait(
+            lambda: any("workbench" in target["url"] for target in self._page_targets(endpoint)),
+            STEP_TIMEOUT_S,
+            "the VS Code window",
+        )
+        deadline = time.monotonic() + STEP_TIMEOUT_S
+        while True:
+            self.browser = self.playwright.chromium.connect_over_cdp(endpoint)
+            try:
+                return self._wait(
+                    self._workbench_page,
+                    max(min(4 * SETTLE_S, deadline - time.monotonic()), POLL_S),
+                    "the VS Code workbench",
+                )
+            except AssertionError as error:
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"{error}; DevTools page targets: {self._page_targets(endpoint)}"
+                    ) from None
+            self.actions.append("  (reconnected: the workbench was not among the pages)")
+            self.browser.close()
+
+    @staticmethod
+    def _page_targets(endpoint: str) -> list[dict]:
+        try:
+            with urllib.request.urlopen(f"{endpoint}/json/list", timeout=5) as response:
+                targets = json.load(response)
+        except (OSError, ValueError):
+            return []
+        return [
+            {"url": target.get("url", ""), "title": target.get("title")}
+            for target in targets
+            if target.get("type") == "page"
+        ]
 
     def _workbench_page(self):
         for context in self.browser.contexts:
@@ -376,15 +418,8 @@ class VSCode:
                 "the Copilot Chat notice to close",
             )
         elif state == "language models editor":
-            # Its own close button: Escape only closes it while it has focus.
-            self._click(
-                "Language Models editor: Close",
-                page.locator('.monaco-modal-editor-block:visible [aria-label^="Close"]').first,
-            )
             self._wait(
-                lambda: not self.screen()["modelsEditor"],
-                STEP_TIMEOUT_S,
-                "the Language Models editor to close",
+                self._close_models_editor(), STEP_TIMEOUT_S, "the Language Models editor to close"
             )
             # The button keeps its signed-out label for a moment after the providers load.
             self._wait(
@@ -394,7 +429,13 @@ class VSCode:
             )
 
         elif state == "picker closed":
-            self._click("model picker: open", model_button)
+            # The native model-name button handles Enter without crossing a hover overlay.
+            self._act(
+                "model picker: open",
+                lambda: model_button.locator(".model-picker-name:visible").press(
+                    "Enter", timeout=CLICK_TIMEOUT_MS
+                ),
+            )
         elif state == "picker: restricted":
             self._click(
                 "model picker: Trust Workspace",
@@ -412,11 +453,48 @@ class VSCode:
                 picker.locator('button[aria-label="Search Models"]'),
             )
         elif state == "picker: searching":
-            self._act(f"model picker: type {label}", lambda: page.keyboard.type(label))
+            self._search_picker(label)
         elif state == "picker: row shown":
             self._click(f"model picker: {label}", row)
         else:
             raise UnknownScreen(f"Unknown screen while picking {label}: {screen}")
+
+    def _close_models_editor(self):
+        """A check that is true once no Language Models editor is open, clicking Close on each.
+
+        "Add Models..." and ug's "Turn On Copilot Chat" each open one, so another can be there,
+        or open, right after one closes."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        # Its own close button: Escape only closes it while it has focus.
+        close = self.page.locator('.monaco-modal-editor-block:visible [aria-label^="Close"]').first
+        clicked = 0.0
+
+        def closed() -> bool:
+            nonlocal clicked
+            if not self.screen()["modelsEditor"]:
+                return True
+            if time.monotonic() - clicked >= SETTLE_S:
+                clicked = time.monotonic()
+                try:
+                    self._click("Language Models editor: Close", close)
+                except PlaywrightTimeoutError:
+                    self.actions.append("  (the Language Models editor closed before the click)")
+            return False
+
+        return closed
+
+    def _search_picker(self, label: str) -> None:
+        # Keys go to the search box itself, not to whatever has focus: a picker that closes
+        # itself mid-search hands focus to the chat input, and the rest would land in the prompt.
+        search = self.page.locator(".chat-model-picker-widget:visible input").first
+
+        def type_label():
+            search.press("ControlOrMeta+a", timeout=CLICK_TIMEOUT_MS)
+            for key in label:
+                search.press("Space" if key == " " else key, timeout=CLICK_TIMEOUT_MS)
+
+        self._act(f"model picker: type {label}", type_label)
 
     def _wait_for_copilot_chat(self) -> None:
         # Copilot Chat shows this toast once it runs on Databricks models. A prompt sent before
@@ -458,7 +536,7 @@ class VSCode:
             deadline = min(acted + STEP_TIMEOUT_S, cap)
             try:
                 if state == "picker: searching":
-                    self._act(f"model picker: type {label}", lambda: page.keyboard.type(label))
+                    self._search_picker(label)
                 elif state in (
                     "picker closed",
                     "picker: models",

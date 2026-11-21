@@ -86,14 +86,15 @@ class MacApp:
             "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
         )
 
-    def type_line(self, text: str) -> None:
-        """Type into the focused control with real keystrokes, then press Return."""
+    def type_line(self, text: str, *, submit: bool = True) -> None:
+        """Type with real keystrokes, optionally pressing Return."""
+        enter = "key code 36\n" if submit else ""
         script = (
             "on run argv\n"
             'tell application "System Events"\n'
             "set frontmost of (first process whose unix id is (item 1 of argv as integer)) to true\n"
             "keystroke (item 2 of argv)\n"
-            "key code 36\n"
+            f"{enter}"
             "end tell\n"
             "end run"
         )

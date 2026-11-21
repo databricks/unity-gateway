@@ -96,6 +96,13 @@ function Set-MachinePath($Dir, [switch]$Remove) {
   } finally { if ($key) { $key.Dispose() } }
   $env:Path = Update-PathEntry $env:Path $Dir -Remove:$Remove
 }
+function Set-SharedReadAccess($Dir) {
+  if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { throw "Shared runtime folder not found: $Dir" }
+  foreach ($permission in '*S-1-5-32-545:(OI)(CI)RX', '*S-1-5-32-545:RX') {
+    & "$env:SystemRoot\System32\icacls.exe" $Dir /grant $permission /T /Q
+    if ($LASTEXITCODE -ne 0) { throw "Setting shared runtime permissions failed: $LASTEXITCODE" }
+  }
+}
 function Get-AgentAliases($Ug) {
   $escaped = $Ug.Replace("'", "''")
   @"
@@ -234,6 +241,9 @@ foreach ($name in 'claude', 'codex') {
     throw "$name was not installed in $NpmDir. Check ug configure's output."
   }
 }
+
+# Allow standard users to read and run the shared installation
+Set-SharedReadAccess $Prefix
 
 # Add PowerShell aliases for all users
 if ((Get-ExecutionPolicy -Scope LocalMachine) -in 'Undefined', 'Restricted') {

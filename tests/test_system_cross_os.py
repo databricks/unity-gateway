@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,3 +101,11 @@ def test_user_profiles_dir(monkeypatch, platform, system_drive, expected):
         monkeypatch.setenv("SystemDrive", system_drive)
 
     assert system_cross_os.user_profiles_dir() == expected
+
+
+def test_process_running():
+    assert system_cross_os.process_running(os.getpid())
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert not system_cross_os.process_running(child.pid)
+    assert not system_cross_os.process_running(0)

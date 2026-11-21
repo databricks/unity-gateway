@@ -22,6 +22,7 @@ from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
     custom_catalog_path,
+    is_codex_app_server_launch,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -46,8 +47,10 @@ from ucode.databricks import (
     build_auth_token_argv,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -528,6 +531,14 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     )
 
 
+def _claude_route_options(model_ids: list[str]) -> list[tuple[str, str]]:
+    models = _canonical_claude_models(model_ids)
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        preferred = map_claude_family_models(models).values()
+        models = list(dict.fromkeys([*preferred, *models]))[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "claude")
+
+
 def _request_claude_routing_decision(
     workspace: str,
     token: str,
@@ -536,7 +547,7 @@ def _request_claude_routing_decision(
     provider: str | None = None,
     attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    route_options = _claude_route_options(model_ids)
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     if attribution_headers is None:
@@ -867,18 +878,18 @@ def launch_claude(
             auto_picker = False
     if auto_picker:
         try:
-            auto_config = json.loads(
-                picker_config(
-                    catalog,
-                    workspace,
-                    auto_settings,
-                    default_model=launch_model
-                    or default_model
-                    or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
-                    or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
-                    or os.environ.get("ANTHROPIC_MODEL")
-                    or state.get("claude_models", {}).get("opus"),
-                )
+            auto_config = picker_config(
+                catalog,
+                workspace,
+                auto_settings,
+                launch_settings=settings,
+                managed_settings=managed_auto,
+                default_model=launch_model
+                or default_model
+                or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
+                or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
+                or os.environ.get("ANTHROPIC_MODEL")
+                or state.get("claude_models", {}).get("opus"),
             )
         except ValueError as exc:
             print_warning(f"Skipped Claude Auto: {exc}")
@@ -1080,7 +1091,11 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    launch_config: dict | None = None,
+    available_models: list[str] | None = None,
 ) -> NoReturn:
+    from ucode.agents.args import has_explicit_model_arg
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -1092,25 +1107,31 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    if available_models is None:
+        available_models = custom_catalog_models() or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
             "Run `ucode configure codex` to enable routing."
         )
-    custom_oauth = state.get("custom_oauth")
-    overlay = render_overlay(
-        workspace,
-        start_model,
-        state.get("profile"),
-        use_pat=bool(state.get("use_pat")),
-        custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
-        managed_http_headers=state.get("codex_http_headers"),
-    )
-    catalog_path = custom_catalog_path()
-    if catalog_path is not None:
-        overlay["model_catalog_json"] = str(catalog_path)
+    app_server_launch = is_codex_app_server_launch(tool_args)
+    if launch_config is None:
+        custom_oauth = state.get("custom_oauth")
+        overlay = render_overlay(
+            workspace,
+            state.get("codex_default_model") if app_server_launch else start_model,
+            state.get("profile"),
+            use_pat=bool(state.get("use_pat")),
+            custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
+            managed_http_headers=state.get("codex_http_headers"),
+        )
+        catalog_path = custom_catalog_path()
+        if catalog_path is not None:
+            overlay["model_catalog_json"] = str(catalog_path)
+    else:
+        overlay = dict(launch_config)
+        if not app_server_launch:
+            overlay["model"] = start_model
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["responses_api_metadata.smart_router_recipe_name"] = routing.configured_router_name()
     overlay["features.hooks"] = True
@@ -1131,6 +1152,9 @@ def launch_codex(
         SESSION_PYTHON_ENV_VAR
     ]
     config_args = codex_config_args(overlay)
+    if app_server_launch:
+        # The caller owns this app-server's address, model and clients, so run its command as is.
+        exec_or_spawn([binary, *config_args, *tool_args])
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
@@ -1163,6 +1187,11 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            **(
+                {"provider": state["_codex_launch_provider"]}
+                if state.get("_codex_launch_provider")
+                else {}
+            ),
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []
@@ -1175,8 +1204,9 @@ def launch_codex(
                     if key in overlay
                 }
             )
+        model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, *model_args, *tool_args]
         )
         try:
             returncode = tui.wait()
