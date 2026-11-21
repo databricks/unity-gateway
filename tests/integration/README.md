@@ -1423,9 +1423,9 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the internal first-prompt-and-subagent mode). It independently
+The unit/component `../test_smart_routing_config.py` checks unset, disabled, enabled, and
+conflicting combinations of the routing, orchestration, and savings flags against the
+supported presets, including first-prompt-and-subagent and savings modes. It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -2398,6 +2398,12 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
+
+Savings estimates and `subagent_orch_savings_v0` have offline component and native
+fixture coverage for child attribution, interrupted accounting, mounted estimate expiry, and refresh lifecycle in
+[the component test guide](../README.md). Refresh failure/cache combinations stay in component
+tests, with representative native fixture launches. The integration suite does not yet cover live endpoint pricing, savings display,
+or savings accumulation across session off/on.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no

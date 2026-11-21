@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
@@ -17,6 +18,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
+import ucode.smart_routing.pricing as pricing
+import ucode.smart_routing.savings as savings
 from ucode import claude_answer_delivery, config_io, metrics
 from ucode.codex_config import (
     codex_config_args,
@@ -38,6 +41,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
@@ -47,6 +51,7 @@ from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
+    fetch_endpoint_rates,
     list_anthropic_model_catalog,
     list_anthropic_models,
     map_claude_family_models,
@@ -85,6 +90,7 @@ from ucode.smart_routing.config import (
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
+from ucode.workspace import state_workspace_key
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
@@ -110,6 +116,13 @@ CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 # Omnigent matches the "ug-smart-router" plugin name exactly; update Omnigent if it changes.
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
+# Native plugin options for the savings mod, at the values Claude fills in for a launch that omits
+# them: no pricer (the estimate is off) and no orchestrator skill version to show.
+CLAUDE_SAVINGS_OPTION_DEFAULTS: dict[str, str | list[str]] = {
+    "savings_pricer": [],
+    "savings_usage": "",
+    "orchestrator_version": "",
+}
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
@@ -414,6 +427,103 @@ def _claude_mod_launch_options(
     }
 
 
+def savings_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether a routed Claude launch explicitly enables the savings feature."""
+    source = resolve_environment(env, agent=AGENT_CLAUDE)
+    return source.get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
+
+
+def _claude_savings_launch_options(
+    launch_dir: Path, *, price_cache: Path, baseline_session_start: bool
+) -> dict[str, str | list[str]]:
+    """Options for the savings mod: the pricer it runs after each turn, the file it sums usage
+    into, and the orchestrator skill version it shows when the launch activates that skill."""
+    options = dict(CLAUDE_SAVINGS_OPTION_DEFAULTS)
+    if not savings_enabled():
+        return options
+    options["savings_pricer"] = savings.pricer_argv(
+        python=sys.executable,
+        price_cache=price_cache,
+        baseline_session_start=baseline_session_start,
+    )
+    options["savings_usage"] = str(launch_dir / savings.USAGE_FILENAME)
+    if orchestrator.feature_enabled(agent=AGENT_CLAUDE):
+        options["orchestrator_version"] = orchestrator.skill_version(agent=AGENT_CLAUDE) or ""
+    return options
+
+
+# Claude settings env keys that name the main model a session may start on.
+_MAIN_MODEL_ENV_KEYS = (
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+)
+
+
+def _savings_model_services(models: list[str | None], settings: dict) -> list[str]:
+    """The ``system.ai`` model services a session's responses can be priced against.
+
+    Covers the routable models plus the main model, which the baseline prices every token at and
+    which can come from a pinned ``--model`` or Claude's default-model env rather than the catalog.
+    """
+    env = settings.get("env")
+    env = env if isinstance(env, dict) else {}
+    candidates = [*models, *(env.get(key) for key in _MAIN_MODEL_ENV_KEYS)]
+    services: set[str] = set()
+    for model in candidates:
+        if not isinstance(model, str) or not model:
+            continue
+        name = _canonical_claude_model_id(_unwrapped_claude_model_id(model.strip()))
+        name = name.removesuffix("[1m]")
+        if name.startswith("system.ai."):
+            services.add(name)
+    return sorted(services)
+
+
+def _refresh_savings_prices(
+    workspace: str, token: str, model_services: list[str], price_cache: Path
+) -> None:
+    """Fetch this launch's per-token rates and cache them for the savings pricer.
+
+    On failure unexpired cached rates remain usable; without them the estimate stays hidden.
+    """
+    if not model_services:
+        return
+    try:
+        rates, reason = fetch_endpoint_rates(workspace, token, model_services)
+        if reason is not None:
+            metrics.failure(
+                metrics.SAVINGS_PRICE_REFRESH_OPERATION,
+                reason,
+                continued_with_fallback=True,
+                workspace=workspace,
+            )
+            return
+        prices = pricing.prices_from_endpoint_rates(rates)
+        pricing.write_price_cache(price_cache, prices, refreshed_models=model_services)
+    except Exception as error:  # noqa: BLE001 - background failures must not surface in the TUI
+        metrics.failure(
+            metrics.SAVINGS_PRICE_REFRESH_OPERATION,
+            error,
+            continued_with_fallback=True,
+            workspace=workspace,
+        )
+
+
+def _start_savings_price_refresh(
+    workspace: str, token: str, model_services: list[str], price_cache: Path
+) -> None:
+    """Refresh prices off the launch path so a slow rates API never delays Claude's startup."""
+    threading.Thread(
+        target=_refresh_savings_prices,
+        args=(workspace, token, model_services, price_cache),
+        name="ug-savings-prices",
+        daemon=True,
+    ).start()
+
+
 def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     # Replayed prompt snapshots bypass tool.describe, even after cache invalidation.
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
@@ -483,6 +593,25 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": routing.ROUTER_NAME,
                     "title": "Recipe",
                     "description": "Original routing recipe",
+                },
+                "savings_pricer": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": CLAUDE_SAVINGS_OPTION_DEFAULTS["savings_pricer"],
+                    "title": "Savings pricer",
+                    "description": "Command that prices the session's token sums",
+                },
+                "savings_usage": {
+                    "type": "string",
+                    "default": CLAUDE_SAVINGS_OPTION_DEFAULTS["savings_usage"],
+                    "title": "Savings usage file",
+                    "description": "Launch-scoped file the token sums are written to",
+                },
+                "orchestrator_version": {
+                    "type": "string",
+                    "default": CLAUDE_SAVINGS_OPTION_DEFAULTS["orchestrator_version"],
+                    "title": "Orchestrator skill version",
+                    "description": "Smart Router Orchestrator skill version, when it is active",
                 },
             },
         },
@@ -939,6 +1068,7 @@ def launch_claude(
     env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
         "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
     )
+    env[ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR] = "1" if savings_enabled() else "0"
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
@@ -983,6 +1113,9 @@ def launch_claude(
             env[SESSION_ENV_VAR] = str(session_path)
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            # The savings pricer reads rates from this cache, since it runs after every turn and
+            # can't wait on the network; the refresh below fills it.
+            price_cache = pricing.price_cache_path(APP_DIR, state_workspace_key(state) or workspace)
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
             mod_options = {
                 **_claude_mod_launch_options(
@@ -991,6 +1124,9 @@ def launch_claude(
                 ),
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
+                **_claude_savings_launch_options(
+                    launch_dir, price_cache=price_cache, baseline_session_start=route_first_prompt
+                ),
             }
             if auto_picker:
                 mod_options["autoPicker"] = json.dumps(auto_config)
@@ -1002,6 +1138,13 @@ def launch_claude(
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = mod_options
+            if savings_enabled():
+                _start_savings_price_refresh(
+                    workspace,
+                    token,
+                    _savings_model_services([*model_ids, launch_model], settings),
+                    price_cache,
+                )
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir)

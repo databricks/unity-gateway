@@ -296,6 +296,7 @@ journeys use vendor model IDs.
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
+| Native launch components | `native_claude/test_savings_launch.py` | Real UG/Claude launch, local HTTPS endpoint rates and prepared Messages responses |
 | Dedicated-workspace CUJ | `e2e_cuj/test_*.py` | Real user journeys against read-only, preconfigured workspaces |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Connector skill behavior | `connector_behavior/test_*.py` | Real Claude decisions with generated guidance and synthetic connector tools |
@@ -560,6 +561,21 @@ and covers an explicit Claude headless task on that model.
 Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs in the scoped picker.
 The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
 picker while retaining the catalog's display label.
+
+Savings estimates have component coverage in `test_smart_routing_savings.py`
+and `test_smart_routing_pricing.py` for routed-child attribution, token baselines, per-model rate expiry, and failure handling.
+`test_claude_smart_routing_v2.py` covers unavailable USD rates, cache preservation after
+failed or malformed refreshes, and endpoint HTTP operation, status, attempt and fallback telemetry.
+`test_smart_routing_config.py` and `test_smart_router.py` cover opt-in and session controls.
+`test_workspace_selection.py::TestEndpointRatesTransport` covers HTTPS request handling,
+including omitted and empty rate lists versus malformed fields.
+`native_claude/test_mod.py` and `native_claude/test_savings_launch.py` exercise the real
+Claude binary with prepared responses: accounting, model changes, row visibility,
+interrupted-step accounting, mounted estimate expiry, refresh cancellation, and nonblocking price refresh.
+Native refresh failures use representative HTTP/cold-cache and connection/prior-cache launches;
+component tests cover the failure/cache combinations. CI includes the launch checks in its
+pinned Claude mod job. These checks do not establish live endpoint compatibility
+or native UX with live model calls.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
@@ -1327,9 +1343,9 @@ commands, substitutions, other variables, and different conditions remain reject
 and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
-`test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
-routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
-supported presets, including the customer first-prompt-and-subagent mode. It uses the named
+`test_smart_routing_config.py` checks unset, disabled, enabled, and conflicting combinations of
+the routing, orchestration, and savings flags against the supported presets, including the
+first-prompt-and-subagent and savings modes. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.

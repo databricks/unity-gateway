@@ -35,7 +35,9 @@ class Session:
         env,
         api="http://127.0.0.1:1",
         route_command=(),
+        options=None,
         resume=None,
+        hooks=None,
         auto_picker=None,
         user_settings=None,
         launch_settings=None,
@@ -63,7 +65,11 @@ class Session:
         )
         if user_settings is not None:
             (root / "config/settings.json").write_text(json.dumps(user_settings))
-        options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
+        options = {
+            **_claude_mod_launch_options(env),
+            **(options or {}),
+            "routeCommand": list(route_command),
+        }
         if auto_picker is not None:
             options["autoPicker"] = json.dumps(auto_picker)
         settings = {
@@ -74,6 +80,8 @@ class Session:
             },
             "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
+        if hooks is not None:
+            settings["hooks"] = hooks
         header_root = install_header_mod(root / "managed-mod")
         _enable_header_mod(settings, header_root)
         process_env = {
@@ -109,6 +117,9 @@ class Session:
                 *(["--model", model] if model else []),
                 "--tools",
                 "Agent",
+                # The fixture allows Agent explicitly; auto mode adds classifier requests.
+                "--permission-mode",
+                "default",
                 "--allowedTools",
                 "Agent",
                 "--plugin-dir",
