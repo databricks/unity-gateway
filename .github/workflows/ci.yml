@@ -73,6 +73,7 @@ jobs:
         run: |
           uv lock
           uv sync
+          echo "BUDGET_SKIP=dependencies were installed after a cache miss" >> "$GITHUB_ENV"
       - &budget-setup-done
         name: Mark setup done
         shell: bash
@@ -104,6 +105,10 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
+          if [ -n "${BUDGET_SKIP:-}" ]; then
+            echo "::notice::Time budget not checked: $BUDGET_SKIP."
+            exit 0
+          fi
           now=$(date +%s)
           setup=$((BUDGET_RUN_STARTED - BUDGET_JOB_STARTED))
           run=$((now - BUDGET_RUN_STARTED))
@@ -164,10 +169,10 @@ jobs:
             "$VENV_BIN/python" -m pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
       - &unit-report
         name: Upload this shard's timings
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: unit-${{ runner.os }}-${{ matrix.shard }}
+          name: unit-shard-${{ runner.os }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/shard-report.json
@@ -214,29 +219,25 @@ jobs:
 
   windows-provisioning:
     name: Windows provisioning helpers
+    # A Windows runner too: it runs with the Windows unit shards, outside pull requests.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 10
-    env:
-      SETUP_BUDGET: 15
-      RUN_BUDGET: 20
-      JOB_BUDGET: 35
     steps:
-      - *budget-start
       - *checkout
-      - *budget-setup-done
       - name: Windows provisioning helpers (Windows PowerShell 5.1)
         shell: powershell
         run: ./tests/mdm/windows-provision.Tests.ps1
       - name: Windows provisioning helpers (PowerShell 7)
         shell: pwsh
         run: ./tests/mdm/windows-provision.Tests.ps1
-      - *budget-check
 
-  # Records per-file timings from main's full run and checks every shard's slice added up to the
-  # whole collected suite. Commit the artifact to tests/unit_test_times.json when shards drift.
+  # Checks every shard's slice added up to the whole collected suite and records per-file timings.
+  # It runs wherever pull requests do not, so the merge queue proves coverage before main, and
+  # `test` requires it there. Commit main's artifact to tests/unit_test_times.json when shards drift.
   unit-test-times:
     name: Unit test times
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     needs: [unit-linux, unit-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -244,7 +245,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          pattern: unit-*
+          pattern: unit-shard-*
           path: ${{ runner.temp }}/shards
       - run: python3 scripts/unit_test_times.py "$RUNNER_TEMP/shards" "$RUNNER_TEMP/unit_test_times.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -255,8 +256,9 @@ jobs:
   claude-mod:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
-    needs: changes
-    if: ${{ needs.changes.outputs.live == 'true' }}
+    # Hermetic, but two minutes of the real Claude CLI: it runs wherever pull requests do not,
+    # including fork PRs' merge groups, and `e2e` requires it there.
+    if: ${{ github.event_name != 'pull_request' }}
     timeout-minutes: 10
     env:
       UV_INDEX_URL: https://pypi.org/simple
@@ -323,13 +325,21 @@ jobs:
       JOB_BUDGET: 35
     steps:
       - *budget-start
-      - *checkout
+      # The wheel's version comes from Git tags, so fetch history (without file blobs).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - *budget-setup-done
       - run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
       - name: Run the built wheel's entry points
         run: |
           wheel=("$RUNNER_TEMP"/dist/*.whl)
+          case "${wheel[0]##*/}" in
+            *-0.0.0-*) echo "::error::The wheel fell back to version 0.0.0: ${wheel[0]##*/}"; exit 1 ;;
+          esac
           uvx --python 3.12 --from "${wheel[0]}" ug --help > /dev/null
           uvx --python 3.12 --from "${wheel[0]}" ucode --help > /dev/null
       - *budget-check
@@ -496,13 +506,17 @@ jobs:
   required-tests:
     name: test
     if: ${{ !cancelled() }}
-    needs: [checks, unit-linux, unit-windows, windows-provisioning, vscode-extension]
+    # The rollups require the Security Gate, so a failed scan blocks merging even though no other
+    # job waits for it.
+    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require checks, every unit shard and the VS Code extension tests to pass
         env:
           EVENT_NAME: ${{ github.event_name }}
+          COVERAGE_RESULT: ${{ needs.unit-test-times.result }}
+          GATE_RESULT: ${{ needs.security-gate.result }}
           LINT_RESULT: ${{ needs.checks.result }}
           RESULT: ${{ needs.unit-linux.result }}
           WINDOWS_RESULT: ${{ needs.unit-windows.result }}
@@ -510,24 +524,32 @@ jobs:
           VSCODE_EXTENSION_RESULT: ${{ needs.vscode-extension.result }}
         # The result check is the last command: a failed `&&` chain earlier in a step does not stop it.
         run: |
+          # Windows jobs and the coverage proof run outside pull requests, where all are required.
           if [ "$EVENT_NAME" = pull_request ]; then
-            echo "::notice::Windows unit shards run in the merge queue before this change reaches main."
+            echo "::notice::Windows unit shards and provisioning helpers run in the merge queue before this change reaches main."
           fi
-          test "$LINT_RESULT" = success && test "$RESULT" = success &&
-            test "$PROVISIONING_RESULT" = success && test "$VSCODE_EXTENSION_RESULT" = success && {
-              test "$WINDOWS_RESULT" = success ||
-                { test "$EVENT_NAME" = pull_request && test "$WINDOWS_RESULT" = skipped; }
+          test "$GATE_RESULT" = success && test "$LINT_RESULT" = success && test "$RESULT" = success &&
+            test "$VSCODE_EXTENSION_RESULT" = success && {
+              {
+                test "$WINDOWS_RESULT" = success && test "$PROVISIONING_RESULT" = success &&
+                  test "$COVERAGE_RESULT" = success
+              } || {
+                test "$EVENT_NAME" = pull_request && test "$WINDOWS_RESULT" = skipped &&
+                  test "$PROVISIONING_RESULT" = skipped && test "$COVERAGE_RESULT" = skipped
+              }
             }
 
   required-e2e:
     name: e2e
     if: ${{ !cancelled() }}
-    needs: [changes, package, claude-mod, e2e, integration]
+    needs: [security-gate, changes, package, claude-mod, e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require the package and, outside pull requests, every live suite to pass
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          GATE_RESULT: ${{ needs.security-gate.result }}
           SELECTION_RESULT: ${{ needs.changes.result }}
           LIVE: ${{ needs.changes.outputs.live }}
           PACKAGE_RESULT: ${{ needs.package.result }}
@@ -536,12 +558,16 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
         # The result check is the last command: a failed `&&` chain earlier in a step does not stop it.
         run: |
-          if [ "$LIVE" = false ]; then
+          if [ "$EVENT_NAME" = pull_request ]; then
             echo "::notice::Live agent and integration suites run in the merge queue before this change reaches main."
+          elif [ "$LIVE" = false ]; then
+            echo "::notice::Live suites skipped: fork code gets no CI secrets in the merge queue."
           fi
-          test "$SELECTION_RESULT" = success && test "$PACKAGE_RESULT" = success &&
-            test "$RESULT" = success && {
-              { test "$INTEGRATION_RESULT" = success && test "$CLAUDE_MOD_RESULT" = success; } ||
-                { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped &&
-                  test "$CLAUDE_MOD_RESULT" = skipped; }
+          test "$GATE_RESULT" = success && test "$SELECTION_RESULT" = success &&
+            test "$PACKAGE_RESULT" = success && test "$RESULT" = success && {
+              test "$CLAUDE_MOD_RESULT" = success ||
+                { test "$EVENT_NAME" = pull_request && test "$CLAUDE_MOD_RESULT" = skipped; }
+            } && {
+              test "$INTEGRATION_RESULT" = success ||
+                { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped; }
             }

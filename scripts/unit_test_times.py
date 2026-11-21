@@ -33,7 +33,7 @@ def main() -> None:
     by_file = collections.defaultdict(lambda: collections.defaultdict(lambda: [0.0, 0]))
     by_test = collections.defaultdict(collections.Counter)
     for artifact in sorted(path for path in artifacts.iterdir() if path.is_dir()):
-        system = artifact.name.split("-")[1]
+        system = artifact.name.split("-")[2]  # unit-shard-<OS>-<n>
         report = json.loads((artifact / "shard-report.json").read_text(encoding="utf-8"))
         units[system].update(tuple(unit) for unit in report["units"])
         collected[system].update(report["collected"])
