@@ -337,6 +337,30 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
         return body, False
 
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._send_json_error(status, message)
+
+    def _send_json_error(self, status: int, message: str) -> None:
+        # Shaped like the upstream dialect so the agent shows the message instead of
+        # a generic transport failure.
+        if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
+            error_type = "authentication_error" if status == 401 else "not_found_error"
+            payload = {"type": "error", "error": {"type": error_type, "message": message}}
+        else:
+            payload = {"error": {"message": message, "type": "invalid_request_error"}}
+        body = json.dumps(payload).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+
     def _handle(self) -> None:
         self._metric_started = time.monotonic()
         self._metric_labels: dict[str, object] = {
@@ -760,30 +784,6 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                 return True
         return False
 
-    def _reject(self, status: int, message: str) -> None:
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        if length:
-            self.rfile.read(length)
-        self._send_json_error(status, message)
-
-    def _send_json_error(self, status: int, message: str) -> None:
-        # Shaped like the upstream dialect so the agent shows the message instead of
-        # a generic transport failure.
-        if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
-            error_type = "authentication_error" if status == 401 else "not_found_error"
-            payload = {"type": "error", "error": {"type": error_type, "message": message}}
-        else:
-            payload = {"error": {"message": message, "type": "invalid_request_error"}}
-        body = json.dumps(payload).encode()
-        try:
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except OSError:
-            pass
-
     def _handle(self) -> None:
         if not _is_allowed_gateway_path(self.path, self.allowed_path_prefixes):
             self._reject(404, "This path is not served by the Unity Gateway proxy.")
@@ -885,12 +885,18 @@ class _OtelProxyHandler(_ProxyHandler):
 # another local process, host, or workspace API.
 _CODEX_RELAY_PATH_PREFIXES = ("/responses", "/responses/compact")
 UG_SESSION_SECRET_HEADER = "X-UG-Session-Secret"
+# The secret travels to Codex through this environment variable, never on the command line.
+UG_SESSION_SECRET_ENV_VAR = "UG_SESSION_SECRET"
 
 
 class _CodexProxyHandler(_ProxyHandler):
     runtime: CodexRuntime
     session_secret: str
     prepared: PreparedRequest | None = None
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        # The session secret authenticates this relay only; the gateway never sees it.
+        return self.token_header, frozenset({UG_SESSION_SECRET_HEADER.lower()}), "codex_runtime"
 
     def _handle(self) -> None:
         # Same boundary as the gateway-auth proxy: only the launch's own client holding
@@ -909,18 +915,8 @@ class _CodexProxyHandler(_ProxyHandler):
             return
         super()._handle()
 
-    def _reject(self, status: int, message: str) -> None:
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        if length:
-            self.rfile.read(length)
-        self._safe_send_error(status, message)
-
     def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
         self.prepared = None
-        if self.command != "POST" or not _is_allowed_gateway_path(
-            self.path, _CODEX_RELAY_PATH_PREFIXES
-        ):
-            return body, False
         self.prepared = self.runtime.prepare_request(body or b"", dict(self.headers.items()))
         local = self.prepared.synthetic_response
         if local is None:
@@ -995,10 +991,12 @@ class _CodexProxyHandler(_ProxyHandler):
             self.wfile.flush()
         except (ValueError, httpx.HTTPError) as exc:
             self._metric_error = f"Codex runtime could not adapt the Responses stream: {exc}"
-            self.wfile.write(
-                b'event: error\ndata: {"type":"error","code":"codex_runtime_protocol_error","message":"Codex runtime could not adapt the Responses stream"}\n\n'
+            frame = (
+                b'event: error\ndata: {"type":"error","code":"codex_runtime_protocol_error",'
+                b'"message":"Codex runtime could not adapt the Responses stream"}\n\n'
             )
-            self._metric_bytes += 128
+            self.wfile.write(frame)
+            self._metric_bytes += len(frame)
             self.wfile.flush()
 
     def _response_headers(self, resp: httpx.Response) -> None:
@@ -1025,6 +1023,7 @@ def _start_proxy(
     handler_attrs: Mapping[str, object] | None = None,
     metrics_proxy_mode: str = "gateway_auth",
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    upstream_base: str | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -1038,7 +1037,11 @@ def _start_proxy(
     Returns (server, cache, client); the caller runs the server (e.g. in a
     thread) and calls shutdown()/cache.stop()/client.close() on exit.
     """
-    upstream_base = f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
+    upstream = (
+        upstream_base
+        if upstream_base is not None
+        else f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
+    )
     cache = TokenCache(
         token_provider,
         force_refresh_near_expiry=force_refresh_near_expiry,
@@ -1047,7 +1050,7 @@ def _start_proxy(
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
-    client = httpx.Client(base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
+    client = httpx.Client(base_url=upstream, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
 
     handler = cast(
         type[_ProxyHandler],
@@ -1228,4 +1231,5 @@ def start_codex_proxy(
         handler_type=handler,
         force_refresh_near_expiry=True,
         metrics_proxy_mode="codex_runtime",
+        upstream_base=upstream_url,
     )

@@ -1165,7 +1165,6 @@ def json_response(payload):
 
 
 RELAY_SECRET = "relay-test-secret"
-RELAY_SERVER = None
 
 
 @contextmanager
@@ -1190,8 +1189,6 @@ def relay(respond, *, enabled=lambda: True):
     server.RequestHandlerClass.client = client
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    global RELAY_SERVER
-    RELAY_SERVER = server
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"
     finally:
@@ -1360,7 +1357,7 @@ def test_relay_serves_only_the_responses_endpoints():
             assert response.status_code == 404, (method, path)
 
 
-def test_relay_metrics_use_the_workspace_key_and_codex_runtime_mode():
+def test_relay_metrics_use_the_workspace_key_and_codex_runtime_mode(metrics_recorder, monkeypatch):
     with relay(lambda request: json_response({"object": "response"})) as url:
         response = httpx.post(
             url + "/responses",
@@ -1368,10 +1365,13 @@ def test_relay_metrics_use_the_workspace_key_and_codex_runtime_mode():
             headers={"X-UG-Session-Secret": RELAY_SECRET},
         )
         assert response.status_code == 200
-    handler_class = RELAY_SERVER.RequestHandlerClass
-    assert handler_class.metrics_workspace == "https://workspace.example"
-    assert handler_class.metrics_proxy_mode == "codex_runtime"
-    assert handler_class.session_secret == RELAY_SECRET
+    from ucode import metrics
+
+    rows = list(metrics_recorder.pending)
+    duration = [row for row in rows if row[1] == metrics.PROXY_REQUEST_DURATION_MS]
+    assert duration, rows
+    assert "workspace.example" in str(duration[0][0])
+    assert duration[0][3]["proxy_mode"] == "codex_runtime"
 
 
 def test_unrecognized_active_request_is_forwarded_unchanged():
@@ -1390,6 +1390,8 @@ def test_unrecognized_active_request_is_forwarded_unchanged():
     assert response.status_code == 200
     assert len(received) == 1
     assert received[0].read() == b"not json"
+    assert str(received[0].url) == "https://workspace.example/ai-gateway/codex/v1/responses"
+    assert "x-ug-session-secret" not in received[0].headers
 
 
 def test_compaction_keeps_the_gateway_route_and_omits_child_contract():

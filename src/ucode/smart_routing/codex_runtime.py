@@ -108,6 +108,7 @@ class CodexRuntime:
         self._binding = {"body": skill_body, "sha256": self._skill_sha256}
         self._owner_contract = bound_owner_contract(self._binding)
         self._lock = threading.RLock()
+        # dict insertion order doubles as the LRU order for _thread_state.
         self._threads: dict[str, _ThreadState] = {}
         self._thread_roots: dict[str, str | None] = {}
         self._thread_parents: dict[str, str | None] = {}
@@ -227,12 +228,13 @@ class CodexRuntime:
         return _encode_json(transformed)
 
     def _resolve_root(self, thread_id: str, parent_thread_id: str | None) -> str | None:
+        # Conflicts are detected before any mutation: an inconsistent identity only
+        # skips the policy (the request is forwarded unchanged), never poisons state.
         previous_parent = self._thread_parents.get(thread_id, _UNSET)
         if previous_parent is not _UNSET and previous_parent != parent_thread_id:
-            raise ValueError("native Codex thread changed its parent identity")
+            raise _UnrecognizedRequest("native Codex thread changed its parent identity")
         if parent_thread_id == thread_id:
-            raise ValueError("native Codex thread cannot be its own parent")
-        self._thread_parents[thread_id] = parent_thread_id
+            raise _UnrecognizedRequest("native Codex thread cannot be its own parent")
         if parent_thread_id is None:
             root_id = thread_id
         else:
@@ -243,27 +245,30 @@ class CodexRuntime:
             and root_id is not None
             and previous_root not in (None, root_id)
         ):
-            raise ValueError("native Codex thread was rebound to another root")
+            raise _UnrecognizedRequest("native Codex thread was rebound to another root")
         if root_id is None and thread_id in self._thread_roots:
             root_id = self._thread_roots[thread_id]
+        self._thread_parents[thread_id] = parent_thread_id
         self._thread_roots[thread_id] = root_id
         return root_id
 
     def _thread_state(self, thread_id: str, root_id: str | None) -> _ThreadState:
         state = self._threads.get(thread_id)
+        if state is not None and root_id is not None and state.root_id not in (None, root_id):
+            raise _UnrecognizedRequest("native Codex thread state belongs to another root")
         if state is None:
             state = _ThreadState(root_id=root_id)
             self._threads[thread_id] = state
-            self._evict_oldest_threads(thread_id)
         elif state.root_id is None:
             state.root_id = root_id
-        elif root_id is not None and state.root_id != root_id:
-            raise ValueError("native Codex thread state belongs to another root")
+        # LRU: the thread just served moves to the end, so eviction keeps active roots.
+        self._threads[thread_id] = self._threads.pop(thread_id)
+        self._evict_oldest_threads(thread_id)
         return state
 
     def _evict_oldest_threads(self, current: str) -> None:
-        # Insertion order evicts the longest-idle thread, from all three maps at once so
-        # a thread's identity entries can never outlive (or lose) its state.
+        # Evict from all the maps at once, so a thread's identity entries can never
+        # outlive (or lose) its state; an evicted root's activation goes with it.
         while len(self._threads) > _MAX_TRACKED_THREADS:
             oldest = next(iter(self._threads))
             if oldest == current:
@@ -271,6 +276,7 @@ class CodexRuntime:
             self._threads.pop(oldest, None)
             self._thread_roots.pop(oldest, None)
             self._thread_parents.pop(oldest, None)
+            self._activated_roots.discard(oldest)
         while len(self._thread_roots) > _MAX_TRACKED_THREADS:
             self._thread_roots.pop(next(iter(self._thread_roots)))
         while len(self._thread_parents) > _MAX_TRACKED_THREADS:
@@ -763,6 +769,12 @@ class _ResponseTransformer:
         data = b"\n".join(data_values)
         if data == b"[DONE]":
             return frame
+        if event_name not in _EXPECTED_RESPONSE_EVENTS and not any(
+            marker in data for marker in (b'"item"', b'"response"', b'"item_id"')
+        ):
+            # Events the policies never touch (text deltas and other unexpected
+            # names) skip the parse, copy, and comparison entirely.
+            return frame
         try:
             event = _load_json_object(data, "Codex Responses SSE event")
         except ValueError:
@@ -875,6 +887,7 @@ class _ResponseTransformer:
                 raise ValueError("Codex delegation reused a call id for another response item")
             self._state.call_items[call_id] = item_id
             while len(self._state.call_items) > _MAX_TRACKED_CALLS_PER_THREAD:
+                self._state.wait_flags.pop(next(iter(self._state.call_items)), None)
                 self._state.call_items.pop(next(iter(self._state.call_items)))
             if hint is True:
                 self._state.wait_flags[call_id] = True
@@ -996,6 +1009,13 @@ def _rewrite_tool_list(tools: Any) -> bool:
         if not isinstance(tool, dict):
             continue
         _check_wire_namespace(tool)
+        if tool.get("type") in {"function", "custom"} and tool.get("namespace") == NATIVE_NAMESPACE:
+            # Flat declarations carry the namespace on the tool itself.
+            tool["namespace"] = WIRE_NAMESPACE
+            changed = True
+            if tool.get("name") in PLAINTEXT_TOOLS:
+                _remove_message_encrypted_marker(tool)
+            continue
         if tool.get("type") != "namespace" or tool.get("name") != NATIVE_NAMESPACE:
             continue
         tool["name"] = WIRE_NAMESPACE

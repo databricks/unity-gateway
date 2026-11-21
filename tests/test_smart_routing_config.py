@@ -99,7 +99,6 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
-@pytest.mark.parametrize("ENABLE_CODEX_ORCHESTRATOR_RUNTIME", [None, "0", "1"])
 @pytest.mark.parametrize(
     "SMART_ROUTER_CONFIG_VERSION",
     [
@@ -117,7 +116,6 @@ def test_smart_routing_config_cartesian_grid(
     ENABLE_SMART_ROUTING_V2,
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
     ENABLE_SMART_ROUTER_ORCHESTRATOR,
-    ENABLE_CODEX_ORCHESTRATOR_RUNTIME,
     SMART_ROUTER_CONFIG_VERSION,
 ):
     source = {
@@ -126,7 +124,6 @@ def test_smart_routing_config_cartesian_grid(
             (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_V2),
             (ENABLE_SUBAGENT_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_SUBAGENT_ONLY),
             (ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, ENABLE_SMART_ROUTER_ORCHESTRATOR),
-            (ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR, ENABLE_CODEX_ORCHESTRATOR_RUNTIME),
         )
         if value is not None
     }
@@ -151,6 +148,36 @@ def test_smart_routing_config_cartesian_grid(
     assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
     assert applied == original
+
+
+def test_codex_runtime_flag_overrides_an_inherited_value():
+    # Codex's subagent_orch_v2 runtime "1" wins over an inherited "0".
+    applied = {
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V2,
+    }
+    resolved = config.resolve_environment(applied, agent=AGENT_CODEX)
+    assert resolved[ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR] == "1"
+    assert (
+        config.resolve_environment(applied, agent=AGENT_CLAUDE)[
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
+        ]
+        == "0"
+    )
+    # Claude's V1 mapping keeps the runtime off even when the flag is inherited on.
+    applied[ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR] = "1"
+    assert (
+        config.resolve_environment(applied, agent=AGENT_CLAUDE)[
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
+        ]
+        == "0"
+    )
+    assert (
+        config.resolve_environment(applied, agent=AGENT_CODEX)[
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
+        ]
+        == "1"
+    )
 
 
 @pytest.mark.parametrize(

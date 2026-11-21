@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from ucode import agents, codex_config, custom_oauth, managed_files
+from ucode import agents, codex_config, custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.smart_routing import codex_interposer, codex_routing, orchestrator, session_env, v2
 
@@ -1638,19 +1638,18 @@ def test_runtime_launch_keeps_the_relay_alive_until_the_session_exits(monkeypatc
         assert connection.connect_ex(address[0]) != 0
 
 
-@pytest.mark.parametrize("version", ["0.145.0", "unknown"])
-def test_runtime_version_guard_warns_and_launches_without_the_runtime(version, monkeypatch, capsys):
+def test_runtime_relay_derives_its_upstream_from_the_provider_base_url(monkeypatch):
     enable_runtime(monkeypatch)
-    monkeypatch.setattr(codex, "agent_version", lambda binary: version)
     session_env.start_session()
     overlay = codex.render_overlay("https://workspace.example", "test-model")
-    original = json.loads(json.dumps(overlay))
-    with v2._codex_runtime_proxy({"workspace": "https://workspace.example"}, overlay, "codex") as (
-        runtime_active
-    ):
-        assert runtime_active is False
-    assert overlay == original
-    assert "0.160.0" in capsys.readouterr().out
+    with v2._codex_runtime_proxy(
+        {"workspace": "https://workspace.example"}, overlay, "codex"
+    ) as runtime_active:
+        assert runtime_active is True
+        # The relay forwards to the provider's gateway path, not the workspace root.
+        bound = gateway_proxy  # the live client is bound on the handler class
+        assert overlay["model_providers"]["Databricks"]["base_url"].startswith("http://127.0.0.1:")
+        assert bound.UG_SESSION_SECRET_ENV_VAR in os.environ
 
 
 def test_runtime_checks_current_session_controls(monkeypatch):
