@@ -14,11 +14,12 @@ local python = new Mapping<String, Step> {
     check = "uv run ruff format --check {{files}}"
     fix = "uv run ruff format {{files}}"
   }
+  // Check only: lint fixes can change meaning, and with partially staged files they would also
+  // rewrite the unstaged copy. Run `just fix` to apply them.
   ["ruff"] {
     glob = List("src/**/*.py", "tests/**/*.py")
     depends = List("ruff_format")
     check = "uv run ruff check {{files}}"
-    fix = "uv run ruff check --fix {{files}}"
   }
 }
 
