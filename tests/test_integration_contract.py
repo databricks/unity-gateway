@@ -1664,3 +1664,32 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
         '              --vscode-sha256 "$VSCODE_SHA256")'
     ) in harness
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize(
+    ("lint", "unit", "vscode", "passes"),
+    [
+        ("success", "success", "success", True),
+        ("failure", "success", "success", False),
+        ("skipped", "success", "success", False),
+        ("cancelled", "success", "success", False),
+        ("success", "failure", "success", False),
+        ("success", "success", "failure", False),
+    ],
+)
+def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    assert "    needs: [lint, test, vscode-extension]\n" in required
+    script = required.split("        run: |", 1)[1]
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env={**os.environ, "LINT_RESULT": lint, "RESULT": unit, "VSCODE_EXTENSION_RESULT": vscode},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stderr

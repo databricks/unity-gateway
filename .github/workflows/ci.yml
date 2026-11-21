@@ -259,7 +259,7 @@ jobs:
   integration:
     name: Integration
     needs: security-gate
-    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
+    # Integration needs CI secrets, so it runs only after the security gate passes.
     if: ${{ github.event_name != 'merge_group' && needs.security-gate.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
