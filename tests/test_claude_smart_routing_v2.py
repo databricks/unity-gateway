@@ -572,6 +572,7 @@ class TestV2Launch:
         }
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert env["UCODE_AGENT_LABELS_DIR"] == str(v2.APP_DIR / "claude-agent-labels")
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
             assert env[key] == os.environ[key]
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env

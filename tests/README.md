@@ -182,6 +182,16 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
+Native routing components check the streamed parent reply: parallel Agent calls are routed
+once, before they are recorded, and only their `description` becomes
+`<animal> · <model> · <task>` while other arguments, chunk order and non-Agent calls are
+unchanged. Spawn receipts are compared with that heading; cards, lone rows, the agent list
+and completed-task notices show the launched model and flag a mismatch, a missing launch model
+is not persisted, and saved receipts are restored per child on resume. The agent-list
+assertions run only where Claude has that row (2.1.328 and later). Native auto-mode cases
+retain their approval/denial and zero fallback-classification assertions.
+The native status command checks old animal-only mappings, model labels with unchanged
+live progress and counters, and identical activity labels without duplication.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
@@ -1827,8 +1837,8 @@ no-mocking boundary and the Scenario/Expected docstring format.
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
-Native hook and Python component tests cover rate-limit exclusions, model aliases
-(including seven- and eight-digit gateway prefixes), cooldown expiry and clock loss,
+Native hook and Python component tests cover rate-limit exclusions for streamed and direct calls,
+model aliases (including seven- and eight-digit gateway prefixes), cooldown expiry and clock loss,
 conversation clears, failed selections, and resume/disabled behavior.
 `native_claude/test_mod.py` drives a real native background failure with a loopback HTTP 429, then checks the next routed request and
 completed replacement child. These checks use controlled inputs, not live provider quotas.
