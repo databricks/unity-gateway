@@ -30,7 +30,6 @@ jobs:
   # Lint, format and types in one job that reports every failing check, not just the first.
   checks:
     name: Checks
-    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -81,7 +80,6 @@ jobs:
   # so `Unit test times` can record fresh timings and prove nothing was missed.
   unit-linux:
     name: Unit tests · Linux · ${{ matrix.shard }}/12
-    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -115,7 +113,6 @@ jobs:
 
   unit-windows:
     name: Unit tests · Windows · ${{ matrix.shard }}/16
-    needs: security-gate
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
@@ -146,7 +143,6 @@ jobs:
 
   windows-provisioning:
     name: Windows provisioning helpers
-    needs: security-gate
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -181,7 +177,7 @@ jobs:
   claude-mod:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
-    needs: [security-gate, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.live == 'true' }}
     timeout-minutes: 10
     env:
@@ -205,7 +201,6 @@ jobs:
   vscode-extension:
     name: VS Code extension
     runs-on: ubuntu-latest
-    needs: security-gate
     timeout-minutes: 10
     defaults:
       run:
@@ -236,7 +231,6 @@ jobs:
   # Builds the wheel the installers ship and runs its console entry point, without live services.
   package:
     name: Package
-    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -257,9 +251,11 @@ jobs:
   # The live agent and integration suites run in the merge queue, on main, on the schedule and
   # on dispatch; the merge queue gates main on them. Pull requests get the hermetic checks only.
   # In the merge queue, fork PRs' code gets no CI secrets (scripts/ci_select.py).
+  # Jobs that receive CI secrets run only where `live` is true, which is never a pull request, so
+  # PR code meets secrets only after a member's `/integration-test` (fork-integration.yml) and its
+  # own Security Gate. Every other job is secret-free and runs in parallel with the gate.
   changes:
     name: Select live suites
-    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -294,7 +290,7 @@ jobs:
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
-    needs: [security-gate, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.live == 'true' }}
     defaults:
       run:
@@ -404,9 +400,8 @@ jobs:
 
   integration:
     name: Integration
-    needs: [security-gate, changes]
-    # Integration needs CI secrets, so it runs only after the security gate passes.
-    if: ${{ needs.security-gate.result == 'success' && needs.changes.outputs.live == 'true' && !cancelled() }}
+    needs: changes
+    if: ${{ needs.changes.outputs.live == 'true' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 

@@ -846,24 +846,47 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     scan = _workflow("security-scan.yml")
     gate = _workflow("security-gate.yml")
 
-    for workflow in (ci, publish):
-        assert gate_job in workflow
-        jobs = dict(
+    def jobs_of(workflow):
+        return dict(
             re.findall(
                 r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
                 workflow.split("\njobs:\n", 1)[1],
             )
         )
-        gated = {"security-gate"}
-        while True:
-            previous = gated.copy()
-            for name, job in jobs.items():
-                needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
-                if needs and {need.strip() for need in needs[1].split(",")} <= gated:
-                    gated.add(name)
-            if gated == previous:
-                break
-        assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
+
+    # The publisher still runs every job behind the gate.
+    assert gate_job in publish
+    jobs = jobs_of(publish)
+    gated = {"security-gate"}
+    while True:
+        previous = gated.copy()
+        for name, job in jobs.items():
+            needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+            if needs and {need.strip() for need in needs[1].split(",")} <= gated:
+                gated.add(name)
+        if gated == previous:
+            break
+    assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
+
+    # CI runs the gate alongside secret-free jobs. Every job that receives CI secrets runs only
+    # where selection reports `live`, and selection never reports it for a pull request.
+    assert gate_job in ci
+    jobs = jobs_of(ci)
+    with_secrets = {name for name, job in jobs.items() if re.search(r"secrets[.:]", job)}
+    assert with_secrets == {"e2e-shards", "integration"}, with_secrets
+    for name in with_secrets | {"claude-mod"}:
+        assert re.search(r"(?m)^    needs: \[?changes\]?$", jobs[name]), name
+        assert "needs.changes.outputs.live == 'true'" in jobs[name], name
+    selection = jobs["changes"]
+    pull_request_branch = selection.split('if [ "$EVENT_NAME" = pull_request ]; then', 1)[1]
+    pull_request_branch = pull_request_branch.split("elif", 1)[0]
+    assert 'echo "live=false" >> "$GITHUB_OUTPUT"' in pull_request_branch
+    assert "live=true" not in pull_request_branch
+    # Where `live` can be true, the gate does not poll: merge groups, pushes, schedule, dispatch.
+    assert (
+        "if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}"
+        in gate
+    )
     assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
     assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
@@ -991,7 +1014,9 @@ def _run_security_gate(
         if api_error:
             raise api_error
         fetches.append(request.full_url)
-        endpoint, page = request.full_url.rsplit("&page=", 1)
+        url, fresh = request.full_url.rsplit("&fresh=", 1)
+        assert fresh.isdigit()  # every poll bypasses the anonymous response cache
+        endpoint, page = url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
         if page == "1":
@@ -1826,14 +1851,13 @@ def test_merge_group_checks_every_queued_pr(tmp_path, monkeypatch):
         CI_SELECT["queued_prs"]("HEAD~3", "HEAD")
 
 
-def test_integration_requires_a_passing_security_gate():
-    # `!cancelled()` alone would let integration receive secrets after a failed scan.
+def test_integration_never_receives_secrets_on_pull_requests():
     integration = (
         _workflow("ci.yml").split("\n  integration:\n", 1)[1].split("\n  required-tests:\n")[0]
     )
     condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
-    assert "needs.security-gate.result == 'success'" in condition
-    assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
+    assert "needs.changes.outputs.live == 'true'" in condition
+    assert re.search(r"(?m)^    needs: changes$", integration)
 
 
 @pytest.mark.parametrize(
