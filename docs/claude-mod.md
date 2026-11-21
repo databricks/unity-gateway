@@ -29,11 +29,30 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
-`agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
+`agent.spawn` hook applies the selected model, preserving the agent's type, prompt,
 name and permissions. The routing response contains only `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
+
+Claude draws the collapsed parallel-agent header and the task list from the Agent call's
+`description`, which it records when the parent's reply ends. A native `turn.step` hook holds
+a reply that contains Agent calls until the router has answered for each one, then replaces
+only that `description` with `<animal> · <model> · <task>` before the call is recorded, so
+auto-mode review and execution see the same text. The task title comes from the first
+sentence of the call's prompt. The router still receives the parent's original call, and
+`tool.call` routes only a call that did not arrive through a streamed reply.
+The model in that heading is the router's selection, a prediction until the child starts.
+At spawn the host's receipt is compared with it. Routing cards, the agent list and
+completed-task notices read the receipt: they show the launched model and, when it differs
+from the heading, a `⚠ heading said <model>` flag. A host that reports no launch model is
+logged and its labels are not saved. Session-scoped display files keep the receipts across
+resume; the resumed transcript already carries the rewritten description.
+Rewriting a reply voids a server-side auto-mode verdict for it, so Claude's own fallback reviewer
+classifies the rewritten call instead; `CLAUDE_CODE_AUTO_MODE_SERVER=1` keeps the original reply and its
+verdict. An Auto-picker launch keeps the model's own headings: its session model is a picker alias that cannot act as
+the fallback reviewer once the server-side auto-mode verdict is void.
+Native task descriptions, full prompts, agent addresses and permissions are unchanged.
 In subagent-only mode, the native tool description explains that a requested model
 outside the built-in choices does not prevent a general-purpose launch; the router
 selects an available execution model.
