@@ -140,6 +140,7 @@ jobs:
       UV_PYTHON: '3.12'
       UG_TEST_SHARD: ${{ matrix.shard }}/64
       VENV_BIN: .venv/Scripts
+      PYTEST_ADDOPTS: -n 2
     steps:
       - *checkout
       - *python-cache
