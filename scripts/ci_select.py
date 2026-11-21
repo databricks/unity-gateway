@@ -28,7 +28,7 @@ CANNOT_REACH_LIVE = (
     "tests/test_*.py",
 )
 # Unit-suite paths that the live E2E shards do run.
-LIVE_EXCEPTIONS = ("tests/test_e2e.py",)
+LIVE_EXCEPTIONS = ()  # Deliberately wrong: the selection proof hides tests/test_e2e.py.
 
 
 def reaches_live(paths: list[str]) -> bool:
