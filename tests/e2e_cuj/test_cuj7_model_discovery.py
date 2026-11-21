@@ -474,6 +474,17 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         options = route.payload["route_options"]
         assert 1 <= len(options) <= 128
         response = recorder.response_for(route)
+        session.record(
+            f"routing-request-{route.sequence}.json",
+            {
+                "router_name": route.payload.get("route_selector", {}).get("router_name"),
+                "route_options": [
+                    {key: option.get(key) for key in ("model", "harness")} for option in options
+                ],
+                "status_code": response.status_code,
+                "request_id": response.headers.get("x-request-id"),
+            },
+        )
         assert response.status_code == 200, response.payload
         selections = response.payload["route_selection"]
         assert len(selections) == 1, selections
