@@ -600,8 +600,8 @@ The Claude mod entry point has separate native component checks in
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 native hook and Python component tests cover rate-limit cooldown using fixtures.
 `../native_claude/test_mod.py` checks native failure-notice serialization and
-replacement routing after a loopback HTTP 429; it does not establish live gateway quota recovery. The
-existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
+replacement completion after a loopback HTTP 429; it does not establish live gateway
+quota recovery. The existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's native off-feedback selector has component coverage in
 `../test_smart_router_feedback.py` and `../test_codex_metadata.py`: native tool binding,
 explicit-command authorization, original-task selection, 16-character validation,

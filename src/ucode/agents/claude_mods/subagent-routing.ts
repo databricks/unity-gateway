@@ -146,7 +146,7 @@ export const routedModels = {
     return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
       ? resolved : child?.model
   },
-  reset() { children.clear(); rateLimitedUntil.clear() },
+  reset() { children.clear() },
 }
 
 const ANIMALS = [
@@ -236,12 +236,21 @@ export const savedRoutedDisplay = (value: unknown, sessionId: string): RoutedDis
 }
 // Native terminal notices omit Retry-After, so expire this local hint after one minute.
 const RATE_LIMIT_COOLDOWN_MS = 60_000
+const activeRateLimits = (timestamp: number | undefined): string[] => {
+  // Forget confirmed expirations; clock loss must not revive them or clear live entries.
+  if (timestamp !== undefined) {
+    for (const [model, until] of rateLimitedUntil) {
+      if (until <= timestamp) rateLimitedUntil.delete(model)
+    }
+  }
+  return [...rateLimitedUntil.keys()]
+}
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
 const SPINNER_INTERVAL_MS = 100
 
-// The timer is cosmetic: without a clock it is omitted rather than blocking routing.
+// Clock loss omits cosmetic timing and retains known cooldowns.
 async function now($: any): Promise<number | undefined> {
   try {
     return await $.clock.now()
@@ -483,6 +492,7 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
+  rateLimitedUntil.clear()
   const showModel = options.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI !== '0'
   routing.options = options
   routing.autoModels = autoModels
@@ -500,9 +510,7 @@ export const registerSubagentRouting = (
     let routingDisabled = false
     let routingFailed = false
     const timestamp = await now($)
-    const excluded_models = [...rateLimitedUntil]
-      .filter(([, until]) => timestamp !== undefined && until > timestamp)
-      .map(([model]) => model)
+    const excluded_models = activeRateLimits(timestamp)
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
       if (!names.has(tool_use_id)) {
@@ -575,9 +583,8 @@ export const registerSubagentRouting = (
     if (!route && !routingDisabled && (!denial || cooldownDenial)) {
       const current = await now($)
       // The request's exclusions may expire while the routing process is running.
-      const coolingDown = current === undefined
-        ? excluded_models.length > 0 || cooldownDenial
-        : [...rateLimitedUntil.values()].some(until => until > current)
+      const coolingDown = activeRateLimits(current).length > 0
+        || (current === undefined && cooldownDenial)
       if (coolingDown) {
         // Native model aliases cannot establish eligibility when routing fails.
         denial ??= 'Smart Router could not select an available model; retry after cooldown.'
@@ -607,7 +614,7 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const timestamp = route ? await now($) : undefined
-    if (route && timestamp !== undefined && (rateLimitedUntil.get(rateLimitKey(route.model)) ?? 0) > timestamp) {
+    if (route && activeRateLimits(timestamp).includes(rateLimitKey(route.model))) {
       // A failure notice may arrive in flight; never launch that now-limited selection.
       records.delete(e.tool_use_id)
       $.ui.invalidate('ui.render')
@@ -742,6 +749,7 @@ export const registerSubagentRouting = (
     return Box({ flexDirection: 'column', children: [...ids.filter((id) => records.has(id)).map((id) => card($, e, records.get(id)!)), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    // Conversation changes do not reset provider cooldowns for this launch.
     routedModels.reset()
     if (e.reason === 'clear') {
       routedDisplays.records.clear()

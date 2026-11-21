@@ -863,7 +863,7 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
     """Scenario: a routed background child receives an HTTP 429 from a local fixture.
 
     Expected: Claude creates the failure notice itself. The next native Agent call
-    excludes that model and starts the replacement. This is offline contract coverage,
+    excludes that model and completes the replacement. This is offline contract coverage,
     not evidence of live provider quotas or an end-to-end gateway recording.
     """
     failed_model = "claude-opus-4-6"
@@ -967,6 +967,18 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
                 self.server.replacement_received.set()
                 return
             text = json.dumps(request.get("messages", []))
+            for message in request.get("messages", []):
+                content = message.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    notice = block.get("text", "") if isinstance(block, dict) else ""
+                    if (
+                        "<tool-use-id>toolu_replacement_background</tool-use-id>" in notice
+                        and "<status>completed</status>" in notice
+                    ):
+                        self.server.completion_notice = notice
+                        self.server.replacement_completed.set()
             if not self.server.first_issued:
                 self.server.first_issued = True
                 self.stream(model, "toolu_first_background")
@@ -985,6 +997,8 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
     server.replacement_issued = False
     server.failure_notice_request = None
     server.replacement_received = threading.Event()
+    server.replacement_completed = threading.Event()
+    server.completion_notice = None
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
@@ -1012,6 +1026,12 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
                 "requests": server.requests,
             }
 
+            assert server.replacement_completed.wait(timeout=30), {
+                "stderr": session.errors,
+                "requests": server.requests,
+            }
+            assert "<result>Fixture response.</result>" in server.completion_notice
+            (tmp_path / "native-completion-notice.txt").write_text(server.completion_notice)
             routed = [json.loads(line) for line in requests.read_text().splitlines()]
             assert len(routed) == 2, routed
             assert "excluded_models" not in routed[0]
