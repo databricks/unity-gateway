@@ -484,15 +484,27 @@ def _refresh_savings_prices(
 ) -> None:
     """Fetch this launch's per-token rates and cache them for the savings pricer.
 
-    On failure the previous cache stays; without one the estimate stays hidden.
+    On failure unexpired cached rates remain usable; without them the estimate stays hidden.
     """
     try:
-        rates, _reason = fetch_endpoint_rates(workspace, token, model_services)
+        rates, reason = fetch_endpoint_rates(workspace, token, model_services)
+        if reason is not None:
+            metrics.failure(
+                metrics.SAVINGS_PRICE_REFRESH_OPERATION,
+                reason,
+                continued_with_fallback=True,
+                workspace=workspace,
+            )
+            return
         prices = pricing.prices_from_endpoint_rates(rates)
-        if prices:
-            pricing.write_price_cache(price_cache, prices)
-    except Exception:  # noqa: BLE001 - a background refresh must never surface in the agent's TUI
-        return
+        pricing.write_price_cache(price_cache, prices, refreshed_models=model_services)
+    except Exception as error:  # noqa: BLE001 - background failures must not surface in the TUI
+        metrics.failure(
+            metrics.SAVINGS_PRICE_REFRESH_OPERATION,
+            error,
+            continued_with_fallback=True,
+            workspace=workspace,
+        )
 
 
 def _start_savings_price_refresh(

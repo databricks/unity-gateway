@@ -7,16 +7,18 @@ import json
 import os
 import sys
 import threading
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from ucode import custom_oauth
+from tests.conftest import metric_observations
+from ucode import custom_oauth, metrics
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import claude_hooks, pricing, routing, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -1610,3 +1612,102 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [
+        [],
+        [
+            {
+                "model_service": "system.ai.opus",
+                "costs": [
+                    {
+                        "unit": "DBU",
+                        "token_costs": [
+                            {"token_type": "TOKEN_TYPE_INPUT", "cost": "5"},
+                        ],
+                    }
+                ],
+            }
+        ],
+        [
+            {
+                "model_service": "system.ai.opus",
+                "costs": [
+                    {
+                        "unit": "USD",
+                        "token_costs": [
+                            {"token_type": "TOKEN_TYPE_INPUT", "cost": "NaN"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    ],
+    ids=["no-longer-visible", "no-usd-group", "unusable-rate"],
+)
+def test_savings_refresh_removes_unpriced_models(tmp_path, monkeypatch, rates):
+    path = tmp_path / "prices.json"
+    old = pricing.ModelPrice(input=Decimal("5"))
+    pricing.write_price_cache(path, {"system.ai.opus": old, "system.ai.other": old})
+    # Only the HTTP boundary is controlled; exercise the real parser and locked cache update.
+    monkeypatch.setattr(v2, "fetch_endpoint_rates", lambda *_: (rates, None))
+
+    v2._refresh_savings_prices("workspace.example", "test-token", ["system.ai.opus"], path)
+
+    assert pricing.read_price_cache(path) == {"other": old}
+
+
+@pytest.mark.parametrize("failure", ["reason", "exception"])
+def test_savings_refresh_failure_preserves_cache_and_reports_fallback(
+    tmp_path, monkeypatch, metrics_recorder, failure
+):
+    path = tmp_path / "prices.json"
+    pricing.write_price_cache(path, {"opus": pricing.ModelPrice(input=Decimal("5"))})
+    before = path.read_bytes()
+
+    def fetch(*_):
+        if failure == "exception":
+            raise OSError("private transport detail")
+        return [], "HTTP 404: private response detail"
+
+    monkeypatch.setattr(v2, "fetch_endpoint_rates", fetch)
+    v2._refresh_savings_prices("workspace.example", "test-token", ["system.ai.opus"], path)
+
+    assert path.read_bytes() == before
+    [(count, labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+    assert count == 1
+    assert labels["operation"] == "savings_price_refresh"
+    assert labels["continued_with_fallback"] is True
+    assert "private" not in json.dumps(list(metrics_recorder.pending))
+    assert "test-token" not in json.dumps(list(metrics_recorder.pending))
+
+
+def test_savings_refresh_success_is_not_an_error(tmp_path, monkeypatch, metrics_recorder):
+    path = tmp_path / "prices.json"
+    monkeypatch.setattr(
+        v2,
+        "fetch_endpoint_rates",
+        lambda *_: (
+            [
+                {
+                    "model_service": "system.ai.opus",
+                    "costs": [
+                        {
+                            "unit": "USD",
+                            "token_costs": [
+                                {"token_type": "TOKEN_TYPE_INPUT", "cost": "7"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+            None,
+        ),
+    )
+
+    v2._refresh_savings_prices("workspace.example", "test-token", ["system.ai.opus"], path)
+
+    assert pricing.read_price_cache(path) == {"opus": pricing.ModelPrice(input=Decimal("7"))}
+    assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []

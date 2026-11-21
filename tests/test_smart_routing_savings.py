@@ -46,15 +46,22 @@ SUBAGENT_USAGE = {
 @pytest.fixture
 def price_cache(tmp_path) -> Path:
     path = tmp_path / "model-prices.json"
-    pricing.write_price_cache(path, PRICES, now=1.0)
+    pricing.write_price_cache(path, PRICES)
     return path
 
 
 def entry(
-    agent: str, baseline: str | None, served: str, usage: dict, *, before_user_switch: bool = False
+    agent: str,
+    baseline: str | None,
+    served: str,
+    usage: dict,
+    *,
+    before_user_switch: bool = False,
+    routed: bool = True,
 ) -> dict:
     found = {
         "agent": agent,
+        "routed": routed if agent != "main" else False,
         "served": served,
         "before_user_switch": before_user_switch,
         "usage": usage,
@@ -260,6 +267,51 @@ class TestUsageSavings:
             usage.write_text(text, encoding="utf-8")
 
         assert priced(usage, price_cache) is None
+
+
+@pytest.mark.parametrize("first_prompt", [False, True])
+def test_unrouted_children_add_cost_without_attributed_savings(tmp_path, price_cache, first_prompt):
+    entries = [
+        entry("main", OPUS_ID, OPUS_ID, MAIN_USAGE, before_user_switch=True),
+        entry("routed", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
+        entry(
+            "unrouted", SONNET_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True, routed=False
+        ),
+    ]
+    usage = write_usage(tmp_path, entries)
+    assert savings.usage_savings(
+        usage, price_cache=price_cache, baseline_session_start=first_prompt
+    ) == (Decimal("0.183"), Decimal("0.50205"))
+    assert priced(usage, price_cache, first_prompt=first_prompt) == saved("$0.18", "36%")
+
+
+@pytest.mark.parametrize("first_prompt", [False, True])
+def test_unrouted_children_never_use_a_main_model_baseline(tmp_path, price_cache, first_prompt):
+    usage = write_usage(
+        tmp_path,
+        [
+            entry(
+                "pinned", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True, routed=False
+            ),
+        ],
+    )
+    assert priced(usage, price_cache, first_prompt=first_prompt) is None
+
+
+@pytest.mark.parametrize("attribution", [None, "true", 1])
+@pytest.mark.parametrize("first_prompt", [False, True])
+def test_unknown_child_attribution_hides_totals_without_discarding_usage(
+    tmp_path, price_cache, attribution, first_prompt
+):
+    legacy = entry("legacy", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True)
+    if attribution is None:
+        legacy.pop("routed")
+    else:
+        legacy["routed"] = attribution
+    usage = write_usage(tmp_path, [entry("known", OPUS_ID, SONNET_ID, SUBAGENT_USAGE), legacy])
+    original = usage.read_bytes()
+    assert priced(usage, price_cache, first_prompt=first_prompt) is None
+    assert usage.read_bytes() == original
 
 
 class TestSavingsSegment:

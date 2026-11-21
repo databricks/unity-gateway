@@ -1,22 +1,12 @@
 """Price the Claude mod's token sums into a smart-routing savings estimate.
 
-The savings estimate assumes every token the session used, main agent and subagents alike, would
-otherwise have run on the baseline main-agent model::
+Each routed child's tokens are compared with the main model selected when it ran.
+Unrouted children add their actual cost to both totals, without a routing saving.
+First-prompt routing uses the pre-routing main model for main and routed-child work
+until a manual model switch. Unknown usage or child attribution hides the estimate.
 
-    saved = sum(tokens * price(baseline)) - sum(tokens * price(model that served them))
-
-per token class. The mod (``agents/claude_mods/register.ts``) sums each turn request's usage by
-(agent, baseline, served) and sends this module a snapshot after every turn; it persists the
-snapshot atomically and prints one JSON
-line with the segment the mod draws. A main-agent request is its own baseline, and a subagent's is
-the main model in effect when it ran, so switching models with ``/model`` never reprices earlier
-work. Under first-prompt routing, where the router also picks the main model, requests from before
-the user changed the main model are priced against the model selected before submitting the first
-prompt, so a manual selection before routing becomes the baseline. A negative
-result (routing chose pricier models) is shown as a cost increase.
-
-Keep imports lightweight: the mod runs this in a fresh process after every turn,
-and the CLI's usual imports take about a second.
+The mod persists cumulative usage after each turn. Keep imports lightweight because
+it runs this module in a fresh process to price each snapshot.
 """
 
 from __future__ import annotations
@@ -102,17 +92,25 @@ def usage_savings(
         if not isinstance(entry, dict):
             return None
         usage, served = entry.get("usage"), entry.get("served")
-        baseline = entry.get("baseline")
-        if fixed_baseline is not None and entry.get("before_user_switch") is True:
-            baseline = fixed_baseline
+        agent = entry.get("agent")
+        if not isinstance(agent, str) or not agent:
+            return None
         if not isinstance(usage, dict) or not isinstance(served, str) or not served:
             return None
-        if not isinstance(baseline, str) or not baseline:
-            return None
-        # The mod's usage has no cache-write TTL split, and ug launches Claude with 1-hour caching.
+        # Unsplit cache writes use the one-hour TTL configured for UG's Claude launches.
         tokens = TokenUsage.from_message_usage(usage, uncovered_writes_1h=True)
         if not any(tokens):
             continue
+        routed = entry.get("routed")
+        if agent != "main" and not isinstance(routed, bool):
+            return None
+        baseline = entry.get("baseline")
+        if agent != "main" and not routed:
+            baseline = served
+        elif fixed_baseline is not None and entry.get("before_user_switch") is True:
+            baseline = fixed_baseline
+        if not isinstance(baseline, str) or not baseline:
+            return None
         served_key, baseline_key = model_key(served), model_key(baseline)
         costs = _response_costs(prices, served_key, baseline_key, tokens)
         if costs is None:

@@ -31,7 +31,9 @@ from ucode.os_compatibility.file_lock_cross_os import (
     release_file_lock,
 )
 
-_PRICE_CACHE_VERSION = 1
+_PRICE_CACHE_VERSION = 2
+# Launches refresh rates; failed refreshes may use each model's last rates for one day.
+_PRICE_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60
 _MILLION = Decimal(1_000_000)
 _CONTEXT_SUFFIX_RE = re.compile(r"\[[^\]]*\]$")
 _ANTHROPIC_AIGW_PREFIX_RE = re.compile(r"^anthropic-aigw-[0-9a-f]{7,8}-")
@@ -231,22 +233,34 @@ def price_cache_path(app_dir: Path, workspace: str) -> Path:
 
 
 def write_price_cache(
-    path: Path, prices: Mapping[str, ModelPrice], *, now: float | None = None
+    path: Path,
+    prices: Mapping[str, ModelPrice],
+    *,
+    refreshed_models: Iterable[str] = (),
+    now: float | None = None,
 ) -> None:
-    """Merge refreshed rates without losing models fetched by another launch.
+    """Replace successfully refreshed models while preserving other launches' fresh rates.
 
-    ``prices`` is keyed by any spelling of the model id; entries are stored under ``model_key``.
+    Models requested but absent from ``prices`` are no longer priceable. Their old rates must
+    be removed, including when the refresh returned no USD rates at all.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_name(f"{path.name}.lock").open("a") as lock:
         acquire_exclusive_file_lock(lock, timeout=5)
         try:
-            merged = read_price_cache(path) or {}
-            merged.update({model_key(model): price for model, price in prices.items()})
+            fetched_at = time.time() if now is None else now
+            merged = _read_price_entries(path, now=fetched_at)
+            for model in refreshed_models:
+                merged.pop(model_key(model), None)
+            merged.update(
+                {model_key(model): (price, fetched_at) for model, price in prices.items()}
+            )
             payload = {
                 "version": _PRICE_CACHE_VERSION,
-                "fetched_at": now if now is not None else time.time(),
-                "models": {model: _dump_price(price) for model, price in merged.items()},
+                "models": {
+                    model: {**_dump_price(price), "fetched_at": timestamp}
+                    for model, (price, timestamp) in merged.items()
+                },
             }
             fd, temporary = tempfile.mkstemp(
                 dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
@@ -262,24 +276,34 @@ def write_price_cache(
             release_file_lock(lock)
 
 
-def read_price_cache(path: Path) -> dict[str, ModelPrice] | None:
-    """Load prices keyed by ``model_key``."""
+def _read_price_entries(path: Path, *, now: float) -> dict[str, tuple[ModelPrice, float]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        return {}
     if not isinstance(payload, dict) or payload.get("version") != _PRICE_CACHE_VERSION:
-        return None
+        return {}
     models = payload.get("models")
     if not isinstance(models, dict):
-        return None
-    prices = {
-        key: price
-        for key, raw in models.items()
-        if isinstance(key, str)
-        and (price := _load_price(raw)) is not None
-        and (price.input is not None or price.output is not None)
-    }
-    if not prices:
-        return None
-    return prices
+        return {}
+    entries = {}
+    for key, raw in models.items():
+        if not isinstance(key, str) or not isinstance(raw, dict):
+            continue
+        fetched_at = raw.get("fetched_at")
+        if (
+            not isinstance(fetched_at, (int, float))
+            or isinstance(fetched_at, bool)
+            or not 0 <= now - fetched_at < _PRICE_CACHE_MAX_AGE_SECONDS
+        ):
+            continue
+        price = _load_price(raw)
+        if price is not None and (price.input is not None or price.output is not None):
+            entries[key] = (price, fetched_at)
+    return entries
+
+
+def read_price_cache(path: Path, *, now: float | None = None) -> dict[str, ModelPrice] | None:
+    """Load unexpired prices keyed by ``model_key``; unknown ages are not usable."""
+    entries = _read_price_entries(path, now=time.time() if now is None else now)
+    return {key: price for key, (price, _) in entries.items()} or None

@@ -2353,8 +2353,8 @@ Codex retains its CLI control-file checks. No extra TUI sessions or tasks are ad
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 
 Savings estimates and `subagent_orch_savings_v0` have offline component and native
-fixture coverage described in [the component test guide](../README.md).
-The integration suite does not yet cover live endpoint pricing, savings display,
+fixture coverage for child attribution, interrupted accounting, rate expiry, and refresh lifecycle in
+[the component test guide](../README.md). The integration suite does not yet cover live endpoint pricing, savings display,
 or savings accumulation across session off/on.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;

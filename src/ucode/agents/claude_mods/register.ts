@@ -197,9 +197,9 @@ async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions
   if (note) $.ui.log(note, { to: 'debug' });
 }
 
-async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+async function readOrchestratorState($: EngineInterface, options: PluginOptions, snapshot?: Environment): Promise<boolean> {
   if (!options.orchestratorInstructions) return false;
-  const current = await readSessionEnvironment($);
+  const current = snapshot ?? await readSessionEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
@@ -299,7 +299,6 @@ export function register(on: On, options: PluginOptions): void {
   let awaitingModelChoice = false;
   let switchingAuto = false;
   const internalModels: string[] = [];
-  let sessionActive = true;
   let manualOffRequest: ManualOffRequest | undefined;
   let autoSave: AutoSaveRequest | undefined;
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
@@ -340,6 +339,7 @@ export function register(on: On, options: PluginOptions): void {
 
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     sessionActive = false;
+    stopSavingsRefresh();
     if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
     resetChooser();
     internalModels.length = 0;
@@ -362,6 +362,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     async function* next(request: typeof e) {
       const agent = str(request.agentId);
+      const routed = agent !== null && routedModels.model(agent) !== undefined;
       let trackSavings = false;
       let baseline: string | null = null;
       try {
@@ -379,32 +380,41 @@ export function register(on: On, options: PluginOptions): void {
             userSwitched ||= firstMainModel !== null && selected !== firstMainModel;
             dirty = true;
           }
-          if (agent !== null) baseline = selected ?? lastMainModel;
+          if (routed) baseline = selected ?? lastMainModel;
         }
       } catch {
         trackSavings = false;
       }
       const beforeUserSwitch = !userSwitched;
-      const result = yield* forward(request);
+      let completed = false;
       try {
-        const usage = (result as any)?.usage;
-        const served = str(request.model) ?? str(usage?.model);
-        const base = agent === null ? served : baseline;
-        if (trackSavings && await ready($)) {
-          if (!usage) {
-            incompleteUsage = true;
-            dirty = true;
-            setEstimate($, null);
-          } else if (served && base) {
-            accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage);
-            dirty = true;
+        const result = yield* forward(request);
+        completed = true;
+        try {
+          const usage = (result as any)?.usage;
+          const served = str(request.model) ?? str(usage?.model);
+          const base = routed ? baseline : served;
+          // Session controls can change while the model request is in flight.
+          if (trackSavings && await readSavingsState($)) {
+            if (!usage || !served || !base) {
+              markUsageIncomplete($);
+            } else {
+              accumulate(agent ?? 'main', base, served, beforeUserSwitch, routed, usage);
+              dirty = true;
+            }
           }
+        } catch {}
+        return result;
+      } finally {
+        // A thrown or cancelled request may have been billed without returning usage.
+        if (!completed && trackSavings) {
+          try {
+            if (await readSavingsState($)) markUsageIncomplete($);
+          } catch {}
         }
-      } catch {}
-      return result;
+      }
     }
-    const active = Boolean(options.orchestratorInstructions) && isRoutingEnabled(current)
-      && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
+    const active = await readOrchestratorState($, options, current);
     if (active !== orchestratorActive) {
       orchestratorActive = active;
       // A CLI/skill toggle changes the session file without notifying this process.
@@ -913,8 +923,9 @@ export function register(on: On, options: PluginOptions): void {
 }
 
 // Price turn-step usage by the requested model ID; gateway response IDs can drift.
-// Subagents use the current main model as their baseline. First-prompt routing uses
-// the user's pre-routing model until a later manual switch. See docs/claude-mod.md.
+// Only routed children use the main model as their baseline; unrouted children
+// keep their actual cost in both totals. First-prompt routing preserves the user's
+// pre-routing model until a manual switch. See docs/claude-mod.md.
 
 const USAGE_VERSION = 1;
 const PRICER_TIMEOUT_MS = 20_000;
@@ -934,6 +945,7 @@ type Entry = {
   baseline: string;
   served: string;
   before_user_switch: boolean;
+  routed?: boolean;
   usage: Totals;
 };
 // The pricer's segment: a saving, or a cost increase when routing chose pricier models.
@@ -949,6 +961,13 @@ let pricer: string[] = [];
 let usagePath: string | null = null;
 let enabled = false;
 let version: string | null = null;
+let sessionActive = true;
+let savingsRefresh: { cancel: () => void } | undefined;
+
+function stopSavingsRefresh(): void {
+  savingsRefresh?.cancel();
+  savingsRefresh = undefined;
+}
 
 const entries = new Map<string, Entry>();
 // The model selected before first-prompt routing. Seeded at launch, then captured
@@ -961,7 +980,7 @@ let lastMainModel: string | null = null;
 let firstMainModel: string | null = null;
 // Whether the selected main model has changed since the first request.
 let userSwitched = false;
-// Missing usage cannot be recovered by repricing the later session totals.
+// An unmetered response may still be billed; later totals cannot recover its usage.
 let incompleteUsage = false;
 let seeding: Promise<void> | undefined;
 let estimate: Estimate | null = null;
@@ -984,9 +1003,10 @@ function accumulate(
   baseline: string,
   served: string,
   beforeUserSwitch: boolean,
+  routed: boolean | undefined,
   usage: any,
 ): void {
-  const key = JSON.stringify([agent, baseline, served, beforeUserSwitch]);
+  const key = JSON.stringify([agent, baseline, served, beforeUserSwitch, routed]);
   let entry = entries.get(key);
   if (!entry) {
     entry = {
@@ -994,6 +1014,7 @@ function accumulate(
       baseline,
       served,
       before_user_switch: beforeUserSwitch,
+      routed,
       usage: {
         input_tokens: 0,
         output_tokens: 0,
@@ -1025,7 +1046,11 @@ async function loadUsage($: any): Promise<void> {
       const baseline = str(item?.baseline);
       const served = str(item?.served);
       if (agent && baseline && served && item.usage && typeof item.usage === 'object') {
-        accumulate(agent, baseline, served, item.before_user_switch === true, item.usage);
+        const routed = typeof item.routed === 'boolean' ? item.routed : undefined;
+        if (agent !== 'main' && routed === undefined && TOKEN_KEYS.some(key => num(item.usage[key]) > 0)) {
+          incompleteUsage = true;
+        }
+        accumulate(agent, baseline, served, item.before_user_switch === true, routed, item.usage);
         dirty = true;
       }
     }
@@ -1115,6 +1140,12 @@ async function writeAndPrice($: any): Promise<void> {
   }
 }
 
+function markUsageIncomplete($: EngineInterface): void {
+  incompleteUsage = true;
+  dirty = true;
+  setEstimate($, null);
+}
+
 function setEstimate($: EngineInterface, next: Estimate | null): void {
   if (JSON.stringify(next) !== JSON.stringify(estimate)) {
     estimate = next;
@@ -1174,7 +1205,6 @@ function registerSavings(on: On, options: PluginOptions): void {
   enabled = pricer.length > 0 && usagePath !== null;
   version = str(raw.orchestrator_version);
   let savingsActive = false;
-  let refresh: { cancel: () => void } | undefined;
 
   // Price at the end of each turn, off the turn's critical path. The status band holds the
   // event's one unmatched hook, so this one matches every turn instead.
@@ -1185,14 +1215,25 @@ function registerSavings(on: On, options: PluginOptions): void {
   });
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!sessionActive) {
+      stopSavingsRefresh();
+      savingsShown = false;
+      return next(e);
+    }
     savingsActive = await readSavingsState($);
-    // CLI toggles change the file without updating Claude's cached render props.
-    if (enabled && !refresh) {
+    // Only an existing estimate needs redraws for file-based off/on toggles.
+    if (!sessionActive || estimate === null) {
+      stopSavingsRefresh();
+    } else if (!savingsRefresh) {
       try {
-        refresh = $.clock.every(1000, async () => {
+        savingsRefresh = $.clock.every(1000, async () => {
+          if (!sessionActive || estimate === null) {
+            stopSavingsRefresh();
+            return;
+          }
           try {
             const active = await readSavingsState($);
-            if (active !== savingsActive) {
+            if (sessionActive && estimate !== null && active !== savingsActive) {
               savingsActive = active;
               $.ui.invalidate('ui.render');
             }
@@ -1202,7 +1243,7 @@ function registerSavings(on: On, options: PluginOptions): void {
     }
     // Decided before the inner handlers run, so the status band sees it whichever
     // handler Claude Code runs first.
-    savingsShown = savingsActive && estimate !== null;
+    savingsShown = sessionActive && savingsActive && estimate !== null;
     const theirs = await next(e);
     if (!savingsShown) return theirs;
     const ui = $.ui.resolve(e);

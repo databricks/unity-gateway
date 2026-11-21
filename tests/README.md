@@ -538,12 +538,13 @@ The managed Claude parent-schema journey expects numbered GPT models to carry `[
 picker while retaining the catalog's display label.
 
 Savings estimates have component coverage in `test_smart_routing_savings.py`
-and `test_smart_routing_pricing.py` for token baselines, cached rates, and failure handling.
+and `test_smart_routing_pricing.py` for routed-child attribution, token baselines, per-model rate expiry, and failure handling.
+`test_claude_smart_routing_v2.py` covers unavailable USD rates and refresh error telemetry.
 `test_smart_routing_config.py` and `test_smart_router.py` cover opt-in and session controls.
 `test_workspace_selection.py::TestEndpointRatesTransport` covers HTTPS request handling.
 `native_claude/test_mod.py` and `native_claude/test_savings_launch.py` exercise the real
 Claude binary with prepared responses: accounting, model changes, row visibility,
-and nonblocking price refresh. These checks do not establish live endpoint compatibility
+interrupted-step accounting, refresh cancellation, and nonblocking price refresh. These checks do not establish live endpoint compatibility
 or native UX with live model calls.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task

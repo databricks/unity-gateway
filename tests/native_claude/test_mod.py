@@ -270,6 +270,7 @@ def test_savings_mod_tracks_native_main_and_subagent_usage(native_binary, tmp_pa
     child_entry = next(entry for entry in entries if entry["agent"] != "main")
     assert parent_entry == {
         "agent": "main",
+        "routed": False,
         "baseline": main,
         "served": main,
         "before_user_switch": True,
@@ -282,7 +283,8 @@ def test_savings_mod_tracks_native_main_and_subagent_usage(native_binary, tmp_pa
     }
     assert child_entry == {
         "agent": child_entry["agent"],
-        "baseline": main,
+        "routed": routed,
+        "baseline": main if routed else child,
         "served": child,
         "before_user_switch": True,
         "usage": counts[1],

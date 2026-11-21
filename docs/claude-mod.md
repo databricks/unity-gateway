@@ -280,8 +280,11 @@ extra cost, using cached endpoint rates. It replaces the routing status band;
 the prompt hint still shows routing state. An active orchestrator also shows its
 skill version. Rate refresh runs in the background and is scoped to the workspace.
 
-Each subagent's baseline is the main model selected when it runs. First-prompt
-routing keeps the pre-routing baseline until the user changes the main model.
-Later model changes affect subsequent usage only; saved totals survive mod reloads.
-Missing rates, incomplete usage, or a failed usage write hide the estimate without
-blocking model requests. With savings off, no usage is written or rates refreshed.
+Routed children use the main model selected when they run as their baseline.
+Unrouted children contribute their actual cost to both totals, without a routing saving.
+First-prompt routing keeps the pre-routing baseline for main and routed-child work
+until the user changes the main model. Later model changes affect subsequent usage only.
+Saved totals survive mod reloads; legacy child totals without routing attribution hide
+the estimate. Missing or expired rates, incomplete usage (including interrupted requests
+without usage), and failed usage writes also hide it without blocking model requests.
+Rates expire after 24 hours. With savings off, no usage is written or rates refreshed.

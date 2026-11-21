@@ -53,7 +53,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_SAVINGS_V0: {
-        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "1",
@@ -465,3 +465,17 @@ def test_nested_version_scope_overrides_and_restores_identity(monkeypatch, overr
                     raise RuntimeError("stop")
         assert config.auto_mode_enabled()
     assert not config.auto_mode_enabled()
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_savings_preset_changes_only_accounting_from_the_default(agent):
+    default = config.resolve_environment(
+        {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.DEFAULT_ENABLED_VERSION}, agent=agent
+    )
+    enabled = config.resolve_environment(
+        {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_SAVINGS_V0}, agent=agent
+    )
+    assert enabled == {**default, ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "1"}
+    assert v2.smart_routing_enabled(enabled, default=False, agent=agent)
+    assert not v2.first_prompt_routing_enabled(enabled, agent=agent)
+    assert orchestrator.feature_enabled(enabled, agent=agent)
