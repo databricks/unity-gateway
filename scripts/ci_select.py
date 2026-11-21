@@ -4,9 +4,11 @@ The live suites drive real agents with CI secrets against shared workspaces.
 
 - `pull-request <base> <head>`: a PR whose diff cannot reach them gets its feedback from lint and
   the unit suites alone. Every file outside CANNOT_REACH_LIVE reruns everything.
-- `merge-group <head ref> <repository>`: the merge queue runs every live suite for a PR from
-  this repository. A fork PR's queued code never receives CI secrets here, matching its PR runs;
-  members authorize fork integration with `/integration-test`.
+- `merge-group <base> <head> <repository>`: the merge queue runs every live suite when every PR
+  in the group comes from this repository. A fork PR's queued code never receives CI secrets
+  here, matching its PR runs; members authorize fork integration with `/integration-test`.
+
+CI runs this file from the base revision, so a PR cannot change how its own run is selected.
 
 The merge queue, main and scheduled runs therefore run the full live suites for every same-repo
 change, so a wrong entry in CANNOT_REACH_LIVE turns the merge queue red before it reaches main.
@@ -18,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 # Paths whose changes no live journey can observe. Keep this list short and literal. A trailing
@@ -39,7 +42,8 @@ CANNOT_REACH_LIVE = (
 )
 # Unit-suite paths that the live E2E shards do run.
 LIVE_EXCEPTIONS = ("tests/test_e2e.py",)
-MERGE_GROUP_REF = re.compile(r"gh-readonly-queue/.+/pr-(\d+)-[0-9a-f]{40}")
+# The merge queue squashes each PR into a commit whose subject ends in "(#<number>)".
+SQUASH_SUBJECT = re.compile(r"\(#(\d+)\)$")
 
 
 def reaches_live(paths: list[str]) -> bool:
@@ -69,17 +73,38 @@ def changed_paths(base: str, head: str) -> list[str]:
     return [path for path in output.split("\0") if path]
 
 
-def queued_pr_is_from(head_ref: str, repository: str) -> bool:
-    """Whether the merge group's PR comes from ``repository`` rather than a fork."""
-    match = MERGE_GROUP_REF.fullmatch(head_ref)
-    if match is None:
-        raise SystemExit(f"::error::Unrecognized merge group ref {head_ref!r}.")
+def queued_prs(base: str, head: str) -> list[str]:
+    """PR numbers squashed into the merge group, one per commit."""
+    subjects = subprocess.run(
+        ["git", "log", "--reverse", "--format=%s", f"{base}..{head}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    numbers = [SQUASH_SUBJECT.search(subject) for subject in subjects]
+    if not subjects or None in numbers:
+        raise SystemExit(f"::error::Cannot attribute every merge group commit to a PR: {subjects}")
+    return [match[1] for match in numbers]
+
+
+def pr_is_from(number: str, repository: str) -> bool:
+    """Whether PR ``number`` comes from ``repository`` rather than a fork.
+
+    The request is anonymous: hosted runners' job tokens are rejected by the organization's IP
+    allow list. A merge group makes one request per queued PR.
+    """
     api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-    url = f"{api}/repos/{repository}/pulls/{match[1]}"
-    with urllib.request.urlopen(url, timeout=30) as response:
-        pull = json.load(response)
+    url = f"{api}/repos/{repository}/pulls/{number}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            pull = json.load(response)
+    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        raise SystemExit(
+            f"::error::Could not look up PR #{number} ({error}); the merge queue cannot tell "
+            "whether its code may receive CI secrets. Re-queue the PR once GitHub's API answers."
+        ) from error
     head_repo = (pull.get("head") or {}).get("repo") or {}
-    print(f"Merge group for PR #{match[1]} from {head_repo.get('full_name') or 'a deleted fork'}")
+    print(f"PR #{number} comes from {head_repo.get('full_name') or 'a deleted fork'}")
     return head_repo.get("full_name") == repository
 
 
@@ -92,7 +117,8 @@ def main() -> None:
         for path in changed:
             print(f"  {path}")
     elif mode == "merge-group":
-        live = queued_pr_is_from(*args)
+        base, head, repository = args
+        live = all(pr_is_from(number, repository) for number in queued_prs(base, head))
         print(f"live suites {'run' if live else 'skipped: fork code gets no CI secrets'}")
     else:
         raise SystemExit(f"::error::Unknown selection mode {mode!r}.")

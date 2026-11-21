@@ -166,16 +166,23 @@ jobs:
       - id: select
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           REPOSITORY: ${{ github.repository }}
+        # The selector comes from the base revision, so a PR cannot choose its own coverage.
+        # A base without it (before selection existed) runs everything.
         run: |
+          selector="$RUNNER_TEMP/ci_select.py"
           case "$EVENT_NAME" in
-            pull_request) python3 scripts/ci_select.py pull-request "$BASE_SHA" "$HEAD_SHA" ;;
-            merge_group) python3 scripts/ci_select.py merge-group "$MERGE_GROUP_REF" "$REPOSITORY" ;;
-            *) echo "live=true" >> "$GITHUB_OUTPUT" ;;
+            pull_request) mode=(pull-request "$BASE_SHA" "$HEAD_SHA") ;;
+            merge_group) mode=(merge-group "$BASE_SHA" "$HEAD_SHA" "$REPOSITORY") ;;
+            *) mode=() ;;
           esac
+          if [ ${#mode[@]} -gt 0 ] && git show "$BASE_SHA:scripts/ci_select.py" > "$selector"; then
+            python3 "$selector" "${mode[@]}"
+          else
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          fi
 
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}

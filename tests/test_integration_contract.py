@@ -1735,13 +1735,10 @@ def test_merge_queue_runs_every_live_suite():
     integration = _workflow("integration.yml")
     assert "merge_group" not in integration.split("\njobs:\n", 1)[1]
     selection = ci.split("\n  changes:\n", 1)[1].split("\n  e2e-shards:\n", 1)[0]
-    assert 'pull_request) python3 scripts/ci_select.py pull-request "$BASE_SHA" "$HEAD_SHA" ;;' in (
-        selection
-    )
-    assert (
-        'merge_group) python3 scripts/ci_select.py merge-group "$MERGE_GROUP_REF" "$REPOSITORY" ;;'
-    ) in selection
-    assert '*) echo "live=true" >> "$GITHUB_OUTPUT" ;;' in selection
+    # The selector runs from the base revision, so a PR cannot choose its own coverage.
+    assert 'git show "$BASE_SHA:scripts/ci_select.py" > "$selector"' in selection
+    assert 'merge_group) mode=(merge-group "$BASE_SHA" "$HEAD_SHA" "$REPOSITORY") ;;' in selection
+    assert 'echo "live=true" >> "$GITHUB_OUTPUT"' in selection
     for job in ("e2e-shards", "integration"):
         body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
         assert "needs.changes.outputs.live == 'true'" in body
@@ -1777,6 +1774,23 @@ def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
     assert (result.returncode == 0) is passes, result.stderr
 
 
+def _git_repo(path):
+    """A scratch repository whose commits ignore the caller's signing and identity settings."""
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(path), "-c", "commit.gpgsign=false", "-c", "user.name=t"]
+            + ["-c", "user.email=t@t", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    return git
+
+
 @pytest.mark.parametrize(
     ("head_repo", "live"),
     [
@@ -1794,41 +1808,38 @@ def test_merge_group_runs_live_suites_only_for_same_repo_prs(monkeypatch, head_r
         return io.StringIO(json.dumps({"head": {"repo": head_repo}}))
 
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
-    ref = "gh-readonly-queue/main/pr-1824-" + "a" * 40
-    assert CI_SELECT["queued_pr_is_from"](ref, "databricks/unity-gateway") is live
+    assert CI_SELECT["pr_is_from"]("1824", "databricks/unity-gateway") is live
     assert requested == ["https://api.github.com/repos/databricks/unity-gateway/pulls/1824"]
 
 
-def test_merge_group_selection_fails_closed(monkeypatch):
-    with pytest.raises(SystemExit, match="Unrecognized merge group ref"):
-        CI_SELECT["queued_pr_is_from"]("main", "databricks/unity-gateway")
+def test_merge_group_checks_every_queued_pr(tmp_path, monkeypatch):
+    git = _git_repo(tmp_path)
+    for subject in ["claude: First change (#1801)", "codex: Second change (#1802)"]:
+        git("commit", "-q", "--allow-empty", "-m", subject)
+    monkeypatch.chdir(tmp_path)
+    assert CI_SELECT["queued_prs"]("HEAD~2", "HEAD") == ["1801", "1802"]
+    git("commit", "-q", "--allow-empty", "-m", "an unattributed commit")
+    with pytest.raises(SystemExit, match="Cannot attribute every merge group commit"):
+        CI_SELECT["queued_prs"]("HEAD~3", "HEAD")
 
+
+def test_merge_group_selection_fails_closed(monkeypatch):
     def unavailable(url, timeout):
         raise urllib.error.HTTPError(url, 403, "rate limited", {}, None)
 
     monkeypatch.setattr(urllib.request, "urlopen", unavailable)
-    with pytest.raises(urllib.error.HTTPError):
-        CI_SELECT["queued_pr_is_from"](
-            "gh-readonly-queue/main/pr-7-" + "b" * 40, "databricks/unity-gateway"
-        )
+    with pytest.raises(SystemExit, match="Could not look up PR #7"):
+        CI_SELECT["pr_is_from"]("7", "databricks/unity-gateway")
 
 
-def test_pr_selection_reads_whole_paths_from_git(tmp_path):
-    def git(*args):
-        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
-
-    git("init", "-q")
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
+def test_pr_selection_reads_whole_paths_from_git(tmp_path, monkeypatch):
+    git = _git_repo(tmp_path)
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py hk.pkl").write_text("")
     git("add", "-A")
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "spaced")
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        changed = CI_SELECT["changed_paths"]("HEAD~1", "HEAD")
-    finally:
-        os.chdir(cwd)
+    git("commit", "-q", "-m", "spaced")
+    monkeypatch.chdir(tmp_path)
+    changed = CI_SELECT["changed_paths"]("HEAD~1", "HEAD")
     assert changed == ["tests/test_a.py hk.pkl"]
     # Split on whitespace, this one path would read as two skip-listed paths.
     assert CI_SELECT["reaches_live"](changed) is True
