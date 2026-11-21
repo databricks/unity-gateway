@@ -3,6 +3,7 @@
     ".github/**",
     "tests/**/*.py",
     "**/test_*.py",
-    "skills/**/*.md"
+    "skills/**/*.md",
+    "src/ucode/agents/desktop/connector_skills/*.md"
   ]
 }
