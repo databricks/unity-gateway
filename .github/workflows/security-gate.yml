@@ -66,7 +66,10 @@ jobs:
               headers = {"Authorization": f"Bearer {token}"} if token else {}
               pages = []
               while True:
-                  url = f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
+                  # Anonymous responses are cached for up to 60 s; a fresh query sees the scan
+                  # finish when it does.
+                  url = (f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
+                         f"&fresh={time.time_ns()}")
                   request = urllib.request.Request(url, headers=headers)
                   try:
                       with urllib.request.urlopen(request, timeout=30) as response:
@@ -92,9 +95,14 @@ jobs:
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
           request = None
-          for attempt in range(11):
+          # Poll every 10 s for 2 minutes, every 30 s for the next 3, then every 2 minutes up to
+          # the 20-minute deadline. Scans finish in 19 s at p50 and 89 s at p95, the tail being
+          # their resolver's wait for a protected runner. Anonymous pull_request calls share
+          # GitHub's 60/hour limit per runner IP, so a gate makes at most 27 polls.
+          delays = [10] * 12 + [30] * 6 + [60] + [120] * 7
+          for attempt in range(len(delays) + 1):
               if attempt:
-                  time.sleep(120)
+                  time.sleep(delays[attempt - 1])
               if request is None:
                   requests = [run for run in workflow_runs(request_endpoint)
                               if run["event"] == "pull_request"

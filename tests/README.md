@@ -1696,8 +1696,13 @@ triggers alongside workflow reuse. Push, schedule and dispatch skip the gate. Me
 rely on native PR enforcement; live verification remains a
 [rollout blocker](#security-scan-rollout).
 
-`test_security_scan_runs_before_every_job_that_runs_pr_code` checks every CI/publisher job
-has a dependency path through the gate and checks the diff flags that keep a PR's
+`test_security_scan_runs_before_every_job_that_runs_pr_code` checks every publisher job has a
+dependency path through the gate. In CI, the gate runs alongside the secret-free jobs (checks,
+unit shards, VS Code, package), and every job that receives CI secrets runs only where `Select
+live suites` reports `live`, which it never does for a pull request; there the gate does not
+poll. The required `test` and `e2e` checks both require the gate's success, so a failed scan
+still blocks merging (`test_a_failed_security_gate_fails_both_required_checks`). The gate polls with a fresh query string so GitHub's 60-second anonymous response cache
+does not delay it. The test also checks the diff flags that keep a PR's
 `.gitattributes` from hiding changes. The shared scanner test
 `test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
 a name the exfil scan watches. `test_security_scan_parsers_survive_diff_and_path_tricks` checks
@@ -2001,7 +2006,7 @@ requirements, not guarantees supplied by the YAML or component tests.
 Re-running CI reuses its original scan. A maintainer can apply
 `skip-scan:<full 40-character head SHA>` for a reviewed commit, then re-run all scan jobs
 to refresh labels and the failed CI jobs. Later pushes need a new waiver; the old generic
-`skip-security-scan` label has no effect. Gates poll every two minutes for up to 20 minutes
+`skip-security-scan` label has no effect. Gates poll every 10 seconds for 2 minutes, every 30 seconds for the next 3, then every 2 minutes up to 20 minutes (at most 27 polls)
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.

@@ -846,24 +846,47 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     scan = _workflow("security-scan.yml")
     gate = _workflow("security-gate.yml")
 
-    for workflow in (ci, publish):
-        assert gate_job in workflow
-        jobs = dict(
+    def jobs_of(workflow):
+        return dict(
             re.findall(
                 r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
                 workflow.split("\njobs:\n", 1)[1],
             )
         )
-        gated = {"security-gate"}
-        while True:
-            previous = gated.copy()
-            for name, job in jobs.items():
-                needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
-                if needs and {need.strip() for need in needs[1].split(",")} <= gated:
-                    gated.add(name)
-            if gated == previous:
-                break
-        assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
+
+    # The publisher still runs every job behind the gate.
+    assert gate_job in publish
+    jobs = jobs_of(publish)
+    gated = {"security-gate"}
+    while True:
+        previous = gated.copy()
+        for name, job in jobs.items():
+            needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+            if needs and {need.strip() for need in needs[1].split(",")} <= gated:
+                gated.add(name)
+        if gated == previous:
+            break
+    assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
+
+    # CI runs the gate alongside secret-free jobs. Every job that receives CI secrets runs only
+    # where selection reports `live`, and selection never reports it for a pull request.
+    assert gate_job in ci
+    jobs = jobs_of(ci)
+    with_secrets = {name for name, job in jobs.items() if re.search(r"secrets[.:]", job)}
+    assert with_secrets == {"e2e-shards", "integration"}, with_secrets
+    for name in with_secrets:
+        assert re.search(r"(?m)^    needs: \[?changes\]?$", jobs[name]), name
+        assert "needs.changes.outputs.live == 'true'" in jobs[name], name
+    selection = jobs["changes"]
+    pull_request_branch = selection.split('if [ "$EVENT_NAME" = pull_request ]; then', 1)[1]
+    pull_request_branch = pull_request_branch.split("elif", 1)[0]
+    assert 'echo "live=false" >> "$GITHUB_OUTPUT"' in pull_request_branch
+    assert "live=true" not in pull_request_branch
+    # Where `live` can be true, the gate does not poll: merge groups, pushes, schedule, dispatch.
+    assert (
+        "if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}"
+        in gate
+    )
     assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
     assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
@@ -891,13 +914,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 11),
-        ([[{"status": "queued", "conclusion": None}]], False, 11),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 11),
-        ([[{"display_title": "Security Scan #8"}]], False, 11),
-        ([[{"event": "pull_request"}]], False, 11),
-        ([[{"event": "workflow_dispatch"}]], False, 11),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 11),
+        ([[]], False, 27),
+        ([[{"status": "queued", "conclusion": None}]], False, 27),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 27),
+        ([[{"display_title": "Security Scan #8"}]], False, 27),
+        ([[{"event": "pull_request"}]], False, 27),
+        ([[{"event": "workflow_dispatch"}]], False, 27),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 27),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -962,6 +985,7 @@ def _run_security_gate(
         "created_at": "2026-11-13T00:00:00Z",
     } | (request_change or {})
     calls = {"request": 0, "scan": 0}
+    fetches = []
 
     def pages(which, index):
         changes = responses[min(index, len(responses) - 1)]
@@ -989,17 +1013,28 @@ def _run_security_gate(
         assert timeout == 30
         if api_error:
             raise api_error
-        endpoint, page = request.full_url.rsplit("&page=", 1)
+        fetches.append(request.full_url)
+        url, fresh = request.full_url.rsplit("&fresh=", 1)
+        assert fresh.isdigit()  # every poll bypasses the anonymous response cache
+        endpoint, page = url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
         if page == "1":
             calls[which] += 1
         return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
 
+    slept = []
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
-    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("time.sleep", slept.append)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
+    # Polling cadence may change, but a gate that never sees the scan waits exactly 20 minutes,
+    # and one gate run stays well under the 60 requests/hour anonymous limit. This fixture answers
+    # every list with two pages, so 27 polls cost at most 56 fetches here (28 with one-page lists).
+    assert sum(slept) <= 20 * 60
+    if max(calls.values()) == 27:
+        assert sum(slept) == 20 * 60
+    assert len(fetches) <= 56
     return result.value.code, max(calls.values())
 
 
@@ -1015,7 +1050,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 11
+    assert code != 0 and calls == 27
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -1026,7 +1061,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 11)
+    assert calls == (1 if matches_commit else 27)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
@@ -1621,13 +1656,16 @@ def test_required_e2e_enforces_integration_result(
     event, selection, live, package, claude_mod, integration_result, passes
 ):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    assert "    needs: [changes, package, claude-mod, e2e, integration]\n" in required
+    assert (
+        "    needs: [security-gate, changes, package, claude-mod, e2e, integration]\n" in required
+    )
     script = required.split("        run: |", 1)[1]
     result = subprocess.run(
         ["/bin/bash", "-c", textwrap.dedent(script)],
         env={
             **os.environ,
             "EVENT_NAME": event,
+            "GATE_RESULT": "success",
             "SELECTION_RESULT": selection,
             "LIVE": live,
             "PACKAGE_RESULT": package,
@@ -1748,8 +1786,8 @@ def test_required_tests_enforces_lint_result(failing, bad):
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
     assert (
-        "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
-        "vscode-extension]\n" in required
+        "    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, "
+        "windows-provisioning, vscode-extension]\n" in required
     )
     script = required.split("        run: |", 1)[1]
     names = [
@@ -1764,6 +1802,7 @@ def test_required_tests_enforces_lint_result(failing, bad):
         **dict.fromkeys(names, "success"),
         "COVERAGE_RESULT": "skipped",
         "EVENT_NAME": "pull_request",
+        "GATE_RESULT": "success",
     }
     if failing:
         env[failing] = bad
@@ -1836,14 +1875,13 @@ def test_merge_group_selection_fails_closed(monkeypatch):
         CI_SELECT["pr_is_from"]("7", "databricks/unity-gateway")
 
 
-def test_integration_requires_a_passing_security_gate():
-    # `!cancelled()` alone would let integration receive secrets after a failed scan.
+def test_integration_never_receives_secrets_on_pull_requests():
     integration = (
         _workflow("ci.yml").split("\n  integration:\n", 1)[1].split("\n  required-tests:\n")[0]
     )
     condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
-    assert "needs.security-gate.result == 'success'" in condition
-    assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
+    assert "needs.changes.outputs.live == 'true'" in condition
+    assert re.search(r"(?m)^    needs: changes$", integration)
 
 
 @pytest.mark.parametrize(
@@ -1994,6 +2032,7 @@ def test_merge_queue_requires_unit_shard_coverage(event, coverage):
         **dict.fromkeys(names, "success"),
         "EVENT_NAME": event,
         "COVERAGE_RESULT": coverage,
+        "GATE_RESULT": "success",
     }
     result = subprocess.run(
         ["/bin/bash", "-c", textwrap.dedent(script)],
@@ -2005,3 +2044,29 @@ def test_merge_queue_requires_unit_shard_coverage(event, coverage):
     )
     passes = coverage == "success" or (coverage == "skipped" and event == "pull_request")
     assert (result.returncode == 0) is passes, result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the rollups run bash on Linux")
+@pytest.mark.parametrize("rollup", ["required-tests", "required-e2e"])
+@pytest.mark.parametrize("gate", ["failure", "cancelled", "skipped"])
+def test_a_failed_security_gate_fails_both_required_checks(rollup, gate):
+    ci = _workflow("ci.yml")
+    body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {rollup}:\n", 1)[1], maxsplit=1)[0]
+    assert re.search(r"(?m)^    needs: \[security-gate, ", body)
+    names = re.findall(r"(?m)^          ([A-Z_]+): \$\{\{ needs\.", body)
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "EVENT_NAME": "pull_request",
+        "LIVE": "true",
+    }
+    env["GATE_RESULT"] = gate
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(body.split("        run: |", 1)[1])],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode != 0
