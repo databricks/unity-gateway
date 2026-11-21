@@ -10558,7 +10558,8 @@ class TestAutoCleanupLifecycle:
         ):
             first = runner.invoke(app, ["revert"])
             assert first.exit_code == 1, first.output
-            assert "injected native write failure" in first.output
+            # The message may wrap at any width, depending on the temporary path length.
+            assert "injected native write failure" in " ".join(first.output.split())
             assert state_mod.get_claude_auto_revert_targets() == {"ug-auto-old": "team.models.main"}
             assert (
                 not private.exists()

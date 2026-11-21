@@ -358,7 +358,8 @@ def test_native_feedback_exemptions_skip_prompt_and_isaac(inline_feedback, monke
     popen.assert_not_called()
 
 
-@pytest.mark.parametrize("thread_id", [str(uuid4()), None, {}])
+# A fixed id keeps collection identical across pytest-xdist workers.
+@pytest.mark.parametrize("thread_id", ["5b0f6c1e-2d47-4b8e-9a3c-7e1d2f4a6b90", None, {}])
 def test_native_rejects_unbound_sessions(native_router, inline_feedback, thread_id):
     controls, run, popen, _ = inline_feedback
     with pytest.raises(ValueError, match="only to this session's root"):
