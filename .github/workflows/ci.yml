@@ -140,7 +140,14 @@ jobs:
       UG_TEST_SHARD: ${{ matrix.shard }}/48
       VENV_BIN: .venv/Scripts
     steps:
-      - *checkout
+      # The commit's files without a Git checkout: on Windows runners checkout spends 6-10 s
+      # starting Git processes, and the unit tests read no Git metadata.
+      - name: Download this commit
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: curl -fsSL "https://codeload.github.com/$REPOSITORY/tar.gz/$SHA" | tar xz --strip-components=1
       - *python-cache
       - *setup-uv
       - *install
