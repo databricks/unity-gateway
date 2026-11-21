@@ -1693,3 +1693,13 @@ def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_integration_requires_a_passing_security_gate():
+    # `!cancelled()` alone would let integration receive secrets after a failed scan.
+    integration = (
+        _workflow("ci.yml").split("\n  integration:\n", 1)[1].split("\n  required-tests:\n")[0]
+    )
+    condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
+    assert "needs.security-gate.result == 'success'" in condition
+    assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
