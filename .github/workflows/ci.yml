@@ -290,6 +290,7 @@ jobs:
   integration:
     name: Integration
     needs: [security-gate, changes]
+    # Integration needs CI secrets, so it runs only after the security gate passes.
     if: ${{ needs.security-gate.result == 'success' && needs.changes.outputs.live == 'true' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
