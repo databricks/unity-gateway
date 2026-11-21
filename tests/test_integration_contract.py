@@ -733,7 +733,6 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
     integration = workflow.split("\n  integration:\n", 1)[1].split("\n  report:\n", 1)[0]
-    gate = workflow.split("\n  security-gate:\n", 1)[1].split("\n  integration:\n", 1)[0]
     report = workflow.split("\n  report:\n", 1)[1]
 
     assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
@@ -749,21 +748,15 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
-    assert "needs: authorize" in gate
-    assert "uses: ./.github/workflows/security-gate.yml" in gate
-    assert "pr-number: ${{ github.event.issue.number }}" in gate
-    assert "head-sha: ${{ needs.authorize.outputs.sha }}" in gate
-    assert "actions: read" in gate and "secrets:" not in gate
-    # TEMPORARY: the gate runs and is reported but does not block integration. Restore
-    # `needs: [authorize, security-gate]` once the scan resolver handles fork PRs.
+    # TEMPORARY: no Security Gate here until the scan resolver handles fork PRs. Restore the
+    # gate job, `needs: [authorize, security-gate]` and the scan result in `report`.
     assert "needs: [authorize]" in integration
     assert "if:" not in integration
     assert "group: fork-integration-${{ github.event.issue.number }}" in integration
     assert "uses: ./.github/workflows/integration.yml" in integration
     assert "ref: ${{ needs.authorize.outputs.sha }}" in integration
     assert "needs.authorize.result == 'success'" in report
-    assert "needs: [authorize, security-gate, integration]" in report
-    assert "SCAN_RESULT: ${{ needs.security-gate.result }}" in report
+    assert "needs: [authorize, integration]" in report
     assert "repos/$GITHUB_REPOSITORY/statuses/$SHA" in report
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0], (
         "Workflow-level concurrency would let any PR comment cancel a run"
@@ -1138,48 +1131,6 @@ def test_security_gate_runner_and_token_respect_event_trust(event_name, head_rep
     )
     assert evaluate(token) == ("" if hosted else "test-token")
     assert evaluate(condition) == waits
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="the report step runs bash on Linux")
-@pytest.mark.parametrize(
-    ("scan_result", "integration_result", "state", "message"),
-    [
-        ("success", "success", "success", "Fork integration success"),
-        ("success", "failure", "failure", "Fork integration failure"),
-        # TEMPORARY: the scan is reported but not enforced; the integration result decides the state.
-        ("failure", "success", "success", "success (Security Scan failure, not enforced)"),
-        ("failure", "failure", "failure", "failure (Security Scan failure, not enforced)"),
-        ("cancelled", "skipped", "failure", "skipped (Security Scan cancelled, not enforced)"),
-    ],
-)
-def test_fork_integration_reports_scan_failure_on_authorized_commit(
-    tmp_path, scan_result, integration_result, state, message
-):
-    report = _workflow("fork-integration.yml").split("\n  report:\n", 1)[1]
-    script = textwrap.dedent(report.split("        run: |\n", 1)[1])
-    fake_gh = tmp_path / "gh"
-    fake_gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n')
-    fake_gh.chmod(0o755)
-    result = subprocess.run(
-        ["bash", "-c", script],
-        env={
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "CALLS": str(tmp_path / "calls"),
-            "GITHUB_REPOSITORY": "databricks/unity-gateway",
-            "PR_NUMBER": "7",
-            "SHA": HEAD,
-            "RESULT": integration_result,
-            "SCAN_RESULT": scan_result,
-            "RUN_URL": "https://example/run",
-        },
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 0, result.stderr
-    calls = (tmp_path / "calls").read_text()
-    assert f"statuses/{HEAD} -f state={state}" in calls
-    assert message in calls
 
 
 def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():

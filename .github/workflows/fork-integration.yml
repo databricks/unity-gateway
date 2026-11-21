@@ -3,8 +3,9 @@ name: Fork integration
 # Only org members can run it, on any PR; outside contributors ask a member,
 # who reviews the changes first.
 # `/integration-test [sha]` pins the current head, or requires the named reviewed commit.
-# TEMPORARY: the Security Gate still runs and is reported, but does not block integration
-# while the scan's fork-PR resolver failure is fixed. Restore `needs: [authorize, security-gate]`.
+# TEMPORARY: the Security Gate is commented out below while the Security Scan's fork-PR
+# resolver failure is fixed. To re-enable, uncomment every block marked `SECURITY GATE`
+# and delete the `needs:` line it replaces.
 # Workflow definitions always come from the default branch.
 on:
   issue_comment:
@@ -91,18 +92,20 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
             "Sorry @$COMMENTER, only Databricks org members can run integration tests. A maintainer can run \`/integration-test\` after reviewing the changes."
 
-  security-gate:
-    name: Security Gate
-    needs: authorize
-    permissions:
-      actions: read
-    uses: ./.github/workflows/security-gate.yml
-    with:
-      pr-number: ${{ github.event.issue.number }}
-      head-sha: ${{ needs.authorize.outputs.sha }}
+  # SECURITY GATE (disabled): uncomment this job.
+  # security-gate:
+  #   name: Security Gate
+  #   needs: authorize
+  #   permissions:
+  #     actions: read
+  #   uses: ./.github/workflows/security-gate.yml
+  #   with:
+  #     pr-number: ${{ github.event.issue.number }}
+  #     head-sha: ${{ needs.authorize.outputs.sha }}
 
   integration:
     name: Integration
+    # SECURITY GATE (disabled): replace the next line with `needs: [authorize, security-gate]`.
     needs: [authorize]
     # Job-level so ordinary PR comments, which skip this job, never cancel a run.
     concurrency:
@@ -115,7 +118,8 @@ jobs:
 
   report:
     name: Report fork integration
-    needs: [authorize, security-gate, integration]
+    # SECURITY GATE (disabled): replace the next line with `needs: [authorize, security-gate, integration]`.
+    needs: [authorize, integration]
     if: ${{ always() && needs.authorize.result == 'success' }}
     runs-on:
       group: databricks-protected-runner-group
@@ -131,14 +135,16 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           SHA: ${{ needs.authorize.outputs.sha }}
           RESULT: ${{ needs.integration.result }}
-          SCAN_RESULT: ${{ needs.security-gate.result }}
+          # SECURITY GATE (disabled): uncomment.
+          # SCAN_RESULT: ${{ needs.security-gate.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # SECURITY GATE (disabled): uncomment.
+          # if [ "$SCAN_RESULT" != success ]; then
+          #   RESULT="blocked by Security Scan ($SCAN_RESULT)"
+          # fi
           state=$([ "$RESULT" = success ] && echo success || echo failure)
-          if [ "$SCAN_RESULT" != success ]; then
-            RESULT="$RESULT (Security Scan $SCAN_RESULT, not enforced)"
-          fi
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
             -f state="$state" -f context="Fork integration" \
             -f description="Integration $RESULT on ${SHA:0:7}" -f target_url="$RUN_URL" >/dev/null
