@@ -2,6 +2,8 @@
   "include": [
     ".github/**",
     "tests/**/*.py",
-    "**/test_*.py"
+    "**/test_*.py",
+    "skills/**/*.md",
+    "src/ucode/agents/desktop/connector_skills/*.md"
   ]
 }

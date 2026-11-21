@@ -41,6 +41,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
 ROUTING_BOX_WIDTH = 73
+PROMPT_PREVIEW_CHARS = 240
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 _EXPLANATION_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}")
@@ -57,6 +58,19 @@ def format_switch_message(model: str, reason: str | None) -> str:
     return _format_box(lines)
 
 
+def format_prompt_preview(prompt: str | None) -> str | None:
+    """Keep notices and retained logs within the same first-line disclosure bound."""
+    if prompt is None:
+        return None
+    line = next((line for line in prompt.splitlines() if line.strip()), "")
+    preview = " ".join(line.split())
+    if not preview:
+        return None
+    if len(preview) > PROMPT_PREVIEW_CHARS:
+        return preview[: PROMPT_PREVIEW_CHARS - 3] + "..."
+    return preview
+
+
 def format_subagent_message(
     model: str,
     reason: str | None,
@@ -65,15 +79,11 @@ def format_subagent_message(
     prompt: str | None = None,
 ) -> str:
     """Format a routed-subagent notice without the first-prompt disclaimer."""
+    preview = format_prompt_preview(prompt)
     lines = [
         "Using Unity Gateway Smart Router - Subagent",
-        *(
-            [f"Subagent : {subagent_name}"]
-            if subagent_name
-            else [f"Prompt : {prompt}"]
-            if prompt
-            else []
-        ),
+        *([f"Subagent : {subagent_name}"] if subagent_name else []),
+        *([f"Prompt preview : {preview}"] if preview else []),
         f"Selected Model : {model}",
         *([f"Reason : {reason}"] if reason else []),
     ]
@@ -160,7 +170,7 @@ class SubagentNoticeConfig:
         return _nonempty_string(tool_input.get(self.name_field))
 
     def prompt(self, tool_input: dict[str, Any]) -> str | None:
-        return _nonempty_string(tool_input.get(self.prompt_field))
+        return _plaintext_string(tool_input.get(self.prompt_field))
 
     def display_model(self, decision_model: str, routed_model: str) -> str:
         if self.display_model_mapper is None:

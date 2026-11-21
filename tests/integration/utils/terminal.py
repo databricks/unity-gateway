@@ -54,15 +54,17 @@ def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
 
 
 def _normalize_smart_router_env_guard(command: str) -> str:
-    whitespace_guard = (
-        "if ([string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
-        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)) "
-    )
-    if command.startswith(whitespace_guard):
-        command = (
-            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-            + command.removeprefix(whitespace_guard)
+    for check in ("IsNullOrWhiteSpace", "IsNullOrEmpty"):
+        guard = (
+            f"if ([string]::{check}($env:UCODE_SMART_ROUTER_PYTHON) -or "
+            f"[string]::{check}($env:UCODE_SESSION_ENV_FILE)) "
         )
+        if command.startswith(guard):
+            command = (
+                "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+                + command.removeprefix(guard)
+            )
+            break
     return re.sub(
         r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
         r'\1Write-Output "ENV_UNSET"\2',

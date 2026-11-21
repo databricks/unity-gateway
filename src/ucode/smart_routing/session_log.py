@@ -17,12 +17,16 @@ from typing import Any
 
 from ucode.config_io import APP_DIR
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
-from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw_box
+from ucode.smart_routing.routing import (
+    ROUTING_BOX_WIDTH,
+    RoutingDecision,
+    draw_box,
+    format_prompt_preview,
+)
 
 SCHEMA_VERSION = 1
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600
-PREVIEW_CHARS = 160
 TABLE_MAX_ROWS = 20
 TABLE_TASK_COLUMN = 2
 TABLE_MODEL_COLUMN = 3
@@ -61,9 +65,7 @@ def append_decision(
         path = session_log_path(harness, payload.get("session_id"))
         if path is None:
             return
-        preview = next((line.strip() for line in task_text.splitlines() if line.strip()), None)
-        if preview is not None and len(preview) > PREVIEW_CHARS:
-            preview = preview[:PREVIEW_CHARS] + "…"
+        preview = format_prompt_preview(task_text)
         original = payload.get("tool_input")
         original = original if isinstance(original, dict) else {}
         record = {
