@@ -1,5 +1,13 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import {
+  endStatusBandTurn,
+  registerStatusBand,
+  settleStartupValidation,
+  showStatusBand,
+  skipStartupValidation,
+  startStartupValidation,
+  warnUnsupportedModelList,
+} from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -13,6 +21,8 @@ import {
   RECIPE_FIELD,
   SMART_ROUTER_OFF_REPLY,
   SMART_ROUTER_ON_REPLY,
+  OMNI_LAUNCH_MODE,
+  UNSUPPORTED_MODEL_LIST_WARNING,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
@@ -269,6 +279,64 @@ async function setRouting(
   }
 }
 
+const VALIDATION_POLL_MS = 100;
+// Longer than the Python check's 4 s deadline, after which it never turns routing off.
+const VALIDATION_WAIT_MS = 5000;
+
+async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
+  if (!startStartupValidation()) return;
+  try {
+    const controls = await $.env.get('UCODE_SESSION_ENV_FILE');
+    if (typeof controls !== 'string' || !controls.endsWith('.json')) {
+      settleStartupValidation();
+      $.ui.invalidate('ui.render');
+      return;
+    }
+    let complete = false;
+    let waited = 0;
+    let poll: { cancel: () => void } | undefined;
+    const finish = (): void => {
+      complete = true;
+      settleStartupValidation();
+      poll?.cancel();
+      $.ui.invalidate('ui.render');
+    };
+    const check = async (): Promise<void> => {
+      if (complete) return;
+      let result: any;
+      try {
+        result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'));
+      } catch {}
+      if (complete) return;
+      if (!result || !('routing_disabled' in result)) {
+        if (waited >= VALIDATION_WAIT_MS) finish();
+        return;
+      }
+      complete = true;
+      if (result.routing_disabled === true) {
+        warnUnsupportedModelList();
+        try {
+          await setRouting($, options, false, false);
+        } catch {}
+        if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) {
+          $.ui.log(SMART_ROUTER_OFF_REPLY);
+          $.ui.log(UNSUPPORTED_MODEL_LIST_WARNING);
+        }
+      }
+      finish();
+    };
+    await check();
+    if (!complete) {
+      poll = $.clock.every(VALIDATION_POLL_MS, () => {
+        waited += VALIDATION_POLL_MS;
+        return check();
+      });
+    }
+  } catch {
+    settleStartupValidation();
+  }
+}
+
 async function runInternalModel($: EngineInterface, internalModels: string[], model: string) {
   internalModels.push(model);
   try {
@@ -303,6 +371,7 @@ export function register(on: On, options: PluginOptions): void {
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
+  if (options.startupValidation !== '1') skipStartupValidation();
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   function clearAutoSave(): void {
@@ -319,15 +388,20 @@ export function register(on: On, options: PluginOptions): void {
 
   on('session.start', async ($, e, next) => {
     sessionActive = true;
-    if (auto) {
-      await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
-      if (auto.staticModel) await initStaticVariant($, auto);
-      await customAutoRow($, auto, await mainModel($, auto));
-      await syncAutoRouting($, options, auto, routingSync);
-    }
-    if (launchedEnabled) {
-      const current = await readEnvironment($);
-      await setRouting($, options, isRoutingEnabled(current), false);
+    try {
+      if (auto) {
+        await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
+        if (auto.staticModel) await initStaticVariant($, auto);
+        await customAutoRow($, auto, await mainModel($, auto));
+        await syncAutoRouting($, options, auto, routingSync);
+      }
+      if (launchedEnabled) {
+        const current = await readEnvironment($);
+        await setRouting($, options, isRoutingEnabled(current), false);
+      }
+    } finally {
+      // After the launch write, so a disabling result cannot be overwritten by it.
+      await watchStartupValidation($, options);
     }
     return next(e);
   });

@@ -2004,3 +2004,14 @@ That last case runs on Linux (the store is a CA bundle file) and on the Windows 
 adds the CA to the certificate store and sets `UG_TEST_OS_TRUSTED_CA_DIR`; it is skipped on macOS
 and on a Windows machine without that variable. No test goes through a real TLS-inspection proxy,
 and `ug upgrade` is not run against one.
+
+## Smart Router startup validation
+
+The check runs only with `UG_STARTUP_ROUTE_VALIDATION=1`; launch and mod tests cover the default
+without it (no request, band from the first paint). `test_startup_validation.py` covers the background check with a controlled transport: an
+unsupported model list turns routing off for the session; HTTP errors, malformed responses,
+exceptions and a result past the 4 s deadline leave routing on; result-write failures are
+isolated. The smart-routing launch
+tests cover the resolved Claude model/harness list and provider.
+Claude's native mod tests cover the band hold, the result handling, the unsupported warning and its one-turn hide, the 5 s fallback, and the two transcript log lines (`Smart Router is off` and the warning) logged only when `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
+These component tests do not establish live Gateway or classifier compatibility.

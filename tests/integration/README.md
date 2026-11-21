@@ -1,5 +1,9 @@
 # Integration tests
 
+Startup compatibility validation has component coverage in `../test_startup_validation.py`,
+the smart-routing launch tests, and the native Claude mod suite. They control the validation
+response or transport; no live Gateway routes:validate or classifier journey is claimed.
+
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
