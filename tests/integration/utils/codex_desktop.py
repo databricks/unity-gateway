@@ -36,6 +36,30 @@ def configure_databricks_token_profile(session, workspace: str) -> str:
     return profile
 
 
+def wait_for_macos_composer(app, timeout: float = 120) -> None:
+    """Recheck the visible skip confirmation once before entering a task."""
+    start = time.monotonic()
+    retried = False
+    while True:
+        tree = app.read_tree()
+        dialog = any(row[0] == "AXHeading" and "Skip setup?" in row[1:] for row in tree)
+        if not dialog and any(row[0] == "AXTextArea" for row in tree):
+            return
+        now = time.monotonic()
+        if now >= start + timeout:
+            app.session.record(
+                "chatgpt-tree.json", {"waiting_for": ["AXTextArea", None], "tree": tree}
+            )
+            raise AssertionError("chatgpt never showed AXTextArea None")
+        if not retried and now >= start + 10:
+            buttons = [row for row in tree if row[0] == "AXButton" and "Go to ChatGPT" in row[1:]]
+            if dialog and len(buttons) == 1:
+                app.session.record("chatgpt-skip-recheck.json", {"tree": tree})
+                app.click("AXButton", "Go to ChatGPT")
+                retried = True
+        time.sleep(2)
+
+
 def finish_windows_readiness_check(app, timeout: float = 60) -> None:
     """Setup restarts the app-server; finish a failed readiness check before sending any task."""
     error = "Couldn’t check Windows setup"
