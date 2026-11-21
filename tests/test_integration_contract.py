@@ -1679,3 +1679,46 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
         '              --vscode-sha256 "$VSCODE_SHA256")'
     ) in harness
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
+
+
+@pytest.mark.parametrize(
+    ("args", "workspace", "workers"),
+    [
+        # The unit CI job passes only --ignore=tests/test_e2e.py, which pytest keeps out of args.
+        ([], "", None),
+        (["tests/test_cli.py"], "", None),
+        (["tests/test_e2e.py"], "", 0),
+        (["tests/test_e2e.py::TestUnityGateway"], "", 0),
+        ([], "https://workspace.example", 0),
+    ],
+)
+def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers):
+    from types import SimpleNamespace
+
+    from tests import conftest
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
+    assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
+
+
+@pytest.mark.parametrize(
+    ("args", "parallel"),
+    [
+        # Deselect every live test: the hook decides the worker count before collection.
+        (["tests/test_e2e.py", "-k", "no_such_test"], False),
+        (["tests/test_jsonc.py"], True),
+    ],
+)
+def test_pytest_discovers_the_serial_live_hook(args, parallel):
+    env = {key: value for key, value in os.environ.items() if key != "UCODE_TEST_WORKSPACE"}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (0, 5), result.stdout + result.stderr
+    assert ("workers [" in result.stdout) is parallel, result.stdout
