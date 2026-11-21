@@ -160,7 +160,8 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert "shasum -a 256 -c" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -178,7 +179,8 @@ def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
     assert "-ne $env:CHATGPT_APP_SHA256" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn"
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn",
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_skill_calls_mcp",
     }
 
 
@@ -199,7 +201,8 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
     assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 

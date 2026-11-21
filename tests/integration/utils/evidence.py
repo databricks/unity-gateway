@@ -424,9 +424,9 @@ def codex_routing_display_for_task(screen: str, marker: str, *, orchestrator_on:
         if "Using Unity Gateway Smart Router - Subagent" not in line:
             continue
         end = index + 1
-        while end < min(index + 12, len(lines)) and "└" not in lines[end]:
+        while end < len(lines) and re.fullmatch(r"\s*│.*│\s*", lines[end]):
             end += 1
-        if end >= len(lines) or "└" not in lines[end]:
+        if end >= len(lines) or not re.fullmatch(r"\s*└─+┘\s*", lines[end]):
             continue
         text = "".join("".join(lines[index : end + 1]).split())
         if "SelectedModel:" not in text or ("[orchestratoron]" in text) != orchestrator_on:

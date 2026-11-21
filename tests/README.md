@@ -82,6 +82,10 @@ HTTP 200 through the relay. Its dedicated protected Linux CI job maps `CODEX_OAU
 to `CODEX_ACCESS_TOKEN`; `test_cuj_session.py` covers credential redaction from evidence.
 File tools, desktop configure/revert, desktop inference, and browser sign-in are not covered.
 
+The shared integration redactor masks both original and stripped credentials, even after
+removal from the session environment. Component checks cover padded bearer and Codex tokens
+in stdin/stdout/stderr artifacts and leave ordinary whitespace intact for blank credentials.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
@@ -1400,6 +1404,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_codex_custom_azure_openai_mps` | Select custom Azure OpenAI MPS through the configure picker, then launch Codex without a provider override | Saved provider; completed TUI file task on the selected GPT deployment; normal exit; no routing |
 | `test_ug_configure_claude_bedrock_mps` | Select the restricted Bedrock MPS in the real configure picker; launch Claude without an explicit model | Saved provider in status; Sonnet 4.6 is selected from the Sonnet + Haiku allow-list and completes a TUI file task; normal exit |
 | `test_ug_configure_claude_bedrock_mantle_mps` | Select the Mantle MPS in the real configure picker; launch Claude on Opus 5.5 without a provider override | Saved provider and Claude provider header; completed TUI file task on the selected model; normal exit; no routing |
+| `test_ug_codex_desktop_macos_skill_calls_mcp`, `test_ug_codex_desktop_windows_skill_calls_mcp` | Reuse the existing CI credential in an isolated CLI token profile, configure Codex with --use-pat, add web-search MCP, and invoke a local skill | Verified CLI identity before configure/add; hidden reference token on screen and in a completed managed-model desktop turn; successful native MCP receipts with the hidden query in that same turn. Uses the saved-token path with inherited bearer overrides removed; browser OAuth and token refresh are not covered |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_codex_bedrock_runtime_mps` | Select the Bedrock Runtime MPS in the real configure picker; launch Codex on its GPT-5.6 inference profile without a provider override | Saved provider in status; completed TUI file task on the selected model; normal exit; no routing |
@@ -1580,6 +1585,27 @@ and managed-settings coverage remain deferred; a green installation check alone
 does not establish a successful live task.
 Required macOS and Windows jobs open the pinned ChatGPT desktop app after managed `ug configure`, send a
 prompt through the GUI, and assert the exact answer, model, and completed turn from the app's rollout.
+Both also invoke a user-authored `$CODEX_HOME/skills` skill whose reference file supplies a hidden
+query and completion token, after registering `system.ai.web_search` with `ug mcp add`.
+The token must render in the GUI and complete on the managed model; native successful MCP receipts
+must carry the query in that same Codex Desktop/Databricks turn. The pinned app versions are
+macOS `26.1103.31037` and Windows `26.1103.7773.0`; harness-latest also selects the macOS journey.
+`test_codex_desktop_evidence.py` rejects false positives from failed/missing calls, unrelated
+turns/queries/servers, wrong origins/models and echoed or incomplete answers. Skill/MCP evidence
+selects the single root rollout and retains any child rollouts in the artifacts. Missing or
+ambiguous roots fail, and successful child evidence cannot satisfy a failed or incomplete root.
+These are offline parser checks; live desktop coverage requires the native CI jobs.
+Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
+in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
+The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;
+the tests only read that native setting. Missing or partial TOML is polled until the setup
+deadline; component checks cover recovery and deadline failure. Windows artifacts retain early MCP/setup diagnostics.
+If the app's setup restart leaves a sandbox-readiness error, the journey uses the visible
+Try again control once before sending the prompt; a persistent error fails. No task is resubmitted.
+Offline submission checks reject assistant echoes, unrelated prompts and non-message events.
+The native MCP approval is answered with Allow once only when the dialog names web_search on
+the expected server with the exact hidden query. Offline checks reject other tools, servers,
+queries and ambiguous approval controls.
 The `All integration tests` check requires every selected integration job to pass, including
 both managed-config lanes for full/live runs; full coverage does not depend on a label or
 a manual request.
@@ -1774,7 +1800,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys verify that `smart_routing.enabled` alone leaves Claude's first prompt unrouted and turns on Smart Router Orchestrator for Claude, and that Codex's managed default stays unrouted and unorchestrated; the Claude managed-default skill-toggle cases and a Codex launch-only opt-out case cover those paths; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
-| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; GUI inference on macOS and Windows by `integration/test_ug_codex_desktop_macos.py` and `integration/test_ug_codex_desktop_windows.py`; desktop tracing and Linux GUI are not |
+| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; GUI inference, local skill execution and MCP web-search invocation on macOS and Windows by `integration/test_ug_codex_desktop_macos.py` and `integration/test_ug_codex_desktop_windows.py`; UC skill downloads through the desktop, connector browser sign-in, desktop tracing and Linux GUI are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
 | Other agents | Live scope is Claude Code and Codex, plus a non-blocking OpenCode headless case |
 | OpenCode `--model` / `-m` | Unit/component tests cover raw CLI forwarding, configured model selection, launch arguments, rejection of unknown models before starting the native process, and the existing failure when no default model is available; no dedicated live integration journey |

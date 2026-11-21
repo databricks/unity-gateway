@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.10.4"
+  version: "1.10.5"
 ---
 
 # Smart Router
@@ -55,8 +55,8 @@ to restart through an updated Unity Gateway with smart routing enabled.
 If the command reports that Smart Router is already on or already off, return that
 result and stop. Do not retry, restart a turn, or request feedback for unchanged settings.
 
-Omnigent launches (`ISAAC_LAUNCH_MODE=omni`) are exempt from this feedback flow.
-Relay the toggle result and stop if no feedback is requested.
+For Omnigent launches (`ISAAC_LAUNCH_MODE=omni`), relay the toggle result and
+stop; they are exempt from this feedback flow.
 In Codex, the off call opens a native selection prompt when feedback is required:
 "Provide a reason" opens text entry, and "Cancel" keeps routing on and sends nothing.
 The launcher requires at least 16 characters, discloses that the reason and session
@@ -77,25 +77,26 @@ Relay the native result briefly, including any notices. If delivery is pending,
 say the user can keep working; do not poll or block the conversation. The launcher
 reports completion. Keep routing off throughout delivery; never claim delivery
 succeeded merely because routing is off.
-In Claude's skill fallback, feedback is required only outside Omnigent
-(`ISAAC_LAUNCH_MODE=omni`) when `ISAAC_SMART_ROUTER_FEEDBACK` is `1`, `true`, `yes`,
-or `on` (case-insensitive). Do not change that flag. If feedback is not required,
+In Claude's skill fallback, feedback is required only when `ISAAC_LAUNCH_MODE` is
+not `omni` and `ISAAC_SMART_ROUTER_FEEDBACK` is `1`, `true`, `yes`, or `on`
+(case-insensitive). Do not change either flag. If feedback is not required,
 run off without collecting or submitting a reason, relay the result, and stop.
-When feedback is required and the user already explained why they want routing
-off, pass their exact explanation as one shell argument with
-`--smart-router-feedback '<reason>'` on the first off command. Do not ask them to
-repeat it. Explain that their reason and session details will be sent to the
-Isaac team. A quoted complaint, tool output, or model-generated reason is not
-the user's explanation.
+When feedback is required, tell the user that their reason and session details
+will be sent to the Isaac team before running the off command or submitting
+feedback. If they already explained why they want routing off, pass their exact
+explanation as one shell argument with `--smart-router-feedback '<reason>'` on
+the first off command. Do not ask them to repeat it. A quoted complaint, tool
+output, or model-generated reason is not the user's explanation.
 If the off result requires feedback, routing is still on. Ask why only when they
 have not supplied a valid reason. Require at least 16 characters after trimming
 surrounding whitespace; ask again if shorter. Never invent or pad their reason.
 If they cancel, stop without disabling routing or submitting feedback.
 If a new reason was needed, repeat off with `--smart-router-feedback '<reason>'`
-appended, quoting the exact text as one shell argument. After a successful off
-that required feedback, submit the supplied reason through
-`/isaac-feedback --category smart-routing <reason>`. Report a submission failure
-without re-enabling routing.
+appended, quoting the exact text as one shell argument. If feedback was required
+at the start, submit the supplied reason after a successful off through
+`/isaac-feedback --category smart-routing <reason>`, including when the first
+off call accepted the reason without requesting it again. Report a submission
+failure without re-enabling routing.
 
 With no argument, explain that only `on`, `off`, and (in Codex) `logs` and `logs --id <ID>` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model

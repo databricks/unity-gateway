@@ -1,6 +1,6 @@
 # A UI Automation client for one app: `tree PID` prints its windows' enabled, on-screen elements,
-# `invoke PID TYPE NAME` activates the first matching one (any name if NAME is empty), `type PID TEXT`
-# types into the focused control with real keystrokes and presses Enter, and `screenshot PID PATH`
+# `invoke PID TYPE NAME` activates the first matching one (any name if NAME is empty), `type PID TEXT [enter]`
+# types into the focused control with real keystrokes and optionally presses Enter, and `screenshot PID PATH`
 # saves a PNG of its window.
 param(
     [Parameter(Mandatory)][ValidateSet('tree', 'invoke', 'type', 'screenshot')][string]$Command,
@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
 $automation = [Windows.Automation.AutomationElement]
 $byProcess = [Windows.Automation.PropertyCondition]::new($automation::ProcessIdProperty, $ProcessId)
@@ -58,7 +59,8 @@ switch ($Command) {
         $focused = $automation::FocusedElement.Current.ProcessId
         if ($focused -ne $ProcessId) { throw "Keyboard focus is in process $focused, not $ProcessId" }
         # SendKeys treats these characters as commands unless braced.
-        [Windows.Forms.SendKeys]::SendWait(($First -replace '[+^%~(){}\[\]]', '{$0}') + '{ENTER}')
+        [Windows.Forms.SendKeys]::SendWait(($First -replace '[+^%~(){}\[\]]', '{$0}'))
+        if ($Second -eq 'enter') { [Windows.Forms.SendKeys]::SendWait('{ENTER}') }
     }
     'screenshot' {
         $rect = $windows[0].Current.BoundingRectangle

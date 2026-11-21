@@ -245,18 +245,25 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 
 
 @pytest.mark.parametrize(
-    ("missing_message", "extra_command"),
+    ("missing_message", "extra_command", "write_output", "selected"),
     [
-        ('"SMART_ROUTER_ENV_UNSET"', ""),
-        ("'MISSING_SMART_ROUTER_ENV'", ""),
-        ('"$(Remove-Item important.txt)"', ""),
-        ('"SMART_ROUTER_ENV_UNSET"', "; Remove-Item important.txt"),
-        ("'MISSING_SMART_ROUTER_ENV'", "; Remove-Item important.txt"),
+        ('"SMART_ROUTER_ENV_UNSET"', "", "Write-Output ", "›"),
+        ("'MISSING_SMART_ROUTER_ENV'", "", "", "\ufffd"),
+        ('"$(Remove-Item important.txt)"', "", "Write-Output ", "\ufffd"),
+        ('"$(Remove-Item important.txt)"', "", "", "›"),
+        ('"SMART_ROUTER_ENV_UNSET"', "; Remove-Item important.txt", "Write-Output ", "›"),
+        ("'MISSING_SMART_ROUTER_ENV'", "; Remove-Item important.txt", "", "\ufffd"),
+    ],
+    ids=[
+        "quoted-output",
+        "bare-conpty",
+        "interpolated-output",
+        "interpolated-bare",
+        "appended-output",
+        "appended-bare",
     ],
 )
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
-@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
-@pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
 @pytest.mark.parametrize(
     "condition",
     [
@@ -1252,12 +1259,19 @@ def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
 
 
 @pytest.mark.parametrize("orchestrator_on", [False, True])
-def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on):
+@pytest.mark.parametrize("tall_card", [False, True], ids=["short", "wrapped-preview-and-reason"])
+def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on, tall_card):
     suffix = " [orchestrator on]" if orchestrator_on else ""
+    preview = (
+        "│ Prompt preview : first wrapped line │\n" + "│ continued preview │\n" * 3
+        if tall_card
+        else ""
+    )
+    reason = "│ Reason : first wrapped line │\n" + "│ continued reason │\n" * 5 if tall_card else ""
     panel = (
         "│ Using Unity Gateway Smart Router - Subagent │\n"
         f"│ Subagent : subagent{suffix} │\n"
-        "│ Selected Model : gpt-6-luna │\n└──────────┘\n"
+        f"{preview}│ Selected Model : gpt-6-luna │\n{reason}└──────────┘\n"
     )
     prompt = '› Spawn a child with task name "ug_subagent_ab12"\n  and return its answer.\n\n'
     screen = prompt + panel + "› Ask Codex to do anything\n"
@@ -1277,6 +1291,21 @@ def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on
     )
     assert not evidence.codex_routing_display_for_task(
         screen, "ug_subagent_ab12", orchestrator_on=not orchestrator_on
+    )
+
+
+@pytest.mark.parametrize("interruption", ["", "› A later task\n", "│ missing right border\n"])
+def test_codex_routing_display_requires_a_complete_uninterrupted_card(interruption):
+    screen = (
+        '› Spawn a child with task name "ug_subagent_ab12"\n\n'
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        "│ Subagent : subagent │\n"
+        "│ Selected Model : gpt-6-luna │\n"
+        + interruption
+        + ("└──────────┘\n" if interruption else "")
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=False
     )
 
 
