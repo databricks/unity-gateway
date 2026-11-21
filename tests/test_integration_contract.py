@@ -891,13 +891,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 22),
-        ([[{"status": "queued", "conclusion": None}]], False, 22),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 22),
-        ([[{"display_title": "Security Scan #8"}]], False, 22),
-        ([[{"event": "pull_request"}]], False, 22),
-        ([[{"event": "workflow_dispatch"}]], False, 22),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 22),
+        ([[]], False, 16),
+        ([[{"status": "queued", "conclusion": None}]], False, 16),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 16),
+        ([[{"display_title": "Security Scan #8"}]], False, 16),
+        ([[{"event": "pull_request"}]], False, 16),
+        ([[{"event": "workflow_dispatch"}]], False, 16),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 16),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -962,6 +962,7 @@ def _run_security_gate(
         "created_at": "2026-11-13T00:00:00Z",
     } | (request_change or {})
     calls = {"request": 0, "scan": 0}
+    fetches = []
 
     def pages(which, index):
         changes = responses[min(index, len(responses) - 1)]
@@ -989,6 +990,7 @@ def _run_security_gate(
         assert timeout == 30
         if api_error:
             raise api_error
+        fetches.append(request.full_url)
         endpoint, page = request.full_url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
@@ -1002,9 +1004,10 @@ def _run_security_gate(
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
     # Polling cadence may change; the 20-minute deadline may not grow, and one gate run must stay
-    # far below the 60 requests/hour anonymous limit (each poll fetches at most two pages).
+    # well under the 60 requests/hour anonymous limit. This fixture answers every list with two
+    # pages, so 16 polls cost at most 34 fetches here (17 when each list fits one page).
     assert sum(slept) <= 20 * 60
-    assert sum(calls.values()) * 2 <= 50
+    assert len(fetches) <= 34
     return result.value.code, max(calls.values())
 
 
@@ -1020,7 +1023,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 22
+    assert code != 0 and calls == 16
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -1031,7 +1034,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 22)
+    assert calls == (1 if matches_commit else 16)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
