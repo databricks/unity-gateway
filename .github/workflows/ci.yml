@@ -98,6 +98,9 @@ jobs:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
     needs: security-gate
+    # Hermetic, but two minutes of the real Claude CLI: it runs wherever pull requests do not,
+    # including fork PRs' merge groups, and `e2e` requires it there.
+    if: ${{ github.event_name != 'pull_request' }}
     timeout-minutes: 10
     env:
       UV_INDEX_URL: https://pypi.org/simple
@@ -148,8 +151,35 @@ jobs:
             exit 1
           }
 
-  # Pull requests run the live suites only when their diff can reach them, and the merge queue
-  # runs them all for same-repo PRs (scripts/ci_select.py); push, schedule and dispatch run them all.
+  # Builds the wheel the installers ship and runs its console entry point, without live services.
+  package:
+    name: Package
+    needs: security-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      UV_INDEX_URL: https://pypi.org/simple
+    steps:
+      # The wheel's version comes from Git tags, so fetch history (without file blobs).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+      - name: Run the built wheel's entry points
+        run: |
+          wheel=("$RUNNER_TEMP"/dist/*.whl)
+          case "${wheel[0]##*/}" in
+            *-0.0.0-*) echo "::error::The wheel fell back to version 0.0.0: ${wheel[0]##*/}"; exit 1 ;;
+          esac
+          uvx --python 3.12 --from "${wheel[0]}" ug --help > /dev/null
+          uvx --python 3.12 --from "${wheel[0]}" ucode --help > /dev/null
+
+  # The live agent and integration suites run in the merge queue, on main, on the schedule and
+  # on dispatch; the merge queue gates main on them. Pull requests get the hermetic checks only.
+  # In the merge queue, fork PRs' code gets no CI secrets (scripts/ci_select.py).
   changes:
     name: Select live suites
     needs: security-gate
@@ -159,6 +189,7 @@ jobs:
       live: ${{ steps.select.outputs.live }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'merge_group' }}
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -166,20 +197,19 @@ jobs:
       - id: select
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           REPOSITORY: ${{ github.repository }}
         # The selector comes from the base revision, so a PR cannot choose its own coverage.
         # A base without it (before selection existed) runs everything.
         run: |
           selector="$RUNNER_TEMP/ci_select.py"
-          case "$EVENT_NAME" in
-            pull_request) mode=(pull-request "$BASE_SHA" "$HEAD_SHA") ;;
-            merge_group) mode=(merge-group "$BASE_SHA" "$HEAD_SHA" "$REPOSITORY") ;;
-            *) mode=() ;;
-          esac
-          if [ ${#mode[@]} -gt 0 ] && git show "$BASE_SHA:scripts/ci_select.py" > "$selector"; then
-            python3 "$selector" "${mode[@]}"
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo "Live suites run in the merge queue before this change reaches main."
+            echo "live=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = merge_group ] &&
+            git show "$BASE_SHA:scripts/ci_select.py" > "$selector"; then
+            python3 "$selector" merge-group "$BASE_SHA" "$HEAD_SHA" "$REPOSITORY"
           else
             echo "live=true" >> "$GITHUB_OUTPUT"
           fi
@@ -324,18 +354,31 @@ jobs:
   required-e2e:
     name: e2e
     if: ${{ !cancelled() }}
-    needs: [changes, e2e, integration]
+    needs: [changes, package, claude-mod, e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all agent and integration tests to pass, unless selection skipped them
+      - name: Require the package and, outside pull requests, every live suite to pass
         env:
+          EVENT_NAME: ${{ github.event_name }}
           SELECTION_RESULT: ${{ needs.changes.result }}
           LIVE: ${{ needs.changes.outputs.live }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CLAUDE_MOD_RESULT: ${{ needs.claude-mod.result }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
+        # The result check is the last command: a failed `&&` chain earlier in a step does not stop it.
         run: |
-          test "$SELECTION_RESULT" = success && test "$RESULT" = success && {
-            test "$INTEGRATION_RESULT" = success ||
-              { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped; }
-          }
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo "::notice::Live agent and integration suites run in the merge queue before this change reaches main."
+          elif [ "$LIVE" = false ]; then
+            echo "::notice::Live suites skipped: fork code gets no CI secrets in the merge queue."
+          fi
+          test "$SELECTION_RESULT" = success && test "$PACKAGE_RESULT" = success &&
+            test "$RESULT" = success && {
+              test "$CLAUDE_MOD_RESULT" = success ||
+                { test "$EVENT_NAME" = pull_request && test "$CLAUDE_MOD_RESULT" = skipped; }
+            } && {
+              test "$INTEGRATION_RESULT" = success ||
+                { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped; }
+            }
