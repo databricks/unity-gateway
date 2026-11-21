@@ -1748,8 +1748,8 @@ def test_required_tests_enforces_lint_result(failing, bad):
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
     assert (
-        "    needs: [checks, unit-linux, unit-windows, windows-provisioning, vscode-extension]\n"
-        in required
+        "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
+        "vscode-extension]\n" in required
     )
     script = required.split("        run: |", 1)[1]
     names = [
@@ -1759,7 +1759,12 @@ def test_required_tests_enforces_lint_result(failing, bad):
         "PROVISIONING_RESULT",
         "VSCODE_EXTENSION_RESULT",
     ]
-    env = {**os.environ, **dict.fromkeys(names, "success")}
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "COVERAGE_RESULT": "skipped",
+        "EVENT_NAME": "pull_request",
+    }
     if failing:
         env[failing] = bad
     result = subprocess.run(
@@ -1872,7 +1877,10 @@ def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers
 def test_pytest_discovers_the_serial_live_hook(args, parallel):
     # The child run must not inherit this CI shard or overwrite its coverage report.
     skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    # Two workers: enough to show the hook left unit runs parallel without starting one child
+    # worker per CPU inside every parent xdist worker.
     env = {key: value for key, value in os.environ.items() if key not in skip}
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
         cwd=Path(__file__).parent.parent,
@@ -1950,3 +1958,49 @@ def test_unit_shard_spec_rejects_bad_values(spec):
 
     with pytest.raises(ValueError):
         shard.parse(spec)
+
+
+def test_checks_run_exactly_the_just_lint_commands():
+    """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
+    justfile = (Path(__file__).parent.parent / "justfile").read_text()
+    checks = _workflow("ci.yml").split("\n  checks:\n", 1)[1].split("\n  unit-linux:\n", 1)[0]
+    for recipe, command in (
+        ("ruff-check", "ruff check src/ tests/"),
+        ("ruff-format-check", "ruff format --check src/ tests/"),
+        ("ty", "ty check src/"),
+    ):
+        assert f"{recipe}:\n    uv run {command}\n" in justfile, recipe
+        assert f'"$VENV_BIN/{command.split()[0]}" {command.split(" ", 1)[1]}' in checks, recipe
+    assert "lint: ruff-check ruff-format-check ty\n" in justfile
+
+
+@pytest.mark.parametrize("coverage", ["success", "skipped", "failure"])
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+def test_merge_queue_requires_unit_shard_coverage(event, coverage):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    script = required.split("        run: |", 1)[1]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "EVENT_NAME": event,
+        "COVERAGE_RESULT": coverage,
+    }
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    passes = coverage == "success" or (coverage == "skipped" and event == "pull_request")
+    assert (result.returncode == 0) is passes, result.stderr

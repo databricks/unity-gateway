@@ -119,10 +119,10 @@ jobs:
             "$VENV_BIN/python" -m pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
       - &unit-report
         name: Upload this shard's timings
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: unit-${{ runner.os }}-${{ matrix.shard }}
+          name: unit-shard-${{ runner.os }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/shard-report.json
@@ -177,11 +177,12 @@ jobs:
         shell: pwsh
         run: ./tests/mdm/windows-provision.Tests.ps1
 
-  # Records per-file timings from main's full run and checks every shard's slice added up to the
-  # whole collected suite. Commit the artifact to tests/unit_test_times.json when shards drift.
+  # Checks every shard's slice added up to the whole collected suite and records per-file timings.
+  # It runs wherever pull requests do not, so the merge queue proves coverage before main, and
+  # `test` requires it there. Commit main's artifact to tests/unit_test_times.json when shards drift.
   unit-test-times:
     name: Unit test times
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     needs: [unit-linux, unit-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -189,7 +190,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          pattern: unit-*
+          pattern: unit-shard-*
           path: ${{ runner.temp }}/shards
       - run: python3 scripts/unit_test_times.py "$RUNNER_TEMP/shards" "$RUNNER_TEMP/unit_test_times.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -441,12 +442,14 @@ jobs:
   required-tests:
     name: test
     if: ${{ !cancelled() }}
-    needs: [checks, unit-linux, unit-windows, windows-provisioning, vscode-extension]
+    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require checks, every unit shard and the VS Code extension tests to pass
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          COVERAGE_RESULT: ${{ needs.unit-test-times.result }}
           LINT_RESULT: ${{ needs.checks.result }}
           RESULT: ${{ needs.unit-linux.result }}
           WINDOWS_RESULT: ${{ needs.unit-windows.result }}
@@ -455,7 +458,10 @@ jobs:
         run: |
           test "$LINT_RESULT" = success && test "$RESULT" = success &&
             test "$WINDOWS_RESULT" = success && test "$PROVISIONING_RESULT" = success &&
-            test "$VSCODE_EXTENSION_RESULT" = success
+            test "$VSCODE_EXTENSION_RESULT" = success && {
+              test "$COVERAGE_RESULT" = success ||
+                { test "$EVENT_NAME" = pull_request && test "$COVERAGE_RESULT" = skipped; }
+            }
 
   required-e2e:
     name: e2e
