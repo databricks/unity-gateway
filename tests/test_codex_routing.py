@@ -313,7 +313,9 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
+            codex_routing.RoutingDecision(
+                model="databricks-gpt-5-5", explanation={"summary": "unused display metadata"}
+            ),
             None,
         )
 
@@ -337,6 +339,7 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
     record = json.loads(decisions.read_text())
     assert record["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest()
     assert record["task_length"] == len(assignment)
+    assert "explanation" not in record
     assert "task_name" not in record
     assert assignment not in decisions.read_text()
     assert record["session_id"] == "s1"

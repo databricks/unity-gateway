@@ -2,6 +2,7 @@ import type { AgentInfo, On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
+import { parseSmartRouterCommand } from '../hooks/isaac-feedback.ts';
 import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
 
 const RECIPE = 'task_v3';
@@ -110,6 +111,10 @@ test('a launch without routing keeps the command inert', { options: { ...ROUTED,
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });
 
   expect(reply.text).toContain('was not enabled');
+  const explain = await $.command.run({ command: 'smart-router', args: 'explain on' });
+  expect(explain.text).toBe('Usage: /smart-router on|off|logs');
+  const invalidExplain = await $.command.run({ command: 'smart-router', args: 'explain invalid' });
+  expect(invalidExplain.text).toBe('Usage: /smart-router on|off|logs');
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
 });
 
@@ -357,7 +362,7 @@ const FEEDBACK_PANE = {
 
 // Isaac's feedback rule is on and the engine answers the form's panes, logs, and processes.
 function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode = 0) {
-  const { env } = setup(on);
+  const { env, writes } = setup(on);
   Object.assign(env, {
     ISAAC_SMART_ROUTER_FEEDBACK: '1',
     UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -382,7 +387,7 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     return { value: { isPlaced: true } };
   });
   on('ui.close', () => ({ value: undefined }));
-  return { env, runs, logs, panes };
+  return { env, writes, runs, logs, panes };
 }
 
 test('an omni launch skips the form only for an off marked --feedback-collected', { options: ROUTED }, async ($, on) => {
@@ -401,11 +406,22 @@ test('an omni launch skips the form only for an off marked --feedback-collected'
 });
 
 test('--feedback-collected is accepted only after off', { options: ROUTED }, async ($, on) => {
-  const { env, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
-  for (const args of ['on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected']) {
+  const { env, writes, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
+  const initial = { ...env };
+  for (const args of [
+    'explain on', 'explain off', 'explain latest',
+    ' explain\t on ', ' explain\t latest ', ' explain\t off ',
+    'on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected',
+  ]) {
+    expect(parseSmartRouterCommand(args)).toBeUndefined();
     expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs');
   }
+  expect(env).toEqual(initial);
+  expect(writes).toEqual([]);
   expect(runs).toEqual([]);
+  env.ISAAC_LAUNCH_MODE = undefined;
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text)
+    .toContain('Smart Router is still on');
 
   // Without Isaac's feedback rule the flag changes nothing.
   env.ISAAC_SMART_ROUTER_FEEDBACK = '0';
