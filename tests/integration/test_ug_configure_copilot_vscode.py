@@ -107,12 +107,14 @@ def _assert_turn(session, recorder, checkpoint, task, answer, model, route, head
     if task.value not in answer and requests:
         # Shows whether a wrong answer followed a good read, a failed read, or none.
         last = requests[-1]
+        try:
+            last_response = recorder.response_for(last, timeout=5).body.decode("utf-8", "replace")
+        except AssertionError as missing:
+            # Keep the wrong-answer assert below as the failure, not the missing response.
+            last_response = str(missing)
         session.record(
             f"missed-answer-{model}.json",
-            {
-                "toolOutputs": _tool_outputs(last.payload),
-                "lastResponse": recorder.response_for(last).body.decode("utf-8", "replace")[:4000],
-            },
+            {"toolOutputs": _tool_outputs(last.payload), "lastResponse": last_response[:4000]},
         )
     assert task.value in answer, answer
     assert requests, "The chat turn reached no gateway route"

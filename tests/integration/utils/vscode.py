@@ -352,7 +352,12 @@ class VSCode:
                 self._seen("picked", screen)
                 last, picked_since = "picked", picked_since or time.monotonic()
                 if time.monotonic() - picked_since >= SETTLE_S:
-                    self._wait_for_copilot_chat()
+                    if not self.copilot_chat_ready:
+                        # Copilot Chat can open the second editor as it starts, so the picked
+                        # screen holds again from then.
+                        self._wait_for_copilot_chat()
+                        picked_since, deadline = None, min(time.monotonic() + STEP_TIMEOUT_S, cap)
+                        continue
                     self.shot("model-picked")
                     return
                 time.sleep(POLL_S)
@@ -390,6 +395,10 @@ class VSCode:
                 if self._picker_state(self.screen(), label) == state:
                     raise
                 self.actions.append(f"  (the screen changed before the click: {state})")
+            if state == "language models editor":
+                # Its action returns once the editor has closed, so an editor on the next read is
+                # another one, even when no other screen was read in between.
+                last = None
         raise AssertionError(f"Timed out picking {label}; last screen {self.screen()}")
 
     def _picker_action(self, state: str, screen: dict, label: str) -> None:
@@ -554,6 +563,9 @@ class VSCode:
                 if self._picker_state(self.screen(), label) == state:
                     raise
                 self.actions.append(f"  (the screen changed before the click: {state})")
+            if state == "language models editor":
+                # As in pick_model: the next editor seen is another one.
+                last = None
         raise AssertionError(f"Timed out searching the picker for {label}; last {self.screen()}")
 
     def quit(self) -> None:

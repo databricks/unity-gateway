@@ -32,13 +32,18 @@ def process_running(pid: int) -> bool:
         return False
     if sys.platform == "win32":
         import ctypes
+        from ctypes import wintypes
 
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return kernel32.GetLastError() == 5  # ERROR_ACCESS_DENIED: it exists
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
         try:
-            code = ctypes.c_ulong()
+            code = wintypes.DWORD()
             return (
                 bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
             )
