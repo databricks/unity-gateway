@@ -1209,6 +1209,7 @@ def _codex_runtime_proxy(state: dict, overlay: dict) -> Iterator[bool]:
 
 
 def _wait_codex_process(argv: list[str]) -> NoReturn:
+    metrics.agent_handoff()
     proc = subprocess_cross_os.popen(argv)
     installed = []
 
@@ -1228,7 +1229,10 @@ def _wait_codex_process(argv: list[str]) -> NoReturn:
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
+        # POSIX delivers ^C to the whole process group, so the child already has
+        # it; only Windows needs the explicit resend (as in exec_or_spawn).
+        if os.name == "nt":
+            proc.send_signal(signal.SIGINT)
         returncode = proc.wait()
     finally:
         for sig, previous in installed:

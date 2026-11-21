@@ -161,11 +161,15 @@ class CodexRuntime:
         request_kind = _request_kind(payload)
 
         with self._lock:
+            previous_state = self._threads.get(thread_id)
             snapshot = (
                 self._thread_parents.get(thread_id, _UNSET),
                 self._thread_roots.get(thread_id, _UNSET),
-                self._threads.get(thread_id),
+                previous_state,
                 thread_id in self._activated_roots,
+                # The wait maps are mutated in place, so the rollback copies them.
+                dict(previous_state.wait_flags) if previous_state else {},
+                dict(previous_state.call_items) if previous_state else {},
             )
             try:
                 return self._apply_locked(
@@ -179,7 +183,9 @@ class CodexRuntime:
                 raise
 
     def _restore_thread(self, thread_id: str, snapshot) -> None:
-        previous_parent, previous_root, previous_state, was_activated = snapshot
+        previous_parent, previous_root, previous_state, was_activated, wait_flags, call_items = (
+            snapshot
+        )
         if previous_parent is _UNSET:
             self._thread_parents.pop(thread_id, None)
         else:
@@ -192,6 +198,10 @@ class CodexRuntime:
             self._threads.pop(thread_id, None)
         else:
             self._threads[thread_id] = previous_state
+            previous_state.wait_flags.clear()
+            previous_state.wait_flags.update(wait_flags)
+            previous_state.call_items.clear()
+            previous_state.call_items.update(call_items)
         if not was_activated:
             self._activated_roots.discard(thread_id)
 
