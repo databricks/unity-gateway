@@ -1711,3 +1711,16 @@ def test_savings_refresh_success_is_not_an_error(tmp_path, monkeypatch, metrics_
 
     assert pricing.read_price_cache(path) == {"opus": pricing.ModelPrice(input=Decimal("7"))}
     assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []
+
+
+@pytest.mark.parametrize("existing_cache", [False, True])
+def test_savings_refresh_without_models_preserves_cache(tmp_path, metrics_recorder, existing_cache):
+    path = tmp_path / "prices.json"
+    if existing_cache:
+        pricing.write_price_cache(path, {"opus": pricing.ModelPrice(input=Decimal("5"))})
+    before = path.read_bytes() if existing_cache else None
+
+    v2._refresh_savings_prices("workspace.example", "test-token", [], path)
+
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []

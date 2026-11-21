@@ -486,6 +486,8 @@ def _refresh_savings_prices(
 
     On failure unexpired cached rates remain usable; without them the estimate stays hidden.
     """
+    if not model_services:
+        return
     try:
         rates, reason = fetch_endpoint_rates(workspace, token, model_services)
         if reason is not None:
