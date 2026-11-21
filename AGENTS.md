@@ -13,6 +13,7 @@ Tests live in `tests/`.
 - Run the full test suite with `uv run pytest`.
 - Run focused tests with `uv run pytest tests/<file>.py`.
 - Run e2e tests with `UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v`.
+- When you fix a failing test, add a line to `tests/FAILURE_LOG.md` classifying it as a caught regression (the fix was in `src/`) or a change detector (the fix was in the test). Do not write tests that only detect change: exact log or UI wording beyond what users rely on, call order of internal helpers, private data layout, collection-time randomness (`uuid4()`, timestamps) in test ids, or terminal-width-dependent output assertions.
 - Run the lint gate (ruff check + ruff format check + ty) with `just lint`; `just fix` autofixes. These are the same checks CI's `Checks` job runs. Without `just` installed, use `uvx --from rust-just just lint`, or run the underlying `uv run ruff ...` / `uv run ty ...` commands directly.
 - Run the CLI from the current checkout with `uv run ug ...`.
 - Reinstall the local checkout as the Unity Gateway tool with `uv tool install --reinstall .`.
