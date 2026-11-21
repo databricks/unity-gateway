@@ -1,0 +1,570 @@
+{
+ "tests/test_agent_antigravity.py": [
+  0.19,
+  72
+ ],
+ "tests/test_agent_claude.py": [
+  1.86,
+  535
+ ],
+ "tests/test_agent_codex.py": [
+  1.55,
+  256
+ ],
+ "tests/test_agent_copilot.py": [
+  11.62,
+  258
+ ],
+ "tests/test_agent_cursor.py": [
+  0.03,
+  11
+ ],
+ "tests/test_agent_gemini.py": [
+  0.09,
+  39
+ ],
+ "tests/test_agent_kilo.py": [
+  0.12,
+  64
+ ],
+ "tests/test_agent_opencode.py": [
+  0.77,
+  68
+ ],
+ "tests/test_agent_pi.py": [
+  0.07,
+  56
+ ],
+ "tests/test_agent_updates.py": [
+  0.01,
+  8
+ ],
+ "tests/test_agent_vscode.py": [
+  1.2,
+  96
+ ],
+ "tests/test_agents_commands.py": [
+  1.8,
+  48
+ ],
+ "tests/test_agents_init.py": [
+  2.31,
+  206
+ ],
+ "tests/test_browser_cross_os.py": [
+  0.04,
+  8
+ ],
+ "tests/test_budget.py": [
+  0.17,
+  78
+ ],
+ "tests/test_catalog_browsing.py": [
+  1.12,
+  20
+ ],
+ "tests/test_claude_answer_delivery.py": [
+  0.3,
+  33
+ ],
+ "tests/test_claude_auto_cleanup.py": [
+  0.04,
+  32
+ ],
+ "tests/test_claude_credential_blanks.py": [
+  0.1,
+  13
+ ],
+ "tests/test_claude_desktop.py": [
+  2.56,
+  273
+ ],
+ "tests/test_claude_header_mod.py": [
+  0.17,
+  28
+ ],
+ "tests/test_claude_launch_settings.py": [
+  0.17,
+  16
+ ],
+ "tests/test_claude_managed_headers.py": [
+  0.04,
+  18
+ ],
+ "tests/test_claude_mod.py": [
+  0.2,
+  22
+ ],
+ "tests/test_claude_parent_settings_behavior.py": [
+  0.04,
+  7
+ ],
+ "tests/test_claude_pty_replay.py": [
+  7.92,
+  13
+ ],
+ "tests/test_claude_routing.py": [
+  0.08,
+  20
+ ],
+ "tests/test_claude_search_discovery.py": [
+  0.13,
+  10
+ ],
+ "tests/test_claude_search_provider.py": [
+  4.74,
+  43
+ ],
+ "tests/test_claude_smart_routing_v2.py": [
+  1.73,
+  70
+ ],
+ "tests/test_claude_windows_smart_routing.py": [
+  0.0,
+  1
+ ],
+ "tests/test_cli.py": [
+  39.96,
+  969
+ ],
+ "tests/test_code_plugin.py": [
+  0.06,
+  12
+ ],
+ "tests/test_codex_catalog.py": [
+  0.16,
+  67
+ ],
+ "tests/test_codex_config.py": [
+  0.12,
+  45
+ ],
+ "tests/test_codex_desktop_evidence.py": [
+  0.13,
+  55
+ ],
+ "tests/test_codex_interaction_evidence.py": [
+  0.04,
+  16
+ ],
+ "tests/test_codex_metadata.py": [
+  1.99,
+  51
+ ],
+ "tests/test_codex_routing.py": [
+  0.07,
+  24
+ ],
+ "tests/test_codex_smart_routing_v2.py": [
+  0.34,
+  90
+ ],
+ "tests/test_comment_command_authorization.py": [
+  0.16,
+  66
+ ],
+ "tests/test_config_io.py": [
+  0.11,
+  52
+ ],
+ "tests/test_configure_managed_writes.py": [
+  0.78,
+  29
+ ],
+ "tests/test_constants.py": [
+  0.0,
+  1
+ ],
+ "tests/test_copilot_app.py": [
+  1.44,
+  36
+ ],
+ "tests/test_copilot_app_plugin.py": [
+  2.47,
+  75
+ ],
+ "tests/test_copilot_relay.py": [
+  87.44,
+  93
+ ],
+ "tests/test_cowork_hooks.py": [
+  0.13,
+  23
+ ],
+ "tests/test_cowork_plugin.py": [
+  0.09,
+  42
+ ],
+ "tests/test_cowork_session_evidence.py": [
+  0.09,
+  57
+ ],
+ "tests/test_cowork_skills.py": [
+  0.67,
+  9
+ ],
+ "tests/test_cuj_evidence.py": [
+  0.21,
+  105
+ ],
+ "tests/test_cuj_session.py": [
+  0.05,
+  9
+ ],
+ "tests/test_cuj_workspace.py": [
+  0.01,
+  6
+ ],
+ "tests/test_custom_oauth.py": [
+  0.5,
+  27
+ ],
+ "tests/test_databricks.py": [
+  7.01,
+  633
+ ],
+ "tests/test_desktop_auth.py": [
+  0.17,
+  65
+ ],
+ "tests/test_desktop_auth_cli.py": [
+  0.6,
+  14
+ ],
+ "tests/test_desktop_bundle.py": [
+  0.61,
+  12
+ ],
+ "tests/test_desktop_configure_cli.py": [
+  0.39,
+  41
+ ],
+ "tests/test_desktop_marketplace.py": [
+  0.57,
+  39
+ ],
+ "tests/test_desktop_mdm.py": [
+  2.4,
+  68
+ ],
+ "tests/test_desktop_scope.py": [
+  2.81,
+  29
+ ],
+ "tests/test_desktop_setup.py": [
+  1.46,
+  251
+ ],
+ "tests/test_doctor.py": [
+  0.08,
+  33
+ ],
+ "tests/test_e2e_cuj_helpers.py": [
+  89.83,
+  216
+ ],
+ "tests/test_e2e_uc.py": [
+  0.0,
+  6
+ ],
+ "tests/test_e2e_user_agent.py": [
+  47.22,
+  7
+ ],
+ "tests/test_entry_points.py": [
+  0.63,
+  4
+ ],
+ "tests/test_file_lock_cross_os.py": [
+  0.04,
+  9
+ ],
+ "tests/test_gateway_proxy.py": [
+  0.33,
+  69
+ ],
+ "tests/test_gateway_proxy_integration.py": [
+  40.33,
+  48
+ ],
+ "tests/test_integration_contract.py": [
+  32.52,
+  200
+ ],
+ "tests/test_integration_evidence.py": [
+  0.49,
+  271
+ ],
+ "tests/test_integration_managed.py": [
+  0.02,
+  8
+ ],
+ "tests/test_integration_model_discovery.py": [
+  0.15,
+  74
+ ],
+ "tests/test_integration_provider_catalog.py": [
+  0.06,
+  32
+ ],
+ "tests/test_integration_runner.py": [
+  0.11,
+  41
+ ],
+ "tests/test_integration_terminal_screen.py": [
+  22.06,
+  28
+ ],
+ "tests/test_interactive_picker.py": [
+  0.01,
+  11
+ ],
+ "tests/test_jsonc.py": [
+  0.03,
+  25
+ ],
+ "tests/test_launcher.py": [
+  0.01,
+  6
+ ],
+ "tests/test_macos_cowork_harness.py": [
+  2.43,
+  110
+ ],
+ "tests/test_macos_provision.py": [
+  0.21,
+  6
+ ],
+ "tests/test_managed_budget.py": [
+  0.08,
+  29
+ ],
+ "tests/test_managed_config.py": [
+  0.73,
+  239
+ ],
+ "tests/test_managed_export.py": [
+  0.27,
+  28
+ ],
+ "tests/test_managed_files.py": [
+  0.74,
+  198
+ ],
+ "tests/test_managed_model_lifecycle.py": [
+  0.06,
+  8
+ ],
+ "tests/test_managed_resolve.py": [
+  0.22,
+  96
+ ],
+ "tests/test_managed_setup.py": [
+  0.21,
+  104
+ ],
+ "tests/test_mcp.py": [
+  2.54,
+  306
+ ],
+ "tests/test_mcp_connection_login.py": [
+  0.18,
+  56
+ ],
+ "tests/test_mcp_oauth.py": [
+  0.01,
+  3
+ ],
+ "tests/test_mcp_proxy.py": [
+  0.41,
+  128
+ ],
+ "tests/test_mcp_proxy_cli.py": [
+  0.51,
+  6
+ ],
+ "tests/test_mcp_proxy_shared.py": [
+  17.78,
+  20
+ ],
+ "tests/test_mcp_web_search.py": [
+  0.04,
+  20
+ ],
+ "tests/test_mcp_web_search_concurrency.py": [
+  0.04,
+  13
+ ],
+ "tests/test_metrics.py": [
+  0.23,
+  45
+ ],
+ "tests/test_metrics_commands.py": [
+  0.01,
+  3
+ ],
+ "tests/test_metrics_delivery.py": [
+  1.55,
+  4
+ ],
+ "tests/test_metrics_isolation.py": [
+  0.09,
+  11
+ ],
+ "tests/test_model_sources.py": [
+  0.01,
+  4
+ ],
+ "tests/test_ownership.py": [
+  0.11,
+  24
+ ],
+ "tests/test_polly_review.py": [
+  0.13,
+  25
+ ],
+ "tests/test_published_agent_config.py": [
+  1.42,
+  89
+ ],
+ "tests/test_repro_claude_relayed.py": [
+  0.05,
+  10
+ ],
+ "tests/test_repro_custom_oauth_storm.py": [
+  6.48,
+  2
+ ],
+ "tests/test_request_tags.py": [
+  0.02,
+  9
+ ],
+ "tests/test_routing_rationale.py": [
+  0.0,
+  2
+ ],
+ "tests/test_security_scan.py": [
+  0.44,
+  33
+ ],
+ "tests/test_security_scan_request.py": [
+  0.27,
+  44
+ ],
+ "tests/test_skills.py": [
+  0.15,
+  17
+ ],
+ "tests/test_skills_api.py": [
+  0.18,
+  47
+ ],
+ "tests/test_skills_download.py": [
+  0.82,
+  97
+ ],
+ "tests/test_skills_list.py": [
+  0.04,
+  13
+ ],
+ "tests/test_skills_state.py": [
+  0.11,
+  35
+ ],
+ "tests/test_skills_usage.py": [
+  0.74,
+  9
+ ],
+ "tests/test_smart_router.py": [
+  3.4,
+  20
+ ],
+ "tests/test_smart_router_feedback.py": [
+  1.33,
+  97
+ ],
+ "tests/test_smart_router_logs_cli.py": [
+  0.87,
+  24
+ ],
+ "tests/test_smart_router_session_log.py": [
+  0.07,
+  30
+ ],
+ "tests/test_smart_routing_attribution_headers.py": [
+  0.07,
+  21
+ ],
+ "tests/test_smart_routing_config.py": [
+  0.68,
+  266
+ ],
+ "tests/test_startup_imports.py": [
+  0.75,
+  34
+ ],
+ "tests/test_state.py": [
+  0.21,
+  58
+ ],
+ "tests/test_string_utils.py": [
+  0.09,
+  36
+ ],
+ "tests/test_subprocess_cross_os.py": [
+  0.13,
+  35
+ ],
+ "tests/test_system_cross_os.py": [
+  0.04,
+  17
+ ],
+ "tests/test_telemetry.py": [
+  0.13,
+  59
+ ],
+ "tests/test_time_utils.py": [
+  0.01,
+  5
+ ],
+ "tests/test_tls.py": [
+  0.11,
+  31
+ ],
+ "tests/test_tls_https.py": [
+  16.11,
+  5
+ ],
+ "tests/test_tui_request_recorder.py": [
+  30.21,
+  48
+ ],
+ "tests/test_ug_headers.py": [
+  0.34,
+  18
+ ],
+ "tests/test_ug_review_bot.py": [
+  0.1,
+  43
+ ],
+ "tests/test_ui.py": [
+  0.5,
+  83
+ ],
+ "tests/test_usage.py": [
+  0.12,
+  55
+ ],
+ "tests/test_user_journey_gate.py": [
+  0.04,
+  14
+ ],
+ "tests/test_workspace.py": [
+  0.09,
+  38
+ ],
+ "tests/test_workspace_selection.py": [
+  0.62,
+  52
+ ]
+}

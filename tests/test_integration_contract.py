@@ -1683,31 +1683,45 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
 @pytest.mark.parametrize(
-    ("lint", "unit", "vscode", "passes"),
+    "failing",
     [
-        ("success", "success", "success", True),
-        ("failure", "success", "success", False),
-        ("skipped", "success", "success", False),
-        ("cancelled", "success", "success", False),
-        ("success", "failure", "success", False),
-        ("success", "success", "failure", False),
+        None,
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
     ],
 )
-def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
+@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
+def test_required_tests_enforces_lint_result(failing, bad):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
-    assert "    needs: [lint, test, vscode-extension]\n" in required
+    assert (
+        "    needs: [checks, unit-linux, unit-windows, windows-provisioning, vscode-extension]\n"
+        in required
+    )
     script = required.split("        run: |", 1)[1]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {**os.environ, **dict.fromkeys(names, "success")}
+    if failing:
+        env[failing] = bad
     result = subprocess.run(
         ["/bin/bash", "-c", textwrap.dedent(script)],
-        env={**os.environ, "LINT_RESULT": lint, "RESULT": unit, "VSCODE_EXTENSION_RESULT": vscode},
+        env=env,
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
-    assert (result.returncode == 0) is passes, result.stderr
+    assert (result.returncode == 0) is (failing is None), result.stderr
 
 
 def test_integration_requires_a_passing_security_gate():
@@ -1761,3 +1775,40 @@ def test_pytest_discovers_the_serial_live_hook(args, parallel):
     )
     assert result.returncode in (0, 5), result.stdout + result.stderr
     assert ("workers [" in result.stdout) is parallel, result.stdout
+
+
+def test_unit_shards_run_every_test_exactly_once():
+    from tests import shard
+
+    nodeids = [f"tests/test_{name}.py::test_{index}" for name in "abcde" for index in range(40)]
+    per_test = {"tests/test_a.py": 9.0, "tests/test_b.py": 0.01}  # c, d, e are unknown files
+    for total in (1, 3, 12, 16):
+        owners = shard.assign(nodeids, total, per_test)
+        assert owners == shard.assign(list(nodeids), total, per_test)  # same on every shard
+        assert sorted(set(owners)) == list(range(1, min(total, len(nodeids)) + 1))
+        assert len(owners) == len(nodeids)
+    # A slow file spreads across shards instead of landing on one.
+    owners = shard.assign(nodeids, 4, per_test)
+    slow = {owner for nodeid, owner in zip(nodeids, owners, strict=True) if "test_a.py" in nodeid}
+    assert slow == {1, 2, 3, 4}
+
+
+def test_unit_shard_loads_stay_balanced():
+    from tests import shard
+
+    times = shard.load_times()
+    per_test = shard.test_seconds(times)
+    nodeids = [f"{path}::{index}" for path, (_, count) in times.items() for index in range(count)]
+    for total in (12, 16):
+        loads = [0.0] * total
+        for nodeid, owner in zip(nodeids, shard.assign(nodeids, total, per_test), strict=True):
+            loads[owner - 1] += per_test[nodeid.split("::", 1)[0]]
+        assert max(loads) - min(loads) < max(per_test.values()) + 0.01, loads
+
+
+@pytest.mark.parametrize("spec", ["0/4", "5/4", "x/4"])
+def test_unit_shard_spec_rejects_bad_values(spec):
+    from tests import shard
+
+    with pytest.raises(ValueError):
+        shard.parse(spec)
