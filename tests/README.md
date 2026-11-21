@@ -1987,8 +1987,7 @@ Re-running CI reuses its original scan. A maintainer can apply
 `skip-scan:<full 40-character head SHA>` for a reviewed commit, then re-run all scan jobs
 to refresh labels and the failed CI jobs. Later pushes need a new waiver; the old generic
 `skip-security-scan` label has no effect. Gates poll every 10 seconds for up to 20 minutes
-(with a 25-minute job budget), authenticated with the job's read-only Actions token so they
-do not share the runner IP's anonymous API quota. API limits still
+(with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
 

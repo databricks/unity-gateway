@@ -40,9 +40,7 @@ jobs:
         # Live verification blocks rollout; see tests/README.md#security-scan-rollout.
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
         env:
-          # Anonymous calls share the runner IP's 60 requests/hour and fail CI under load.
-          # The job token can only read Actions data, which is already public here.
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.event_name == 'issue_comment' && github.token || '' }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}

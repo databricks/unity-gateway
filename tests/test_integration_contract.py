@@ -1122,7 +1122,7 @@ def test_security_gate_runner_and_token_respect_event_trust(event_name, head_rep
         if hosted
         else {"group": "databricks-protected-runner-group", "labels": "linux-ubuntu-latest"}
     )
-    assert evaluate(token) == "test-token"
+    assert evaluate(token) == ("" if hosted else "test-token")
     assert evaluate(condition) == waits
 
 
