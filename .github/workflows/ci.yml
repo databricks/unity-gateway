@@ -97,8 +97,10 @@ jobs:
   claude-mod:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
-    needs: [security-gate, changes]
-    if: ${{ needs.changes.outputs.live == 'true' }}
+    needs: security-gate
+    # Hermetic, but two minutes of the real Claude CLI: it runs wherever pull requests do not,
+    # including fork PRs' merge groups, and `e2e` requires it there.
+    if: ${{ github.event_name != 'pull_request' }}
     timeout-minutes: 10
     env:
       UV_INDEX_URL: https://pypi.org/simple
@@ -158,15 +160,20 @@ jobs:
     env:
       UV_INDEX_URL: https://pypi.org/simple
     steps:
+      # The wheel's version comes from Git tags, so fetch history (without file blobs).
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
           filter: blob:none
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
       - name: Run the built wheel's entry points
         run: |
           wheel=("$RUNNER_TEMP"/dist/*.whl)
+          case "${wheel[0]##*/}" in
+            *-0.0.0-*) echo "::error::The wheel fell back to version 0.0.0: ${wheel[0]##*/}"; exit 1 ;;
+          esac
           uvx --python 3.12 --from "${wheel[0]}" ug --help > /dev/null
           uvx --python 3.12 --from "${wheel[0]}" ucode --help > /dev/null
 
@@ -353,6 +360,7 @@ jobs:
     steps:
       - name: Require the package and, outside pull requests, every live suite to pass
         env:
+          EVENT_NAME: ${{ github.event_name }}
           SELECTION_RESULT: ${{ needs.changes.result }}
           LIVE: ${{ needs.changes.outputs.live }}
           PACKAGE_RESULT: ${{ needs.package.result }}
@@ -361,12 +369,16 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
         # The result check is the last command: a failed `&&` chain earlier in a step does not stop it.
         run: |
-          if [ "$LIVE" = false ]; then
+          if [ "$EVENT_NAME" = pull_request ]; then
             echo "::notice::Live agent and integration suites run in the merge queue before this change reaches main."
+          elif [ "$LIVE" = false ]; then
+            echo "::notice::Live suites skipped: fork code gets no CI secrets in the merge queue."
           fi
           test "$SELECTION_RESULT" = success && test "$PACKAGE_RESULT" = success &&
             test "$RESULT" = success && {
-              { test "$INTEGRATION_RESULT" = success && test "$CLAUDE_MOD_RESULT" = success; } ||
-                { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped &&
-                  test "$CLAUDE_MOD_RESULT" = skipped; }
+              test "$CLAUDE_MOD_RESULT" = success ||
+                { test "$EVENT_NAME" = pull_request && test "$CLAUDE_MOD_RESULT" = skipped; }
+            } && {
+              test "$INTEGRATION_RESULT" = success ||
+                { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped; }
             }
