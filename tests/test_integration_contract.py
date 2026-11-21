@@ -1732,31 +1732,50 @@ def test_merge_queue_runs_every_live_suite():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
 @pytest.mark.parametrize(
-    ("lint", "unit", "vscode", "passes"),
+    "failing",
     [
-        ("success", "success", "success", True),
-        ("failure", "success", "success", False),
-        ("skipped", "success", "success", False),
-        ("cancelled", "success", "success", False),
-        ("success", "failure", "success", False),
-        ("success", "success", "failure", False),
+        None,
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
     ],
 )
-def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
+@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
+def test_required_tests_enforces_lint_result(failing, bad):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
-    assert "    needs: [lint, test, vscode-extension]\n" in required
+    assert (
+        "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
+        "vscode-extension]\n" in required
+    )
     script = required.split("        run: |", 1)[1]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "COVERAGE_RESULT": "skipped",
+        "EVENT_NAME": "pull_request",
+    }
+    if failing:
+        env[failing] = bad
     result = subprocess.run(
         ["/bin/bash", "-c", textwrap.dedent(script)],
-        env={**os.environ, "LINT_RESULT": lint, "RESULT": unit, "VSCODE_EXTENSION_RESULT": vscode},
+        env=env,
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
-    assert (result.returncode == 0) is passes, result.stderr
+    assert (result.returncode == 0) is (failing is None), result.stderr
 
 
 def _git_repo(path):
@@ -1825,3 +1844,164 @@ def test_integration_requires_a_passing_security_gate():
     condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
     assert "needs.security-gate.result == 'success'" in condition
     assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
+
+
+@pytest.mark.parametrize(
+    ("args", "workspace", "workers"),
+    [
+        # The unit CI job passes only --ignore=tests/test_e2e.py, which pytest keeps out of args.
+        ([], "", None),
+        (["tests/test_cli.py"], "", None),
+        (["tests/test_e2e.py"], "", 0),
+        (["tests/test_e2e.py::TestUnityGateway"], "", 0),
+        ([], "https://workspace.example", 0),
+    ],
+)
+def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers):
+    from types import SimpleNamespace
+
+    from tests import conftest
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
+    assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
+
+
+@pytest.mark.parametrize(
+    ("args", "parallel"),
+    [
+        # Deselect every live test: the hook decides the worker count before collection.
+        (["tests/test_e2e.py", "-k", "no_such_test"], False),
+        (["tests/test_jsonc.py"], True),
+    ],
+)
+def test_pytest_discovers_the_serial_live_hook(args, parallel):
+    # The child run must not inherit this CI shard or overwrite its coverage report.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    # Two workers: enough to show the hook left unit runs parallel without starting one child
+    # worker per CPU inside every parent xdist worker.
+    env = {key: value for key, value in os.environ.items() if key not in skip}
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (0, 5), result.stdout + result.stderr
+    assert ("workers [" in result.stdout) is parallel, result.stdout
+
+
+def test_unit_shards_run_every_test_exactly_once():
+    from tests import shard
+
+    files = [f"tests/test_{name}.py" for name in "abcdefgh"]
+    slow = {"tests/test_a.py::test_0": 9.0, "tests/test_a.py::test_1": 3.0}
+    times = {"files": {"tests/test_a.py": [40.0, 100], "tests/test_b.py": [0.5, 10]}, "slow": slow}
+    nodeids = [
+        f"{path}::test_{index}" for path in files for index in range(100 if "_a" in path else 10)
+    ]
+    for total in (1, 3, 20, 40):
+        plan = shard.plan(files, total, times)
+        assert plan == shard.plan(list(files), total, times)  # identical on every shard
+        owners = [
+            [
+                index
+                for index, owned in enumerate(shard.owned_tests(units, nodeids, set(slow)))
+                if owned
+            ]
+            for units in plan
+        ]
+        assert sorted(index for owned in owners for index in owned) == list(range(len(nodeids)))
+    # Slow tests are units of their own; the rest of a slow file spreads across shards.
+    plan = shard.plan(files, 8, times)
+    assert sum(("test", "tests/test_a.py::test_0") in units for units in plan) == 1
+    owners = {
+        index for index, units in enumerate(plan) for unit in units if unit[1] == "tests/test_a.py"
+    }
+    # 40 s less 12 s of slow tests leaves 28 s: seven 4-second chunks on seven shards.
+    assert len(owners) == 7
+    assert shard.test_files() == sorted(
+        f"tests/{path.name}"
+        for path in Path(shard.TESTS).glob("test_*.py")
+        if path.name != "test_e2e.py"
+    )
+
+
+def test_unit_shard_loads_stay_balanced():
+    from tests import shard
+
+    for system, total in (("Linux", 24), ("Windows", 64)):
+        times = shard.load_times(system)
+        assert all(seconds >= shard.SLOW_SECONDS for seconds in times["slow"].values())
+        plan = shard.plan(shard.test_files(), total, times)
+        units = sorted(unit for owned in plan for unit in owned)
+        assert len(units) == len(set(units))
+        weights = []
+        for owned in plan:
+            load = 0.0
+            for unit in owned:
+                if unit[0] == "test":
+                    load += times["slow"][unit[1]]
+                else:
+                    slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                    load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+            weights.append(load)
+        assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+@pytest.mark.parametrize("spec", ["0/4", "5/4", "x/4"])
+def test_unit_shard_spec_rejects_bad_values(spec):
+    from tests import shard
+
+    with pytest.raises(ValueError):
+        shard.parse(spec)
+
+
+def test_checks_run_exactly_the_just_lint_commands():
+    """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
+    justfile = (Path(__file__).parent.parent / "justfile").read_text()
+    checks = _workflow("ci.yml").split("\n  checks:\n", 1)[1].split("\n  unit-linux:\n", 1)[0]
+    for recipe, command in (
+        ("ruff-check", "ruff check src/ tests/"),
+        ("ruff-format-check", "ruff format --check src/ tests/"),
+        ("ty", "ty check src/"),
+    ):
+        assert f"{recipe}:\n    uv run {command}\n" in justfile, recipe
+        assert f'"$VENV_BIN/{command.split()[0]}" {command.split(" ", 1)[1]}' in checks, recipe
+    assert "lint: ruff-check ruff-format-check ty\n" in justfile
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("coverage", ["success", "skipped", "failure"])
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+def test_merge_queue_requires_unit_shard_coverage(event, coverage):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    script = required.split("        run: |", 1)[1]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "EVENT_NAME": event,
+        "COVERAGE_RESULT": coverage,
+    }
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    passes = coverage == "success" or (coverage == "skipped" and event == "pull_request")
+    assert (result.returncode == 0) is passes, result.stderr
