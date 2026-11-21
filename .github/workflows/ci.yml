@@ -148,12 +148,39 @@ jobs:
             exit 1
           }
 
+  # Pull requests run the live suites only when their diff can reach them
+  # (scripts/ci_select.py); every other event, including the merge queue, runs them all.
+  changes:
+    name: Select live suites
+    needs: security-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      live: ${{ steps.select.outputs.live }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+      - id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            python3 scripts/ci_select.py "$BASE_SHA" "$HEAD_SHA" | tee selection.txt
+            tail -n 1 selection.txt >> "$GITHUB_OUTPUT"
+          else
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          fi
+
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
-    needs: security-gate
-    # The merge queue runs only lint and unit tests; e2e already ran on the PR.
-    if: ${{ github.event_name != 'merge_group' }}
+    needs: [security-gate, changes]
+    if: ${{ needs.changes.outputs.live == 'true' }}
     defaults:
       run:
         shell: bash
@@ -246,21 +273,24 @@ jobs:
 
   e2e:
     name: All agent tests
-    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
-    needs: e2e-shards
+    if: ${{ !cancelled() }}
+    needs: [changes, e2e-shards]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every e2e shard to pass
+      - name: Require every e2e shard to pass, unless selection skipped them
         env:
+          SELECTION_RESULT: ${{ needs.changes.result }}
+          LIVE: ${{ needs.changes.outputs.live }}
           RESULT: ${{ needs.e2e-shards.result }}
-        run: test "$RESULT" = success
+        run: |
+          test "$SELECTION_RESULT" = success &&
+            { test "$RESULT" = success || { test "$LIVE" = false && test "$RESULT" = skipped; }; }
 
   integration:
     name: Integration
-    needs: security-gate
-    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
-    if: ${{ github.event_name != 'merge_group' && needs.security-gate.result == 'success' && !cancelled() }}
+    needs: [security-gate, changes]
+    if: ${{ needs.security-gate.result == 'success' && needs.changes.outputs.live == 'true' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
@@ -285,13 +315,18 @@ jobs:
   required-e2e:
     name: e2e
     if: ${{ !cancelled() }}
-    needs: [e2e, integration]
+    needs: [changes, e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all agent and integration tests to pass
+      - name: Require all agent and integration tests to pass, unless selection skipped them
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          SELECTION_RESULT: ${{ needs.changes.result }}
+          LIVE: ${{ needs.changes.outputs.live }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }
+        run: |
+          test "$SELECTION_RESULT" = success && test "$RESULT" = success && {
+            test "$INTEGRATION_RESULT" = success ||
+              { test "$LIVE" = false && test "$INTEGRATION_RESULT" = skipped; }
+          }

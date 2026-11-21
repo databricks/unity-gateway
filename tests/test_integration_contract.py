@@ -1475,13 +1475,13 @@ def test_live_suites_use_fresh_id_for_random_ids():
 def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
     job = jobs[job_name]
-    assert "github.event_name != 'merge_group'" in job
+    # The merge queue runs the full suite, so only credential-less fork PRs skip Cowork.
+    assert "merge_group" not in job
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert condition.group(1) == (
-        "${{ github.event_name != 'merge_group' && "
-        "(github.event_name != 'pull_request' || "
-        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+        "${{ github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository }}"
     )
     assert "id-token:" not in job
     assert "continue-on-error:" not in job
@@ -1552,8 +1552,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     jobs = _integration_jobs()
     job = jobs["anthropic-mps"]
     assert (
-        "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+        "      UG_COWORK_DESKTOP: ${{ matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
     ) in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
@@ -1598,24 +1597,28 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
 @pytest.mark.parametrize(
-    ("event", "integration_result", "passes"),
+    ("selection", "live", "integration_result", "passes"),
     [
-        ("pull_request", "success", True),
-        ("pull_request", "failure", False),
-        ("pull_request", "cancelled", False),
-        ("pull_request", "skipped", False),
-        ("push", "failure", False),
-        ("merge_group", "skipped", True),
+        ("success", "true", "success", True),
+        ("success", "true", "failure", False),
+        ("success", "true", "cancelled", False),
+        ("success", "true", "skipped", False),
+        # A pull request whose diff cannot reach the live suites skips them.
+        ("success", "false", "skipped", True),
+        ("success", "false", "failure", False),
+        # A failed selection never counts as a skip.
+        ("failure", "", "skipped", False),
     ],
 )
-def test_required_e2e_enforces_integration_result(event, integration_result, passes):
+def test_required_e2e_enforces_integration_result(selection, live, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    script = required.split("        run: ", 1)[1].strip()
+    script = required.split("        run: |", 1)[1].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
             **os.environ,
-            "EVENT_NAME": event,
+            "SELECTION_RESULT": selection,
+            "LIVE": live,
             "RESULT": "success",
             "INTEGRATION_RESULT": integration_result,
         },
@@ -1664,3 +1667,70 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
         '              --vscode-sha256 "$VSCODE_SHA256")'
     ) in harness
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
+
+
+CI_SELECT = runpy.run_path(str(Path(__file__).parent.parent / "scripts/ci_select.py"))
+
+
+@pytest.mark.parametrize(
+    ("paths", "live"),
+    [
+        (["docs/smart-routing.md", "README.md", "tests/README.md"], False),
+        (["tests/test_cli.py", "tests/copilot_app_rows.test.mjs", "hk.pkl"], False),
+        (["tests/integration/README.md", "AGENTS.md"], False),
+        # Runtime code, packaged skills and the live suites' own inputs rerun everything.
+        (["docs/a.md", "src/ucode/cli.py"], True),
+        (["skills/smart-router/SKILL.md"], True),
+        (["src/ucode/agents/claude_mods/README.md"], True),
+        (["tests/test_e2e.py"], True),
+        (["tests/conftest.py"], True),
+        (["tests/integration/test_ug_smoke.py"], True),
+        (["tests/integration/utils/harness.py"], True),
+        ([".github/workflows/ci.yml"], True),
+        (["scripts/ci_select.py"], True),
+        (["pyproject.toml"], True),
+        (["uv.lock"], True),
+        # An empty diff cannot prove anything is unreachable.
+        ([], True),
+    ],
+)
+def test_pr_selection_skips_live_suites_only_for_unreachable_paths(paths, live):
+    assert CI_SELECT["reaches_live"](paths) is live
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the rollup runs bash on Linux")
+@pytest.mark.parametrize(
+    ("selection", "live", "shards", "passes"),
+    [
+        ("success", "true", "success", True),
+        ("success", "true", "failure", False),
+        ("success", "true", "skipped", False),
+        ("success", "false", "skipped", True),
+        ("failure", "", "skipped", False),
+    ],
+)
+def test_agent_test_rollup_accepts_only_selected_skips(selection, live, shards, passes):
+    rollup = _workflow("ci.yml").split("\n  e2e:\n", 1)[1].split("\n  integration:\n", 1)[0]
+    script = rollup.split("        run: |", 1)[1]
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env={**os.environ, "SELECTION_RESULT": selection, "LIVE": live, "RESULT": shards},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_merge_queue_runs_every_live_suite():
+    ci = _workflow("ci.yml")
+    integration = _workflow("integration.yml")
+    assert "merge_group" not in integration.split("\njobs:\n", 1)[1]
+    selection = ci.split("\n  changes:\n", 1)[1].split("\n  e2e-shards:\n", 1)[0]
+    assert 'if [ "$EVENT_NAME" = pull_request ]; then' in selection
+    assert 'echo "live=true" >> "$GITHUB_OUTPUT"' in selection
+    for job in ("e2e-shards", "integration"):
+        body = ci.split(f"\n  {job}:\n", 1)[1].split("\n  e2e:\n", 1)[0]
+        assert "needs.changes.outputs.live == 'true'" in body
+        assert "github.event_name != 'merge_group'" not in body

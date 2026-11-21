@@ -1652,7 +1652,15 @@ The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
 requires both `All agent tests` and the complete integration workflow. A failed
 or skipped dependency fails the gate, and a running integration suite keeps it
-pending. The advisory Windows installation and headless lanes are not part of `All integration
+pending. The one accepted skip is PR selection: `Select live suites` runs
+`scripts/ci_select.py`, and a pull request whose every changed path is in its
+`CANNOT_REACH_LIVE` list (docs, Markdown outside `src/` and `skills/`, unit-test files
+other than `tests/test_e2e.py`, `hk.pkl`) skips the agent shards and integration. Every
+other path reruns everything. The merge queue, pushes to main, the hourly schedule and
+dispatches always run every live suite, so a path wrongly listed there turns the merge
+queue red before it reaches main. `test_pr_selection_skips_live_suites_only_for_unreachable_paths`,
+`test_agent_test_rollup_accepts_only_selected_skips` and `test_merge_queue_runs_every_live_suite`
+pin this contract. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 One shared `Security Scan` runs from the default branch on `workflow_run: requested` for

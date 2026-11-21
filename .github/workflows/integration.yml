@@ -160,7 +160,7 @@ jobs:
   cowork-inference-windows:
     name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
-    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -287,7 +287,7 @@ jobs:
   cowork-inference-macos:
     name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
-    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 80
     strategy:
       fail-fast: false
@@ -598,7 +598,7 @@ jobs:
       TEST_MARKER: anthropic_mps and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}
       # Desktop jobs skip merge-group runs, like the other Cowork lanes.
-      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.agent == 'claude' }}
+      UG_COWORK_DESKTOP: ${{ matrix.os == 'windows-latest' && matrix.agent == 'claude' }}
       UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
       UG_COWORK_MODEL: claude-haiku-4-5-20251001
       UG_COWORK_RELAY: false
