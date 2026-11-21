@@ -22,7 +22,9 @@ collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior
 
 def pytest_xdist_auto_num_workers(config):
     """Keep the live E2E suite serial: its shards share one workspace's model quota."""
-    if any(os.path.basename(arg.split("::")[0]) == "test_e2e.py" for arg in config.args):
+    if os.environ.get("UCODE_TEST_WORKSPACE") or any(
+        os.path.basename(arg.split("::")[0]) == "test_e2e.py" for arg in config.args
+    ):
         return 0
     return None
 
