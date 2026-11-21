@@ -39,6 +39,7 @@ from ucode.agents import (
     configure_single_tool,
     configure_tool,
     ensure_bootstrap_dependencies,
+    ensure_minimum_version,
     ensure_provider_state,
     explicit_model_arg_value,
     install_databricks_ai_tools_for_agents,
@@ -824,15 +825,14 @@ def configure_shared_state(
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
     if skip_model_discovery:
-        # Provider mode: the agent routes through a Model Provider Service and
-        # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
+        # The agent uses its provider, but web search needs a hosted model. Prefer UC IDs
+        # so gateway-only models do not inherit legacy serving-endpoint names.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+                _, ws_models, _, _, _ = discover_model_services(workspace, token)
+                if not ws_models:
+                    ws_models, _ = discover_codex_models(workspace, token)
+            web_search_model = claude_agent.select_web_search_model(ws_models)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -4455,6 +4455,12 @@ def _launch_tool(
                     routing_unavailable = codex_agent.minimum_version_error(
                         smart_routing_enabled=True
                     )
+                    if routing_unavailable:
+                        ensure_minimum_version(
+                            "codex",
+                            lambda: codex_agent.minimum_version_error(smart_routing_enabled=True),
+                        )
+                        routing_unavailable = None
                 except RuntimeError as exc:
                     routing_unavailable = str(exc)
             if routing_unavailable:

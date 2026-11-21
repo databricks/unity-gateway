@@ -331,12 +331,14 @@ def prepare_codex_catalog(
     *,
     workspace: str | None = None,
     get_token: Callable[[], str] | None = None,
+    include_bundled: bool = False,
 ) -> dict:
     """Resolve custom services' destinations, then extract and validate native metadata.
 
     --bundled bypasses discovery. Validation reads an explicit local catalog.
     Both commands run outside user/project config in a disposable CODEX_HOME.
     Failure blocks configuration rather than falling back to remote Codex discovery.
+    Routing without a scoped catalog retains the native menu and adds missing router models.
     """
     model_ids = _model_service_model_ids(names, workspace, get_token)
     try:
@@ -353,16 +355,24 @@ def prepare_codex_catalog(
                 )
             ):
                 raise ValueError("invalid bundled model catalog")
+            if include_bundled:
+                native_keys = {_model_key(model["slug"]) for model in bundled}
+                names = [name for name in names if _model_key(name) not in native_keys]
             fallback_warnings: list[str] = []
             catalog = build_codex_catalog(
                 bundled, names, warn=fallback_warnings.append, model_ids=model_ids
             )
+            if include_bundled:
+                priority = max(model.get("priority", 0) for model in bundled) + 1
+                for offset, model in enumerate(catalog["models"]):
+                    model["priority"] = priority + offset
+                catalog["models"] = [*bundled, *catalog["models"]]
             _validate_codex_catalog_in_home(binary, catalog, home)
     except (OSError, TypeError, ValueError, subprocess.SubprocessError):
         raise RuntimeError(
-            "Could not build the managed Codex model catalog locally. "
+            "Could not build the Codex model catalog locally. "
             "Upgrade the active Codex installation and verify "
-            "`codex debug models --bundled` works, then retry configuration. "
+            "`codex debug models --bundled` works, then retry. "
             "Gateway discovery was not used."
         ) from None
     for message in fallback_warnings:

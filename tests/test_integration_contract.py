@@ -96,6 +96,12 @@ def test_managed_integration_ci_is_blocking():
     assert baseline | routing == _collect_integration_cases(
         "(managed_fixture or workspace_switch) and codex and not soft_fail"
     )
+    equals_model_case = (
+        "test_ug_codex_v2_routing.py::"
+        "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+    )
+    assert equals_model_case not in baseline
+    assert equals_model_case in routing
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
     )
@@ -160,7 +166,8 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert "shasum -a 256 -c" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -178,7 +185,8 @@ def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
     assert "-ne $env:CHATGPT_APP_SHA256" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn"
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn",
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_skill_calls_mcp",
     }
 
 
@@ -199,7 +207,8 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
     assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -273,8 +282,17 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         routing = _collect_integration_cases(
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
+        managed_routing = _collect_integration_cases(
+            _ci_marker_expression(jobs["managed"], agent, smart_routing=True)
+        )
         assert not (smoke | full) & routing
-        for model_option in ("saved", "split", "equals"):
+        equals_model_case = (
+            "test_ug_codex_v2_routing.py::"
+            "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+        )
+        assert equals_model_case not in routing
+        assert equals_model_case in managed_routing
+        for model_option in ("saved", "split"):
             assert (
                 "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
                 f"[{model_option}]" in routing
@@ -283,7 +301,7 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         for name in ("full", "managed"):
             assert "smart_routing: [false]" in jobs[name]
             assert (
-                "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
+                "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
                 "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
@@ -475,7 +493,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ (matrix.test == 'test_cuj4_smart_routing.py' || "
-        "matrix.test == 'test_cuj7_model_discovery.py') && '0.165.0' || "
+        "matrix.test == 'test_cuj7_model_discovery.py') && '0.171.0' || "
         "inputs.codex_version || '0.156.0' }}"
     ) in job
 
