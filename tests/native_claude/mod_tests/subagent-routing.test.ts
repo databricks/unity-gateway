@@ -722,6 +722,51 @@ test('parent receives the successful child model without rewriting requested inp
   }
 });
 
+for (const [name, selected, resolved, expected] of [
+  ['custom deployment context hint', 'team.models.x[1m]', 'team.models.x', 'team.models.x[1m]'],
+  ['legacy alias', 'system.ai.claude-sonnet-5', 'databricks-claude-sonnet-5', 'system.ai.claude-sonnet-5'],
+  ['seven-digit gateway alias', 'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol', 'gpt-6-1-sol'],
+  ['eight-digit gateway alias', 'anthropic-aigw-77df06ea-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol', 'gpt-6-1-sol'],
+]) {
+  test(`child continuations preserve model identity: ${name}`, async ($, on) => {
+    const turnModels: string[] = [];
+    on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined }));
+    on('session.id', () => ({ value: 'session-1' }));
+    on('clock.now', () => ({ value: 10_000 }));
+    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: selected, rationale: 'Selected for the task',
+    }) } }));
+    on('fs.write', () => ({ value: undefined }));
+    on('agent.spawn', ($, e) => {
+      expect(e.model).toBe(selected);
+      return { agentId: 'pinned-child', model: resolved };
+    });
+    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
+      tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description,
+      subagentType: e.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+      name: 'child', permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
+    }) }));
+    on('turn.step', async function* ($, e) {
+      turnModels.push(e.model);
+      yield { kind: 'text', index: 0, text: 'Child answer' };
+      return { turnId: e.turnId, index: e.index, answer: 'Child answer',
+        toolUses: [], stopReason: 'end_turn', usage: null };
+    });
+
+    const call = await $.tool.call({ tool: 'Agent', tool_use_id: 'pin-model', ...originalInput });
+    expect(call.result).toEqual({ agentId: 'pinned-child', model: resolved });
+    for (const index of [1, 2]) {
+      const stream = $.turn.step({ turnId: 'child-turn', index, model: resolved,
+        messageCount: index, agentId: 'pinned-child' });
+      let item = await stream.next();
+      while (!item.done) item = await stream.next();
+      expect(item.value.answer).toBe('Child answer');
+    }
+    expect(turnModels).toEqual([expected, expected]);
+  });
+}
+
 async function collectParentTurn($: any, turnId: string, index = 1) {
   const stream = $.turn.step({
     turnId, index, model: 'parent-model', messageCount: 3, agentId: undefined,

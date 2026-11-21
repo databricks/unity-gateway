@@ -55,6 +55,13 @@ const explanationModelId = (model: string): string => {
 }
 
 const canonicalModel = (model: string): string => {
+  const original = unwrapGatewayModel(model)
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+}
+
+// Native failure notices omit context hints and may use legacy built-in aliases.
+const rateLimitKey = (model: string): string => {
   const original = unwrapGatewayModel(model).replace(/^databricks-claude-/, 'system.ai.claude-')
   const canonical = original.startsWith('system.ai.') ? original.slice('system.ai.'.length) : original
   return canonical.replace(/\[1m\]$/, '')
@@ -320,8 +327,8 @@ export function recordSubagentRateLimit(text: string, timestamp: number): void {
   const task = text.match(/^<task-notification>\s*<task-id>([^<\s]+)<\/task-id>/)
   const failure = text.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
   const model = task ? routedModels.model(task[1]) : undefined
-  if (model && failure && canonicalModel(model) === canonicalModel(failure[1])) {
-    rateLimitedUntil.set(canonicalModel(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
+  if (model && failure && rateLimitKey(model) === rateLimitKey(failure[1])) {
+    rateLimitedUntil.set(rateLimitKey(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
   }
 }
 
@@ -600,7 +607,7 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const timestamp = route ? await now($) : undefined
-    if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
+    if (route && timestamp !== undefined && (rateLimitedUntil.get(rateLimitKey(route.model)) ?? 0) > timestamp) {
       // A failure notice may arrive in flight; never launch that now-limited selection.
       records.delete(e.tool_use_id)
       $.ui.invalidate('ui.render')
