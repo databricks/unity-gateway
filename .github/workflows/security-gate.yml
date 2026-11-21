@@ -92,10 +92,10 @@ jobs:
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
           request = None
-          # Poll every 10 s for the first minute, when most scans finish (p50 20 s), then every
-          # 2 minutes. Anonymous pull_request calls share GitHub's 60/hour limit per runner IP, so
-          # a gate makes at most 16 polls; the deadline stays within 20 minutes.
-          delays = [10] * 6 + [120] * 9
+          # Poll every 10 s for the first minute, when most scans finish (p50 20 s), again at 2
+          # minutes, then every 2 minutes up to the 20-minute deadline. Anonymous pull_request
+          # calls share GitHub's 60/hour limit per runner IP, so a gate makes at most 17 polls.
+          delays = [10] * 6 + [60] + [120] * 9
           for attempt in range(len(delays) + 1):
               if attempt:
                   time.sleep(delays[attempt - 1])
