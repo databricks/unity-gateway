@@ -1875,25 +1875,31 @@ def test_unit_shards_run_every_test_exactly_once():
     from tests import shard
 
     files = [f"tests/test_{name}.py" for name in "abcdefgh"]
-    times = {"tests/test_a.py": [40.0, 100], "tests/test_b.py": [0.5, 10]}  # others unknown
-    for total in (1, 3, 16, 32):
+    slow = {"tests/test_a.py::test_0": 9.0, "tests/test_a.py::test_1": 3.0}
+    times = {"files": {"tests/test_a.py": [40.0, 100], "tests/test_b.py": [0.5, 10]}, "slow": slow}
+    nodeids = [
+        f"{path}::test_{index}" for path in files for index in range(100 if "_a" in path else 10)
+    ]
+    for total in (1, 3, 20, 40):
         plan = shard.plan(files, total, times)
         assert plan == shard.plan(list(files), total, times)  # identical on every shard
-        units = [unit for owned in plan for unit in owned]
-        assert len(units) == len(set(units))
-        chunks = {path: count for path, _, count in units}
-        assert sorted(chunks) == files
-        assert sorted(units) == sorted(
-            (path, chunk, count) for path, count in chunks.items() for chunk in range(1, count + 1)
-        )
-    # A file slower than one chunk spreads across shards instead of setting one shard's floor.
+        owners = [
+            [
+                index
+                for index, owned in enumerate(shard.owned_tests(units, nodeids, set(slow)))
+                if owned
+            ]
+            for units in plan
+        ]
+        assert sorted(index for owned in owners for index in owned) == list(range(len(nodeids)))
+    # Slow tests are units of their own; the rest of a slow file spreads across shards.
+    plan = shard.plan(files, 8, times)
+    assert sum(("test", "tests/test_a.py::test_0") in units for units in plan) == 1
     owners = {
-        index
-        for index, owned in enumerate(shard.plan(files, 8, times))
-        for path, _, _ in owned
-        if path == "tests/test_a.py"
+        index for index, units in enumerate(plan) for unit in units if unit[1] == "tests/test_a.py"
     }
-    assert len(owners) == 8
+    # 40 s less 12 s of slow tests leaves 28 s: seven 4-second chunks on seven shards.
+    assert len(owners) == 7
     assert shard.test_files() == sorted(
         f"tests/{path.name}"
         for path in Path(shard.TESTS).glob("test_*.py")
@@ -1906,11 +1912,21 @@ def test_unit_shard_loads_stay_balanced():
 
     for system, total in (("Linux", 20), ("Windows", 40)):
         times = shard.load_times(system)
+        assert all(seconds >= shard.SLOW_SECONDS for seconds in times["slow"].values())
         plan = shard.plan(shard.test_files(), total, times)
-        loads = [
-            sum(times.get(path, [1.0])[0] / count for path, _, count in owned) for owned in plan
-        ]
-        assert max(loads) - min(loads) <= shard.CHUNK_SECONDS, loads
+        units = sorted(unit for owned in plan for unit in owned)
+        assert len(units) == len(set(units))
+        weights = []
+        for owned in plan:
+            load = 0.0
+            for unit in owned:
+                if unit[0] == "test":
+                    load += times["slow"][unit[1]]
+                else:
+                    slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                    load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+            weights.append(load)
+        assert max(weights) - min(weights) <= max(times["slow"].values()), weights
 
 
 @pytest.mark.parametrize("spec", ["0/4", "5/4", "x/4"])

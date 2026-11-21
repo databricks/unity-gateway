@@ -39,16 +39,15 @@ jobs:
       # public PyPI at CI time: UV_INDEX_URL + a `uv lock` before install.
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
+      VENV_BIN: .venv/bin
     steps:
       - &checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
           filter: blob:none
-      - &setup-uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       # Main saves this environment and pull requests restore it, so a PR installs nothing unless
-      # it changes uv.lock or pyproject.toml.
+      # it changes uv.lock or pyproject.toml; uv itself is only needed to build it.
       - &python-cache
         id: python-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -57,6 +56,9 @@ jobs:
             .venv
             ${{ runner.temp }}/uv-python-dir
           key: python-env-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+      - &setup-uv
+        if: ${{ steps.python-cache.outputs.cache-hit != 'true' }}
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - &install
         name: Install dependencies
         if: ${{ steps.python-cache.outputs.cache-hit != 'true' }}
@@ -68,9 +70,9 @@ jobs:
       - name: Run every check and list each failure
         run: |
           failed=()
-          uv run --no-sync ruff check src/ tests/ || failed+=("ruff check")
-          uv run --no-sync ruff format --check src/ tests/ || failed+=("ruff format --check")
-          uv run --no-sync ty check src/ || failed+=("ty check")
+          "$VENV_BIN/ruff" check src/ tests/ || failed+=("ruff check")
+          "$VENV_BIN/ruff" format --check src/ tests/ || failed+=("ruff format --check")
+          "$VENV_BIN/ty" check src/ || failed+=("ty check")
           if [ ${#failed[@]} -gt 0 ]; then
             echo "::error::Failed checks: ${failed[*]}"
           fi
@@ -92,19 +94,20 @@ jobs:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
       UG_TEST_SHARD: ${{ matrix.shard }}/20
+      VENV_BIN: .venv/bin
     steps:
       - *checkout
-      - *setup-uv
       - *python-cache
+      - *setup-uv
       - *install
       - &unit-run
         name: Run this shard
         shell: bash
         # Only this shard's files, so it imports and collects only what it runs.
         run: |
-          mapfile -t files < <(uv run --no-sync python -m tests.shard files "$UG_TEST_SHARD" | tr -d '\r')
+          mapfile -t files < <("$VENV_BIN/python" -m tests.shard files "$UG_TEST_SHARD" | tr -d '\r')
           UG_TEST_SHARD_REPORT="$RUNNER_TEMP/shard-report.json" \
-            uv run --no-sync pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
+            "$VENV_BIN/python" -m pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
       - &unit-report
         name: Upload this shard's timings
         if: ${{ github.event_name == 'push' }}
@@ -129,10 +132,11 @@ jobs:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
       UG_TEST_SHARD: ${{ matrix.shard }}/40
+      VENV_BIN: .venv/Scripts
     steps:
       - *checkout
-      - *setup-uv
       - *python-cache
+      - *setup-uv
       - *install
       - name: Trust a disposable test CA in the Windows certificate store
         # tests/test_tls_https.py checks that ug verifies a server whose root is only in the OS
@@ -140,7 +144,7 @@ jobs:
         shell: pwsh
         run: |
           $directory = Join-Path $env:RUNNER_TEMP "ug-test-ca"
-          uv run --no-sync python tests/tls_ca.py $directory
+          & "$env:VENV_BIN/python" tests/tls_ca.py $directory
           certutil -addstore -f Root (Join-Path $directory "ca.pem")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "UG_TEST_OS_TRUSTED_CA_DIR=$directory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
