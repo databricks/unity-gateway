@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import { beginStatusBandTurn, endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
+import { routeAgentStream, endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   MODEL_SET_PREFIX,
@@ -319,6 +319,29 @@ export function register(on: On, options: PluginOptions): void {
   }
 
   on('session.start', async ($, e, next) => {
+    routedDisplays.records.clear();
+    try {
+      const session_id = await $.session.id();
+      routedDisplays.sessionId = session_id;
+      const root = await $.env.get('UCODE_AGENT_LABELS_DIR');
+      // Only smart-routed launches save display files.
+      routedDisplays.root = root;
+      const directory = `${root}/${encodeURIComponent(session_id)}`;
+      if (root && await $.fs.exists(directory)) for (const entry of await $.fs.list(directory)) {
+        if (entry.kind !== 'file' || entry.isLink || !entry.name.startsWith('agent-') || !entry.name.endsWith('.json')) continue;
+        try {
+          const saved = savedRoutedDisplay(JSON.parse(await $.fs.read(`${directory}/${entry.name}`)), session_id);
+          if (!saved || entry.name !== `agent-${encodeURIComponent(saved.agent_id)}.json`) continue;
+          routedDisplays.records.set(saved.agent_id, saved);
+          await $.fs.write(`${$.plugin.root}/agent-names/${entry.name}`, JSON.stringify(saved));
+        } catch {
+          $.ui.log('Could not restore a subagent display label; native labels remain where unavailable.');
+        }
+      }
+    } catch {
+      $.ui.log('Could not restore subagent display labels; native labels remain where unavailable.');
+    }
+    $.ui.invalidate('ui.render');
     sessionActive = true;
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
@@ -370,7 +393,20 @@ export function register(on: On, options: PluginOptions): void {
     const model = routedModels.model(e.agentId)
       ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined)
       ?? (auto ? autoTarget(auto, e.model) : undefined);
-    return yield* next(model ? {...e, model} : e);
+    // The stream router takes the few calls it needs, as the validator follows `$` no further.
+    const routing = {
+      session: {id: () => $.session.id(), model: () => $.session.model()},
+      // A server-side auto-mode verdict covers the call as the model wrote it.
+      serverReview: async () => await $.env.get('CLAUDE_CODE_AUTO_MODE_SERVER') === '1',
+      routingEnabled: async () => isRoutingEnabled({
+        ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
+        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+      }),
+      process: {run: (command: readonly string[], init: {stdin: string; timeoutMs: number}) => $.process.run(command, init)},
+      clock: {now: () => $.clock.now(), every: (ms: number, tick: () => void) => $.clock.every(ms, tick)},
+      ui: {invalidate: (name: 'ui.render') => $.ui.invalidate(name), log: (text: string) => $.ui.log(text)},
+    };
+    return yield* routeAgentStream(routing, e, next(model ? {...e, model} : e));
   });
 
   if (auto) {
