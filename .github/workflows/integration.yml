@@ -202,6 +202,7 @@ jobs:
           }
           & ./scripts/cowork-inference/test-diagnostics.ps1
           & ./scripts/cowork-inference/test-prepare-task.ps1
+          & ./scripts/cowork-inference/test-task-waits.ps1
       - name: Download and verify the approved Claude installer
         shell: pwsh
         run: ./scripts/cowork-inference/download-desktop.ps1

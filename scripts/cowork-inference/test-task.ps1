@@ -41,12 +41,23 @@ function Find-Control {
 function Wait-Control {
     param([string[]]$Names, [int]$Seconds = 60, $Root = $script:window)
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $scans = 0
     do {
+        $scans++
         $control = Find-Control -Names $Names -Root $Root
         if ($control) { return $control }
         Start-Sleep -Milliseconds 500
     } until ([DateTime]::UtcNow -ge $deadline)
-    Save-UI 'wait-failed'
+    $report.waitFailure = [ordered]@{
+        names = $Names
+        budgetSeconds = $Seconds
+        scans = $scans
+        elapsedMilliseconds = $timer.ElapsedMilliseconds
+    }
+    try { Save-UI 'wait-failed' -Root $Root }
+    catch { $report.waitFailure.snapshotError = $_.Exception.GetType().Name }
+    $report.waitFailure.snapshotCompletedMilliseconds = $timer.ElapsedMilliseconds
     throw "Control not ready: $($Names -join ', ')"
 }
 

@@ -19,6 +19,15 @@ through Windows UI Automation. `--force-renderer-accessibility` exposes the app'
 accessible controls. Controls are polled until enabled and visible, with a 60-second deadline per
 transition. No preliminary launch or virtualization check is needed.
 
+On a Windows task control timeout, `result.json` includes `waitFailure`: the requested
+labels, wait budget, scan count, and elapsed milliseconds before and after the failure
+snapshot. `wait-failed.json` captures the actual subtree searched, including native folder
+dialogs. Compare those timings with the snapshot when an expected control appears there;
+its presence after the wait alone does not establish when it became available.
+If snapshot collection fails, `snapshotError` records its exception class and the original
+control timeout remains the failure. `test-task-waits.ps1` checks ready controls, missing
+controls, and failed snapshots with only the UI Automation boundary substituted.
+
 The test installs UG from the checkout, runs `ug configure` with the existing
 `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` CI secrets, and checks the generated
 gateway profile. UG detects the installed Windows MSIX package and executable,
