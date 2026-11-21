@@ -1,5 +1,6 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
+import contextlib
 import hashlib
 import json
 import os
@@ -664,6 +665,62 @@ def test_terminal_api_failure_reports_the_actual_error(screen):
 )
 def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-assertion"])
+def test_antigravity_request_evidence_survives_test_outcome(tmp_path, failed):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+    log = session.home / antigravity.STATE_DIRECTORY / "log" / "cli-test.log"
+    url = "http://127.0.0.1:37805/ai-gateway/gemini/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
+    outcome = (
+        pytest.raises(AssertionError, match="native status ERROR")
+        if failed
+        else contextlib.nullcontext()
+    )
+
+    with outcome:
+        with antigravity.record_requests(session):
+            log.parent.mkdir(parents=True)
+            log.write_text(f"Making Gateway streaming request to: {url}\n")
+            if failed:
+                raise AssertionError("native status ERROR")
+
+    artifact = session.artifacts / "antigravity-requests.json"
+    assert json.loads(artifact.read_text()) == {"urls": [url]}
+    assert log.read_text() == f"Making Gateway streaming request to: {url}\n"
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-assertion"])
+def test_antigravity_capture_error_preserves_the_original_failure(tmp_path, failed):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+    # A directory in place of a log makes the real reader raise on every platform.
+    log = session.home / antigravity.STATE_DIRECTORY / "log" / "cli-unreadable.log"
+    log.mkdir(parents=True)
+    failure = AssertionError("native status ERROR")
+
+    with pytest.raises(AssertionError if failed else OSError) as captured:
+        with antigravity.record_requests(session):
+            if failed:
+                raise failure
+
+    if failed:
+        assert captured.value is failure
+        assert any("Antigravity request capture also failed:" in note for note in failure.__notes__)
+
+
+def test_antigravity_request_capture_omits_sessions_without_native_logs(tmp_path):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    with antigravity.record_requests(session):
+        pass
+
+    assert list(session.artifacts.iterdir()) == []
 
 
 @pytest.mark.parametrize("reason", ["RESOURCE_EXHAUSTED", "REQUEST_LIMIT_EXCEEDED"])

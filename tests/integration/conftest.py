@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.agents import antigravity
 from utils.desktop import desktop_config_library
 from utils.evidence import fresh_id
 from utils.harness import UserSession
@@ -174,6 +175,15 @@ def session(request, installed_binary):
                 sudo = shutil.which("sudo")
                 if os.name == "posix" and policy.exists() and sudo:
                     user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
+
+
+@pytest.fixture(autouse=True)
+def antigravity_request_evidence(request):
+    if request.node.get_closest_marker("antigravity") is None:
+        yield
+        return
+    with antigravity.record_requests(request.getfixturevalue("session")):
+        yield
 
 
 @pytest.fixture
