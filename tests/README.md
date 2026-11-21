@@ -1652,7 +1652,25 @@ The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
 requires both `All agent tests` and the complete integration workflow. A failed
 or skipped dependency fails the gate, and a running integration suite keeps it
-pending. The advisory Windows installation and headless lanes are not part of `All integration
+pending. The one accepted skip is selection by `Select live suites` (`scripts/ci_select.py`):
+- A pull request whose every changed path is in `CANNOT_REACH_LIVE` (docs, specs, bench, root
+  `README.md`/`LICENSE.md`/`NOTICE.md`, Markdown under `tests/`, `tests/*.mjs`, unit-test files
+  other than `tests/test_e2e.py`, `hk.pkl`) skips the agent shards and integration. Every other
+  path reruns everything, including `AGENTS.md` and `CLAUDE.md`, which live launches read.
+- The merge queue runs every live suite when every PR in the group (one squash commit each,
+  ending in `(#<number>)`) comes from this repository. A fork PR's queued code gets no CI secrets
+  there, as on its own PR runs; members authorize fork integration with `/integration-test`. A
+  commit without a PR number, or a PR that cannot be looked up, fails selection.
+- The selector always runs from the base revision, so a PR cannot change its own selection; a base
+  that predates it runs everything.
+- Pushes to main, the hourly schedule and dispatches always run every live suite.
+
+So a path wrongly listed in `CANNOT_REACH_LIVE` turns the merge queue red before it reaches main.
+A merge-queue entry now takes as long as the PR's full live run, about 50 minutes, and is exposed to
+the same live-service failures. `test_pr_selection_skips_live_suites_only_for_unreachable_paths`,
+`test_pr_selection_reads_whole_paths_from_git`, `test_merge_group_runs_live_suites_only_for_same_repo_prs`,
+`test_merge_group_checks_every_queued_pr`, `test_merge_group_selection_fails_closed`, `test_agent_test_rollup_accepts_only_selected_skips` and
+`test_merge_queue_runs_every_live_suite` pin this contract. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 One shared `Security Scan` runs from the default branch on `workflow_run: requested` for

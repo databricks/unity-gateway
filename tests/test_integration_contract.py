@@ -1475,13 +1475,13 @@ def test_live_suites_use_fresh_id_for_random_ids():
 def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
     job = jobs[job_name]
-    assert "github.event_name != 'merge_group'" in job
+    # The merge queue runs the full suite, so only credential-less fork PRs skip Cowork.
+    assert "merge_group" not in job
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert condition.group(1) == (
-        "${{ github.event_name != 'merge_group' && "
-        "(github.event_name != 'pull_request' || "
-        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+        "${{ github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository }}"
     )
     assert "id-token:" not in job
     assert "continue-on-error:" not in job
@@ -1552,8 +1552,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     jobs = _integration_jobs()
     job = jobs["anthropic-mps"]
     assert (
-        "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+        "      UG_COWORK_DESKTOP: ${{ matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
     ) in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
@@ -1598,24 +1597,28 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
 @pytest.mark.parametrize(
-    ("event", "integration_result", "passes"),
+    ("selection", "live", "integration_result", "passes"),
     [
-        ("pull_request", "success", True),
-        ("pull_request", "failure", False),
-        ("pull_request", "cancelled", False),
-        ("pull_request", "skipped", False),
-        ("push", "failure", False),
-        ("merge_group", "skipped", True),
+        ("success", "true", "success", True),
+        ("success", "true", "failure", False),
+        ("success", "true", "cancelled", False),
+        ("success", "true", "skipped", False),
+        # A pull request whose diff cannot reach the live suites skips them.
+        ("success", "false", "skipped", True),
+        ("success", "false", "failure", False),
+        # A failed selection never counts as a skip.
+        ("failure", "", "skipped", False),
     ],
 )
-def test_required_e2e_enforces_integration_result(event, integration_result, passes):
+def test_required_e2e_enforces_integration_result(selection, live, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    script = required.split("        run: ", 1)[1].strip()
+    script = required.split("        run: |", 1)[1].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
             **os.environ,
-            "EVENT_NAME": event,
+            "SELECTION_RESULT": selection,
+            "LIVE": live,
             "RESULT": "success",
             "INTEGRATION_RESULT": integration_result,
         },
@@ -1666,6 +1669,82 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
 
 
+CI_SELECT = runpy.run_path(str(Path(__file__).parent.parent / "scripts/ci_select.py"))
+
+
+@pytest.mark.parametrize(
+    ("paths", "live"),
+    [
+        (["docs/smart-routing.md", "README.md", "tests/README.md"], False),
+        (["tests/test_cli.py", "tests/copilot_app_rows.test.mjs", "hk.pkl"], False),
+        (["tests/integration/README.md", "docs/guides/setup.md"], False),
+        # Live launches run in the checkout and read its agent instructions.
+        (["AGENTS.md"], True),
+        (["CLAUDE.md"], True),
+        # `*` stays within one directory, so new helpers below tests/ rerun everything.
+        (["tests/test_helpers/live_driver.py"], True),
+        (["tests/drivers/live.mjs"], True),
+        (["tests/integration/notes/plan.md"], True),
+        # Runtime code, packaged skills and the live suites' own inputs rerun everything.
+        (["docs/a.md", "src/ucode/cli.py"], True),
+        (["skills/smart-router/SKILL.md"], True),
+        (["src/ucode/agents/claude_mods/README.md"], True),
+        (["tests/test_e2e.py"], True),
+        (["tests/conftest.py"], True),
+        (["tests/integration/test_ug_smoke.py"], True),
+        (["tests/integration/utils/harness.py"], True),
+        ([".github/workflows/ci.yml"], True),
+        (["scripts/ci_select.py"], True),
+        (["pyproject.toml"], True),
+        (["uv.lock"], True),
+        # An empty diff cannot prove anything is unreachable.
+        ([], True),
+    ],
+)
+def test_pr_selection_skips_live_suites_only_for_unreachable_paths(paths, live):
+    assert CI_SELECT["reaches_live"](paths) is live
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the rollup runs bash on Linux")
+@pytest.mark.parametrize(
+    ("selection", "live", "shards", "passes"),
+    [
+        ("success", "true", "success", True),
+        ("success", "true", "failure", False),
+        ("success", "true", "skipped", False),
+        ("success", "false", "skipped", True),
+        ("failure", "", "skipped", False),
+    ],
+)
+def test_agent_test_rollup_accepts_only_selected_skips(selection, live, shards, passes):
+    rollup = _workflow("ci.yml").split("\n  e2e:\n", 1)[1].split("\n  integration:\n", 1)[0]
+    script = rollup.split("        run: |", 1)[1]
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env={**os.environ, "SELECTION_RESULT": selection, "LIVE": live, "RESULT": shards},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_merge_queue_runs_every_live_suite():
+    ci = _workflow("ci.yml")
+    integration = _workflow("integration.yml")
+    assert "merge_group" not in integration.split("\njobs:\n", 1)[1]
+    selection = ci.split("\n  changes:\n", 1)[1].split("\n  e2e-shards:\n", 1)[0]
+    # The selector runs from the base revision, so a PR cannot choose its own coverage.
+    assert 'git show "$BASE_SHA:scripts/ci_select.py" > "$selector"' in selection
+    assert 'merge_group) mode=(merge-group "$BASE_SHA" "$HEAD_SHA" "$REPOSITORY") ;;' in selection
+    assert 'echo "live=true" >> "$GITHUB_OUTPUT"' in selection
+    for job in ("e2e-shards", "integration"):
+        body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
+        assert "needs.changes.outputs.live == 'true'" in body
+        assert "github.event_name != 'merge_group'" not in body
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
 @pytest.mark.parametrize(
     ("lint", "unit", "vscode", "passes"),
@@ -1693,6 +1772,77 @@ def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+def _git_repo(path):
+    """A scratch repository whose commits ignore the caller's signing and identity settings."""
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(path), "-c", "commit.gpgsign=false", "-c", "user.name=t"]
+            + ["-c", "user.email=t@t", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    return git
+
+
+@pytest.mark.parametrize(
+    ("head_repo", "live"),
+    [
+        ({"full_name": "databricks/unity-gateway"}, True),
+        # Fork code gets no CI secrets in the merge queue, as on its own PR runs.
+        ({"full_name": "someone/unity-gateway"}, False),
+        (None, False),
+    ],
+)
+def test_merge_group_runs_live_suites_only_for_same_repo_prs(monkeypatch, head_repo, live):
+    requested = []
+
+    def fetch(url, timeout):
+        requested.append(url)
+        return io.StringIO(json.dumps({"head": {"repo": head_repo}}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fetch)
+    assert CI_SELECT["pr_is_from"]("1824", "databricks/unity-gateway") is live
+    assert requested == ["https://api.github.com/repos/databricks/unity-gateway/pulls/1824"]
+
+
+def test_merge_group_checks_every_queued_pr(tmp_path, monkeypatch):
+    git = _git_repo(tmp_path)
+    for subject in ["claude: First change (#1801)", "codex: Second change (#1802)"]:
+        git("commit", "-q", "--allow-empty", "-m", subject)
+    monkeypatch.chdir(tmp_path)
+    assert CI_SELECT["queued_prs"]("HEAD~2", "HEAD") == ["1801", "1802"]
+    git("commit", "-q", "--allow-empty", "-m", "an unattributed commit")
+    with pytest.raises(SystemExit, match="Cannot attribute every merge group commit"):
+        CI_SELECT["queued_prs"]("HEAD~3", "HEAD")
+
+
+def test_merge_group_selection_fails_closed(monkeypatch):
+    def unavailable(url, timeout):
+        raise urllib.error.HTTPError(url, 403, "rate limited", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    with pytest.raises(SystemExit, match="Could not look up PR #7"):
+        CI_SELECT["pr_is_from"]("7", "databricks/unity-gateway")
+
+
+def test_pr_selection_reads_whole_paths_from_git(tmp_path, monkeypatch):
+    git = _git_repo(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py hk.pkl").write_text("")
+    git("add", "-A")
+    git("commit", "-q", "-m", "spaced")
+    monkeypatch.chdir(tmp_path)
+    changed = CI_SELECT["changed_paths"]("HEAD~1", "HEAD")
+    assert changed == ["tests/test_a.py hk.pkl"]
+    # Split on whitespace, this one path would read as two skip-listed paths.
+    assert CI_SELECT["reaches_live"](changed) is True
 
 
 def test_integration_requires_a_passing_security_gate():
