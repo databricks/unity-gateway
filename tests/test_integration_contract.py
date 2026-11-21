@@ -914,13 +914,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 17),
-        ([[{"status": "queued", "conclusion": None}]], False, 17),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 17),
-        ([[{"display_title": "Security Scan #8"}]], False, 17),
-        ([[{"event": "pull_request"}]], False, 17),
-        ([[{"event": "workflow_dispatch"}]], False, 17),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 17),
+        ([[]], False, 27),
+        ([[{"status": "queued", "conclusion": None}]], False, 27),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 27),
+        ([[{"display_title": "Security Scan #8"}]], False, 27),
+        ([[{"event": "pull_request"}]], False, 27),
+        ([[{"event": "workflow_dispatch"}]], False, 27),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 27),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -1030,11 +1030,11 @@ def _run_security_gate(
         exec(compile(script, "security-gate.yml", "exec"), {})
     # Polling cadence may change, but a gate that never sees the scan waits exactly 20 minutes,
     # and one gate run stays well under the 60 requests/hour anonymous limit. This fixture answers
-    # every list with two pages, so 17 polls cost at most 36 fetches here (18 with one-page lists).
+    # every list with two pages, so 27 polls cost at most 56 fetches here (28 with one-page lists).
     assert sum(slept) <= 20 * 60
-    if max(calls.values()) == 17:
+    if max(calls.values()) == 27:
         assert sum(slept) == 20 * 60
-    assert len(fetches) <= 36
+    assert len(fetches) <= 56
     return result.value.code, max(calls.values())
 
 
@@ -1050,7 +1050,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 17
+    assert code != 0 and calls == 27
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -1061,7 +1061,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 17)
+    assert calls == (1 if matches_commit else 27)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
