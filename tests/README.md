@@ -1644,7 +1644,7 @@ locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).
-Unit tests still run as one job. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
+Unit tests run as 12 Linux and 16 Windows shards (`Unit tests · <OS> · <n>/<total>`): each collects the whole suite and keeps its time-balanced slice (`tests/shard.py`, weights from `tests/unit_test_times.json`), so a slow file spreads across shards. On main, `Unit test times` records fresh per-file timings as an artifact and fails unless each OS's shards ran every collected test exactly once; commit the artifact when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
 `tests/e2e_cuj/test_cuj<N>_*.py` file, because CUJs share machine-wide `/etc` agent
 settings. All matrices use `fail-fast: false` so one failure does not cancel other coverage.
 
