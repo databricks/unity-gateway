@@ -1163,15 +1163,19 @@ def managed_http_headers(state: dict) -> dict[str, str]:
     }
 
 
-def proxy_headers(state: dict) -> dict[str, str]:
-    """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
-    headers = {
-        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}"),
-        # Makes the gateway map or drop the Anthropic betas its serving backend lacks. Without it,
-        # Copilot's tool search beta (`advanced-tool-use-2025-11-20`, sent once it has enough MCP
-        # tools) gets a 400 from Claude served through Bedrock.
-        "x-databricks-use-coding-agent-mode": "true",
-    }
+def proxy_headers(state: dict, *, user_agent: bool = True) -> dict[str, str]:
+    """Headers the proxy adds to every gateway request; admin-managed headers win by name.
+
+    Without ``user_agent``, ug's own User-Agent is left for the caller to set per request."""
+    headers: dict[str, str] = {}
+    if user_agent:
+        headers["User-Agent"] = ucode_user_agent(
+            ug_version(), f"copilot/{agent_version(SPEC['binary'])}"
+        )
+    # Makes the gateway map or drop the Anthropic betas its serving backend lacks. Without it,
+    # Copilot's tool search beta (`advanced-tool-use-2025-11-20`, sent once it has enough MCP
+    # tools) gets a 400 from Claude served through Bedrock.
+    headers["x-databricks-use-coding-agent-mode"] = "true"
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
@@ -1186,6 +1190,8 @@ def proxy_headers(state: dict) -> dict[str, str]:
 # Codex's own headers. Copilot sends no such ids to a provider of its own.
 SESSION_ID_HEADER = "session-id"
 SUBAGENT_ID_HEADER = "thread-id"
+# A Copilot runtime signed in to GitHub names its session in this header.
+CLIENT_SESSION_ID_HEADER = "x-client-session-id"
 _SESSION_FLAGS = ("--session-id", "-r", "--resume", "--continue", "--connect")
 
 
@@ -1253,21 +1259,64 @@ def first_user_text(body: bytes | None) -> str | None:
     return None
 
 
-def subagent_headers(session_id: str) -> Callable[[Any, bytes | None], dict[str, str]]:
-    """Gives a subagent's requests an id of that subagent: Copilot marks them only by type, and
-    its delegated prompt, the first user message, stays the same over the subagent's turns. The
-    hash is keyed for this launch, so the id can't confirm a guess at the prompt."""
+def client_session_id(request_headers: Any) -> str | None:
+    """The id of the Copilot session a request belongs to, when it names one by UUID."""
+    return _uuid(request_headers.get(CLIENT_SESSION_ID_HEADER) or "")
+
+
+def subagent_headers(
+    session_id: str | None = None,
+) -> Callable[[Any, bytes | None], dict[str, str]]:
+    """Gives a subagent's requests an id of that subagent, under ``session_id`` or else the
+    request's own session: Copilot marks them only by type, and its delegated prompt, the first
+    user message, stays the same over the subagent's turns. The hash is keyed for this launch, so
+    the id can't confirm a guess at the prompt."""
     key = secrets.token_bytes(32)
 
     def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
         if request_headers.get("x-interaction-type") != "conversation-subagent":
             return {}
+        session = session_id or client_session_id(request_headers)
         prompt = first_user_text(body)
-        if prompt is None:
+        if session is None or prompt is None:
             return {}
         # JSON can carry a lone surrogate, which strict UTF-8 can't encode.
         digest = hmac.new(key, prompt.encode("utf-8", "surrogatepass"), hashlib.sha256)
-        return {SUBAGENT_ID_HEADER: f"{session_id}-{digest.hexdigest()[:16]}"}
+        return {SUBAGENT_ID_HEADER: f"{session}-{digest.hexdigest()[:16]}"}
+
+    return headers
+
+
+_PRODUCT_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[^\s(),;/]+")
+_USER_AGENT_COMMENT = re.compile(r"\([^()]*\)")
+
+
+def seat_runtime_user_agent(runtime_user_agent: str | None) -> str:
+    """ug's User-Agent for a call of VS Code's Copilot runtime: the runtime's own products (e.g.
+    ``copilot/1.0.111-0 term/unknown client/vscode``) after ``ucode/<v>``, so the gateway
+    attributes the call to Copilot at the runtime's version and the usage log still names VS
+    Code."""
+    tokens = [
+        token
+        for token in _USER_AGENT_COMMENT.sub(" ", runtime_user_agent or "").split()
+        if _PRODUCT_TOKEN.fullmatch(token)
+    ]
+    if not tokens or not tokens[0].casefold().startswith("copilot/"):
+        tokens.insert(0, "copilot/unknown")
+    return ucode_user_agent(ug_version(), *tokens)
+
+
+def seat_runtime_headers() -> Callable[[Any, bytes | None], dict[str, str]]:
+    """Headers for each call of VS Code's Copilot runtime on the seat relay. One runtime serves
+    every chat of a VS Code window, so the session id is each call's own chat session."""
+    subagents = subagent_headers()
+
+    def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
+        added = {"User-Agent": seat_runtime_user_agent(request_headers.get("User-Agent"))}
+        session_id = client_session_id(request_headers)
+        if session_id:
+            added[SESSION_ID_HEADER] = session_id
+        return {**added, **subagents(request_headers, body)}
 
     return headers
 
@@ -1459,17 +1508,12 @@ def run_seat_runtime(
     written to stdout."""
     from ucode import copilot_relay
 
-    headers = {
-        name: value
-        for name, value in proxy_headers(state).items()
-        # The runtime names VS Code in its own User-Agent.
-        if name.casefold() != "user-agent"
-    }
     server, cache, client, api_url = start_seat_relay(
         state,
         provider_service,
-        headers=headers,
+        headers=proxy_headers(state, user_agent=False),
         sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
+        request_headers_adder=seat_runtime_headers(),
     )
     try:
         env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
