@@ -169,6 +169,10 @@ class TestUnityGateway:
     def test_probe_unity_gateway_capabilities_does_not_raise(self, e2e_workspace, e2e_token):
         probe_unity_gateway_capabilities(e2e_workspace, e2e_token)
 
+    def test_selection_proof_hidden_change(self, e2e_workspace):
+        # DO NOT MERGE: a real live-suite regression the proof base hides from PR selection.
+        assert e2e_workspace == "selection proof"
+
     def test_workspace_hostname_resolves(self, e2e_workspace):
         hostname = workspace_hostname(e2e_workspace)
         assert "." in hostname
