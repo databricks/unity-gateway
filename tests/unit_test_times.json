@@ -571,7 +571,6 @@
    ]
   },
   "slow": {
-   "tests/test_copilot_relay.py::TestGate::test_refuses_anything_but_one_github_bearer[***": 3.0,
    "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[completed]": 3.24,
    "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[completed_empty_history]": 3.23,
    "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[completed_latest]": 3.22,
@@ -1223,7 +1222,6 @@
    "tests/test_copilot_relay.py::TestDirectCalls::test_go_to_the_copilot_host_without_databricks_credentials[GET-/agents/swe/custom-agents/octo/repo]": 2.37,
    "tests/test_copilot_relay.py::TestDirectCalls::test_go_to_the_copilot_host_without_databricks_credentials[POST-/agents/sessions]": 2.03,
    "tests/test_copilot_relay.py::TestGate::test_answers_websocket_responses_with_426[GET-headers1]": 2.02,
-   "tests/test_copilot_relay.py::TestGate::test_refuses_anything_but_one_github_bearer[***": 3.56,
    "tests/test_copilot_relay.py::TestGate::test_refuses_anything_but_one_github_bearer[gho_x]": 2.02,
    "tests/test_copilot_relay.py::TestGate::test_refuses_other_hosts_and_browser_origins[headers2]": 2.02,
    "tests/test_copilot_relay.py::TestGate::test_refuses_paths_outside_the_secret[/s3cret-path/%63hat/completions]": 2.56,
