@@ -1718,3 +1718,23 @@ def test_integration_requires_a_passing_security_gate():
     condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
     assert "needs.security-gate.result == 'success'" in condition
     assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
+
+
+@pytest.mark.parametrize(
+    ("args", "workspace", "workers"),
+    [
+        # The unit CI job passes only --ignore=tests/test_e2e.py, which pytest keeps out of args.
+        ([], "", None),
+        (["tests/test_cli.py"], "", None),
+        (["tests/test_e2e.py"], "", 0),
+        (["tests/test_e2e.py::TestUnityGateway"], "", 0),
+        ([], "https://workspace.example", 0),
+    ],
+)
+def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers):
+    from types import SimpleNamespace
+
+    from tests import conftest
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
+    assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
