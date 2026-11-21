@@ -410,10 +410,25 @@ test('returns malformed, ineligible, and root-cache-controlled bodies byte-for-b
     const body = JSON.stringify({ ...request, cache_control: control });
     expect(preserveGptCacheBoundary('/messages', body)).toBe(body);
   }
-  for (const number of ['9007199254740993', '-9007199254740993', '-0.0', '1e400']) {
+  for (const number of [
+    '9007199254740993', '-9007199254740993', '-0.0', '1e400',
+    '1e-400', '-1e-400', '4.9e-324', '0.1234567890123456789', '1.0', '1E3',
+  ]) {
     const body = `{"model":"system.ai.gpt-6-1-terra","metadata":{"value":${number}},"messages":[{"role":"user","content":[{"type":"text","text":"keep","cache_control":{"type":"ephemeral"}}]}]}`;
     expect(preserveGptCacheBoundary('/messages', body)).toBe(body);
   }
+});
+
+test('preserves canonical numbers and ignores number-like text when moving a marker', () => {
+  const request = JSON.parse(userRequestBody('system.ai.gpt-6-luna', { type: 'ephemeral' }));
+  request.metadata = {
+    values: [0, -1, 0.125, 5e-324, 1e-7, Number.MAX_SAFE_INTEGER],
+    '1e-400': 'quoted "1e-400" and escaped \\"0.1234567890123456789"',
+  };
+  const expected = JSON.parse(JSON.stringify(request));
+  expected.cache_control = expected.messages[0].content[0].cache_control;
+  delete expected.messages[0].content[0].cache_control;
+  expect(JSON.parse(preserveGptCacheBoundary('/messages', JSON.stringify(request)))).toEqual(expected);
 });
 
 test('registered HTTP fetch hook enables gateway requests by default and preserves transport fields', async () => {

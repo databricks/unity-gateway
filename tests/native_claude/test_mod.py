@@ -1037,11 +1037,10 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
                 ),
             ) as session:
                 result = session.send(
-                    "Use a subagent to return 10, with no tools." if routed else "Reply with OK."
+                    "Use a subagent to return 10, with no tools." if routed else "Reply with 10."
                 )
                 assert not result["is_error"], result
-                if routed:
-                    assert "10" in result["result"], result
+                assert "10" in result["result"], result
         finally:
             receipt_dir = tmp_path / label
             receipt_dir.mkdir(parents=True, exist_ok=True)
@@ -1167,8 +1166,10 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             and block["cache_control"].get("ttl", "5m") in {"5m", "1h"}
         ]
 
-    def request_for_model(requests, model):
-        return next(request for request in requests if request["body"].get("model") == model)
+    def requests_for_model(requests, model):
+        matching = [request for request in requests if request["body"].get("model") == model]
+        assert matching, (model, requests)
+        return matching
 
     preserved_header_names = (
         "accept",
@@ -1214,16 +1215,16 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
         )
 
         for model in (parent_model, child_model):
-            before = request_for_model(baseline, model)
-            after = request_for_model(active, model)
-            before_controls = latest_user_controls(before)
-            assert before_controls == [eligible_control], before["body"]
-            assert before["body"]["messages"] == eligible_messages
-            assert "cache_control" not in before["body"], before["body"]
-            assert_preserved(before, after)
-            assert after["body"].get("cache_control") == before_controls[-1], after["body"]
-            assert after["body"]["messages"] == moved_messages, after["body"]
-            assert latest_user_controls(after) == [], after["body"]
+            before_requests = requests_for_model(baseline, model)
+            for before in before_requests:
+                assert latest_user_controls(before) == [eligible_control], before["body"]
+                assert before["body"]["messages"] == eligible_messages
+                assert "cache_control" not in before["body"], before["body"]
+            for after in requests_for_model(active, model):
+                assert_preserved(before_requests[0], after)
+                assert after["body"].get("cache_control") == eligible_control, after["body"]
+                assert after["body"]["messages"] == moved_messages, after["body"]
+                assert latest_user_controls(after) == [], after["body"]
 
         assert any(
             request["body"].get("model") == child_model
@@ -1240,14 +1241,16 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             routed=True,
             route_model=qualified_child,
         )
-        qualified_request = request_for_model(qualified, qualified_child)
-        assert qualified_request["headers"].get("x-claude-code-request-class") == "subagent", (
-            qualified
-        )
-        assert qualified_request["body"]["messages"] == moved_messages, qualified_request["body"]
-        assert qualified_request["body"].get("cache_control") == eligible_control
-        assert latest_user_controls(qualified_request) == [], qualified_request["body"]
-        assert qualified_request["body"].get("caller_field") == "keep"
+        for qualified_request in requests_for_model(qualified, qualified_child):
+            assert qualified_request["headers"].get("x-claude-code-request-class") == "subagent", (
+                qualified_request
+            )
+            assert qualified_request["body"]["messages"] == moved_messages, qualified_request[
+                "body"
+            ]
+            assert qualified_request["body"].get("cache_control") == eligible_control
+            assert latest_user_controls(qualified_request) == [], qualified_request["body"]
+            assert qualified_request["body"].get("caller_field") == "keep"
 
         natural_parent_model = "system.ai.gpt-6-luna"
         natural_routed_child_model = "system.ai.gpt-6-astra"
@@ -1343,7 +1346,8 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
         ]
         for label, env, model in gate_cases:
             requests = run_case(label, env, model)
-            assert_unmoved(request_for_model(requests, model))
+            for request in requests_for_model(requests, model):
+                assert_unmoved(request)
 
         user_plugin_only = run_case(
             "cache-boundary-user-plugin-only",
@@ -1353,7 +1357,8 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             managed_header_mod=False,
         )
         for model in (parent_model, child_model):
-            assert_unmoved(request_for_model(user_plugin_only, model))
+            for request in requests_for_model(user_plugin_only, model):
+                assert_unmoved(request)
 
         root_env = {
             **active_env,
@@ -1366,12 +1371,13 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             ),
         }
         existing_root = run_case("cache-boundary-existing-root", root_env)
-        root_request = request_for_model(existing_root, parent_model)
-        assert root_request["body"].get("cache_control") == explicit_root_control
-        assert root_request["body"].get("caller_field") == "keep"
-        assert latest_user_controls(root_request) == [eligible_control], root_request["body"]
-        assert root_request["body"]["messages"] == eligible_messages
-        assert_preserved(request_for_model(baseline, parent_model), root_request)
+        for root_request in requests_for_model(existing_root, parent_model):
+            assert root_request["body"].get("cache_control") == explicit_root_control
+            assert root_request["body"].get("caller_field") == "keep"
+            assert latest_user_controls(root_request) == [eligible_control], root_request["body"]
+            assert root_request["body"]["messages"] == eligible_messages
+            assert_preserved(requests_for_model(baseline, parent_model)[0], root_request)
+
     finally:
         server.shutdown()
         server.server_close()

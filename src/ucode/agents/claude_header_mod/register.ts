@@ -82,12 +82,7 @@ export function preserveGptCacheBoundary(path: string, body: string): string {
   if (!['/messages', '/v1/messages', '/ai-gateway/anthropic/v1/messages'].includes(path.split('?', 1)[0])) return body;
   let payload: unknown;
   try {
-    payload = JSON.parse(body, (_key, value) => {
-      // Leave unusual numbers untouched rather than round a tool argument during serialization.
-      if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0) ||
-          (Number.isInteger(value) && !Number.isSafeInteger(value)))) throw new Error('Unsafe number');
-      return value;
-    });
+    payload = JSON.parse(body);
   } catch {
     return body;
   }
@@ -101,6 +96,14 @@ export function preserveGptCacheBoundary(path: string, body: string): string {
       !Array.isArray(latest.content) || !latest.content.length) return body;
   const content = latest.content;
   if (!content.every(isRecord)) return body;
+  // Check raw number tokens before serialization loses precision; ignore tokens inside strings.
+  for (const match of body.matchAll(/"(?:\\.|[^"\\])*"|(-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/g)) {
+    if (match[1] === undefined) continue;
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || Object.is(value, -0) ||
+        (Number.isInteger(value) && !Number.isSafeInteger(value)) ||
+        JSON.stringify(value) !== match[1]) return body;
+  }
   for (let i = content.length - 1; i >= 0; i--) {
     const control = content[i].cache_control;
     if (isRecord(control) && control.type === 'ephemeral' &&
