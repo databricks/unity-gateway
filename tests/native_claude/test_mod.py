@@ -1092,8 +1092,8 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
     def assert_natural_marker_moved(automatic, disabled):
         for requests, enabled in ((automatic, True), (disabled, False)):
             traces = []
+            shapes = {}
             for path in Path(requests[0]["session_root"]).rglob("*.jsonl"):
-                shapes = {}
                 message_hashes = []
                 for line in path.read_text().splitlines():
                     record = json.loads(line)
@@ -1101,7 +1101,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
                         shapes[record["shapeHash"]] = record["shape"]
                     elif record.get("type") == "api-request":
                         message_hashes = message_hashes[: record["keep"]] + record["tail"]
-                        traces.append((record, shapes[record["shapeHash"]], message_hashes))
+                        traces.append((record, message_hashes))
             for request in requests:
                 body = request["body"]
                 hashes = []
@@ -1117,14 +1117,15 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
                     )
                 matching = [
                     index
-                    for index, (record, shape, original_hashes) in enumerate(traces)
+                    for index, (record, original_hashes) in enumerate(traces)
                     if record["params"]["model"] == body["model"]
                     and original_hashes == hashes
                     and bool(record.get("agentId"))
                     == (request["headers"].get("x-claude-code-request-class") == "subagent")
                 ]
                 assert matching, "Received message content differs from its native request trace"
-                record, shape, _ = traces.pop(matching[0])
+                record, _ = traces.pop(matching[0])
+                shape = shapes[record["shapeHash"]]
                 assert marker_free(body.get("tools")) == shape.get("tools")
                 # The SDK adds its billing header after recording the native request shape.
                 assert body["system"][0]["text"].startswith("x-anthropic-billing-header:")

@@ -478,6 +478,7 @@ def test_launch_without_ug_headers_or_with_an_active_mod_says_nothing(monkeypatc
 def test_cache_boundary_launch_guard(
     monkeypatch, flag, workspace, relayed, version, current_mod, expected
 ):
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
     monkeypatch.setenv("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", "https://inherited.invalid")
     if flag is None:
         monkeypatch.delenv("UG_CLAUDE_GPT_CACHE_BOUNDARY", raising=False)
@@ -516,6 +517,7 @@ def test_cache_boundary_launch_guard(
 def test_launch_keeps_cache_base_for_plain_launch_and_routing_fallback(
     tmp_path, monkeypatch, routing
 ):
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
     _managed_path, _root, writes = _managed_env(tmp_path, monkeypatch, {})
     state = {"workspace": WS, "codex_models": []}
     claude.write_tool_config(state, "databricks-claude-sonnet-4")

@@ -105,9 +105,11 @@ jobs:
         include:
           - claude-version: '2.1.290'
             os: ubuntu-latest
+            managed-policy: false
           # The managed-policy test needs unprivileged user namespaces.
           - claude-version: '2.1.325'
             os: ubuntu-22.04
+            managed-policy: true
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UCODE_TEST_CLAUDE_VERSION: ${{ matrix.claude-version }}
@@ -120,12 +122,12 @@ jobs:
           node-version: 22
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - name: Prepare managed-policy isolation
-        if: matrix.claude-version == '2.1.325'
+        if: matrix.managed-policy
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           sudo install -d -m 755 /etc/claude-code
-          bwrap --unshare-user --ro-bind / / -- true
+          bwrap --die-with-parent --unshare-user --unshare-pid --bind / / --ro-bind /etc/claude-code /etc/claude-code -- true
       - run: npm install -g "@anthropic-ai/claude-code@$UCODE_TEST_CLAUDE_VERSION"
       - run: uv lock
       - name: Validate and test the mod entry point

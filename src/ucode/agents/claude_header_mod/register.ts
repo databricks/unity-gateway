@@ -118,6 +118,7 @@ export function register(on: On): void {
   let submittedLanguage: string | undefined;
   let routingActive: boolean | undefined;
   on('http.fetch', async ($, e, next) => {
+    // Engine-origin HTTP events require Claude 2.1.321+, including direct configured launches.
     if (next.origin.plugin !== 'engine' || e.init?.method?.toUpperCase() !== 'POST' ||
         typeof e.init.body !== 'string' || await $.env.get('UG_CLAUDE_GPT_CACHE_BOUNDARY') === '0') return next(e);
     // Claude 2.1.325 refuses edited authenticated requests in this network-policy mode.
