@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
 import shutil
@@ -793,12 +794,11 @@ def test_native_language_reload_updates_parent_context_once(native_binary, tmp_p
 
 
 def test_managed_cache_boundary_uses_native_fetch_for_parent_and_child(native_binary, tmp_path):
-    """Exercise native fetch with the eligible out-of-order tool-result wire shape.
+    """Verify the native cache boundary on natural and controlled Messages requests.
 
-    The live native prompt adds cache controls to a trailing system Environment/hookcontext
-    message, which is intentionally ineligible. This fixture supplies a representative eligible
-    user tool-result message through CLAUDE_CODE_EXTRA_BODY; the controlled server still drives the
-    actual parent request and routed-child request.
+    The EXTRA_BODY cases retain deterministic eligibility and negative controls. Natural direct
+    gateway cases omit EXTRA_BODY and prove one trailing system marker moves to the request root
+    for parent, ordinary-child, and routed-child requests, with opt-out requests as controls.
     """
     if sys.platform != "linux" or shutil.which("bwrap") is None:
         pytest.skip("Managed-mod proof needs Linux bubblewrap to isolate OS-managed settings")
@@ -866,18 +866,18 @@ def test_managed_cache_boundary_uses_native_fetch_for_parent_and_child(native_bi
                     "name": "Agent",
                     "input": {},
                 }
+                tool_input = {
+                    "description": "Compute arithmetic",
+                    "prompt": "Return 10. Use no tools.",
+                    "subagent_type": "general-purpose",
+                    "name": "CacheProof",
+                    "run_in_background": False,
+                }
+                if not self.server.inherit_parent_model:
+                    tool_input["model"] = "sonnet"
                 delta = {
                     "type": "input_json_delta",
-                    "partial_json": json.dumps(
-                        {
-                            "description": "Compute arithmetic",
-                            "prompt": "Return 10. Use no tools.",
-                            "subagent_type": "general-purpose",
-                            "model": "sonnet",
-                            "name": "CacheProof",
-                            "run_in_background": False,
-                        }
-                    ),
+                    "partial_json": json.dumps(tool_input),
                 }
                 stop_reason = "tool_use"
             else:
@@ -941,12 +941,21 @@ def test_managed_cache_boundary_uses_native_fetch_for_parent_and_child(native_bi
             if path.endswith("/count_tokens"):
                 self.send_json({"input_tokens": 100})
                 return
-            if path != "/v1/messages":
+            if path not in {
+                "/v1/messages",
+                "/ai-gateway/anthropic/v1/messages",
+            }:
                 self.send_json({})
                 return
             request = json.loads(raw)
             self.server.requests.append(
-                {"body": request, "headers": headers, "content_encoding": content_encoding or None}
+                {
+                    "path": path,
+                    "session_root": self.server.session_root,
+                    "body": request,
+                    "headers": headers,
+                    "content_encoding": content_encoding or None,
+                }
             )
             tool_call = (
                 self.server.spawn_agent
@@ -973,12 +982,24 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
     route_command = [sys.executable, "-c", route_script, child_model]
 
     def run_case(
-        label, env, model=parent_model, *, routed=False, managed_header_mod=True, route_model=None
+        label,
+        env,
+        model=parent_model,
+        *,
+        routed=False,
+        managed_header_mod=True,
+        route_model=None,
+        natural=False,
+        spawn_agent=None,
+        inherit_parent_model=False,
+        resume=None,
     ):
         server.requests = []
         server.message_count = 0
-        server.spawn_agent = routed
+        server.spawn_agent = routed if spawn_agent is None else spawn_agent
         server.spawned = False
+        server.inherit_parent_model = inherit_parent_model
+        server.session_root = str(tmp_path / label)
         env = {
             "ENABLE_PROMPT_CACHING_1H": "1",
             "CLAUDE_CODE_USE_GATEWAY": "1",
@@ -993,31 +1014,144 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
                 "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
                 "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
             }
-        with Session(
-            native_binary,
-            tmp_path / label,
-            env,
-            api=base_url,
-            route_command=(
-                [sys.executable, "-c", route_script, route_model] if route_model else route_command
-            )
-            if routed
-            else (),
-            model=model,
-            managed_settings=(
-                _enable_header_mod({}, tmp_path / label / "managed-mod")
-                if managed_header_mod
-                else {"prependPlugins": ["sec-default@builtin"]}
-            ),
-        ) as session:
-            result = session.send(
-                "Use a subagent to return 10, with no tools." if routed else "Reply with OK."
-            )
-            assert not result["is_error"], result
-            if routed:
-                assert "10" in result["result"], result
-        (tmp_path / label / "requests.json").write_text(json.dumps(server.requests, indent=2))
+        try:
+            with Session(
+                native_binary,
+                tmp_path / label,
+                env,
+                resume=resume,
+                api=f"{base_url}/ai-gateway/anthropic" if natural else base_url,
+                route_command=(
+                    [sys.executable, "-c", route_script, route_model]
+                    if route_model
+                    else route_command
+                )
+                if routed
+                else (),
+                model=model,
+                extra_body=None if natural else '{"caller_field":"keep"}',
+                managed_settings=(
+                    _enable_header_mod({}, tmp_path / label / "managed-mod")
+                    if managed_header_mod
+                    else {"prependPlugins": ["sec-default@builtin"]}
+                ),
+            ) as session:
+                result = session.send(
+                    "Use a subagent to return 10, with no tools." if routed else "Reply with OK."
+                )
+                assert not result["is_error"], result
+                if routed:
+                    assert "10" in result["result"], result
+        finally:
+            receipt_dir = tmp_path / label
+            receipt_dir.mkdir(parents=True, exist_ok=True)
+            (receipt_dir / "requests.json").write_text(json.dumps(server.requests, indent=2))
         return list(server.requests)
+
+    def cache_control_locations(value):
+        locations = []
+
+        def visit(current, path=()):
+            if isinstance(current, dict):
+                for key, item in current.items():
+                    item_path = (*path, key)
+                    if key == "cache_control":
+                        locations.append((item_path, json.dumps(item, sort_keys=True)))
+                    else:
+                        visit(item, item_path)
+            elif isinstance(current, list):
+                for index, item in enumerate(current):
+                    visit(item, (*path, index))
+
+        visit(value)
+        return locations
+
+    def marker_free(value):
+        if isinstance(value, dict):
+            return {key: marker_free(item) for key, item in value.items() if key != "cache_control"}
+        if isinstance(value, list):
+            return [marker_free(item) for item in value]
+        return value
+
+    def assert_natural_requests(requests, expected_parent, expected_child):
+        assert requests, requests
+        for request in requests:
+            body = request["body"]
+            is_subagent = request["headers"].get("x-claude-code-request-class") == "subagent"
+            assert request["path"] == "/ai-gateway/anthropic/v1/messages", request
+            assert body["model"] == (
+                expected_child if is_subagent and expected_child is not None else expected_parent
+            ), request
+            assert "caller_field" not in body and body.get("messages"), request
+        has_subagent = any(
+            request["headers"].get("x-claude-code-request-class") == "subagent"
+            for request in requests
+        )
+        assert has_subagent == (expected_child is not None), requests
+
+    def assert_natural_marker_moved(automatic, disabled):
+        for requests, enabled in ((automatic, True), (disabled, False)):
+            traces = []
+            for path in Path(requests[0]["session_root"]).rglob("*.jsonl"):
+                shapes = {}
+                message_hashes = []
+                for line in path.read_text().splitlines():
+                    record = json.loads(line)
+                    if record.get("type") == "api-request-shape":
+                        shapes[record["shapeHash"]] = record["shape"]
+                    elif record.get("type") == "api-request":
+                        message_hashes = message_hashes[: record["keep"]] + record["tail"]
+                        traces.append((record, shapes[record["shapeHash"]], message_hashes))
+            for request in requests:
+                body = request["body"]
+                hashes = []
+                for message in marker_free(body["messages"]):
+                    if isinstance(message.get("content"), str):
+                        message["content"] = [{"type": "text", "text": message["content"]}]
+                    hashes.append(
+                        hashlib.sha256(
+                            json.dumps(
+                                message, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                            ).encode()
+                        ).hexdigest()
+                    )
+                matching = [
+                    index
+                    for index, (record, shape, original_hashes) in enumerate(traces)
+                    if record["params"]["model"] == body["model"]
+                    and original_hashes == hashes
+                    and bool(record.get("agentId"))
+                    == (request["headers"].get("x-claude-code-request-class") == "subagent")
+                ]
+                assert matching, "Received message content differs from its native request trace"
+                record, shape, _ = traces.pop(matching[0])
+                assert marker_free(body.get("tools")) == shape.get("tools")
+                # The SDK adds its billing header after recording the native request shape.
+                assert body["system"][0]["text"].startswith("x-anthropic-billing-header:")
+                assert marker_free(body["system"][1:]) == shape["system"]
+                for key, value in record["params"].items():
+                    if key != "betas":
+                        assert body[key] == value, (key, body[key], value)
+                expected_markers = {}
+                for marker in record["cacheControl"]:
+                    path = list(marker["path"])
+                    if path[0] == "system":
+                        path[1] += 1
+                    expected_markers[(*path, "cache_control")] = json.dumps(
+                        marker["value"], sort_keys=True
+                    )
+                latest_index = len(body["messages"]) - 1
+                assert body["messages"][latest_index]["role"] in {"user", "system"}
+                latest_markers = [
+                    path
+                    for path in expected_markers
+                    if path[:3] == ("messages", latest_index, "content") and len(path) == 5
+                ]
+                assert latest_markers, record
+                if enabled:
+                    source = max(latest_markers, key=lambda path: path[3])
+                    expected_markers[("cache_control",)] = expected_markers.pop(source)
+                assert dict(cache_control_locations(body)) == expected_markers, body
 
     def latest_user_controls(request):
         body = request["body"]
@@ -1063,9 +1197,10 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
         extra_body = json.dumps({"caller_field": "keep", "messages": eligible_messages})
         routed_env = {
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+            "UG_CLAUDE_GPT_CACHE_BOUNDARY": "0",
             "CLAUDE_CODE_EXTRA_BODY": extra_body,
         }
-        baseline = run_case("cache-boundary-unset", routed_env, routed=True)
+        baseline = run_case("cache-boundary-zero-baseline", routed_env, routed=True)
         active_env = {
             "CLAUDE_CODE_EXTRA_BODY": extra_body,
             "UG_CLAUDE_GPT_CACHE_BOUNDARY": "1",
@@ -1115,6 +1250,75 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
         assert qualified_request["body"].get("cache_control") == eligible_control
         assert latest_user_controls(qualified_request) == [], qualified_request["body"]
         assert qualified_request["body"].get("caller_field") == "keep"
+
+        natural_parent_model = "system.ai.gpt-6-luna"
+        natural_routed_child_model = "system.ai.gpt-6-astra"
+        natural_default = run_case(
+            "cache-boundary-natural-default-parent-child",
+            {},
+            natural_parent_model,
+            natural=True,
+            spawn_agent=True,
+            inherit_parent_model=True,
+        )
+        natural_optout = run_case(
+            "cache-boundary-natural-zero-parent-child",
+            {"UG_CLAUDE_GPT_CACHE_BOUNDARY": "0"},
+            natural_parent_model,
+            natural=True,
+            spawn_agent=True,
+            inherit_parent_model=True,
+        )
+        natural_routed = run_case(
+            "cache-boundary-natural-default-routed-child",
+            {},
+            natural_parent_model,
+            routed=True,
+            route_model=natural_routed_child_model,
+            natural=True,
+            spawn_agent=True,
+        )
+        natural_routed_optout = run_case(
+            "cache-boundary-natural-zero-routed-child",
+            {"UG_CLAUDE_GPT_CACHE_BOUNDARY": "0"},
+            natural_parent_model,
+            routed=True,
+            route_model=natural_routed_child_model,
+            natural=True,
+            spawn_agent=True,
+        )
+        assert_natural_requests(natural_default, natural_parent_model, natural_parent_model)
+        assert_natural_requests(natural_optout, natural_parent_model, natural_parent_model)
+        assert_natural_requests(natural_routed, natural_parent_model, natural_routed_child_model)
+        assert_natural_requests(
+            natural_routed_optout, natural_parent_model, natural_routed_child_model
+        )
+        assert_natural_marker_moved(natural_default, natural_optout)
+        assert_natural_marker_moved(natural_routed, natural_routed_optout)
+
+        resume_source = next(
+            (tmp_path / "cache-boundary-natural-default-parent-child").glob(
+                "config/projects/*/*.jsonl"
+            )
+        )
+        resumed_model = natural_routed_child_model
+        resumed_default = run_case(
+            "cache-boundary-natural-resume-model-switch-default",
+            {},
+            resumed_model,
+            natural=True,
+            resume=resume_source,
+        )
+        resumed_optout = run_case(
+            "cache-boundary-natural-resume-model-switch-zero",
+            {"UG_CLAUDE_GPT_CACHE_BOUNDARY": "0"},
+            resumed_model,
+            natural=True,
+            resume=resume_source,
+        )
+        assert_natural_requests(resumed_default, resumed_model, None)
+        assert_natural_requests(resumed_optout, resumed_model, None)
+        assert_natural_marker_moved(resumed_default, resumed_optout)
 
         gate_cases = [
             (

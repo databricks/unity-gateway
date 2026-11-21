@@ -249,32 +249,33 @@ test('allowed Messages paths move cache controls and reject other paths', () => 
   }
 });
 
-test('only the exact GPT 6.1 Terra and Sol model IDs, bare or deployment-qualified, with optional 1m suffix, qualify', () => {
+test('GPT model families and discovery aliases qualify without changing the outgoing model', () => {
   const control = { type: 'ephemeral', ttl: '5m' };
   for (const model of [
-    'system.ai.gpt-6-1-terra', 'system.ai.gpt-6-1-terra[1m]',
-    'system.ai.gpt-6-1-sol', 'system.ai.gpt-6-1-sol[1m]',
+    'gpt-4.1', 'gpt-5.2', 'gpt-6-luna', 'databricks-gpt-6-astra',
+    'system.ai.gpt-6-luna', 'system.ai.gpt-6-1-terra', 'system.ai.gpt-6-1-sol',
+    'system.ai.gpt-5-6-sol', 'system.ai.gpt-6-2-astra',
     'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
-    'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[1m]',
     'anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol',
-    'anthropic-aigw-c4442a48-system.ai.gpt-6-1-sol[1m]',
+    'anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol',
+    'anthropic-aigw-2b40afe0-system.ai.gpt-6-2-astra',
   ]) {
-    const result = JSON.parse(preserveGptCacheBoundary('/messages', userRequestBody(model, control)));
-    expect(result.model).toBe(model);
-    expect(result.cache_control).toEqual(control);
+    for (const wireModel of [model, model + '[1m]']) {
+      const result = JSON.parse(preserveGptCacheBoundary('/messages', userRequestBody(wireModel, control)));
+      expect(result.model).toBe(wireModel);
+      expect(result.cache_control).toEqual(control);
+    }
   }
   for (const model of [
-    'system.ai.gpt-6-sol', 'system.ai.gpt-6-1-sol[5m]',
-    'system.ai.gpt-6-1-sol[1m][1m]', 'system.ai.gpt-6-1-terra-extra', 42, null,
+    'system.ai.gpt-6-1-sol[5m]', 'system.ai.gpt-6-1-sol[1m][1m]', 42, null,
+    'system.ai.gpt-oss-120b', 'gpt-oss-20b', 'claude-sonnet-4-6',
+    'models/system.ai.gpt-6-luna',
+    'custom.models.gpt-6-luna', 'system.ai.not-gpt-6-luna',
     'anthropic-aigw-77df06ea-system.ai.glm-5-3-flash',
-    'anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol[1m]',
-    'anthropic-aigw-2b40afe0-system.ai.gpt-6-2-astra[1m]',
     'xanthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
-    'anthropic-aigw-77df06ea-system.ai.gpt-6-1-terra-extra',
     'anthropic-aigw--system.ai.gpt-6-1-terra',
     'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[5m]',
     'prefix-anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra',
-    'anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra-suffix',
   ]) {
     const body = userRequestBody(model, control);
     expect(preserveGptCacheBoundary('/messages', body)).toBe(body);
@@ -330,6 +331,25 @@ test('moves the last eligible marker from out-of-order parallel tool results wit
   expect(preserveGptCacheBoundary('/v1/messages', result)).toBe(result);
 });
 
+test('moves a trailing system-context marker while retaining the complete native request', () => {
+  const control = { type: 'ephemeral', ttl: '1h' };
+  const request = {
+    model: 'system.ai.gpt-6-1-terra',
+    system: [{ type: 'text', text: 'Instructions', cache_control: control }],
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Inspect the repository.' }] },
+      { role: 'system', content: [{ type: 'text', text: 'Available tools', cache_control: control }] },
+    ],
+  };
+  const body = JSON.stringify(request);
+  const result = preserveGptCacheBoundary('/v1/messages', body);
+  const expected = JSON.parse(body);
+  delete expected.messages[1].content[0].cache_control;
+  expected.cache_control = control;
+  expect(JSON.parse(result)).toEqual(expected);
+  expect(preserveGptCacheBoundary('/v1/messages', result)).toBe(result);
+});
+
 test('retains allowed TTL forms and skips later markers with invalid types or TTLs', () => {
   for (const control of [
     { type: 'ephemeral' }, { type: 'ephemeral', ttl: '5m' }, { type: 'ephemeral', ttl: '1h' },
@@ -374,7 +394,7 @@ test('returns malformed, ineligible, and root-cache-controlled bodies byte-for-b
     { model: 'system.ai.gpt-6-1-terra', messages: 'not a list' },
     { model: 'system.ai.gpt-6-1-terra', messages: [null] },
     { model: 'system.ai.gpt-6-1-terra', messages: [{ role: 'assistant', content: [{ cache_control: { type: 'ephemeral' } }] }] },
-    { model: 'system.ai.gpt-6-1-terra', messages: [{ role: 'user', content: [{ type: 'text', text: 'keep' }] }, { role: 'system', content: [{ type: 'text', text: 'environment', cache_control: { type: 'ephemeral', ttl: '1h' } }] }] },
+    { model: 'system.ai.gpt-6-1-terra', messages: [{ role: 'tool', content: [{ cache_control: { type: 'ephemeral' } }] }] },
     { model: 'system.ai.gpt-6-1-terra', messages: [{ role: 'user', content: [] }] },
     { model: 'system.ai.gpt-6-1-terra', messages: [{ role: 'user', content: 'not a list' }] },
     { model: 'system.ai.gpt-6-1-terra', messages: [{ role: 'user', content: [null] }] },
@@ -396,7 +416,7 @@ test('returns malformed, ineligible, and root-cache-controlled bodies byte-for-b
   }
 });
 
-test('registered HTTP fetch hook rewrites only opted-in engine requests and preserves transport fields', async () => {
+test('registered HTTP fetch hook enables gateway requests by default and preserves transport fields', async () => {
   type Request = { url: string; init?: { method?: string; body?: unknown; [key: string]: unknown }; [key: string]: unknown };
   type Next = ((event: Request) => unknown) & { origin: { plugin: string } };
   type FetchHook = (engine: { env: { get: (name: string) => Promise<unknown> } }, event: Request, next: Next) => Promise<unknown>;
@@ -409,10 +429,11 @@ test('registered HTTP fetch hook rewrites only opted-in engine requests and pres
   delete expected.messages[0].content[0].cache_control;
   expected.cache_control = control;
   const headers = { 'x-original': 'kept' };
+  const signal = { aborted: false };
   const event: Request = {
     url: 'https://gateway.example/v1/messages?beta=true',
     requestId: 'request-1',
-    init: { method: 'post', body, headers, compress: true, redirect: 'manual', credentials: 'omit' },
+    init: { method: 'post', body, headers, signal, compress: true, redirect: 'manual', credentials: 'omit' },
   };
   const response = { status: 207, body: 'engine response' };
   const invoke = async (environment: Record<string, string | undefined>, request: Request, plugin = 'engine') => {
@@ -420,24 +441,44 @@ test('registered HTTP fetch hook rewrites only opted-in engine requests and pres
     const next = Object.assign((value: Request) => { forwarded.push(value); return response; }, { origin: { plugin } }) as Next;
     return { forwarded, result: await fetch({ env: { get: async (name) => environment[name] } }, request, next) };
   };
-  const env = { UG_CLAUDE_GPT_CACHE_BOUNDARY: '1', UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL: 'https://gateway.example' };
+  const env = { UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL: 'https://gateway.example' };
   const enabled = await invoke({ ...env, UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL: 'https://gateway.example///' }, event);
   expect(enabled.forwarded).toHaveLength(1);
   expect(enabled.forwarded[0]).not.toBe(event);
   expect(enabled.forwarded[0]).toEqual({ ...event, init: { ...event.init, body: JSON.stringify(expected) } });
   expect(enabled.forwarded[0].init?.headers).toBe(headers);
+  expect(enabled.forwarded[0].init?.signal).toBe(signal);
   expect(enabled.forwarded[0].init?.method).toBe('post');
   expect(enabled.forwarded[0].init?.compress).toBe(true);
   expect(enabled.result).toBe(response);
 
+  const configured = {
+    CLAUDE_CODE_USE_GATEWAY: '1',
+    ANTHROPIC_BASE_URL: 'https://gateway.example/ai-gateway/anthropic',
+  };
+  const configuredEvent = { ...event, url: configured.ANTHROPIC_BASE_URL + '/v1/messages?beta=true' };
+  for (const flag of [undefined, '', '1']) {
+    const result = await invoke({ ...configured, UG_CLAUDE_GPT_CACHE_BOUNDARY: flag }, configuredEvent);
+    expect(result.forwarded).toHaveLength(1);
+    expect(result.forwarded[0]).toEqual({ ...configuredEvent, init: { ...event.init, body: JSON.stringify(expected) } });
+    expect(result.forwarded[0].init?.headers).toBe(headers);
+    expect(result.result).toBe(response);
+  }
+
   const unchanged = [
     [env, event, 'other'],
-    [{ UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL: env.UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL }, event],
     [{ ...env, UG_CLAUDE_GPT_CACHE_BOUNDARY: '0' }, event],
     [{ ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, event],
     [{ ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '0' }, event],
     [{ ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 'true' }, event],
+    [{ ...env, ANTHROPIC_CUSTOM_HEADERS: 'X-Team: keep\nDatabricks-Model-Provider-Service: catalog.schema.provider' }, event],
+    [{ ...env, ANTHROPIC_CUSTOM_HEADERS: 'databricks-model-provider-service: catalog.schema.provider' }, event],
     [{ UG_CLAUDE_GPT_CACHE_BOUNDARY: '1' }, event],
+    [{ ...configured, UG_CLAUDE_GPT_CACHE_BOUNDARY: '0' }, configuredEvent],
+    [{ ...configured, UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL: '' }, configuredEvent],
+    [{ ...configured, CLAUDE_CODE_USE_GATEWAY: undefined }, configuredEvent],
+    [{ ...configured, ANTHROPIC_BASE_URL: 'https://gateway.example/other' }, configuredEvent],
+    [configured, { ...configuredEvent, url: 'https://elsewhere.example/ai-gateway/anthropic/v1/messages' }],
     [{ ...env, UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL: 'https://elsewhere.example' }, event],
     [env, { ...event, init: { ...event.init, method: 'GET' } }],
     [env, { ...event, url: 'https://gateway.example/other' }],

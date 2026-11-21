@@ -41,6 +41,7 @@ class Session:
         launch_settings=None,
         model="claude-sonnet-4-6",
         managed_settings=None,
+        extra_body='{"caller_field":"keep"}',
     ):
         assert not {"env", "pluginConfigs"}.intersection(launch_settings or {}), (
             "Use env and auto_picker to configure the native session fixture"
@@ -68,7 +69,10 @@ class Session:
         if auto_picker is not None:
             options["autoPicker"] = json.dumps(auto_picker)
         session_env = resolve_environment(env, agent=AGENT_CLAUDE)
-        session_env.setdefault("CLAUDE_CODE_EXTRA_BODY", '{"caller_field":"keep"}')
+        if extra_body is None:
+            session_env.pop("CLAUDE_CODE_EXTRA_BODY", None)
+        else:
+            session_env.setdefault("CLAUDE_CODE_EXTRA_BODY", extra_body)
         settings = {
             **(launch_settings or {}),
             "env": session_env,

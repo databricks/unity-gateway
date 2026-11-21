@@ -3281,12 +3281,12 @@ def _warn_if_launch_headers_dropped() -> None:
     )
 
 
-def _configure_gpt_cache_boundary(state: dict, *, routed: bool) -> None:
-    os.environ.pop("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", None)
+def _configure_gpt_cache_boundary(state: dict) -> None:
+    # An empty launch value prevents the mod's direct-Claude configuration fallback.
+    os.environ["UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"] = ""
     if (
-        not routed
-        or state.get("claude_relayed")
-        or os.environ.get("UG_CLAUDE_GPT_CACHE_BOUNDARY") != "1"
+        state.get("claude_relayed")
+        or os.environ.get("UG_CLAUDE_GPT_CACHE_BOUNDARY") == "0"
         or not state.get("workspace")
     ):
         return
@@ -3324,7 +3324,7 @@ def launch(
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     _warn_if_launch_headers_dropped()
-    _configure_gpt_cache_boundary(state, routed=options.launch_smart_routing)
+    _configure_gpt_cache_boundary(state)
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
@@ -3419,7 +3419,6 @@ def launch(
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
-            os.environ.pop("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL", None)
             routing_setup_failed = True
         else:
             return

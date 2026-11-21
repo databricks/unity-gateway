@@ -476,21 +476,33 @@ A missing, outdated or unverified third-party mod produces a routing-launch warn
 continues unchanged.
 These controlled-provider checks establish instruction delivery, not generated-language compliance.
 
-The same managed mod supports opt-in GPT cache-boundary preservation on routed launches with
-`UG_CLAUDE_GPT_CACHE_BOUNDARY=1` and Claude Code 2.1.321 or newer. It moves one eligible Terra/Sol
-Messages cache marker to the request root through native `http.fetch`, without a local proxy.
-Live routed requests carry deployment-qualified model IDs (`anthropic-aigw-<id>-system.ai.…`);
-the gate accepts exactly the two GPT models in bare and qualified forms.
-Launch tests cover version, installed-source, relay and routing-fallback guards. Native tests use
-an explicit eligible request fixture and controlled provider responses to exercise parent and routed
-child requests (bare and deployment-qualified child models), disabled/untrusted mods, other models,
-origin guards and existing root controls.
+The same managed mod enables GPT cache-boundary preservation automatically on supported
+UG-backed launches with Claude Code 2.1.321 or newer. Smart Router is not required;
+`UG_CLAUDE_GPT_CACHE_BOUNDARY=0` is the emergency opt-out (`=1` remains compatible).
+It moves one eligible Messages cache marker to the request root through native `http.fetch`,
+without a local proxy. The model gate follows UG's GPT identifier forms: bare, `databricks-`,
+`system.ai.`, discovery aliases, and the `[1m]` context hint. The outgoing model is unchanged.
+GPT-OSS, non-GPT models, custom model-service names and external-provider pass-through routes
+are outside the GPT translator contract and remain unchanged.
+
+Launch tests cover ordinary and routed launches, version, installed-source and relay guards,
+and preservation of activation when routing setup falls back to an ordinary launch. Hook tests
+also cover direct Claude launches using the effective UG gateway configuration, explicit opt-out,
+and disabled-launch overrides that prevent that configuration fallback. Native tests capture
+parent, ordinary-child and routed-child requests without overriding their Messages payload,
+including GPT models beyond Terra/Sol. Separate controlled payload cases retain deterministic
+out-of-order tool-result checks, disabled/untrusted mods, origin guards and explicit root controls.
+
+The gateway resolves a root marker after translating and ordering tool results. Native requests
+ending in system context therefore qualify alongside user-ending requests; their content and
+order remain unchanged, and exactly one marker is moved with its original TTL. Existing root
+controls win. Hook tests retain the original transport fields and cancellation signal.
 The managed-mod test uses Linux bubblewrap to isolate `/etc/claude-code`; the host policy is untouched.
 It skips before 2.1.321, where the launcher unit tests cover the unsupported-version guard.
 Claude 2.1.325 rejects rewritten authenticated requests when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
 is nonempty (including `0`); the optimization passes through in that mode, retaining the policy.
 These checks establish payload transformation and native activation, not gateway cache hits,
-benchmark quality or dollar savings. Requests ending in a system message remain unchanged.
+benchmark quality or dollar savings.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
