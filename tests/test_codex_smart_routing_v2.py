@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal as signal_module
 import socket
 import subprocess
 import tomllib
@@ -1642,14 +1643,49 @@ def test_runtime_relay_derives_its_upstream_from_the_provider_base_url(monkeypat
     enable_runtime(monkeypatch)
     session_env.start_session()
     overlay = codex.render_overlay("https://workspace.example", "test-model")
+    provider_base = overlay["model_providers"]["Databricks"]["base_url"]
+    captured = {}
+    real_start = gateway_proxy.start_codex_proxy
+
+    def spy(upstream_url, token_provider, runtime, **kwargs):
+        captured["upstream"] = upstream_url
+        return real_start(upstream_url, token_provider, runtime, **kwargs)
+
+    monkeypatch.setattr(gateway_proxy, "start_codex_proxy", spy)
     with v2._codex_runtime_proxy(
-        {"workspace": "https://workspace.example"}, overlay, "codex"
+        {"workspace": "https://workspace.example"}, overlay
     ) as runtime_active:
         assert runtime_active is True
-        # The relay forwards to the provider's gateway path, not the workspace root.
-        bound = gateway_proxy  # the live client is bound on the handler class
-        assert overlay["model_providers"]["Databricks"]["base_url"].startswith("http://127.0.0.1:")
-        assert bound.UG_SESSION_SECRET_ENV_VAR in os.environ
+        assert captured["upstream"] == provider_base
+        assert gateway_proxy.UG_SESSION_SECRET_ENV_VAR in os.environ
+    assert gateway_proxy.UG_SESSION_SECRET_ENV_VAR not in os.environ
+    assert overlay["model_providers"]["Databricks"]["base_url"] == provider_base
+
+
+def test_wait_codex_process_forwards_termination_signals(monkeypatch):
+    sent = []
+    installed = {}
+
+    class Child:
+        def send_signal(self, sig):
+            sent.append(sig)
+
+        def wait(self):
+            return 5
+
+    monkeypatch.setattr(v2.subprocess_cross_os, "popen", lambda argv: Child())
+    monkeypatch.setattr(
+        v2.signal,
+        "signal",
+        lambda sig, handler: installed.setdefault(sig, handler),
+    )
+    with pytest.raises(SystemExit) as result:
+        v2._wait_codex_process(["codex"])
+    assert result.value.code == 5
+    handler = installed[signal_module.SIGTERM]
+    assert handler is not None and handler != signal_module.SIG_DFL
+    handler(signal_module.SIGTERM, None)
+    assert sent == [signal_module.SIGTERM]
 
 
 def test_runtime_checks_current_session_controls(monkeypatch):
@@ -1746,5 +1782,5 @@ def test_proxy_auth_uses_the_same_custom_oauth_gate_as_the_launch(custom_enabled
         },
     }
     overlay = codex.render_overlay(state["workspace"], "test-model")
-    with v2._codex_runtime_proxy(state, overlay, "codex"):
+    with v2._codex_runtime_proxy(state, overlay):
         assert calls == [("custom" if custom_enabled else "profile", True)]

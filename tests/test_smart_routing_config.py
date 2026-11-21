@@ -52,6 +52,14 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
     },
+    # Claude's Auto mapping: the V0 flags with the Auto picker on.
+    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+    },
 }
 _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V2] = {
     **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V1],
@@ -65,6 +73,14 @@ _EXPECTED_CODEX_PRESETS = {
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+    },
+    # The Auto preset keeps every Codex flag off, like the other Claude-only versions.
+    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
@@ -96,6 +112,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     assert applied == original
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
@@ -110,9 +127,11 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ORCH_V1,
         config.SUBAGENT_ORCH_V2,
         config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     ],
 )
 def test_smart_routing_config_cartesian_grid(
+    agent,
     ENABLE_SMART_ROUTING_V2,
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
     ENABLE_SMART_ROUTER_ORCHESTRATOR,
@@ -135,15 +154,16 @@ def test_smart_routing_config_cartesian_grid(
     expected = original.copy()
     expected.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
     if SMART_ROUTER_CONFIG_VERSION is not None:
-        expected.update(_EXPECTED_PRESETS[SMART_ROUTER_CONFIG_VERSION])
+        presets = _EXPECTED_CODEX_PRESETS if agent == AGENT_CODEX else _EXPECTED_PRESETS
+        expected.update(presets[SMART_ROUTER_CONFIG_VERSION])
 
-    resolved = config.resolve_environment(source, agent=AGENT_CLAUDE)
+    resolved = config.resolve_environment(source, agent=agent)
 
     assert resolved == expected
     assert source == original
 
     applied = source.copy()
-    previous = config.apply_config(applied, agent=AGENT_CLAUDE)
+    previous = config.apply_config(applied, agent=agent)
 
     assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
