@@ -1713,7 +1713,17 @@ class TestSubagentRouting:
             "router_name": "task_v2",
         }
 
-    def test_routes_agent_prompt_with_initialized_model_menu(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "assignment",
+        [
+            {"prompt": "inspect the parser"},
+            {"prompt": " \n", "description": "inspect the parser"},
+        ],
+        ids=["prompt", "blank-prompt-description"],
+    )
+    def test_routes_agent_prompt_with_initialized_model_menu(
+        self, tmp_path, monkeypatch, assignment
+    ):
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
         captured = {}
         decisions_path = tmp_path / "decisions.jsonl"
@@ -1740,7 +1750,7 @@ class TestSubagentRouting:
                 "tool_use_id": "original-sonnet-call",
                 "tool_input": {
                     "subagent_type": "Explore",
-                    "prompt": "inspect the parser",
+                    **assignment,
                     "model": "sonnet",
                 },
             },
@@ -1768,6 +1778,31 @@ class TestSubagentRouting:
         assert decision_record["original_model"] == "sonnet"
         assert decision_record["original_subagent_type"] == "Explore"
         assert decision_record["tool_use_id"] == "original-sonnet-call"
+
+    def test_label_only_agent_keeps_requested_model(self, tmp_path, monkeypatch):
+        decisions_path = tmp_path / "decisions.jsonl"
+        monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
+        select = Mock()
+        monkeypatch.setattr(routing, "select_route", select)
+        payload = {
+            "tool_name": "Agent",
+            "tool_input": {"task_name": "parser", "agent_name": "Explore", "model": "sonnet"},
+        }
+        original = json.dumps(payload)
+
+        assert (
+            v2.route_claude_subagent(
+                payload,
+                workspace="https://example.com",
+                token="token",
+                available_models=["system.ai.claude-opus-4-8"],
+                audit_decision=True,
+            )
+            is None
+        )
+        select.assert_not_called()
+        assert json.dumps(payload) == original
+        assert not decisions_path.exists()
 
     def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)

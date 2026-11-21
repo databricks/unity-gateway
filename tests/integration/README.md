@@ -106,13 +106,18 @@ still require real routed work. Offline evidence checks
 reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
 
-Codex may persist an encrypted child assignment. Calculation journeys then correlate
-the original spawn ciphertext with the child's NEW_TASK receipt and require the audit's
-task-name fallback digest, while plaintext assignments require their full-text digest.
-The existing parent/child completion, selected model, and live decision checks still apply.
-The native v2 assignment journey explicitly uses code mode and separately requires
-plaintext at the hook and child. Its user-owned catalog explicitly exposes native tools
-in code mode; direct-only bundled settings are not a plaintext guarantee. Direct native calls may remain encrypted. Toggle
+Smart-routed Codex launches expose native collaboration tools through code mode in a
+session-owned catalog, retaining native protocols and the original user catalog.
+The native v2 assignment journey starts with code-mode tools disabled in that catalog
+and requires the full assignment at the hook and child, its audited digest, and actual
+completion on the selected model in that same child's session; a different retry child
+cannot satisfy the model check. A request recorder pairs every routing request with
+its HTTP 200 response and decision, including native retries. Saved and split-option
+launches cover the native journey. Its managed-fixture variant covers `--model=VALUE`
+with an offered model and runs only in the managed CI lane. It uses the static catalog
+created by `ug configure`, asserts that its native metadata permits code-mode exposure,
+and verifies that native routing completes without rewriting the managed catalog.
+Missing or encrypted assignments cannot produce a label-based routing decision. Toggle
 evidence accepts the exact guard rejection of a duplicate off call only after a
 successful off result; it still rejects an initial denial or any other failed call.
 
@@ -1396,13 +1401,13 @@ Explicit-model selection, command forwarding, app-server initialization, and cat
 retain their original legacy flags and on/off coverage; preset-specific behavior there is not
 covered.
 `test_ug_codex_v2_routing.py` also launches the real Codex TUI with
-`--enable-smart-routing -- --model VALUE` and `--enable-smart-routing -- --model=VALUE`.
-Both variants must override the saved root model, complete the delegated file task
-with a correlated router decision, and preserve user-owned configuration and catalog.
-The existing saved-model variant remains. Component tests cover short `-m`, launch
-policy for both agents, Isaac's config-only Codex arguments, and native
-utility-subcommand and remote-attachment exclusion;
-these are not live coverage.
+`--enable-smart-routing -- --model VALUE`. The live journey correlates every
+`routes:select` request with its HTTP 200 response and routing decision; the request for
+the delegated assignment carries the complete text and selected model before the routed
+child task completes.
+The saved-model variant remains. Component tests cover equals and short `-m` syntax,
+launch policy for both agents, Isaac's config-only Codex arguments, and native
+utility-subcommand and remote-attachment exclusion; these are not live coverage.
 Those component model-forwarding cases use a supported Codex version independent
 of the test runner's installed binaries.
 `../test_smart_router.py` checks orchestrator hook activation in fresh Python
