@@ -426,10 +426,9 @@ search output. URL matching ignores surrounding Markdown emphasis and inline-cod
 while preserving paths, queries, fragments, and unformatted literal asterisks.
 These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
-the command fails or times out. Session teardown also saves Antigravity request URLs before
-cleanup when a task assertion fails. Offline checks in `test_integration_evidence.py` cover
-successful and failed assertions and sessions without native logs. These artifacts identify
-native request destinations, not gateway timing or timeout causality.
+the command fails or times out. Capture is scoped to Antigravity-marked journeys. The capture context
+retains a failure from its body when log collection also fails. A capture failure still fails
+a context that otherwise succeeded.
 
 `test_opencode_family.py` covers the code OpenCode and Kilo share in `agents/opencode_family.py`.
 Kilo's rendered auth plugin must equal OpenCode's V1 plugin for the same state, and OpenCode's V2
@@ -1294,7 +1293,10 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 
 `test_claude_pty_replay.py` uses fake TUIs to check delayed replay, manual cancellation,
 unrelated slash commands and default restoration. `test_claude_smart_routing_v2.py`
-covers concurrent recovery, file access controls and failures. These are component checks;
+covers concurrent recovery, file access controls and failures, including exit while another
+session has a pending manual choice. A matching temporary model still requires manual
+confirmation or cancellation. `test_config_io.py` checks preserving writes with a nonstandard
+`cp` location, shorter JSON and an explicit mode. These are component checks;
 native picker/history choices and live concurrent recovery remain unverified.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported

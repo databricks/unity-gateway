@@ -608,11 +608,12 @@ finally:
         )
 
     @pytest.mark.parametrize("completion", [b"Kept model as sonnet\n", b"Model switch cancelled\n"])
+    @pytest.mark.parametrize("manual_model", ["opus", "sonnet"])
     def test_cancelled_manual_switch_releases_another_sessions_recovery(
-        self, replay_model_switch, tmp_path, completion
+        self, replay_model_switch, tmp_path, completion, manual_model
     ):
         body = (
-            f"COMPLETION = {completion!r}\n"
+            f"COMPLETION = {completion!r}\nMANUAL_MODEL = {manual_model!r}\n"
             + """\
 from ucode.smart_routing import v2
 
@@ -634,8 +635,12 @@ other = v2._ClaudeModelSettingGuard(settings)
 try:
     assert other.begin("sonnet")
     (test_dir / "ready").touch()
-    assert read_until(b"\\r") == b"/model opus\\r"
+    assert read_until(b"\\r") == f"/model {MANUAL_MODEL}\\r".encode()
     settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+    deadline = time.monotonic() + 3
+    while not other.is_routed():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
     assert other.restore() is False
     os.write(1, COMPLETION)
     deadline = time.monotonic() + 3
@@ -649,7 +654,7 @@ finally:
     other.finish()
 """
         )
-        with _stdin_after(tmp_path / "ready", [b"/model opus\r"]):
+        with _stdin_after(tmp_path / "ready", [f"/model {manual_model}\r".encode()]):
             capture, settings, _ = replay_model_switch(body)
 
         assert (

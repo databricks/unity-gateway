@@ -18,7 +18,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import NoReturn, TextIO
+from typing import Literal, NoReturn, TextIO
 
 from ucode import claude_answer_delivery, config_io, metrics
 from ucode.codex_config import (
@@ -848,11 +848,6 @@ class _ClaudeModelSettingGuard:
         manual = recovery.get("manual")
         if manual is None:
             return False
-        if self._read_settings().get("model") == manual["model"]:
-            recovery["before"] = {"model": manual["model"]}
-            del recovery["manual"]
-            self._write_recovery(recovery)
-            return False
         if os.name == "posix" and manual["pid"] != os.getpid():
             try:
                 os.kill(manual["pid"], 0)
@@ -861,6 +856,7 @@ class _ClaudeModelSettingGuard:
                 return False
             except PermissionError:
                 pass
+        # A peer's temporary write can already match the requested manual model.
         return True
 
     @staticmethod
@@ -1021,20 +1017,13 @@ class _ClaudeModelSettingGuard:
                 self._recovery_path.unlink(missing_ok=True)
             else:
                 recovery = self._read_recovery()
-                current_model = self._read_settings().get("model")
                 if self._manual_registered and recovery.get("manual_choice") != self._token:
                     self._clear()
                     return True
                 recovery["pending"].pop(self._token, None)
                 recovery["manual_choice"] = self._token
-                if current_model == manual_model or (
-                    self._manual_registered and "manual" not in recovery
-                ):
-                    if current_model == manual_model:
-                        recovery["before"] = {"model": manual_model}
-                    recovery.pop("manual", None)
-                elif recovery["pending"]:
-                    # Keep older writers until this command succeeds or its child exits.
+                if recovery["pending"]:
+                    # Keep older writers until confirmation, cancellation or child exit.
                     recovery["manual"] = {
                         "token": self._token,
                         "model": manual_model,
@@ -1050,6 +1039,11 @@ class _ClaudeModelSettingGuard:
         return True
 
     def _finish_manual_choice(self, *, confirmed: bool) -> bool:
+        if confirmed and not self._manual_registered:
+            if self._try_abandon():
+                return True
+            if not self._manual_registered:
+                return False
         if self._lock is None:
             self._lock = self._open_lock("claude-v2-model.lock")
         if self._lock is None:
@@ -1080,6 +1074,9 @@ class _ClaudeModelSettingGuard:
         return self._finish_manual_choice(confirmed=False)
 
     def restore(self) -> bool:
+        return self._restore() is True
+
+    def _restore(self) -> bool | Literal["manual_pending"]:
         if self._cancelled:
             if self._manual_confirmed is not None:
                 return self._finish_manual_choice(confirmed=self._manual_confirmed)
@@ -1092,7 +1089,7 @@ class _ClaudeModelSettingGuard:
             recovery = self._read_recovery()
             if self._manual_choice_pending(recovery):
                 self.defer()
-                return False
+                return "manual_pending"
             if self._token in recovery["pending"]:
                 self._before = recovery["before"]
                 current = self._read_settings()
@@ -1129,8 +1126,13 @@ class _ClaudeModelSettingGuard:
                     if self._cancelled and self._manual_model is not None:
                         if self._finish_manual_choice(confirmed=self._manual_confirmed is True):
                             return True
-                    elif self.restore():
-                        return True
+                    else:
+                        restored = self._restore()
+                        if restored is True:
+                            return True
+                        if restored == "manual_pending":
+                            # Keep recovery until the other session settles its choice.
+                            return False
                 except (OSError, ValueError, RuntimeError):
                     pass
                 remaining = deadline - time.monotonic()

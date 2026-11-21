@@ -1,9 +1,9 @@
 """PTY wrapper that routes Claude Code's first prompt with ``/model <name>``.
 
-Claude Code has no runtime control protocol, so a per-launch UserPromptSubmit
-hook captures and blocks the first prompt. While the TUI is idle, this wrapper
-types a direct model command, restores the user's persisted default model, and
-replays the prompt. Claude Code keeps a blocked prompt in its input box, so every
+The gateway TUI's plugin API exposes no session model setter, so a per-launch
+UserPromptSubmit hook captures and blocks the first prompt. While the TUI is idle,
+this wrapper types a direct model command, restores the user's persisted default
+model, and replays the prompt. Claude Code keeps a blocked prompt in its input box, so every
 write into the box first clears it. Terminal traffic is otherwise forwarded unchanged.
 """
 

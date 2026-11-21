@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 
 import pytest
 import tomlkit
@@ -205,6 +207,59 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 1})
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    @pytest.mark.parametrize("mode", [None, 0o640])
+    def test_atomic_write_preserves_permissions_with_the_available_copier(
+        self, tmp_path, monkeypatch, mode
+    ):
+        copier = shutil.which("cp")
+        assert copier is not None
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        configured_copier = binaries / "cp"
+        configured_copier.symlink_to(copier)
+        monkeypatch.setenv("PATH", str(binaries))
+        run = config_io.subprocess_cross_os.run
+        calls = []
+
+        # Exercise the real copy while recording which PATH entry was used.
+        def record_run(argv, **kwargs):
+            calls.append(argv)
+            return run(argv, **kwargs)
+
+        monkeypatch.setattr(config_io.subprocess_cross_os, "run", record_run)
+        path = tmp_path / "out.json"
+        path.write_text(json.dumps({"old": "x" * 1000}))
+        path.chmod(0o440)
+        before = path.stat()
+        payload = {"replacement": True}
+
+        config_io.atomic_write_json(path, payload, mode=mode, preserve_permissions=True)
+
+        assert calls[0][0] == str(configured_copier)
+        assert path.read_text() == json.dumps(payload, indent=2)
+        after = path.stat()
+        assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+        assert stat.S_IMODE(after.st_mode) == (0o440 if mode is None else mode)
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    def test_atomic_preserving_write_without_a_copier_keeps_the_original(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "out.json"
+        original = '{"original": true}'
+        path.write_text(original)
+        path.chmod(0o640)
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+        with pytest.raises(RuntimeError, match="Failed to write file"):
+            config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+
+        assert path.read_text() == original
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
         assert not list(tmp_path.glob(".out.json.*"))
 
     @pytest.mark.skipif(
