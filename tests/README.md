@@ -1838,8 +1838,11 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 Native hook and Python component tests cover rate-limit exclusions for streamed and direct calls,
-model aliases (including seven- and eight-digit gateway prefixes), cooldown expiry and clock loss,
-conversation clears, failed selections, and resume/disabled behavior.
+model aliases (including seven- and eight-character hex gateway prefixes), batched notifications,
+failures before and after conversation clears, and cooldown expiry followed by clock loss.
+They also cover a new failure between fallback forwarding and spawn, failed selections, and
+resume/disabled behavior. Equivalent structured cooldown denials share the native timing
+matrix; Python tests retain the all-excluded and failed-selection causes separately.
 `native_claude/test_mod.py` drives a real native background failure with a loopback HTTP 429, then checks the next routed request and
 completed replacement child. These checks use controlled inputs, not live provider quotas.
 
@@ -1935,6 +1938,20 @@ installed plugin to contain no duplicate servers. Reconfigure comparisons includ
 added through `ug mcp add`, while retaining the original model/authentication-field assertions.
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
+
+### Routing explanation coverage
+
+The decision-audit writer omits task text and explanations when task-text logging is
+disabled, retaining the task digest and length. Codex passes that privacy setting;
+Claude's session log retains its existing bounded preview. These choices never
+change the selected model. The existing `/smart-router logs`
+detail validates session and tool-call identity, the routed model, and the exact offered
+catalog before displaying comparisons. Native tests cover malformed and oversized
+metadata, dotted and gateway-wrapped model IDs, per-model selection, optional numeric
+estimates, and the default-hidden estimates control. Invalid explanation data leaves the
+selected route and rationale visible. These checks do not establish deployed-service
+explanation availability. See the Claude mod guide for the optional service response
+contract.
 
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed

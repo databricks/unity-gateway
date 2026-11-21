@@ -2,11 +2,24 @@ import type { On, PluginOptions } from 'claude-code'
 import { matchesAutoModel } from './auto-model.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
+type NumericDetails = Record<string, number>
+export type ExplanationModel = {
+  id: string; name: string; selected: boolean; considered: boolean; reason: string
+  qualityEstimate?: number; estimatedCostUsd?: number; routingScore?: number
+  components?: NumericDetails; differenceFromWinner?: NumericDetails
+}
+export type RoutingExplanation = {
+  selectedModel: string; summary: string; taskUnderstanding: string[]; models: ExplanationModel[]
+  formula?: string
+}
 type RoutingRecord = {
   name: string; task: string; title: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
 }
 
+const MAX_EXPLANATION_BYTES = 64 * 1024
+const isObject = (value: unknown): value is Record<string, any> =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value))
 const safeText = (value: unknown, limit: number): string | undefined => {
   if (typeof value !== 'string') return undefined
   const clean = value
@@ -18,8 +31,28 @@ const safeText = (value: unknown, limit: number): string | undefined => {
   return clean || undefined
 }
 
+const safeNumber = (value: unknown, nonNegative = false): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 && (!nonNegative || value >= 0)
+    ? value : undefined
+
+function numericDetails(value: unknown): NumericDetails | undefined {
+  if (!isObject(value) || Object.keys(value).length > 8) return undefined
+  const entries = Object.entries(value)
+  if (entries.some(([key, number]) => !/^[A-Za-z][A-Za-z0-9_. -]{0,63}$/.test(key)
+      || safeNumber(number) === undefined)) return undefined
+  return Object.fromEntries(entries as [string, number][])
+}
+
 const unwrapGatewayModel = (model: string): string =>
   model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
+
+const explanationModelId = (model: string): string => {
+  const original = unwrapGatewayModel(model)
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  // Explanation IDs preserve every catalog suffix; execution matching below also accepts
+  // native [1m] expansion on dotted model versions such as main.default.claude-sonnet-4.5.
+  return original.split('.').length >= 3 ? original : original.replace(/\[1m\]$/, '')
+}
 
 const canonicalModel = (model: string): string => {
   const original = unwrapGatewayModel(model)
@@ -34,7 +67,77 @@ const rateLimitKey = (model: string): string => {
   return canonical.replace(/\[1m\]$/, '')
 }
 
+function matchesIdentityFields(value: Record<string, any>, sessionId?: string, toolUseId?: string): boolean {
+  for (const [field, expected] of [['session_id', sessionId], ['tool_use_id', toolUseId]] as const) {
+    const actual = value[field]
+    if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
+  }
+  return true
+}
+
+function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
+  if (!isObject(value)) return true
+  return [value, value.evidence].every((source) => !isObject(source)
+    || matchesIdentityFields(source, sessionId, toolUseId))
+}
+
+export function parseRoutingExplanation(
+  value: unknown, routedModel: string, sessionId?: string, toolUseId?: string, offeredModels?: readonly string[],
+): RoutingExplanation | undefined {
+  if (!isObject(value)) return undefined
+  const serialized = JSON.stringify(value)
+  if (Object.keys(value).length > 32 || new TextEncoder().encode(serialized).byteLength > MAX_EXPLANATION_BYTES
+      || !matchesRequestIdentity(value, sessionId, toolUseId)) return undefined
+  const selectedModel = value.selected_model
+  const summary = safeText(value.summary, 2000)
+  if (typeof selectedModel !== 'string' || selectedModel.trim() !== selectedModel
+      || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
+      || selectedModel !== explanationModelId(routedModel) || !summary
+      || !Array.isArray(value.models) || value.models.length < 1
+      || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
+
+  const taskUnderstanding = value.task_understanding.map((item: unknown) => safeText(item, 240))
+  if (taskUnderstanding.some((item: string | undefined) => !item)) return undefined
+  const ids = new Set<string>()
+  const models: ExplanationModel[] = []
+  for (const candidate of value.models) {
+    if (!isObject(candidate)) return undefined
+    const id = candidate.id
+    const name = safeText(candidate.name, 128)
+    const reason = safeText(candidate.reason, 1200)
+    if (typeof id !== 'string' || id.trim() !== id
+        || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(id) || ids.has(id)
+        || !name || !reason || typeof candidate.selected !== 'boolean'
+        || typeof candidate.considered !== 'boolean' || (candidate.selected && !candidate.considered)) return undefined
+    ids.add(id)
+    const qualityEstimate = candidate.quality_estimate === undefined ? undefined : safeNumber(candidate.quality_estimate)
+    const estimatedCostUsd = candidate.estimated_cost_usd === undefined ? undefined : safeNumber(candidate.estimated_cost_usd, true)
+    const routingScore = candidate.routing_score === undefined ? undefined : safeNumber(candidate.routing_score)
+    const components = candidate.components === undefined ? undefined : numericDetails(candidate.components)
+    const differenceFromWinner = candidate.difference_from_winner === undefined
+      ? undefined : numericDetails(candidate.difference_from_winner)
+    if ((candidate.quality_estimate !== undefined && qualityEstimate === undefined)
+        || (candidate.estimated_cost_usd !== undefined && estimatedCostUsd === undefined)
+        || (candidate.routing_score !== undefined && routingScore === undefined)
+        || (candidate.components !== undefined && components === undefined)
+        || (candidate.difference_from_winner !== undefined && differenceFromWinner === undefined)) return undefined
+    models.push({ id, name, reason, selected: candidate.selected, considered: candidate.considered,
+      qualityEstimate, estimatedCostUsd, routingScore, components, differenceFromWinner })
+  }
+  if (models.filter((model) => model.selected).length !== 1
+      || !models.some((model) => model.id === selectedModel && model.selected)) return undefined
+  if (offeredModels) {
+    const offeredIds = new Set(offeredModels.map(explanationModelId))
+    if (ids.size !== offeredIds.size || [...offeredIds].some((id) => !ids.has(id))) return undefined
+  }
+  const formula = value.formula === undefined ? undefined : safeText(value.formula, 500)
+  if (value.formula !== undefined && !formula) return undefined
+  return { selectedModel, summary, taskUnderstanding: taskUnderstanding as string[], models, formula }
+}
+
 const children = new Map<string, RoutingRecord>()
+// Background failures can arrive after /clear resets session identity.
+const backgroundModels = new Map<string, string>()
 const rateLimitedUntil = new Map<string, number>()
 export const routedModels = {
   started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
@@ -116,6 +219,7 @@ export const savedRoutedDisplay = (value: unknown, sessionId: string): RoutedDis
 }
 // Native terminal notices omit Retry-After, so expire this local hint after one minute.
 const RATE_LIMIT_COOLDOWN_MS = 60_000
+const COOLDOWN_FALLBACK_DENIAL = 'Smart Router could not select an available model; retry after cooldown.'
 const activeRateLimits = (timestamp: number | undefined): string[] => {
   // Forget confirmed expirations; clock loss must not revive them or clear live entries.
   if (timestamp !== undefined) {
@@ -216,11 +320,13 @@ const cards = { unplaced: [] as string[] }
 // Background API errors arrive as native task notifications, after the client's retries.
 // Keep the cooldown local to this launch's workspace and confirm the failed child's model.
 export function recordSubagentRateLimit(text: string, timestamp: number): void {
-  const task = text.match(/^<task-notification>\s*<task-id>([^<\s]+)<\/task-id>/)
-  const failure = text.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
-  const model = task ? routedModels.model(task[1]) : undefined
-  if (model && failure && rateLimitKey(model) === rateLimitKey(failure[1])) {
-    rateLimitedUntil.set(rateLimitKey(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
+  for (const [, notification] of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
+    const task = notification.match(/^\s*<task-id>([^<\s]+)<\/task-id>/)
+    const failure = notification.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
+    const model = task ? routedModels.model(task[1]) ?? backgroundModels.get(task[1]) : undefined
+    if (model && failure && rateLimitKey(model) === rateLimitKey(failure[1])) {
+      rateLimitedUntil.set(rateLimitKey(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
+    }
   }
 }
 
@@ -388,6 +494,7 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
+  backgroundModels.clear()
   rateLimitedUntil.clear()
   routing.options = options
   routing.autoModels = autoModels
@@ -408,13 +515,11 @@ export const registerSubagentRouting = (
     const { tool_use_id } = e
     let denial = outcome?.denial
     if (outcome && !outcome.routed && !outcome.disabled && (!denial || outcome.cooldownDenial)) {
-      const current = await now($)
       // A streamed decision may wait before execution; recheck expiry and newly arrived notices.
-      const coolingDown = activeRateLimits(current).length > 0
-        || (current === undefined && outcome.cooldownDenial)
+      const coolingDown = activeRateLimits(await now($)).length > 0
       if (coolingDown) {
         // Native model aliases cannot establish eligibility when routing fails.
-        denial ??= 'Smart Router could not select an available model; retry after cooldown.'
+        denial ??= COOLDOWN_FALLBACK_DENIAL
       } else {
         denial = undefined
         if (outcome.failed && !outcome.failureLogged) {
@@ -439,13 +544,16 @@ export const registerSubagentRouting = (
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const timestamp = route ? await now($) : undefined
-    if (route && activeRateLimits(timestamp).includes(rateLimitKey(route.model))) {
-      // A failure notice may arrive in flight; never launch that now-limited selection.
+    const route = e.resume || e.fork ? undefined : records.get(e.tool_use_id)
+    const outcome = e.resume || e.fork ? undefined : attempted.get(e.tool_use_id)
+    const checkFallback = outcome && !outcome.disabled
+    const excluded = route || checkFallback ? activeRateLimits(await now($)) : []
+    if (route ? excluded.includes(rateLimitKey(route.model)) : checkFallback && excluded.length > 0) {
+      // A new failure can invalidate either a selected model or an unverified native fallback.
       records.delete(e.tool_use_id)
-      const denial = 'The selected model is now rate-limited. Retry to select another available model.'
-      const outcome = attempted.get(e.tool_use_id)
+      const denial = route
+        ? 'The selected model is now rate-limited. Retry to select another available model.'
+        : outcome?.denial ?? COOLDOWN_FALLBACK_DENIAL
       if (outcome) Object.assign(outcome, { routed: false, denial, cooldownDenial: true })
       $.ui.invalidate('ui.render')
       return { deny: denial }
@@ -454,6 +562,7 @@ export const registerSubagentRouting = (
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
+      if (e.background) backgroundModels.set(result.agentId, routedModels.model(result.agentId)!)
       $.ui.invalidate('ui.render')
     }
     if (route && result.agentId && !result.deny && !result.model) {
