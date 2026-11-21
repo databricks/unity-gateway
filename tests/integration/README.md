@@ -841,9 +841,11 @@ and the short action timeout still lets the harness resample a changing screen.
 Nothing is seeded: each journey answers the first-launch onboarding with "Continue without Signing
 In", closes the Welcome editor, trusts the folder from the model picker, turns on the bundled
 Copilot Chat with the picker's "Add Models..." or ug's "Turn On Copilot Chat" notice, whichever
-is on screen first (both open the Language Models editor, which it closes), and picks a model by
-its label in the picker. The picked model has to hold for a few seconds, since ug's extension
-switches the chat to its default model once Copilot Chat is on. Each window records its actions
+is on screen first (both open the Language Models editor, which it closes, as often as one opens,
+including one already open on the first read after the last one closed), and picks a model by
+its label in the picker. `../test_integration_vscode_picker.py` covers that second editor
+offline. The picked model has to hold for a few seconds, since ug's extension switches the chat
+to its default model once Copilot Chat is on. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`). Playwright connects once the
 window's DevTools page target exists, and connects again if that connection misses the workbench.
 An answer without the file's value also keeps the tool results and the last response of its turn

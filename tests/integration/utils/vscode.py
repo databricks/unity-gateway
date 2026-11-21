@@ -390,6 +390,10 @@ class VSCode:
                 if self._picker_state(self.screen(), label) == state:
                     raise
                 self.actions.append(f"  (the screen changed before the click: {state})")
+            if state == "language models editor":
+                # Its action returns once the editor has closed, so an editor on the next read is
+                # another one, even when no other screen was read in between.
+                last = None
         raise AssertionError(f"Timed out picking {label}; last screen {self.screen()}")
 
     def _picker_action(self, state: str, screen: dict, label: str) -> None:
@@ -554,6 +558,9 @@ class VSCode:
                 if self._picker_state(self.screen(), label) == state:
                     raise
                 self.actions.append(f"  (the screen changed before the click: {state})")
+            if state == "language models editor":
+                # As in pick_model: the next editor seen is another one.
+                last = None
         raise AssertionError(f"Timed out searching the picker for {label}; last {self.screen()}")
 
     def quit(self) -> None:
