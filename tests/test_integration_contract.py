@@ -874,7 +874,7 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     jobs = jobs_of(ci)
     with_secrets = {name for name, job in jobs.items() if re.search(r"secrets[.:]", job)}
     assert with_secrets == {"e2e-shards", "integration"}, with_secrets
-    for name in with_secrets | {"claude-mod"}:
+    for name in with_secrets:
         assert re.search(r"(?m)^    needs: \[?changes\]?$", jobs[name]), name
         assert "needs.changes.outputs.live == 'true'" in jobs[name], name
     selection = jobs["changes"]
@@ -1632,33 +1632,40 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
 @pytest.mark.parametrize(
-    ("selection", "live", "package", "claude_mod", "integration_result", "passes"),
+    ("event", "selection", "live", "package", "claude_mod", "integration_result", "passes"),
     [
-        ("success", "true", "success", "success", "success", True),
-        ("success", "true", "success", "success", "failure", False),
-        ("success", "true", "success", "success", "cancelled", False),
-        ("success", "true", "success", "success", "skipped", False),
-        ("success", "true", "success", "skipped", "success", False),
-        ("success", "true", "success", "failure", "success", False),
-        ("success", "true", "failure", "success", "success", False),
-        # Pull requests run the hermetic package check; the merge queue runs the live suites.
-        ("success", "false", "success", "skipped", "skipped", True),
-        ("success", "false", "failure", "skipped", "skipped", False),
-        ("success", "false", "success", "skipped", "failure", False),
+        ("merge_group", "success", "true", "success", "success", "success", True),
+        ("merge_group", "success", "true", "success", "success", "failure", False),
+        ("merge_group", "success", "true", "success", "success", "cancelled", False),
+        ("merge_group", "success", "true", "success", "success", "skipped", False),
+        ("merge_group", "success", "true", "success", "skipped", "success", False),
+        ("merge_group", "success", "true", "success", "failure", "success", False),
+        ("merge_group", "success", "true", "failure", "success", "success", False),
+        # A fork PR's merge group skips the live suites but still runs the hermetic Claude mod.
+        ("merge_group", "success", "false", "success", "success", "skipped", True),
+        ("merge_group", "success", "false", "success", "skipped", "skipped", False),
+        # Pull requests run the hermetic package check; the merge queue runs the rest.
+        ("pull_request", "success", "false", "success", "skipped", "skipped", True),
+        ("pull_request", "success", "false", "failure", "skipped", "skipped", False),
+        ("pull_request", "success", "false", "success", "skipped", "failure", False),
         # A failed selection never counts as a skip.
-        ("failure", "", "success", "skipped", "skipped", False),
+        ("pull_request", "failure", "", "success", "skipped", "skipped", False),
     ],
 )
 def test_required_e2e_enforces_integration_result(
-    selection, live, package, claude_mod, integration_result, passes
+    event, selection, live, package, claude_mod, integration_result, passes
 ):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    assert "    needs: [changes, package, claude-mod, e2e, integration]\n" in required
+    assert (
+        "    needs: [security-gate, changes, package, claude-mod, e2e, integration]\n" in required
+    )
     script = required.split("        run: |", 1)[1]
     result = subprocess.run(
         ["/bin/bash", "-c", textwrap.dedent(script)],
         env={
             **os.environ,
+            "EVENT_NAME": event,
+            "GATE_RESULT": "success",
             "SELECTION_RESULT": selection,
             "LIVE": live,
             "PACKAGE_RESULT": package,
@@ -1753,58 +1760,63 @@ def test_merge_queue_runs_every_live_suite():
     # The selector runs from the base revision, so a PR cannot choose its own coverage.
     assert 'git show "$BASE_SHA:scripts/ci_select.py" > "$selector"' in selection
     assert selection.count('echo "live=true" >> "$GITHUB_OUTPUT"') == 1
-    for job in ("e2e-shards", "integration", "claude-mod"):
+    for job in ("e2e-shards", "integration"):
         body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
         assert "needs.changes.outputs.live == 'true'" in body
         assert "github.event_name != 'merge_group'" not in body
+    claude_mod = re.split(r"\n  [a-z0-9-]+:\n", ci.split("\n  claude-mod:\n", 1)[1], maxsplit=1)[0]
+    assert "    if: ${{ github.event_name != 'pull_request' }}\n" in claude_mod
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
-@pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
-@pytest.mark.parametrize(
-    "failing",
-    [
-        None,
-        "LINT_RESULT",
-        "RESULT",
-        "WINDOWS_RESULT",
-        "PROVISIONING_RESULT",
-        "VSCODE_EXTENSION_RESULT",
-    ],
-)
-@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
-def test_required_tests_enforces_lint_result(event, failing, bad):
+REQUIRED_TESTS_RESULTS = {
+    "GATE_RESULT": "success",
+    "LINT_RESULT": "success",
+    "RESULT": "success",
+    "VSCODE_EXTENSION_RESULT": "success",
+    # Pull requests skip the Windows jobs and the coverage proof; the merge queue runs them.
+    "WINDOWS_RESULT": {"pull_request": "skipped", "merge_group": "success"},
+    "PROVISIONING_RESULT": {"pull_request": "skipped", "merge_group": "success"},
+    "COVERAGE_RESULT": {"pull_request": "skipped", "merge_group": "success"},
+}
+
+
+def _required_tests(event, **results):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
     assert (
-        "    needs: [checks, unit-linux, unit-windows, windows-provisioning, vscode-extension]\n"
-        in required
+        "    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, "
+        "windows-provisioning, vscode-extension]\n" in required
     )
-    script = required.split("        run: |", 1)[1]
-    names = [
-        "LINT_RESULT",
-        "RESULT",
-        "WINDOWS_RESULT",
-        "PROVISIONING_RESULT",
-        "VSCODE_EXTENSION_RESULT",
-    ]
-    env = {**os.environ, **dict.fromkeys(names, "success"), "EVENT_NAME": event}
-    if failing:
-        env[failing] = bad
-    result = subprocess.run(
-        ["/bin/bash", "-c", textwrap.dedent(script)],
-        env=env,
+    env = {"EVENT_NAME": event}
+    for name, value in REQUIRED_TESTS_RESULTS.items():
+        env[name] = value[event] if isinstance(value, dict) else value
+    env.update(results)
+    return subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(required.split("        run: |", 1)[1])],
+        env={**os.environ, **env},
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
-    )
-    # Only a pull request may skip the Windows shards; the merge queue requires them.
-    passes = failing is None or (
-        failing == "WINDOWS_RESULT" and bad == "skipped" and event == "pull_request"
-    )
-    assert (result.returncode == 0) is passes, result.stderr
+    ).returncode
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+def test_required_tests_passes_when_every_required_job_does(event):
+    assert _required_tests(event) == 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+@pytest.mark.parametrize("job", list(REQUIRED_TESTS_RESULTS))
+@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
+def test_required_tests_requires_every_unit_job(event, job, bad):
+    expected = REQUIRED_TESTS_RESULTS[job]
+    if (expected[event] if isinstance(expected, dict) else expected) == bad:
+        pytest.skip("that is this event's normal result")
+    assert _required_tests(event, **{job: bad}) != 0
 
 
 def test_windows_unit_shards_run_everywhere_but_pull_requests():
@@ -1812,6 +1824,10 @@ def test_windows_unit_shards_run_everywhere_but_pull_requests():
     job = re.split(r"\n  [a-z0-9-]+:\n", ci.split("\n  unit-windows:\n", 1)[1], maxsplit=1)[0]
     assert "    if: ${{ github.event_name != 'pull_request' }}\n" in job
     assert "needs:" not in job
+    provisioning = re.split(
+        r"\n  [a-z0-9-]+:\n", ci.split("\n  windows-provisioning:\n", 1)[1], maxsplit=1
+    )[0]
+    assert "    if: ${{ github.event_name != 'pull_request' }}\n" in provisioning
 
 
 def _git_repo(path):
@@ -1863,6 +1879,15 @@ def test_merge_group_checks_every_queued_pr(tmp_path, monkeypatch):
         CI_SELECT["queued_prs"]("HEAD~3", "HEAD")
 
 
+def test_merge_group_selection_fails_closed(monkeypatch):
+    def unavailable(url, timeout):
+        raise urllib.error.HTTPError(url, 403, "rate limited", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    with pytest.raises(SystemExit, match="Could not look up PR #7"):
+        CI_SELECT["pr_is_from"]("7", "databricks/unity-gateway")
+
+
 def test_integration_never_receives_secrets_on_pull_requests():
     integration = (
         _workflow("ci.yml").split("\n  integration:\n", 1)[1].split("\n  required-tests:\n")[0]
@@ -1903,7 +1928,10 @@ def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers
 def test_pytest_discovers_the_serial_live_hook(args, parallel):
     # The child run must not inherit this CI shard or overwrite its coverage report.
     skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    # Two workers: enough to show the hook left unit runs parallel without starting one child
+    # worker per CPU inside every parent xdist worker.
     env = {key: value for key, value in os.environ.items() if key not in skip}
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
         cwd=Path(__file__).parent.parent,
@@ -1981,3 +2009,43 @@ def test_unit_shard_spec_rejects_bad_values(spec):
 
     with pytest.raises(ValueError):
         shard.parse(spec)
+
+
+def test_checks_run_exactly_the_just_lint_commands():
+    """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
+    justfile = (Path(__file__).parent.parent / "justfile").read_text()
+    checks = _workflow("ci.yml").split("\n  checks:\n", 1)[1].split("\n  unit-linux:\n", 1)[0]
+    for recipe, command in (
+        ("ruff-check", "ruff check src/ tests/"),
+        ("ruff-format-check", "ruff format --check src/ tests/"),
+        ("ty", "ty check src/"),
+    ):
+        assert f"{recipe}:\n    uv run {command}\n" in justfile, recipe
+        assert f'"$VENV_BIN/{command.split()[0]}" {command.split(" ", 1)[1]}' in checks, recipe
+    assert "lint: ruff-check ruff-format-check ty\n" in justfile
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the rollups run bash on Linux")
+@pytest.mark.parametrize("rollup", ["required-tests", "required-e2e"])
+@pytest.mark.parametrize("gate", ["failure", "cancelled", "skipped"])
+def test_a_failed_security_gate_fails_both_required_checks(rollup, gate):
+    ci = _workflow("ci.yml")
+    body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {rollup}:\n", 1)[1], maxsplit=1)[0]
+    assert re.search(r"(?m)^    needs: \[security-gate, ", body)
+    names = re.findall(r"(?m)^          ([A-Z_]+): \$\{\{ needs\.", body)
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "EVENT_NAME": "pull_request",
+        "LIVE": "true",
+    }
+    env["GATE_RESULT"] = gate
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(body.split("        run: |", 1)[1])],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode != 0
