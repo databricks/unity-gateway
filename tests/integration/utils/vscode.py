@@ -352,7 +352,12 @@ class VSCode:
                 self._seen("picked", screen)
                 last, picked_since = "picked", picked_since or time.monotonic()
                 if time.monotonic() - picked_since >= SETTLE_S:
-                    self._wait_for_copilot_chat()
+                    if not self.copilot_chat_ready:
+                        # Copilot Chat can open the second editor as it starts, so the picked
+                        # screen holds again from then.
+                        self._wait_for_copilot_chat()
+                        picked_since, deadline = None, min(time.monotonic() + STEP_TIMEOUT_S, cap)
+                        continue
                     self.shot("model-picked")
                     return
                 time.sleep(POLL_S)

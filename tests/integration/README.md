@@ -845,7 +845,8 @@ is on screen first (both open the Language Models editor, which it closes, as of
 including one already open on the first read after the last one closed), and picks a model by
 its label in the picker. `../test_integration_vscode_picker.py` covers that second editor
 offline. The picked model has to hold for a few seconds, since ug's extension switches the chat
-to its default model once Copilot Chat is on. Each window records its actions
+to its default model once Copilot Chat is on, and holds again from when Copilot Chat starts, which
+can open the second editor after the first hold. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`). Playwright connects once the
 window's DevTools page target exists, and connects again if that connection misses the workbench.
 An answer without the file's value also keeps the tool results and the last response of its turn

@@ -10,6 +10,8 @@ from tests.integration.utils import vscode as vscode_module
 from tests.integration.utils.vscode import VSCode
 
 LABEL = "Claude Haiku 4.5"
+# ug's extension switches the chat to its default model once Copilot Chat is on.
+DEFAULT_BUTTON = "Models, Claude Opus 5.5"
 EDITOR = {"state": "language models editor", "modelsEditor": True, "picker": None}
 CLOSED = {"state": "picker closed", "modelsEditor": False, "picker": None}
 NO_MATCH = {"state": "picker: no match", "modelsEditor": False, "picker": LABEL}
@@ -17,21 +19,39 @@ PICKED = {"state": "picked", "modelsEditor": False, "picker": None}
 
 
 class ScriptedVSCode(VSCode):
-    """A window whose screens follow the actions taken, as ``reactions`` lists them per state."""
+    """A window whose screens follow the actions taken, as ``reactions`` lists them per state.
 
-    def __init__(self, screen: dict, reactions: dict[str, list[dict]]):
+    With ``starts_copilot_chat``, Copilot Chat starts while the picked screen shows: its toast
+    and that screen replace it after a number of reads."""
+
+    def __init__(
+        self,
+        screen: dict,
+        reactions: dict[str, list[dict]],
+        *,
+        button: str = DEFAULT_BUTTON,
+        starts_copilot_chat: dict | None = None,
+    ):
         self.actions, self.states, self.started = [], [], time.monotonic()
-        self.copilot_chat_ready = True
-        self.current = self._screen(screen, "Models, Claude Opus 5.5")
+        self.copilot_chat_ready = starts_copilot_chat is None
+        self.starts_copilot_chat, self.picked_reads = starts_copilot_chat, 0
+        self.current = self._screen(screen, button)
         self.reactions = {state: list(screens) for state, screens in reactions.items()}
         self.page = SimpleNamespace(keyboard=SimpleNamespace(press=self._escape))
         self.code = SimpleNamespace(poll=lambda: None)
 
     @staticmethod
     def _screen(screen: dict, button: str) -> dict:
-        return {"modelButton": button, "copilotChatOffNotice": False, **screen}
+        return {"modelButton": button, "copilotChatOffNotice": False, "byokToast": False, **screen}
 
     def screen(self) -> dict:
+        if self.starts_copilot_chat and self.current["state"] == "picked":
+            self.picked_reads += 1
+            if self.picked_reads == 20:
+                started = {**self.starts_copilot_chat, "byokToast": True}
+                self.current = self._screen(started, DEFAULT_BUTTON)
+        if self.current.get("byokToast"):
+            self.copilot_chat_ready = True
         return self.current
 
     def shot(self, name: str) -> None:
@@ -85,3 +105,18 @@ def test_assert_not_in_picker_closes_a_language_models_editor_that_opens_as_the_
         "model picker: Escape",
     ]
     assert window.current["picker"] is None
+
+
+def test_pick_model_closes_a_language_models_editor_that_copilot_chat_opens_as_it_starts():
+    # Copilot Chat starts after the picked screen held, and opens the second editor as it does.
+    window = ScriptedVSCode(
+        PICKED,
+        {"language models editor": [CLOSED], "picker closed": [PICKED]},
+        button=f"Models, {LABEL}",
+        starts_copilot_chat=EDITOR,
+    )
+
+    window.pick_model(LABEL)
+
+    assert window.actions == ["language models editor", "picker closed"]
+    assert window.current["state"] == "picked"
