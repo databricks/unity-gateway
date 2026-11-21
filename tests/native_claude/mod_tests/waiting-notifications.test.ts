@@ -120,6 +120,14 @@ for (const key of ['ENABLE_SMART_ROUTER_ORCHESTRATOR', 'ENABLE_SMART_ROUTING_SUB
   });
 }
 
+test('registered submit honors saved orchestrator-off controls', {options: routed}, async ($, on) => {
+  const env = {...routed, UCODE_SESSION_ENV_FILE: '/session/env.json'};
+  const delivered = deliveryHost(on, env, () => [agent]);
+  on('fs.read', () => ({value: JSON.stringify({ENABLE_SMART_ROUTER_ORCHESTRATOR: '0'})}));
+  expect(await $.prompt.submit(prompt)).toEqual({text: notice});
+  expect(delivered).toEqual([prompt]);
+});
+
 test('registered submit preserves delivery when task lookup fails', {options: routed}, async ($, on) => {
   const delivered = deliveryHost(on, routed, () => {throw new Error('Task state unavailable');});
   expect(await $.prompt.submit(prompt)).toEqual({text: notice});
