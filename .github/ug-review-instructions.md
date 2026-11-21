@@ -116,7 +116,8 @@ Historical examples from Lilly's reviews:
 - Use minor findings sparingly for ambiguity or duplication likely to cause future mistakes.
 - Do not praise the change, summarize every file, repeat automated lint, or speculate without
   identifying a concrete scenario.
-- For added or changed source comments, flag lengthy narration of obvious code, duplicated
+- For added or changed source comments, prefer one short sentence, usually one or two lines,
+  explaining a non-obvious reason or constraint. Flag lengthy narration of obvious code, duplicated
   explanations, or change history as nonblocking; suggest removal or a short reason/constraint.
   Keep detail needed for a non-obvious invariant; do not flag wrapping or unchanged comments.
 - Apply these priorities only where relevant. Keep optional follow-up suggestions nonblocking.
