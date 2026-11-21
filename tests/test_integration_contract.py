@@ -1760,6 +1760,7 @@ def test_merge_queue_runs_every_live_suite():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
 @pytest.mark.parametrize(
     "failing",
     [
@@ -1772,7 +1773,7 @@ def test_merge_queue_runs_every_live_suite():
     ],
 )
 @pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
-def test_required_tests_enforces_lint_result(failing, bad):
+def test_required_tests_enforces_lint_result(event, failing, bad):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
@@ -1788,7 +1789,7 @@ def test_required_tests_enforces_lint_result(failing, bad):
         "PROVISIONING_RESULT",
         "VSCODE_EXTENSION_RESULT",
     ]
-    env = {**os.environ, **dict.fromkeys(names, "success")}
+    env = {**os.environ, **dict.fromkeys(names, "success"), "EVENT_NAME": event}
     if failing:
         env[failing] = bad
     result = subprocess.run(
@@ -1799,7 +1800,18 @@ def test_required_tests_enforces_lint_result(failing, bad):
         timeout=10,
         check=False,
     )
-    assert (result.returncode == 0) is (failing is None), result.stderr
+    # Only a pull request may skip the Windows shards; the merge queue requires them.
+    passes = failing is None or (
+        failing == "WINDOWS_RESULT" and bad == "skipped" and event == "pull_request"
+    )
+    assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_windows_unit_shards_run_everywhere_but_pull_requests():
+    ci = _workflow("ci.yml")
+    job = re.split(r"\n  [a-z0-9-]+:\n", ci.split("\n  unit-windows:\n", 1)[1], maxsplit=1)[0]
+    assert "    if: ${{ github.event_name != 'pull_request' }}\n" in job
+    assert "needs:" not in job
 
 
 def _git_repo(path):

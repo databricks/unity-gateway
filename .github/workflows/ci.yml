@@ -125,8 +125,12 @@ jobs:
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/shard-report.json
 
+  # Windows runners' setup varies from 13 to 30 s, so 64 Windows jobs put one slow runner on
+  # almost every PR's critical path. Windows shards run with the live suites instead: in the merge
+  # queue, on main, on the schedule and on dispatch, where `test` requires every one of them.
   unit-windows:
     name: Unit tests · Windows · ${{ matrix.shard }}/64
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
@@ -435,15 +439,22 @@ jobs:
     steps:
       - name: Require checks, every unit shard and the VS Code extension tests to pass
         env:
+          EVENT_NAME: ${{ github.event_name }}
           LINT_RESULT: ${{ needs.checks.result }}
           RESULT: ${{ needs.unit-linux.result }}
           WINDOWS_RESULT: ${{ needs.unit-windows.result }}
           PROVISIONING_RESULT: ${{ needs.windows-provisioning.result }}
           VSCODE_EXTENSION_RESULT: ${{ needs.vscode-extension.result }}
+        # The result check is the last command: a failed `&&` chain earlier in a step does not stop it.
         run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo "::notice::Windows unit shards run in the merge queue before this change reaches main."
+          fi
           test "$LINT_RESULT" = success && test "$RESULT" = success &&
-            test "$WINDOWS_RESULT" = success && test "$PROVISIONING_RESULT" = success &&
-            test "$VSCODE_EXTENSION_RESULT" = success
+            test "$PROVISIONING_RESULT" = success && test "$VSCODE_EXTENSION_RESULT" = success && {
+              test "$WINDOWS_RESULT" = success ||
+                { test "$EVENT_NAME" = pull_request && test "$WINDOWS_RESULT" = skipped; }
+            }
 
   required-e2e:
     name: e2e
