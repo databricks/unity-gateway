@@ -110,7 +110,9 @@ class TestAgentCliChecks:
         assert checks[0].suggestion is not None
 
     def test_compatible_agents_are_ok_without_registry_checks(self):
-        state = {"available_tools": ["claude", "codex", "opencode", "gemini", "pi", "copilot"]}
+        state = {
+            "available_tools": ["claude", "codex", "opencode", "gemini", "pi", "copilot", "omp"]
+        }
         with (
             patch.object(doctor_mod, "load_state", return_value=state),
             patch.object(doctor_mod, "tool_binary_installed", return_value=True),
@@ -118,7 +120,7 @@ class TestAgentCliChecks:
             patch("subprocess.run", side_effect=AssertionError("must not query npm")),
         ):
             checks = _check_agent_clis()
-        assert len(checks) == 6
+        assert len(checks) == 7
         assert all(check.status == "ok" and check.suggestion is None for check in checks)
 
     def test_only_below_minimum_agent_offers_upgrade(self):

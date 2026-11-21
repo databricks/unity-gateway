@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
+from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, omp, opencode
 from ucode.config_io import read_json_safe, read_toml_safe
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -130,6 +130,12 @@ MCP_CLIENTS = {
         "binary": "cursor-agent",
         "display": "Cursor",
         "list_command": "cursor-agent mcp list",
+    },
+    "omp": {
+        # No list_command: omp publishes no `mcp list` subcommand, so the live
+        # status rows skip omp and fall back to configured-only output.
+        "binary": "omp",
+        "display": "Oh My Pi",
     },
     "antigravity": {
         "binary": "agy",
@@ -506,6 +512,9 @@ def configure_client_mcp_server(
     if client == "cursor":
         removed = cursor.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "omp":
+        removed = omp.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     if client == "antigravity":
         removed = antigravity.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
@@ -532,6 +541,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
         return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
+    if client == "omp":
+        return [MCP_USER_SCOPE] if omp.remove_mcp_server_config(name) else []
     if client == "antigravity":
         return [MCP_USER_SCOPE] if antigravity.remove_mcp_server_config(name) else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
@@ -1758,6 +1769,7 @@ _MCP_CLIENT_MODULES = {
     "gemini": gemini,
     "copilot": copilot,
     "cursor": cursor,
+    "omp": omp,
     "opencode": opencode,
     "kilo": kilo,
     "antigravity": antigravity,
@@ -1805,6 +1817,8 @@ def _managed_mcp_entry(
         return gemini.build_mcp_server_entry(argv)
     if client == "copilot":
         return copilot.build_mcp_server_entry(argv)
+    if client == "omp":
+        return omp.build_mcp_server_entry(argv)
     if client == "opencode":
         return opencode.build_mcp_server_entry(argv)
     if client == "kilo":
@@ -2311,7 +2325,7 @@ def setup_mcp_clients(
     if not clients:
         raise RuntimeError(
             "No configured MCP-capable coding agents are installed. Run `ug configure` "
-            "for Codex, Claude, Gemini, OpenCode, or GitHub Copilot CLI first."
+            "for Codex, Claude, Gemini, OpenCode, GitHub Copilot CLI, or Oh My Pi first."
         )
     configured_tools = set(state.get("available_tools") or [])
     missing_clients = [
@@ -2957,7 +2971,12 @@ def _run_mcp_list(client: str) -> str | None:
     spec = MCP_CLIENTS.get(client)
     if not spec:
         return None
-    argv = str(spec["list_command"]).split()
+    list_command = spec.get("list_command")
+    if not list_command:
+        # Clients that keep MCP servers in a file ug writes itself (omp) expose
+        # no listing subcommand; the caller shows configured servers only.
+        return None
+    argv = str(list_command).split()
     # Gemini, Kilo and OpenCode read their MCP config from ug's isolated directories.
     if client == "gemini":
         env = _gemini_cli_env()

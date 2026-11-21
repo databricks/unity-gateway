@@ -25,6 +25,7 @@ dependencies = [
   "mcp>=1.28.0",
   "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
   "opentelemetry-sdk>=1.44.0,<2",
+  "pyyaml>=6.0.0",
   "questionary>=2.0.0",
   "tomlkit>=0.13.0",
   "truststore>=0.10.0",
