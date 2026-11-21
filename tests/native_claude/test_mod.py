@@ -813,7 +813,7 @@ def test_managed_cache_boundary_uses_native_fetch_for_parent_and_child(native_bi
         )
     parent_model = "system.ai.gpt-6-1-terra"
     child_model = "system.ai.gpt-6-1-sol"
-    explicit_root_control = {"type": "ephemeral", "ttl": "1h"}
+    explicit_root_control = {"type": "ephemeral", "ttl": "5m"}
     eligible_control = {"type": "ephemeral", "ttl": "1h"}
     eligible_messages = [
         {
@@ -1240,12 +1240,9 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Cache boundary proof",
             route_model=qualified_child,
         )
         qualified_request = request_for_model(qualified, qualified_child)
-        assert (
-            request_for_model(qualified, qualified_child)["headers"].get(
-                "x-claude-code-request-class"
-            )
-            == "subagent"
-        ), qualified
+        assert qualified_request["headers"].get("x-claude-code-request-class") == "subagent", (
+            qualified
+        )
         assert qualified_request["body"]["messages"] == moved_messages, qualified_request["body"]
         assert qualified_request["body"].get("cache_control") == eligible_control
         assert latest_user_controls(qualified_request) == [], qualified_request["body"]

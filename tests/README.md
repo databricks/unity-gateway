@@ -499,8 +499,11 @@ order remain unchanged, and exactly one marker is moved with its original TTL. E
 controls win. Hook tests retain the original transport fields and cancellation signal.
 The managed-mod test uses Linux bubblewrap to isolate `/etc/claude-code`; the host policy is untouched.
 It skips before 2.1.321, where the launcher unit tests cover the unsupported-version guard.
+CI retains the 2.1.290 compatibility lane and runs the native suite on 2.1.325 with bubblewrap.
+The latter lane checks user-namespace support before testing; a failed prerequisite fails the job.
 Claude 2.1.325 rejects rewritten authenticated requests when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
 is nonempty (including `0`); the optimization passes through in that mode, retaining the policy.
+Inactive launch reasons are recorded with `UCODE_DEBUG=1` rather than warning on every launch.
 These checks establish payload transformation and native activation, not gateway cache hits,
 benchmark quality or dollar savings.
 

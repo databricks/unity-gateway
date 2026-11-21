@@ -469,7 +469,7 @@ def test_launch_without_ug_headers_or_with_an_active_mod_says_nothing(monkeypatc
         (None, WS, True, "2.1.325", True, "off"),
         (None, WS, False, "2.1.290", True, "version"),
         (None, WS, False, "2.1.320", True, "version"),
-        (None, WS, False, "unknown", True, "version"),
+        (None, WS, False, "unknown", True, "unknown_version"),
         (None, WS, False, "2.1.325", False, "mod"),
         ("1", WS, False, "2.1.321", True, "active"),
         ("1", WS, False, "2.1.325", True, "active"),
@@ -486,23 +486,27 @@ def test_cache_boundary_launch_guard(
     version_check = Mock(return_value=version)
     mod_check = Mock(return_value=current_mod)
     warnings = []
+    diagnostics = []
     monkeypatch.setattr(claude, "agent_version", version_check)
     monkeypatch.setattr(claude, "header_mod_active", mod_check)
     monkeypatch.setattr(claude, "print_warning", warnings.append)
+    monkeypatch.setattr(claude, "_debug", lambda _label, detail: diagnostics.append(detail))
 
     claude._configure_gpt_cache_boundary({"workspace": workspace, "claude_relayed": relayed})
 
     assert claude.os.environ.get("UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL") == (
         f"{WS}/ai-gateway/anthropic" if expected == "active" else ""
     )
-    if expected == "version":
-        assert len(warnings) == 1 and "2.1.321" in warnings[0]
+    assert warnings == []
+    if expected in {"version", "unknown_version"}:
+        reason = "2.1.321" if expected == "version" else "could not determine Claude Code version"
+        assert len(diagnostics) == 1 and reason in diagnostics[0]
         mod_check.assert_not_called()
     elif expected == "mod":
-        assert len(warnings) == 1 and "current UG managed mod" in warnings[0]
+        assert len(diagnostics) == 1 and "current UG managed mod" in diagnostics[0]
         mod_check.assert_called_once_with(require_current=True)
     else:
-        assert warnings == []
+        assert diagnostics == []
     if expected == "off":
         version_check.assert_not_called()
         mod_check.assert_not_called()
@@ -565,12 +569,15 @@ def test_cache_boundary_preserves_nonessential_traffic_policy(monkeypatch, polic
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", policy)
     version = Mock()
     warnings = []
+    diagnostics = []
     monkeypatch.setattr(claude, "agent_version", version)
     monkeypatch.setattr(claude, "print_warning", warnings.append)
+    monkeypatch.setattr(claude, "_debug", lambda _label, detail: diagnostics.append(detail))
 
     claude._configure_gpt_cache_boundary({"workspace": WS})
 
     assert claude.os.environ["UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"] == ""
     assert claude.os.environ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == policy
-    assert len(warnings) == 1 and "nonessential-traffic policy" in warnings[0]
+    assert warnings == []
+    assert len(diagnostics) == 1 and "nonessential-traffic policy" in diagnostics[0]
     version.assert_not_called()

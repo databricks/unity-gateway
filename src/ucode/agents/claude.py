@@ -3291,21 +3291,30 @@ def _configure_gpt_cache_boundary(state: dict) -> None:
     ):
         return
     if os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"):
-        print_warning(
+        _debug(
+            "GPT cache boundary",
             "GPT cache-boundary preservation is inactive: Claude's nonessential-traffic policy "
-            "blocks edited authenticated requests. Keeping the network policy unchanged."
+            "blocks edited authenticated requests. Keeping the network policy unchanged.",
         )
         return
     version = _parse_version(agent_version(SPEC["binary"]))
-    if version is None or version < (2, 1, 321):
-        print_warning(
-            "GPT cache-boundary preservation is inactive: it requires Claude Code 2.1.321 or newer."
+    if version is None:
+        _debug(
+            "GPT cache boundary",
+            "GPT cache-boundary preservation is inactive: could not determine Claude Code version.",
+        )
+        return
+    if version < (2, 1, 321):
+        _debug(
+            "GPT cache boundary",
+            "GPT cache-boundary preservation is inactive: it requires Claude Code 2.1.321 or newer.",
         )
         return
     if not header_mod_active(require_current=True):
-        print_warning(
+        _debug(
+            "GPT cache boundary",
             "GPT cache-boundary preservation is inactive: it requires the current UG managed mod. "
-            "Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS."
+            "Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS.",
         )
         return
     os.environ["UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL"] = build_tool_base_url(
