@@ -384,9 +384,11 @@ export function createExporter({
   let dropped = 0;
   let running = null;
   let scheduled = false;
+  let recorded = Promise.resolve();
   const note = (outcome) => {
     try {
-      record({ time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...outcome });
+      const entry = { time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...outcome };
+      recorded = Promise.resolve(record(entry)).catch(() => {});
     } catch {
       // Recording must not stop an export.
     }
@@ -473,7 +475,8 @@ export function createExporter({
       }
     },
     flush,
-    // Resolves once every span added so far was sent or dropped, or after ``ms``.
+    // Resolves once every span added so far was sent or dropped and its outcome recorded, or after
+    // ``ms``.
     async drain(ms) {
       let timer;
       const bound = new Promise((resolve) => {
@@ -481,6 +484,7 @@ export function createExporter({
       });
       const done = (async () => {
         while (queue.length > 0 || running) await flush();
+        await recorded;
       })();
       await Promise.race([done, bound]);
       clearTimeout(timer);
