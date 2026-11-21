@@ -5598,6 +5598,7 @@ def configure(
             profile=profile if profile is not None else profiles,
             agent=agent,
             agents=agents,
+            mdm=mdm,
             conflicting={
                 "--use-pat": use_pat,
                 "--client-id": client_id is not None,
@@ -5863,6 +5864,7 @@ def _configure_global_from_agent_config(
     profile: str | None,
     agent: str | None,
     agents: str | None,
+    mdm: bool,
     conflicting: dict[str, bool],
 ) -> None:
     """A managed run: ``ug configure --global`` on a workspace that publishes an agent configuration.
@@ -5909,6 +5911,9 @@ def _configure_global_from_agent_config(
         # the marker file.
         set_config_scope("global")
         set_machine_wide_only(True)
+        if not dry_run:
+            # As in the merge: MDM_OS marks this run's requests, and the policy keeps it after.
+            request_mdm_os(mdm)
         token: str | None = None
         if from_file is not None:
             raw: dict | None = published_agent_config.load_draft(from_file)
@@ -5962,7 +5967,9 @@ def _configure_global_from_agent_config(
             )
         agent, agents = _drop_per_user_agents(agent, agents)
         if agent is None and agents == "":
-            # Every requested agent has only per-user settings: nothing to write.
+            # Every requested agent has only per-user settings: nothing to write but the mark.
+            if not dry_run:
+                save_requested_mdm_os()
             raise typer.Exit(published_agent_config.EXIT_OK)
         selected = published_agent_config.parse_agents(agents if agents is not None else agent)
         if not dry_run:
@@ -6001,6 +6008,8 @@ def _configure_global_from_agent_config(
             profile=profile,
             token=token,
         )
+        if not dry_run:
+            save_requested_mdm_os()
         if from_file is None and "claude" in selected:
             if "claude" in enabled:
                 # Best effort, as before: a Desktop failure warns without failing the run. A dry
@@ -6020,6 +6029,7 @@ def _configure_global_from_agent_config(
         raise typer.Exit(130) from None
     finally:
         set_machine_wide_only(False)
+        request_mdm_os(None)
     raise typer.Exit(published_agent_config.EXIT_OK)
 
 
