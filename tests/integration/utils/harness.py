@@ -141,8 +141,8 @@ class UserSession:
             "UG_INTEGRATION_CODEX_ACCESS_TOKEN",
         ):
             for token in (os.environ.get(name), self.env.get(name)):
-                if token:
-                    text = text.replace(token, "<redacted>")
+                if token and token.strip():
+                    text = text.replace(token, "<redacted>").replace(token.strip(), "<redacted>")
         return ANSI.sub("", text) if strip_ansi else text
 
     def run(

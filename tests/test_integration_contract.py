@@ -96,6 +96,12 @@ def test_managed_integration_ci_is_blocking():
     assert baseline | routing == _collect_integration_cases(
         "(managed_fixture or workspace_switch) and codex and not soft_fail"
     )
+    equals_model_case = (
+        "test_ug_codex_v2_routing.py::"
+        "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+    )
+    assert equals_model_case not in baseline
+    assert equals_model_case in routing
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
     )
@@ -105,6 +111,18 @@ def test_managed_integration_ci_is_blocking():
         "test_ug_configure_managed_models.py::test_managed_fixture_codex_smart_routing_banner"
         in routing
     )
+    version_aware = (
+        "test_ug_smart_routing_hooks.py::"
+        "test_smart_router_managed_default_matches_codex_version_at_launch"
+    )
+    assert version_aware in baseline
+    assert version_aware in _collect_integration_cases(
+        "harness_latest and codex and managed_fixture"
+    )
+    assert (
+        "test_ug_smart_routing_hooks.py::"
+        "test_smart_router_managed_default_routes_supported_codex_at_launch"
+    ) in routing
 
 
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
@@ -148,7 +166,8 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert "shasum -a 256 -c" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -166,7 +185,8 @@ def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
     assert "-ne $env:CHATGPT_APP_SHA256" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn"
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn",
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_skill_calls_mcp",
     }
 
 
@@ -187,7 +207,8 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
     assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -261,16 +282,26 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         routing = _collect_integration_cases(
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
-        assert not (smoke | full) & routing
-        assert (
-            "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
-            in routing
+        managed_routing = _collect_integration_cases(
+            _ci_marker_expression(jobs["managed"], agent, smart_routing=True)
         )
+        assert not (smoke | full) & routing
+        equals_model_case = (
+            "test_ug_codex_v2_routing.py::"
+            "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+        )
+        assert equals_model_case not in routing
+        assert equals_model_case in managed_routing
+        for model_option in ("saved", "split"):
+            assert (
+                "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
+                f"[{model_option}]" in routing
+            )
         assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
         for name in ("full", "managed"):
             assert "smart_routing: [false]" in jobs[name]
             assert (
-                "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
+                "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
                 "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
@@ -461,7 +492,8 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
-        "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
+        "CODEX_VERSION: ${{ (matrix.test == 'test_cuj4_smart_routing.py' || "
+        "matrix.test == 'test_cuj7_model_discovery.py') && '0.171.0' || "
         "inputs.codex_version || '0.156.0' }}"
     ) in job
 
@@ -646,6 +678,7 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "copilot",
     "antigravity",
+    "vscode",
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
@@ -1325,7 +1358,11 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert (
-                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                        len(
+                            marks
+                            & {"claude", "codex", "opencode", "copilot", "antigravity", "vscode"}
+                        )
+                        == 1
                     ), node.name
 
 
@@ -1603,3 +1640,42 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
+    workflow = WORKFLOW.read_text()
+    jobs = _integration_jobs()
+    job = jobs["vscode"]
+    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}" in workflow
+    assert (
+        'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
+        in workflow
+    )
+    assert "runs-on: ${{ matrix.os }}" in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "continue-on-error: true" in job
+    assert "AGENT: vscode" in job
+    assert "TEST_MARKER: live and vscode" in job
+    assert (
+        "      - name: Install a virtual display for VS Code\n"
+        "        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}\n"
+        "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
+    ) in workflow
+    gate_needs = re.search(r"(?m)^    needs: \[(.*)\]$", jobs["cujs"]).group(1)
+    assert "vscode" not in [need.strip() for need in gate_needs.split(",")]
+
+
+def test_latest_harness_drives_the_newest_vscode_and_copilot():
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    assert "npm view @github/copilot@latest version" in resolver
+    assert "https://update.code.visualstudio.com/api/update/linux-x64/stable/latest" in resolver
+    for output in ("copilot", "vscode", "vscode_sha256"):
+        assert f"needs.resolve-versions.outputs.{output}" in harness
+    assert "- suite: vscode\n            runner: ubuntu-22.04\n" in harness
+    assert "marker: harness_latest and vscode" in harness
+    assert (
+        'args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION"\n'
+        '              --vscode-sha256 "$VSCODE_SHA256")'
+    ) in harness
+    assert "if: ${{ matrix.suite == 'vscode' }}" in harness

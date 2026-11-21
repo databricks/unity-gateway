@@ -68,17 +68,35 @@ def search_setup(tmp_path, monkeypatch):
     return SimpleNamespace(config_path=config_path, isaac_entry=isaac_entry)
 
 
-@pytest.mark.parametrize("discovery", ["model_services", "legacy"])
+@pytest.mark.parametrize("provider_mode", [False, True])
+@pytest.mark.parametrize(
+    ("discovery", "model_names", "expected_name"),
+    [
+        ("model_services", ["gpt-6-astra", "gpt-5-mini", "gpt-6-luna"], "gpt-6-luna"),
+        ("model_services", ["gpt-6-astra", "gpt-5-mini"], "gpt-5-mini"),
+        ("model_services", ["gpt-6-astra", "gpt-5"], "gpt-6-astra"),
+        ("legacy", ["gpt-6-astra", "gpt-5-mini", "gpt-6-luna"], "gpt-6-astra"),
+    ],
+)
 def test_claude_only_setup_registers_search_without_prior_codex_setup(
-    search_setup, monkeypatch, discovery
+    search_setup, monkeypatch, discovery, provider_mode, model_names, expected_name
 ):
+    prefix = "databricks-" if discovery == "legacy" else "system.ai."
+    search_models = [prefix + name for name in model_names]
+    search_model = prefix + expected_name
+    monkeypatch.setattr(
+        cli,
+        "discover_model_services",
+        lambda *_: (
+            {"opus": CLAUDE_MODEL},
+            search_models if discovery == "model_services" else [],
+            [],
+            [],
+            None,
+        ),
+    )
     if discovery == "legacy":
-        monkeypatch.setattr(
-            cli,
-            "discover_model_services",
-            lambda *_: ({"opus": CLAUDE_MODEL}, [], [], [], None),
-        )
-        monkeypatch.setattr(cli, "discover_codex_models", lambda *_: ([SEARCH_MODEL], None))
+        monkeypatch.setattr(cli, "discover_codex_models", lambda *_: (search_models, None))
     else:
 
         def unexpected_fallback(*_):
@@ -86,7 +104,12 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
 
         monkeypatch.setattr(cli, "discover_codex_models", unexpected_fallback)
 
-    state = cli.configure_shared_state(WORKSPACE, profile="test-profile", tools=["claude"])
+    state = cli.configure_shared_state(
+        WORKSPACE,
+        profile="test-profile",
+        tools=["claude"],
+        skip_model_discovery=provider_mode,
+    )
     claude.write_tool_config(state, CLAUDE_MODEL)
 
     servers = json.loads(search_setup.config_path.read_text())["mcpServers"]
@@ -95,10 +118,14 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
     assert entry["env"] == {
         "DATABRICKS_HOST": WORKSPACE,
         "DATABRICKS_CONFIG_PROFILE": "test-profile",
-        "UCODE_WEB_SEARCH_MODEL": SEARCH_MODEL,
+        "UCODE_WEB_SEARCH_MODEL": search_model,
     }
     saved = state_module.load_state()
-    assert saved["codex_models"] == [SEARCH_MODEL]
+    if provider_mode:
+        assert saved["web_search_model"] == search_model
+        assert "codex_models" not in saved
+    else:
+        assert saved["codex_models"] == search_models
     assert saved[claude.WEB_SEARCH_MCP_STATE_KEY] == entry
     settings = json.loads(claude.CLAUDE_SETTINGS_PATH.read_text())
     assert "WebSearch" in settings["permissions"]["deny"]

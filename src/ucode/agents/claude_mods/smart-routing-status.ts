@@ -1,4 +1,5 @@
 import type { On } from 'claude-code'
+import { autoTarget, type AutoPicker } from './auto-model.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 import { recordSubagentRateLimit } from './subagent-routing.ts'
@@ -54,7 +55,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
+export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', async ($, e, next) => {
@@ -77,7 +78,13 @@ export const registerStatusBand = (on: On): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    if (auto) {
+      // The static Auto row is the default variant's alias; name the session's main model.
+      const target = autoTarget(auto, await $.session.model())
+      const main = target === undefined ? undefined : auto.models.find((row) => row.model === target)
+      if (main) state = `Auto (${main.label}) · ${state}`
+    }
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
@@ -97,7 +104,7 @@ export const registerStatusBand = (on: On): void => {
           italic: true,
           children: ['— ' + (firstPrompt ? 'routing first prompt + subagents' : 'routing subagents')],
         })
-      : Text({ dimColor: true, children: ["— Reenable with '/smart-router on'"] })
+      : Text({ dimColor: true, children: [auto ? "— Reenable with Auto in '/model'" : "— Reenable with '/smart-router on'"] })
 
     const line = Box({
       flexDirection: 'row',

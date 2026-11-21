@@ -34,6 +34,7 @@ from ucode.workspace import workspace_headers
 ROUTER_NAME = "stable"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
+MAX_ROUTE_OPTIONS = 128
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
@@ -78,16 +79,22 @@ def format_subagent_message(
 
 
 def _format_box(lines: list[str]) -> str:
-    wrapped_lines = [
-        wrapped
-        for line in lines
-        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
-    ]
+    return draw_box(
+        [
+            wrapped
+            for line in lines
+            for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+        ]
+    )
+
+
+def draw_box(fitted_lines: list[str]) -> str:
+    """Draw lines already no wider than ROUTING_BOX_WIDTH in the routing-card box."""
     border = "─" * (ROUTING_BOX_WIDTH + 2)
     return "\n".join(
         [
             f"┌{border}┐",
-            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in fitted_lines),
             f"└{border}┘",
         ]
     )
@@ -334,7 +341,6 @@ def resolve_spawn_route(
     *,
     is_spawn_agent: Callable[[Any], bool],
     decision_fn: Callable[[str], tuple[RoutingDecision | None, str | None]],
-    default_task_label: str,
     model_id_mapper: Callable[[str], str],
 ) -> SpawnRoute | None:
     """Resolve one subagent-spawn payload to a routed model."""
@@ -343,18 +349,20 @@ def resolve_spawn_route(
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
-    # Derive the routing task from the first available plaintext field. The
-    # harness-specific names are tried in order: `prompt`/`description` (Claude
-    # Code's Agent tool), `message` (Codex's plaintext native spawn_agent assignment), then `task_name` /
-    # `agent_name` (weaker labels for other payloads), then the generic default.
+    # Agent names and encrypted messages carry no assignment the router can judge.
     task = next(
         (
             value
-            for field in ("prompt", "description", "message", "task_name", "agent_name")
-            if (value := _plaintext_string(tool_input.get(field))) is not None
+            for field in ("prompt", "description", "message")
+            if (value := _plaintext_string(tool_input.get(field))) is not None and value.strip()
         ),
-        default_task_label,
+        None,
     )
+    if task is None:
+        logging.getLogger(__name__).debug(
+            "Smart Router skipped subagent: no plaintext assignment text"
+        )
+        return None
     with metrics.subagent_routing():
         decision, reason = decision_fn(task)
     if decision is None:
@@ -371,7 +379,6 @@ def route_spawn_tool(
     *,
     is_spawn_agent: Callable[[Any], bool],
     decision_fn: Callable[[str], tuple[RoutingDecision | None, str | None]],
-    default_task_label: str,
     model_id_mapper: Callable[[str], str],
     notice_config: SubagentNoticeConfig,
     record_decision: Callable[[dict[str, Any], str, RoutingDecision, str], None] | None = None,
@@ -381,7 +388,6 @@ def route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent,
         decision_fn=decision_fn,
-        default_task_label=default_task_label,
         model_id_mapper=model_id_mapper,
     )
     if route is None:

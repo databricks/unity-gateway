@@ -1,4 +1,6 @@
 import type { On, PluginOptions } from 'claude-code'
+import { matchesAutoModel } from './auto-model.ts'
+import { isRoutingEnabled } from './routing-state.ts'
 
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
@@ -145,7 +147,11 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+export const registerSubagentRouting = (
+  on: On,
+  options: PluginOptions,
+  autoModels?: readonly string[],
+): void => {
   routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
@@ -164,6 +170,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    const selected = autoModels ? await $.session.model() : ''
+    if (autoModels && (
+      !autoModels.some(model => matchesAutoModel(model, selected)) ||
+      !isRoutingEnabled({
+        ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
+        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+      })
+    )) return next(e)
     const { tool, tool_use_id, agentId, ...input } = e
     let route
     let denial: string | undefined

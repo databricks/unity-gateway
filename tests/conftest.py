@@ -31,8 +31,17 @@ def _reset_selected_workspace(monkeypatch):
     monkeypatch.setattr(workspace_mod, "_host_types", {})
 
 
+def _extract_truststore() -> None:
+    import ssl
+
+    if ssl.SSLContext.__module__.startswith("truststore"):
+        import truststore
+
+        truststore.extract_from_ssl()
+
+
 @pytest.fixture(autouse=True)
-def _isolate_ucode_state(tmp_path, monkeypatch):
+def _isolate_ucode_state(tmp_path, monkeypatch, request):
     """Redirect ucode's state file and APP_DIR to a per-test tmp dir.
 
     Defense in depth: even if an individual test forgets to patch save_state,
@@ -47,6 +56,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    import ucode.tls as tls_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
@@ -56,13 +66,23 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
+    from ucode.smart_routing import session_log as session_log_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(tls_mod, "_STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(tls_mod, "_applied", None)
+    monkeypatch.delenv(tls_mod.TRUST_STORE_ENV_VAR, raising=False)
+    # Entry points default to the OS trust store; keep that out of the tests that follow.
+    request.addfinalizer(_extract_truststore)
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(config_io_mod, "_dry_run", False)
+    monkeypatch.setattr(claude_mod, "_explicit_configure", False)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    # Bound from APP_DIR at import; creating a log also prunes old ones in that directory.
+    monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
     # No test may run the developer's `code` or look at their installed VS Code extensions.
@@ -143,8 +163,15 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         tmp_path / "etc" / "agents-state.json",
     )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(claude_mod, "_managed_settings_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_SETTINGS_PATH", tmp_path / ".claude" / "ucode-settings.json"
+    )
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_USER_SETTINGS_PATH", tmp_path / ".claude" / "settings.json"
+    )
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)

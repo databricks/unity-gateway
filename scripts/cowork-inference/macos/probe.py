@@ -168,6 +168,7 @@ def configure():
             timeout=60,
         )
         if minted.returncode or not minted.stdout.strip():
+            save("desktop-pat-stderr.txt", minted.stderr)
             raise RuntimeError("Could not mint the Desktop PAT: " + redact(minted.stderr)[-500:])
         os.environ["UG_COWORK_PAT"] = minted.stdout.strip()
     else:

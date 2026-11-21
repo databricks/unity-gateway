@@ -16,7 +16,8 @@ the Anthropic endpoint, its other chat models on the gateway's native OpenAI rou
 registry provider sending the service's routing header. `ug copilot --model-location` registers
 the model services of one Unity Catalog schema: those named like Claude, GPT, GLM, Kimi or
 DeepSeek models on their usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway
-translates.
+translates. A service on the Anthropic endpoint that routes to a Claude model gets that model's catalog id, so
+Copilot sends it Claude's request settings.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
 per-session loopback proxy (`gateway_proxy.start_gateway_auth_proxy`): Copilot authenticates to
@@ -33,10 +34,13 @@ import json
 import os
 import re
 import secrets
+import signal
+import sys
 import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -44,7 +48,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from ucode import metrics
+from ucode import jsonc, metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -76,8 +80,11 @@ from ucode.databricks import (
     bare_model_name,
     build_copilot_base_url,
     build_tool_base_url,
+    get_model_service,
+    is_copilot_seat_relay,
     list_anthropic_model_catalog,
     list_provider_service_models,
+    model_service_backing_model,
     model_version_sort_key,
     resolve_provider_service,
 )
@@ -315,7 +322,7 @@ def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:
     The limits are the ones the gateway listed for the model, else Claude's or an open model's by
     name; the prompt leaves room for the output."""
     open_limits = _OPEN_MODEL_TOKENS if is_open_model(model.id) else None
-    limits = model.listed_limits or claude_token_limits(model.id) or open_limits
+    limits = model.listed_limits or claude_token_limits(model.catalog_name) or open_limits
     if limits is None or limits[0] <= limits[1]:
         return None
     return limits[0] - limits[1], limits[1]
@@ -331,6 +338,13 @@ class CopilotModel:
     listed_limits: tuple[int, int] | None = field(default=None, compare=False)
     # Set when dropping `system.ai.` would collide with another model in the same catalog.
     full_registry_id: bool = field(default=False, compare=False)
+    # The foundation model behind a service whose own name doesn't say which model it is.
+    served_model: str | None = field(default=None, compare=False)
+
+    @property
+    def catalog_name(self) -> str:
+        """The name Copilot's request settings and token limits follow."""
+        return self.served_model or self.id
 
     @property
     def provider(self) -> str:
@@ -508,7 +522,39 @@ def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
     if not catalog:
         reason = f": {listing.error_msg}" if listing.error_msg else ""
         raise RuntimeError(f"Found no model services to use in {schema}{reason}.")
-    return catalog
+    return with_served_models(catalog, workspace, launch_token(state, workspace))
+
+
+def with_served_models(
+    catalog: list[CopilotModel], workspace: str, token: str
+) -> list[CopilotModel]:
+    """``catalog`` with the foundation model behind each Anthropic-route service whose name isn't
+    a Claude model's.
+
+    Copilot applies Claude request settings only to an id it recognizes as Claude, and sends
+    `temperature` to any other model, which newer Claude models reject."""
+    unnamed = [
+        model
+        for model in catalog
+        if model.wire == WIRE_ANTHROPIC and copilot_catalog_model_id(model.id) is None
+    ]
+    if not unnamed:
+        return catalog
+
+    def served(model: CopilotModel) -> str | None:
+        service, _ = get_model_service(model.id, workspace, token, timeout=10)
+        return model_service_backing_model(service) if service else None
+
+    with ThreadPoolExecutor(max_workers=min(8, len(unnamed))) as pool:
+        claude = {
+            model: served_model
+            for model, served_model in zip(unnamed, pool.map(served, unnamed), strict=True)
+            if served_model and copilot_catalog_model_id(served_model)
+        }
+    return [
+        replace(model, served_model=claude[model]) if model in claude else model
+        for model in catalog
+    ]
 
 
 def catalog_from_listings(
@@ -776,7 +822,9 @@ def render_providers_config(
             "wireModel": model.id,
             "name": labels[model],
         }
-        catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
+        catalog_id = (
+            copilot_catalog_model_id(model.catalog_name) if model.wire == WIRE_ANTHROPIC else None
+        )
         if catalog_id is not None:
             entry["modelId"] = catalog_id
         if limits := catalog_model_limits(model):
@@ -793,18 +841,21 @@ OTEL_METRICS_PATH = f"{OTEL_PATH}/v1/metrics"
 _INHERITED_OTEL_PREFIXES = ("OTEL_EXPORTER_OTLP_", "COPILOT_OTEL_")
 
 
-def otel_env(proxy_base_url: str, session_secret: str) -> dict[str, str]:
-    """Copilot's OTLP export to the session proxy, as protobuf, which the gateway requires."""
-    return {
+def otel_env(proxy_base_url: str, session_secret: str | None = None) -> dict[str, str]:
+    """Copilot's OTLP export to the session proxy, as protobuf, which the gateway requires; a
+    ``proxy_base_url`` that already carries the session secret needs no ``session_secret``."""
+    env = {
         "COPILOT_OTEL_ENABLED": "true",
         "COPILOT_OTEL_EXPORTER_TYPE": "otlp-http",
         "OTEL_EXPORTER_OTLP_ENDPOINT": f"{proxy_base_url}{OTEL_PATH}",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
         "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
         "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
-        # The proxy takes the session secret as an API key, which needs no encoding here.
-        "OTEL_EXPORTER_OTLP_HEADERS": f"x-api-key={session_secret}",
     }
+    if session_secret:
+        # The proxy takes the session secret as an API key, which needs no encoding here.
+        env["OTEL_EXPORTER_OTLP_HEADERS"] = f"x-api-key={session_secret}"
+    return env
 
 
 def build_runtime_env(
@@ -1267,9 +1318,192 @@ def _session_catalog(
     return catalog
 
 
+# A seat-relayed session is signed in to GitHub, so none of the offline BYOK setup applies.
+_SEAT_RELAY_DROPPED_ENV = frozenset(
+    {"COPILOT_OFFLINE", "COPILOT_API_URL", "GITHUB_MCP_URL_OVERRIDE", "COPILOT_MODEL"}
+)
+
+
+def seat_relay_env(api_url: str, *, mcp_host: str | None, tracing: bool = False) -> dict[str, str]:
+    """Copilot's environment for a session on a GitHub Copilot seat relay: signed in to GitHub,
+    with every Copilot API call sent to the relay at ``api_url``, and GitHub MCP sent straight to
+    ``mcp_host`` (the caller's Copilot API host) when it's known. With ``tracing``, Copilot exports
+    OTLP to the same relay, and inherited exporter settings are dropped."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("COPILOT_PROVIDER")
+        and key not in _SEAT_RELAY_DROPPED_ENV
+        and not (tracing and key.startswith(_INHERITED_OTEL_PREFIXES))
+    }
+    env["COPILOT_API_URL"] = api_url
+    # Copilot opens /responses as a WebSocket first, which the relay refuses; only `true` (not
+    # `1`) turns that off.
+    env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] = "true"
+    if mcp_host:
+        env["GITHUB_MCP_URL_OVERRIDE"] = f"https://{mcp_host}/mcp/readonly"
+    if tracing:
+        env.update(otel_env(api_url))
+    return env
+
+
+def start_seat_relay(
+    state: dict,
+    provider_service: str,
+    *,
+    headers: dict[str, str],
+    sign_in_hint: str,
+    request_headers_adder: Callable[[Any, bytes | None], dict[str, str]] | None = None,
+) -> tuple[Any, Any, Any, str]:
+    """Start the seat relay for one session; returns ``(server, cache, client, api_url)``."""
+    from ucode import copilot_relay
+
+    secret = secrets.token_urlsafe(32)
+    server, cache, client = copilot_relay.start_copilot_relay_proxy(
+        state["workspace"],
+        _token_provider(state),
+        session_secret=secret,
+        provider_service=provider_service,
+        sign_in_hint=sign_in_hint,
+        added_headers=headers,
+        request_headers_adder=request_headers_adder,
+        on_refresh_failure=_log_proxy_failure,
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, cache, client, f"http://{LOOPBACK_HOST}:{server.server_address[1]}/{secret}"
+
+
+def _stop_seat_relay(server: Any, cache: Any, client: Any) -> None:
+    cache.stop()
+    server.shutdown()
+    server.server_close()
+    client.close()
+
+
+def _copilot_settings_path() -> Path:
+    copilot_home = os.environ.get("COPILOT_HOME")
+    return (Path(copilot_home) if copilot_home else COPILOT_CONFIG_DIR) / "settings.json"
+
+
+def copilot_url_setting() -> str | None:
+    """The ``copilotUrl`` in Copilot's user settings, which an interactive session may use
+    instead of ``COPILOT_API_URL``."""
+    try:
+        value = jsonc.get_member(_copilot_settings_path().read_text(encoding="utf-8"), "copilotUrl")
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def uses_seat_relay(state: dict, provider_service: str, *, tool: str = "copilot") -> bool:
+    """True when ``provider_service`` relays each developer's own GitHub Copilot seat.
+
+    Raises RuntimeError with the service's own error when it can't be looked up or ``tool`` can't
+    use it, so a failed lookup is never taken for a service that isn't a seat relay."""
+    workspace = state["workspace"]
+    service, error = resolve_provider_service(
+        tool, provider_service, workspace, launch_token(state, workspace)
+    )
+    if error or service is None:
+        raise RuntimeError(error or f"Model provider service '{provider_service}' was not found.")
+    return is_copilot_seat_relay(service)
+
+
+def _launch_seat_relay(
+    state: dict, tool_args: list[str], provider_service: str, *, launch_model: str | None
+) -> None:
+    """Run Copilot signed in to GitHub, with its Copilot API calls through the seat relay."""
+    scrub_stored_credentials()
+    try:
+        migrate_legacy_mcp_config()
+    except RuntimeError as exc:
+        print_warning(f"ug's MCP servers aren't available in this session: {exc}")
+    if url := copilot_url_setting():
+        print_warning(
+            f"Copilot's `copilotUrl` setting ({url}) in {_copilot_settings_path()} may send its "
+            f"calls past Unity Gateway, around {provider_service}. Remove it to use the relay."
+        )
+    from ucode import copilot_relay
+
+    workspace = state["workspace"]
+    tool_args, session_id = session_args(tool_args)
+    if launch_model and not explicit_model_arg_value(tool_args):
+        tool_args = ["--model", launch_model, *tool_args]
+    server, cache, client, api_url = start_seat_relay(
+        state,
+        provider_service,
+        headers=with_session_id(proxy_headers(state), session_id),
+        sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
+        request_headers_adder=subagent_headers(session_id),
+    )
+    try:
+        env = seat_relay_env(
+            api_url,
+            mcp_host=copilot_relay.cached_copilot_api_host(),
+            tracing=bool(state.get("copilot_otel_tracing")),
+        )
+        metrics.agent_handoff()
+        proc = subprocess_cross_os.popen([SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env)
+        returncode = _wait_for_exit(proc)
+    finally:
+        _stop_seat_relay(server, cache, client)
+    raise SystemExit(returncode)
+
+
+def run_seat_runtime(
+    state: dict, provider_service: str, runtime: str, runtime_args: list[str]
+) -> int:
+    """Run VS Code's bundled Copilot runtime with its Copilot API calls through the seat relay.
+
+    VS Code starts this in place of the runtime and talks to it over stdio, so nothing may be
+    written to stdout."""
+    from ucode import copilot_relay
+
+    headers = {
+        name: value
+        for name, value in proxy_headers(state).items()
+        # The runtime names VS Code in its own User-Agent.
+        if name.casefold() != "user-agent"
+    }
+    server, cache, client, api_url = start_seat_relay(
+        state,
+        provider_service,
+        headers=headers,
+        sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
+    )
+    try:
+        env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
+        proc = subprocess_cross_os.popen([runtime, *runtime_args], env=env)
+        if not hasattr(signal, "SIGTERM"):
+            return _wait_for_exit(proc)
+        # VS Code stops the runtime by terminating this process, which must stop it too.
+        previous = signal.signal(signal.SIGTERM, lambda *_args: proc.terminate())
+        try:
+            return _wait_for_exit(proc)
+        finally:
+            if previous is not None:
+                signal.signal(signal.SIGTERM, previous)
+    except OSError as exc:
+        sys.stderr.write(
+            f"[ucode] Couldn't start the Copilot runtime {runtime}: {exc}. Rerun "
+            "`ug configure --agents copilot`.\n"
+        )
+        return 1
+    finally:
+        _stop_seat_relay(server, cache, client)
+
+
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
     model_location = state.pop(LAUNCH_MODEL_LOCATION_KEY, None)
+    if provider_service and uses_seat_relay(state, provider_service):
+        requested = options.launch_model or state.get("copilot_default_model")
+        _launch_seat_relay(
+            state,
+            tool_args,
+            provider_service,
+            launch_model=requested if isinstance(requested, str) and requested else None,
+        )
     catalog = _session_catalog(state, tool_args, provider_service, model_location)
     # Resolve before the proxy starts so a bad model fails without starting Copilot.
     tool_args, selected = rewrite_model_args(tool_args, catalog)
