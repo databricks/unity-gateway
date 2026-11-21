@@ -351,6 +351,12 @@ def _unwrapped_claude_model_id(model: str) -> str:
     return routing.unwrap_anthropic_gateway_model(model)
 
 
+def _claude_rate_limit_key(model: str) -> str:
+    model = _canonical_claude_model_id(_unwrapped_claude_model_id(model))
+    # Custom UC deployment names remain distinct from built-in model aliases.
+    return model.removeprefix("system.ai.").removesuffix("[1m]")
+
+
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     overrides: dict[str, str] = {}
     prefix = "system.ai."
@@ -626,6 +632,24 @@ def route_claude_subagent(
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
     """
+    excluded_models = payload.get("excluded_models", []) if not hook_output else []
+    # Explicit exclusions constrain eligibility; malformed input must not silently drop them.
+    if not isinstance(excluded_models, list) or any(
+        not isinstance(model, str) for model in excluded_models
+    ):
+        return {"deny": "Invalid rate-limit exclusions; no subagent was started."}
+    excluded = {_claude_rate_limit_key(model) for model in excluded_models}
+    if excluded:
+        available_models = [
+            model
+            for model in _canonical_claude_models(available_models)
+            if _claude_rate_limit_key(model) not in excluded
+        ]
+        if not available_models:
+            return {
+                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent.",
+                "rate_limit_cooldown": True,
+            }
     started = time.monotonic()
     attribution = routing.attribution_headers(
         "claude",
@@ -648,6 +672,11 @@ def route_claude_subagent(
     )
     routing_ms = round((time.monotonic() - started) * 1000)
     if route is None:
+        if excluded:
+            return {
+                "deny": "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                "rate_limit_cooldown": True,
+            }
         return None
     if audit_decision:
         routing.write_decision_record(

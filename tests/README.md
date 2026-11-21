@@ -1837,6 +1837,14 @@ no-mocking boundary and the Scenario/Expected docstring format.
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
+Native hook and Python component tests cover rate-limit exclusions for streamed and direct calls,
+model aliases (including seven- and eight-character hex gateway prefixes), batched notifications,
+failures before and after conversation clears, and cooldown expiry followed by clock loss.
+They also cover a new failure between fallback forwarding and spawn, failed selections, and
+resume/disabled behavior. Equivalent structured cooldown denials share the native timing
+matrix; Python tests retain the all-excluded and failed-selection causes separately.
+`native_claude/test_mod.py` drives a real native background failure with a loopback HTTP 429, then checks the next routed request and
+completed replacement child. These checks use controlled inputs, not live provider quotas.
 
 The real session-control process call is covered by the live skill-toggle journeys;
 native component tests stub the subagent routing process protocol. No component

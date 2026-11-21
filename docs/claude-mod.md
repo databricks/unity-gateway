@@ -29,8 +29,8 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
-`agent.spawn` hook applies the selected model, preserving the agent's type, prompt,
-name and permissions. The routing response contains only `model` and `rationale`;
+`agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
+name and permissions. A successful routing response contains `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
@@ -100,8 +100,13 @@ only when the turn is aborted. Nothing is drawn above the prompt and nothing is 
 Decisions are kept for the session; a plugin reload clears them from the screen. The
 `/smart-router logs` pane opens a recorded decision and shows its validated explanation
 and offered-model comparisons when task-text logging permits those details to be saved.
-Disabled routing, command failures, and invalid responses keep the original call;
-failures also log a diagnostic.
+A confirmed native background-task 429 excludes that model and equivalent aliases from
+new router requests for 60 seconds. The router chooses from the remaining candidates;
+failed selection or no available candidate denies the new spawn while cooldown is active.
+Cooldowns and background-child failure tracking survive `/clear`; known exclusions remain
+when the clock is unavailable until expiry can be confirmed. The failed child is not retried. Resumes and explicitly
+disabled routing keep their native behavior. Outside cooldown, command failures and
+invalid responses preserve the original call and log a diagnostic.
 
 ### Routing explanations
 

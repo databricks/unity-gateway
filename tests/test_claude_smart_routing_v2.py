@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1805,7 +1806,52 @@ class TestSubagentRouting:
         assert json.dumps(payload) == original
         assert not decisions_path.exists()
 
-    def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("excluded_models", "expected_models"),
+        [
+            (
+                [],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                    "team.models.claude-opus-4-8",
+                    "team.models.claude-opus-4-8[1m]",
+                ],
+            ),
+            (
+                ["anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]"],
+                [
+                    "system.ai.claude-sonnet-5",
+                    "team.models.claude-opus-4-8",
+                    "team.models.claude-opus-4-8[1m]",
+                ],
+            ),
+            (
+                ["team.models.claude-opus-4-8"],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                ],
+            ),
+            (
+                ["team.models.claude-opus-4-8[1m]"],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                ],
+            ),
+            (
+                ["claude-opus-4-8", "databricks-claude-sonnet-5", "team.models.claude-opus-4-8"],
+                [],
+            ),
+        ],
+    )
+    def test_decision_log_keeps_the_filtered_request_menu_and_router(
+        self, tmp_path, monkeypatch, excluded_models, expected_models
+    ):
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
@@ -1819,10 +1865,18 @@ class TestSubagentRouting:
             )
 
         monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
-        v2.route_claude_subagent(
+        available = [
+            "system.ai.claude-opus-4-8",
+            "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+            "databricks-claude-sonnet-5",
+            "team.models.claude-opus-4-8",
+            "team.models.claude-opus-4-8[1m]",
+        ]
+        output = v2.route_claude_subagent(
             {
                 "session_id": "s1",
                 "tool_name": "Agent",
+                "excluded_models": excluded_models,
                 "tool_input": {
                     "subagent_type": "Explore",
                     "prompt": "find all Python entry points",
@@ -1831,20 +1885,88 @@ class TestSubagentRouting:
             },
             workspace="https://example.com",
             token="token",
-            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+            available_models=available,
             audit_decision=True,
         )
 
+        if not expected_models:
+            assert output == {
+                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent.",
+                "rate_limit_cooldown": True,
+            }
+            assert captured == {}
+            assert not decisions_path.exists()
+            return
         body = captured["body"]
         assert body["route_options"] == [
-            {"model": "system.ai.claude-opus-4-8", "harness": "claude"},
-            {"model": "system.ai.claude-sonnet-5", "harness": "claude"},
+            {"model": model, "harness": "claude"} for model in expected_models
         ]
+        assert output["model"] == expected_models[0]
         assert body["task"] == {"prompt": "find all Python entry points"}
         record = json.loads(decisions_path.read_text())
         assert record["route_options"] == body["route_options"]
         assert record["router_name"] == body["route_selector"]["router_name"]
         assert record["router_name"] == routing.ROUTER_NAME
+
+    @pytest.mark.parametrize(
+        ("excluded_models", "expected_output", "requested_models"),
+        [
+            (
+                "claude-opus-4-8",
+                {"deny": "Invalid rate-limit exclusions; no subagent was started."},
+                [],
+            ),
+            ([None], {"deny": "Invalid rate-limit exclusions; no subagent was started."}, []),
+            ([], None, [["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]]),
+            (
+                ["system.ai.claude-opus-4-8"],
+                {
+                    "deny": "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                    "rate_limit_cooldown": True,
+                },
+                [["system.ai.claude-sonnet-5"]],
+            ),
+        ],
+    )
+    def test_missing_route_and_malformed_exclusions(
+        self, excluded_models, expected_output, requested_models
+    ):
+        # An empty local response exercises the real router client's no-selection path.
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                requests.append([option["model"] for option in body["route_options"]])
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                output = v2.route_claude_subagent(
+                    {
+                        "tool_name": "Agent",
+                        "tool_input": {"prompt": "Inspect the parser"},
+                        "excluded_models": excluded_models,
+                    },
+                    workspace=f"http://127.0.0.1:{server.server_port}",
+                    token="fixture-token",
+                    available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+        assert output == expected_output
+        assert requests == requested_models
 
     def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch):
         gateway_model = "anthropic-aigw-77df06ea-system.ai.glm-5-3"
