@@ -1684,3 +1684,26 @@ def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers
 
     monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
     assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
+
+
+@pytest.mark.parametrize(
+    ("args", "parallel"),
+    [
+        # Deselect every live test: the hook decides the worker count before collection.
+        (["tests/test_e2e.py", "-k", "no_such_test"], False),
+        (["tests/test_jsonc.py"], True),
+    ],
+)
+def test_pytest_discovers_the_serial_live_hook(args, parallel):
+    env = {key: value for key, value in os.environ.items() if key != "UCODE_TEST_WORKSPACE"}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (0, 5), result.stdout + result.stderr
+    assert ("workers [" in result.stdout) is parallel, result.stdout
