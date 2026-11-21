@@ -323,8 +323,6 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         task = FileTask(session)
         task.prompt = task.delegate_prompt
         checkpoint = request_recorder.checkpoint()
-        # TODO: remove once the latest recipe supports codex
-        session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
         with Terminal(
             session, "cuj7-codex-saved-provider-routing", [CODEX, "--enable-smart-routing"]
         ) as tui:
