@@ -22,26 +22,39 @@ collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior
 
 
 def pytest_collection_modifyitems(config, items):
-    """Under UG_TEST_SHARD=<index>/<total>, keep only this CI shard's time-balanced slice."""
+    """Under UG_TEST_SHARD=<index>/<total>, keep only this CI shard's files and chunks."""
     spec = os.environ.get("UG_TEST_SHARD")
     if not spec:
         return
     from tests import shard
 
-    index, total = shard.parse(spec)
-    owners = shard.assign(
-        [item.nodeid for item in items], total, shard.test_seconds(shard.load_times())
-    )
-    keep, drop = [], []
-    for item, owner in zip(items, owners, strict=True):
-        (keep if owner == index else drop).append(item)
+    units = shard.units_for(spec)
+    # A shard can own several chunks of one file.
+    owned = {(path, chunk) for path, chunk, _ in units}
+    count = {path: chunks for path, _, chunks in units}
+    keep, drop, position = [], [], {}
+    for item in items:
+        path = item.nodeid.split("::", 1)[0]
+        index = position[path] = position.get(path, -1) + 1
+        mine = path in count and (path, index % count[path] + 1) in owned
+        (keep if mine else drop).append(item)
     config.hook.pytest_deselected(items=drop)
     items[:] = keep
     report = os.environ.get("UG_TEST_SHARD_REPORT")
-    # Every xdist worker collects the same suite; one report per shard is enough.
+    # Every xdist worker collects the same files; one report per shard is enough.
     if report and getattr(config, "workerinput", {}).get("workerid", "gw0") == "gw0":
         with open(report, "w", encoding="utf-8") as output:
-            json.dump({"shard": spec, "collected": len(owners), "selected": len(keep)}, output)
+            json.dump(
+                {
+                    "shard": spec,
+                    "units": [list(unit) for unit in units],
+                    "collected": dict(
+                        sorted((path, index + 1) for path, index in position.items())
+                    ),
+                    "selected": len(keep),
+                },
+                output,
+            )
 
 
 def pytest_xdist_auto_num_workers(config):

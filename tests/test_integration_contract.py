@@ -1763,7 +1763,9 @@ def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers
     ],
 )
 def test_pytest_discovers_the_serial_live_hook(args, parallel):
-    env = {key: value for key, value in os.environ.items() if key != "UCODE_TEST_WORKSPACE"}
+    # The child run must not inherit this CI shard or overwrite its coverage report.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT"}
+    env = {key: value for key, value in os.environ.items() if key not in skip}
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
         cwd=Path(__file__).parent.parent,
@@ -1780,30 +1782,43 @@ def test_pytest_discovers_the_serial_live_hook(args, parallel):
 def test_unit_shards_run_every_test_exactly_once():
     from tests import shard
 
-    nodeids = [f"tests/test_{name}.py::test_{index}" for name in "abcde" for index in range(40)]
-    per_test = {"tests/test_a.py": 9.0, "tests/test_b.py": 0.01}  # c, d, e are unknown files
-    for total in (1, 3, 12, 16):
-        owners = shard.assign(nodeids, total, per_test)
-        assert owners == shard.assign(list(nodeids), total, per_test)  # same on every shard
-        assert sorted(set(owners)) == list(range(1, min(total, len(nodeids)) + 1))
-        assert len(owners) == len(nodeids)
-    # A slow file spreads across shards instead of landing on one.
-    owners = shard.assign(nodeids, 4, per_test)
-    slow = {owner for nodeid, owner in zip(nodeids, owners, strict=True) if "test_a.py" in nodeid}
-    assert slow == {1, 2, 3, 4}
+    files = [f"tests/test_{name}.py" for name in "abcdefgh"]
+    times = {"tests/test_a.py": [40.0, 100], "tests/test_b.py": [0.5, 10]}  # others unknown
+    for total in (1, 3, 16, 32):
+        plan = shard.plan(files, total, times)
+        assert plan == shard.plan(list(files), total, times)  # identical on every shard
+        units = [unit for owned in plan for unit in owned]
+        assert len(units) == len(set(units))
+        chunks = {path: count for path, _, count in units}
+        assert sorted(chunks) == files
+        assert sorted(units) == sorted(
+            (path, chunk, count) for path, count in chunks.items() for chunk in range(1, count + 1)
+        )
+    # A file slower than one chunk spreads across shards instead of setting one shard's floor.
+    owners = {
+        index
+        for index, owned in enumerate(shard.plan(files, 8, times))
+        for path, _, _ in owned
+        if path == "tests/test_a.py"
+    }
+    assert len(owners) == 8
+    assert shard.test_files() == sorted(
+        f"tests/{path.name}"
+        for path in Path(shard.TESTS).glob("test_*.py")
+        if path.name != "test_e2e.py"
+    )
 
 
 def test_unit_shard_loads_stay_balanced():
     from tests import shard
 
     times = shard.load_times()
-    per_test = shard.test_seconds(times)
-    nodeids = [f"{path}::{index}" for path, (_, count) in times.items() for index in range(count)]
-    for total in (12, 16):
-        loads = [0.0] * total
-        for nodeid, owner in zip(nodeids, shard.assign(nodeids, total, per_test), strict=True):
-            loads[owner - 1] += per_test[nodeid.split("::", 1)[0]]
-        assert max(loads) - min(loads) < max(per_test.values()) + 0.01, loads
+    for total in (16, 32):
+        plan = shard.plan(shard.test_files(), total, times)
+        loads = [
+            sum(times.get(path, [1.0])[0] / count for path, _, count in owned) for owned in plan
+        ]
+        assert max(loads) - min(loads) <= shard.CHUNK_SECONDS, loads
 
 
 @pytest.mark.parametrize("spec", ["0/4", "5/4", "x/4"])
