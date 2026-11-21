@@ -827,6 +827,53 @@ capture_path.write_text(json.dumps({
             == {"model": "haiku", "unrelated": "preserved"}
         )
 
+    def test_deferred_recovery_backs_off_and_restores_a_late_write(self, replay_model_switch):
+        capture, settings, observations = replay_model_switch(
+            """\
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+assert os.read(0, 1) == b"\\x1b"
+while not (test_dir / "deferred").exists():
+    time.sleep(0.01)
+deferred_at = time.monotonic()
+received = b""
+while time.monotonic() - deferred_at < 6:
+    os.write(1, b"waiting\\r")
+    if sel.select([0], [], [], 0.05)[0]:
+        received += os.read(0, 4096)
+settings = Path(sys.argv[3])
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+write_at = time.monotonic()
+while not (test_dir / "restored").exists():
+    assert time.monotonic() - write_at < 3, "late persistence must still be restored"
+    if sel.select([0], [], [], 0.05)[0]:
+        received += os.read(0, 4096)
+capture_path.write_text(json.dumps({
+    "received": received.hex(), "deferred_at": deferred_at, "write_at": write_at,
+    "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
+        )
+
+        checks = [
+            instant
+            for instant in observations["checked_at"]
+            if capture["deferred_at"] <= instant < capture["write_at"]
+        ]
+        assert 3 <= len(checks) <= 9, "deferred recovery must back off during a long session"
+        assert (
+            max(later - earlier for earlier, later in zip(checks, checks[1:], strict=False)) >= 0.75
+        )
+        assert capture["received"] == "", "late persistence must not restart automatic input"
+        assert observations["restorations"] == [True]
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
     def test_missing_late_write_does_not_reserve_the_default_until_exit(self, replay_model_switch):
         capture, settings, _ = replay_model_switch(
             """\

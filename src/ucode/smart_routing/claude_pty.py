@@ -35,6 +35,7 @@ CONFIRM_TIMEOUT_S = 3.0
 SWITCH_TIMEOUT_S = 6.0
 MODEL_PERSIST_TIMEOUT_S = 2.0
 MODEL_RESTORE_INTERVAL_S = 0.2
+MODEL_RESTORE_MAX_INTERVAL_S = 2.0
 READY_QUIET_S = 0.75
 SELECT_TIMEOUT_S = 0.2
 PASTE_SUBMIT_DELAY_S = 0.3
@@ -569,11 +570,13 @@ def run_claude_pty(
             deferred_restore = False
             restore_ready = False
             next_restore_check = 0.0
+            restore_check_interval = MODEL_RESTORE_INTERVAL_S
             restore_error_logged = False
             user_input = ModelSwitchInput()
 
             def observe_input(data: bytes, now: float) -> None:
                 nonlocal phase, model_pending, deferred_restore, restore_ready, manual_complete
+                nonlocal next_restore_check, restore_check_interval
                 if phase == "waiting_prompt":
                     return
                 observation = user_input.observe(data, now)
@@ -588,6 +591,8 @@ def run_claude_pty(
                         log(f"[WARN] manual model handoff deferred: {exc}")
                     deferred_restore = model_pending
                     restore_ready = model_pending
+                    next_restore_check = 0.0
+                    restore_check_interval = MODEL_RESTORE_INTERVAL_S
                 if phase == "verifying" and submitted_event.is_set():
                     return
                 if not observation.edited:
@@ -668,6 +673,8 @@ def run_claude_pty(
                             model_pending = True
                             log(f"[WARN] {outcome} manual model handoff deferred: {exc}")
                         deferred_restore = restore_ready = model_pending
+                        next_restore_check = 0.0
+                        restore_check_interval = MODEL_RESTORE_INTERVAL_S
                         manual_complete = None
 
                 if phase == "waiting_prompt":
@@ -686,7 +693,12 @@ def run_claude_pty(
                     and (deferred_restore or phase == "waiting_persist")
                     and now >= next_restore_check
                 ):
-                    next_restore_check = now + MODEL_RESTORE_INTERVAL_S
+                    next_restore_check = now + restore_check_interval
+                    if deferred_restore:
+                        # Keep recovering late writes without polling at startup frequency.
+                        restore_check_interval = min(
+                            restore_check_interval * 2, MODEL_RESTORE_MAX_INTERVAL_S
+                        )
                     try:
                         if (
                             restore_ready or model_switch_persisted()

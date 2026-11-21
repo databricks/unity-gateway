@@ -775,8 +775,11 @@ def _claude_print_prompt(tool_args: list[str]) -> tuple[str | None, bytes | None
 
 
 class _ClaudeModelSettingGuard:
-    def __init__(self, settings_path: Path) -> None:
+    def __init__(
+        self, settings_path: Path, *, warn_preparation: Callable[[str], None] = print_warning
+    ) -> None:
         self.settings_path = settings_path
+        self._warn_preparation = warn_preparation
         self._before: dict | None = None
         self._routed_model: str | None = None
         self._lock: TextIO | None = None
@@ -958,7 +961,7 @@ class _ClaudeModelSettingGuard:
                 return True
         except (OSError, ValueError, RuntimeError) as exc:
             if not self._begin_error_warned:
-                print_warning(
+                self._warn_preparation(
                     f"Smart Routing could not prepare model recovery at {self._recovery_path}: "
                     f"{exc}. Check the recovery file and its directory permissions."
                 )
@@ -1359,7 +1362,9 @@ def launch_claude(
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
     orchestrator.sync_hooks(settings, agent="claude")
-    model_setting = _ClaudeModelSettingGuard(user_settings_path)
+    model_setting = _ClaudeModelSettingGuard(
+        user_settings_path, warn_preparation=lambda message: claude_pty.inject_note(1, message)
+    )
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
         decision = _route_claude_prompt(state, token, prompt, model_ids)

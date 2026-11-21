@@ -946,7 +946,9 @@ class TestV2Launch:
         claude.exec_or_spawn.assert_not_called()
 
     @requires_pty
-    def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
+    def test_restores_model_captured_immediately_before_switch(
+        self, tmp_path, monkeypatch, capfdbinary
+    ):
         ucode_settings = tmp_path / "ucode-settings.json"
         user_settings = tmp_path / "settings.json"
         ucode_settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gw"}}))
@@ -991,6 +993,10 @@ class TestV2Launch:
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
             generated = Path(argv[argv.index("--settings") + 1])
             captured["settings"] = json.loads(generated.read_text())
+            user_settings.write_text("{")
+            assert kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5") is False
+            assert kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5") is False
+            captured["preparation_warning"] = capfdbinary.readouterr().out
             # A user-selected model before the first prompt becomes the value to restore.
             user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
             kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5")
@@ -1020,6 +1026,10 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 0
+        warning = captured["preparation_warning"]
+        assert b"\r\n\x1b[36mSmart Routing could not prepare model recovery" in warning
+        assert warning.count(b"could not prepare model recovery") == 1
+        assert warning.endswith(b"\x1b[0m\r\n")
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"][-1] == "--debug"
         assert captured["routed_model"] == claude_pty.FirstPromptRoute(

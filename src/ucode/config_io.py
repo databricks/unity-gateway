@@ -79,7 +79,7 @@ def atomic_write_json(
                     before = path.stat()
                     # Relative PATH entries could select a copier from the user's project.
                     search_path = os.pathsep.join(
-                        directory for directory in os.get_exec_path() if os.path.isabs(directory)
+                        entry for entry in os.get_exec_path() if os.path.isabs(entry)
                     )
                     copier = shutil.which("cp", path=search_path) if search_path else None
                     if copier is None:

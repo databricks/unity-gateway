@@ -1292,10 +1292,12 @@ models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
 `test_claude_pty_replay.py` uses fake TUIs to check delayed replay, manual cancellation,
-unrelated slash commands and default restoration. `test_claude_smart_routing_v2.py`
+unrelated slash commands and default restoration, including slower polling that still
+recovers late writes. `test_claude_smart_routing_v2.py`
 covers concurrent recovery, file access controls and failures, including exit while another
 session has a pending manual choice, with exit guidance that preserves its recovery state,
-and a stalled permission copy that must respect the cleanup retry window.
+a stalled permission copy that must respect the cleanup retry window, and preparation
+warnings formatted for the active terminal.
 A matching temporary model still requires manual confirmation or cancellation.
 `test_config_io.py` checks preserving writes with an absolute nonstandard `cp` location,
 rejected relative PATH entries, shorter JSON and an explicit mode. These are component checks;
