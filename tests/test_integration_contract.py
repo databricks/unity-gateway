@@ -1664,3 +1664,23 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
         '              --vscode-sha256 "$VSCODE_SHA256")'
     ) in harness
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
+
+
+@pytest.mark.parametrize(
+    ("args", "workspace", "workers"),
+    [
+        # The unit CI job passes only --ignore=tests/test_e2e.py, which pytest keeps out of args.
+        ([], "", None),
+        (["tests/test_cli.py"], "", None),
+        (["tests/test_e2e.py"], "", 0),
+        (["tests/test_e2e.py::TestUnityGateway"], "", 0),
+        ([], "https://workspace.example", 0),
+    ],
+)
+def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers):
+    from types import SimpleNamespace
+
+    from tests import conftest
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
+    assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
