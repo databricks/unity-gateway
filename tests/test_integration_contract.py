@@ -1956,7 +1956,7 @@ def test_unit_shards_run_every_test_exactly_once():
 def test_unit_shard_loads_stay_balanced():
     from tests import shard
 
-    for system, total in (("Linux", 24), ("Windows", 64)):
+    for system, total in (("Linux", 32), ("Windows", 64)):
         times = shard.load_times(system)
         assert all(seconds >= shard.SLOW_SECONDS for seconds in times["slow"].values())
         plan = shard.plan(shard.test_files(), total, times)
@@ -1981,3 +1981,53 @@ def test_unit_shard_spec_rejects_bad_values(spec):
 
     with pytest.raises(ValueError):
         shard.parse(spec)
+
+
+@pytest.mark.parametrize(
+    ("job", "setup", "run", "total"),
+    [
+        ("checks", 15, 7, 35),
+        ("unit-linux", 15, 30, 35),
+        ("windows-provisioning", 15, 20, 35),
+        ("vscode-extension", 15, 20, 35),
+        ("package", 15, 20, 35),
+    ],
+)
+def test_pull_request_jobs_fail_past_their_time_budget(job, setup, run, total):
+    ci = _workflow("ci.yml")
+    body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
+    assert (
+        f"      SETUP_BUDGET: {setup}\n      RUN_BUDGET: {run}\n      JOB_BUDGET: {total}\n" in body
+    )
+    steps = re.findall(r"(?m)^      - (\S+)", body)
+    starts = [step for step in steps if step in ("&budget-start", "*budget-start")]
+    assert steps[0] in ("&budget-start", "*budget-start"), steps
+    assert len(starts) == 1
+    assert steps[-1] in ("&budget-check", "*budget-check"), steps
+    assert any(step in ("&budget-setup-done", "*budget-setup-done") for step in steps)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the budget check runs bash on Linux")
+@pytest.mark.parametrize(
+    ("setup", "run", "passes"), [(10, 20, True), (16, 15, False), (5, 31, False), (14, 22, False)]
+)
+def test_budget_check_fails_any_overrun(setup, run, passes):
+    script = _workflow("ci.yml").split("      - &budget-check\n", 1)[1]
+    script = script.split("        run: |\n", 1)[1].split("\n      - ", 1)[0].split("\n\n", 1)[0]
+    now = int(time.time())
+    result = subprocess.run(
+        ["/bin/bash", "-e", "-c", textwrap.dedent(script)],
+        env={
+            **os.environ,
+            "BUDGET_JOB_STARTED": str(now - setup - run),
+            "BUDGET_RUN_STARTED": str(now - run),
+            "SETUP_BUDGET": "15",
+            "RUN_BUDGET": "30",
+            "JOB_BUDGET": "35",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stdout + result.stderr

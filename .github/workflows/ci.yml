@@ -39,7 +39,15 @@ jobs:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
       VENV_BIN: .venv/bin
+      SETUP_BUDGET: 15
+      RUN_BUDGET: 7
+      JOB_BUDGET: 35
     steps:
+      - &budget-start
+        name: Start the budget clock
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - &checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -65,39 +73,78 @@ jobs:
         run: |
           uv lock
           uv sync
-      # The same three checks `just lint` runs locally.
+      - &budget-setup-done
+        name: Mark setup done
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      # The same three checks `just lint` runs locally, each with its own budget in seconds.
       - name: Run every check and list each failure
         run: |
           failed=()
-          "$VENV_BIN/ruff" check src/ tests/ || failed+=("ruff check")
-          "$VENV_BIN/ruff" format --check src/ tests/ || failed+=("ruff format --check")
-          "$VENV_BIN/ty" check src/ || failed+=("ty check")
+          check() {
+            local budget=$1 label=$2 started elapsed
+            shift 2
+            started=$(date +%s%N)
+            "$@" || failed+=("$label")
+            elapsed=$(( ($(date +%s%N) - started) / 1000000 ))
+            echo "$label: ${elapsed} ms of ${budget} s"
+            [ "$elapsed" -le $((budget * 1000)) ] || failed+=("$label over its ${budget} s budget")
+          }
+          check 1 "ruff check" "$VENV_BIN/ruff" check src/ tests/
+          check 1 "ruff format --check" "$VENV_BIN/ruff" format --check src/ tests/
+          check 5 "ty check" "$VENV_BIN/ty" check src/
           if [ ${#failed[@]} -gt 0 ]; then
             echo "::error::Failed checks: ${failed[*]}"
           fi
           test ${#failed[@]} -eq 0
+      # A job that outgrows its budget fails here, so CI stays fast instead of drifting.
+      - &budget-check
+        name: Check this job's time budget
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          now=$(date +%s)
+          setup=$((BUDGET_RUN_STARTED - BUDGET_JOB_STARTED))
+          run=$((now - BUDGET_RUN_STARTED))
+          total=$((now - BUDGET_JOB_STARTED))
+          echo "setup ${setup}s of ${SETUP_BUDGET}s, run ${run}s of ${RUN_BUDGET}s, job ${total}s of ${JOB_BUDGET}s"
+          over=()
+          [ "$setup" -le "$SETUP_BUDGET" ] || over+=("setup ${setup}s > ${SETUP_BUDGET}s")
+          [ "$run" -le "$RUN_BUDGET" ] || over+=("run ${run}s > ${RUN_BUDGET}s")
+          [ "$total" -le "$JOB_BUDGET" ] || over+=("job ${total}s > ${JOB_BUDGET}s")
+          if [ ${#over[@]} -gt 0 ]; then
+            echo "::error::Over budget: ${over[*]}"
+          fi
+          test ${#over[@]} -eq 0
 
   # Each shard runs its time-balanced files and chunks of the slow files (tests/shard.py), so the
   # shards together run every unit test once. Main uploads JUnit reports and coverage counts
   # so `Unit test times` can record fresh timings and prove nothing was missed.
   unit-linux:
-    name: Unit tests · Linux · ${{ matrix.shard }}/24
+    name: Unit tests · Linux · ${{ matrix.shard }}/32
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UV_PYTHON: '3.12'
-      UG_TEST_SHARD: ${{ matrix.shard }}/24
+      UG_TEST_SHARD: ${{ matrix.shard }}/32
       VENV_BIN: .venv/bin
+      SETUP_BUDGET: 15
+      RUN_BUDGET: 30
+      JOB_BUDGET: 35
     steps:
+      - *budget-start
       - *checkout
       - *python-cache
       - *setup-uv
       - *install
+      - *budget-setup-done
       - &unit-plan
         name: Plan this shard
         id: plan
@@ -124,6 +171,7 @@ jobs:
           path: |
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/shard-report.json
+      - *budget-check
 
   # Windows runners' setup varies from 13 to 30 s, so 64 Windows jobs put one slow runner on
   # almost every PR's critical path. Windows shards run with the live suites instead: in the merge
@@ -168,14 +216,21 @@ jobs:
     name: Windows provisioning helpers
     runs-on: windows-latest
     timeout-minutes: 10
+    env:
+      SETUP_BUDGET: 15
+      RUN_BUDGET: 20
+      JOB_BUDGET: 35
     steps:
+      - *budget-start
       - *checkout
+      - *budget-setup-done
       - name: Windows provisioning helpers (Windows PowerShell 5.1)
         shell: powershell
         run: ./tests/mdm/windows-provision.Tests.ps1
       - name: Windows provisioning helpers (PowerShell 7)
         shell: pwsh
         run: ./tests/mdm/windows-provision.Tests.ps1
+      - *budget-check
 
   # Records per-file timings from main's full run and checks every shard's slice added up to the
   # whole collected suite. Commit the artifact to tests/unit_test_times.json when shards drift.
@@ -228,16 +283,20 @@ jobs:
     defaults:
       run:
         working-directory: vscode-extension
+    env:
+      SETUP_BUDGET: 15
+      RUN_BUDGET: 20
+      JOB_BUDGET: 35
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
+      - *budget-start
+      - *checkout
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
       - run: npm ci --no-audit --no-fund
+      - *budget-setup-done
       - run: npm run typecheck
       - run: npm test
       - name: GitHub Copilot app plugin tests
@@ -250,6 +309,7 @@ jobs:
             echo "::error::The VS Code extension bundle is stale. Run \`just vscode-build\` and commit the result."
             exit 1
           }
+      - *budget-check
 
   # Builds the wheel the installers ship and runs its console entry point, without live services.
   package:
@@ -258,18 +318,21 @@ jobs:
     timeout-minutes: 5
     env:
       UV_INDEX_URL: https://pypi.org/simple
+      SETUP_BUDGET: 15
+      RUN_BUDGET: 20
+      JOB_BUDGET: 35
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
-          filter: blob:none
+      - *budget-start
+      - *checkout
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - *budget-setup-done
       - run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
       - name: Run the built wheel's entry points
         run: |
           wheel=("$RUNNER_TEMP"/dist/*.whl)
           uvx --python 3.12 --from "${wheel[0]}" ug --help > /dev/null
           uvx --python 3.12 --from "${wheel[0]}" ucode --help > /dev/null
+      - *budget-check
 
   # The live agent and integration suites run in the merge queue, on main, on the schedule and
   # on dispatch; the merge queue gates main on them. Pull requests get the hermetic checks only.
