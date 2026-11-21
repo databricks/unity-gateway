@@ -906,13 +906,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 11),
-        ([[{"status": "queued", "conclusion": None}]], False, 11),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 11),
-        ([[{"display_title": "Security Scan #8"}]], False, 11),
-        ([[{"event": "pull_request"}]], False, 11),
-        ([[{"event": "workflow_dispatch"}]], False, 11),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 11),
+        ([[]], False, 27),
+        ([[{"status": "queued", "conclusion": None}]], False, 27),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 27),
+        ([[{"display_title": "Security Scan #8"}]], False, 27),
+        ([[{"event": "pull_request"}]], False, 27),
+        ([[{"event": "workflow_dispatch"}]], False, 27),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 27),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -977,6 +977,7 @@ def _run_security_gate(
         "created_at": "2026-11-13T00:00:00Z",
     } | (request_change or {})
     calls = {"request": 0, "scan": 0}
+    fetches = []
 
     def pages(which, index):
         changes = responses[min(index, len(responses) - 1)]
@@ -1004,6 +1005,7 @@ def _run_security_gate(
         assert timeout == 30
         if api_error:
             raise api_error
+        fetches.append(request.full_url)
         endpoint, page = request.full_url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
@@ -1011,10 +1013,18 @@ def _run_security_gate(
             calls[which] += 1
         return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
 
+    slept = []
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
-    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("time.sleep", slept.append)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
+    # Polling cadence may change, but a gate that never sees the scan waits exactly 20 minutes,
+    # and one gate run stays well under the 60 requests/hour anonymous limit. This fixture answers
+    # every list with two pages, so 27 polls cost at most 56 fetches here (28 with one-page lists).
+    assert sum(slept) <= 20 * 60
+    if max(calls.values()) == 27:
+        assert sum(slept) == 20 * 60
+    assert len(fetches) <= 56
     return result.value.code, max(calls.values())
 
 
@@ -1030,7 +1040,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 11
+    assert code != 0 and calls == 27
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -1041,7 +1051,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 11)
+    assert calls == (1 if matches_commit else 27)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
