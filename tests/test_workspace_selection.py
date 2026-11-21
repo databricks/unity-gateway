@@ -391,7 +391,19 @@ class TestEndpointRatesTransport:
         [
             ([], [[], "endpoint-rates returned an unexpected response shape"]),
             ({}, [[], None]),
-            ({"model_service_rates": {}}, [[], None]),
+            ({"model_service_rates": []}, [[], None]),
+            (
+                {"model_service_rates": {}},
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
+            (
+                {"model_service_rates": None},
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
+            (
+                {"model_service_rates": "invalid"},
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
             (
                 {
                     "model_service_rates": [

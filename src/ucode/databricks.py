@@ -3180,9 +3180,9 @@ def fetch_endpoint_rates(
         return [], reason
     if not isinstance(payload, dict):
         return [], "endpoint-rates returned an unexpected response shape"
-    rates = payload.get("model_service_rates")
+    rates = payload.get("model_service_rates", [])
     if not isinstance(rates, list):
-        return [], None
+        return [], "endpoint-rates returned an unexpected response shape"
     return [rate for rate in rates if isinstance(rate, dict)], None
 
 
