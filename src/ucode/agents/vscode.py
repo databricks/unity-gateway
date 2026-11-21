@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import shlex
 import shutil
@@ -36,6 +37,7 @@ from xml.sax.saxutils import escape
 
 from ucode import config_io, jsonc
 from ucode.agents.copilot import (
+    RUNTIME_WRAPPER_PID_ENV,
     CopilotModel,
     catalog_model_limits,
     claude_model_name,
@@ -50,7 +52,7 @@ from ucode.agents.copilot import (
 )
 from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
-from ucode.databricks import build_auth_shell_command, ug_binary
+from ucode.databricks import build_auth_shell_command, running_launcher, ug_binary
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
@@ -287,14 +289,18 @@ _NODE_ARCHES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "a
 
 def bundled_runtime(code: Path) -> Path | None:
     """The Copilot runtime bundled with the VS Code install that ``code`` belongs to."""
-    system = {OS.MACOS: "darwin", OS.LINUX: "linux"}.get(current_os())
+    system = {OS.MACOS: "darwin", OS.LINUX: "linux", OS.WINDOWS: "win32"}.get(current_os())
     arch = _NODE_ARCHES.get(platform.machine().lower())
     if system is None or arch is None:
         return None
     target = f"{system}-{arch}"
+    name = "copilot-runtime.exe" if system == "win32" else "copilot-runtime"
     bin_dir = code.resolve().parent
     # macOS keeps `code` in the app folder's bin; Linux packages keep the app under resources/app.
-    for app in (bin_dir.parent, bin_dir.parent / "resources" / "app"):
+    apps = [bin_dir.parent, bin_dir.parent / "resources" / "app"]
+    if system == "win32":
+        apps = [*_windows_app_dirs(bin_dir, code), *apps]
+    for app in apps:
         runtime = (
             app
             / "node_modules.asar.unpacked"
@@ -302,11 +308,27 @@ def bundled_runtime(code: Path) -> Path | None:
             / f"copilot-sdk-{target}"
             / "prebuilds"
             / target
-            / "copilot-runtime"
+            / name
         )
         if runtime.is_file():
             return runtime
     return None
+
+
+# `code.cmd` runs `..\<version folder>\resources\app\out\cli.js`; the folder changes with each
+# update, and an old one can outlive the update.
+_WINDOWS_CLI_JS = re.compile(r"%~dp0\.\.\\([^\\\"%]+)\\resources\\app\\out\\cli\.js", re.IGNORECASE)
+
+
+def _windows_app_dirs(bin_dir: Path, code: Path) -> list[Path]:
+    """The app folder of the VS Code version ``code`` runs on Windows, read from its `.cmd`."""
+    try:
+        text = (bin_dir / f"{Path(code.name).stem}.cmd").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return []
+    return [bin_dir.parent / match / "resources" / "app" for match in _WINDOWS_CLI_JS.findall(text)]
 
 
 def _wrapper_dir(*, insiders: bool) -> Path:
@@ -317,7 +339,9 @@ def runtime_wrapper_path(*, insiders: bool, script: str) -> Path:
     """The wrapper for ``script``. Its name carries a hash of the script: VS Code restarts the
     runtime only when this setting changes, so a new script needs a new path."""
     digest = hashlib.sha256(script.encode()).hexdigest()[:12]
-    return _wrapper_dir(insiders=insiders) / f"{RUNTIME_WRAPPER_NAME}-{digest}"
+    # The Copilot SDK runs a `.js` runtime path with VS Code's own Node.
+    suffix = ".js" if current_os() is OS.WINDOWS else ""
+    return _wrapper_dir(insiders=insiders) / f"{RUNTIME_WRAPPER_NAME}-{digest}{suffix}"
 
 
 def _is_runtime_wrapper(value: object, *, insiders: bool) -> bool:
@@ -334,10 +358,34 @@ def _runtime_wrappers(*, insiders: bool) -> list[Path]:
 
 
 def wrapper_script(command: list[str], runtime: Path) -> str:
-    """A POSIX shell script that runs ``command`` on ``runtime`` with the arguments VS Code
-    passes."""
-    parts = " ".join(shlex.quote(part) for part in [*command, "--runtime", str(runtime), "--"])
+    """A script that runs ``command`` on ``runtime`` with the arguments VS Code passes: a POSIX
+    shell script, or on Windows, where VS Code can only start an executable or a `.js` file, a
+    Node script."""
+    argv = [*command, "--runtime", str(runtime), "--"]
+    if current_os() is OS.WINDOWS:
+        return _node_wrapper_script(argv)
+    parts = " ".join(shlex.quote(part) for part in argv)
     return f'#!/bin/sh\nexec {parts} "$@"\n'
+
+
+def _node_wrapper_script(argv: list[str]) -> str:
+    command, *args = argv
+    hint = f"Couldn't start {command}. Rerun `ug configure --agents copilot`."
+    return f"""// Written by `ug configure`: runs VS Code's Copilot runtime through ug's seat relay.
+"use strict";
+const {{ spawn }} = require("node:child_process");
+const child = spawn({json.dumps(command)}, [...{json.dumps(args)}, ...process.argv.slice(2)], {{
+  env: {{ ...process.env, {RUNTIME_WRAPPER_PID_ENV}: String(process.pid) }},
+  stdio: "inherit",
+  windowsHide: true,
+}});
+child.on("error", (error) => {{
+  process.stderr.write("[ucode] " + {json.dumps(hint)} + " " + error.message + "\\n");
+  process.exit(1);
+}});
+child.on("exit", (code) => process.exit(code ?? 1));
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+"""
 
 
 def _read_runtime_path(settings: Path) -> object:
@@ -377,7 +425,15 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
         return "This VS Code has no bundled Copilot runtime ug can run through the seat relay."
     insiders = code.name.startswith("code-insiders")
     settings = user_dir(insiders) / "settings.json"
-    script = wrapper_script(seat_relay_command(state, provider), runtime)
+    command = seat_relay_command(state, provider)
+    if current_os() is OS.WINDOWS:
+        if (ug := _windows_ug_exe(command[0])) is None:
+            return (
+                "ug's `ug.exe` wasn't found, and VS Code can only start an `.exe` without a "
+                "shell. Reinstall ug, then rerun `ug configure --agents copilot`."
+            )
+        command = [ug, *command[1:]]
+    script = wrapper_script(command, runtime)
     wrapper = runtime_wrapper_path(insiders=insiders, script=script)
     try:
         current = _read_runtime_path(settings)
@@ -401,6 +457,15 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
     for stale in _runtime_wrappers(insiders=insiders):
         if stale != wrapper:
             stale.unlink(missing_ok=True)
+    return None
+
+
+def _windows_ug_exe(ug: str) -> str | None:
+    """``ug`` if it's an `.exe`, else the running `ug.exe`: Node can't start a `.cmd`, `.bat` or
+    bare name without a shell."""
+    for candidate in (ug, running_launcher()):
+        if candidate and candidate.lower().endswith(".exe"):
+            return candidate
     return None
 
 
@@ -587,8 +652,7 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
-    windows = current_os() is OS.WINDOWS
-    if seat_relay and not windows and bundled_runtime(code) is None:
+    if seat_relay and bundled_runtime(code) is None:
         print_warning(
             "This VS Code has no bundled Copilot runtime ug can run through the seat relay, so "
             "VS Code was left unchanged. Update VS Code, then rerun `ug configure --agents "
@@ -608,7 +672,7 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     source = f" from {provider or location}" if provider or location else ""
     # Routed before the reinstall, which drops the extension's models: a failed route must not leave
     # the old setup gone with nothing on the relay.
-    if seat_relay and not windows:
+    if seat_relay:
         if error := route_through_seat_relay(state, cast(str, provider), code):
             print_warning(f"GitHub Copilot in VS Code doesn't go through {provider}: {error}")
             return False
@@ -620,12 +684,6 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     if not seat_relay:
         remove_seat_relay_route(insiders=code.name.startswith("code-insiders"))
         print_kv("VS Code extension", f"{installed} with {len(models)} models{source}")
-    elif windows:
-        print_kv("VS Code extension", installed)
-        print_warning(
-            "VS Code on Windows can't route GitHub Copilot through the seat relay yet, so its "
-            "Copilot calls go straight to GitHub. Use `ug copilot` there instead."
-        )
     else:
         print_kv("VS Code extension", f"{installed}, routing Copilot through {provider}")
     print_heading("Next, in VS Code:")

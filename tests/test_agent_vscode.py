@@ -353,6 +353,9 @@ class TestConfigure:
         assert "--install-extension` failed: boom" in _printed(capsys)
 
 
+UG_EXE = r"C:\uv\bin\ug.exe"
+
+
 class TestSeatRelay:
     SEATS = "main.ai.copilot_seats"
     COMMAND = ["/bin/ug", "copilot-seat-runtime", "--provider", SEATS, "--host", WS]
@@ -456,13 +459,53 @@ class TestSeatRelay:
         assert code.config is None
         assert "VS Code was left unchanged" in _printed(capsys)
 
-    def test_windows_installs_without_the_route_and_says_so(self, code, seats, monkeypatch, capsys):
+    def test_windows_routes_copilot_through_a_node_wrapper(
+        self, code, seats, runtime, monkeypatch, capsys
+    ):
         monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: UG_EXE)
 
         assert vscode.configure(STATE, provider=self.SEATS)
 
+        wrapper = self._wrapper()
+        assert wrapper.parent == vscode._wrapper_dir(insiders=False)
+        assert wrapper.name.startswith("ug-copilot-runtime-")
+        assert wrapper.suffix == ".js"
+        script = wrapper.read_text()
+        assert (
+            'spawn("C:\\\\uv\\\\bin\\\\ug.exe", [...["copilot-seat-runtime", "--provider", '
+            in script
+        )
+        assert f'"--profile", "dev", "--runtime", {json.dumps(str(runtime))}, "--"]' in script
+        assert "...process.argv.slice(2)" in script
+        printed = _printed(capsys)
+        assert f"routing Copilot through {self.SEATS}" in printed
+        assert "can't route" not in printed
+
+    @pytest.mark.parametrize("found", [r"C:\tools\ug.cmd", "ug"])
+    def test_windows_uses_the_running_ug_exe_over_a_shim_node_cant_start(
+        self, code, seats, monkeypatch, found
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: found)
+        monkeypatch.setattr(vscode, "running_launcher", lambda: UG_EXE)
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert f"spawn({json.dumps(UG_EXE)}, " in self._wrapper().read_text()
+
+    def test_windows_without_a_ug_exe_leaves_vscode_unchanged(
+        self, code, seats, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: "ug")
+        monkeypatch.setattr(vscode, "running_launcher", lambda: None)
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config is None
         assert not self._settings().exists()
-        assert "can't route GitHub Copilot through the seat relay yet" in _printed(capsys)
+        assert "`ug.exe` wasn't found" in _printed(capsys)
 
     def test_another_source_removes_the_route(self, code, seats, monkeypatch):
         assert vscode.configure(STATE, provider=self.SEATS)
@@ -594,10 +637,136 @@ class TestBundledRuntime:
 
         assert vscode.bundled_runtime(tmp_path / "bin" / "code") is None
 
-    def test_windows_has_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+    @staticmethod
+    def _windows_install(root: Path, version: str, target: str) -> Path:
+        runtime = (
+            root
+            / version
+            / "resources/app/node_modules.asar.unpacked/@github"
+            / f"copilot-sdk-{target}/prebuilds/{target}/copilot-runtime.exe"
+        )
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text("")
+        return runtime
 
-        assert vscode.bundled_runtime(tmp_path / "code.cmd") is None
+    @staticmethod
+    def _code_cmd(root: Path, version: str, name: str = "code") -> Path:
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        cmd = root / "bin" / f"{name}.cmd"
+        cmd.write_text(
+            "@echo off\r\nsetlocal\r\nset VSCODE_DEV=\r\nset ELECTRON_RUN_AS_NODE=1\r\n"
+            f'"%~dp0..\\Code.exe" "%~dp0..\\{version}\\resources\\app\\out\\cli.js" %*\r\n'
+            "endlocal\r\n"
+        )
+        return cmd
+
+    @pytest.mark.parametrize(
+        ("machine", "target"), [("AMD64", "win32-x64"), ("ARM64", "win32-arm64")]
+    )
+    def test_windows_finds_the_runtime_of_the_version_code_cmd_runs(
+        self, tmp_path, monkeypatch, machine, target
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode.platform, "machine", lambda: machine)
+        # An update can leave the previous version's folder behind.
+        self._windows_install(tmp_path, "0ld0ld0ld0", target)
+        runtime = self._windows_install(tmp_path, "8a14f0cc1b", target)
+        cmd = self._code_cmd(tmp_path, "8a14f0cc1b")
+
+        assert vscode.bundled_runtime(cmd) == runtime
+        # Git Bash finds the extensionless `code` script next to code.cmd.
+        (tmp_path / "bin" / "code").write_text("")
+        assert vscode.bundled_runtime(tmp_path / "bin" / "code") == runtime
+
+    def test_windows_insiders_reads_its_own_cmd(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode.platform, "machine", lambda: "AMD64")
+        runtime = self._windows_install(tmp_path, "1234567890", "win32-x64")
+        cmd = self._code_cmd(tmp_path, "1234567890", name="code-insiders")
+
+        assert vscode.bundled_runtime(cmd) == runtime
+
+    def test_windows_without_a_version_folder_uses_resources_app(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode.platform, "machine", lambda: "AMD64")
+        runtime = self._windows_install(tmp_path, ".", "win32-x64")
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "code.cmd").write_text("@echo off\r\n")
+
+        assert vscode.bundled_runtime(tmp_path / "bin" / "code.cmd") == runtime
+
+    def test_windows_without_the_runtime_is_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode.platform, "machine", lambda: "AMD64")
+
+        assert vscode.bundled_runtime(self._code_cmd(tmp_path, "8a14f0cc1b")) is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node to run the wrapper")
+class TestNodeWrapper:
+    """The Windows wrapper, run with Node as VS Code's Copilot SDK runs a `.js` runtime path."""
+
+    @staticmethod
+    def _run(tmp_path, command: list[str], *args: str) -> subprocess.CompletedProcess:
+        script = vscode._node_wrapper_script(command)
+        wrapper = tmp_path / "ug-copilot-runtime-0.js"
+        wrapper.write_text(script)
+        return subprocess.run(
+            ["node", str(wrapper), *args], capture_output=True, text=True, timeout=30
+        )
+
+    def test_runs_the_command_with_vscodes_arguments_and_its_exit_code(self, tmp_path):
+        echo = [
+            sys.executable,
+            "-c",
+            f"import os, sys; print(os.environ[{copilot.RUNTIME_WRAPPER_PID_ENV!r}].isdigit());"
+            " print(sys.argv[1:]); sys.exit(3)",
+        ]
+
+        done = self._run(
+            tmp_path,
+            [*echo, "--runtime", r"C:\VS Code\copilot-runtime.exe", "--"],
+            "--headless",
+            "--stdio",
+            'a "quoted" arg',
+        )
+
+        assert done.returncode == 3
+        has_pid, argv = done.stdout.strip().splitlines()
+        assert has_pid == "True"
+        assert argv == str(
+            [
+                "--runtime",
+                r"C:\VS Code\copilot-runtime.exe",
+                "--",
+                "--headless",
+                "--stdio",
+                'a "quoted" arg',
+            ]
+        )
+
+    def test_passes_stdio_through(self, tmp_path):
+        cat = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read().upper())"]
+        script = vscode._node_wrapper_script(cat)
+        wrapper = tmp_path / "w.js"
+        wrapper.write_text(script)
+
+        done = subprocess.run(
+            ["node", str(wrapper)], input="jsonrpc", capture_output=True, text=True, timeout=30
+        )
+
+        assert done.stdout == "JSONRPC"
+
+    def test_a_command_that_cant_start_says_how_to_fix_it(self, tmp_path):
+        missing = str(tmp_path / "no-such-ug")
+
+        done = self._run(tmp_path, [missing, "copilot-seat-runtime"])
+
+        assert done.returncode == 1
+        assert f"[ucode] Couldn't start {missing}. Rerun `ug configure --agents copilot`." in (
+            done.stderr
+        )
+        assert done.stdout == ""
 
 
 class TestCopilotModels:

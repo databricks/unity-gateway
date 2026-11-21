@@ -2763,6 +2763,31 @@ class TestUgBinary:
         monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
         assert db_mod.ug_binary() == "ug"
 
+    @pytest.mark.parametrize("name", ["ug", "ucode"])
+    def test_without_ug_on_path_uses_the_running_launcher(self, monkeypatch, tmp_path, name):
+        launcher = tmp_path / "venv" / "bin" / name
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        monkeypatch.setattr("sys.argv", [str(launcher), "configure"])
+
+        assert db_mod.ug_binary() == str(launcher.absolute())
+
+    def test_finds_a_windows_launcher_named_without_exe(self, monkeypatch, tmp_path):
+        launcher = tmp_path / "Scripts" / "ug.exe"
+        launcher.parent.mkdir()
+        launcher.write_text("")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        monkeypatch.setattr("sys.argv", [str(tmp_path / "Scripts" / "ug")])
+
+        assert db_mod.ug_binary() == str(launcher.absolute())
+
+    def test_another_program_falls_back_to_the_bare_name(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        monkeypatch.setattr("sys.argv", [str(tmp_path / "pytest")])
+
+        assert db_mod.ug_binary() == "ug"
+
 
 class TestBuildAuthTokenArgv:
     def test_basic_argv(self, monkeypatch):

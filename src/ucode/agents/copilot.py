@@ -1450,6 +1450,47 @@ def _launch_seat_relay(
     raise SystemExit(returncode)
 
 
+# Set by ug's Windows wrapper for VS Code: the process VS Code started and terminates.
+RUNTIME_WRAPPER_PID_ENV = "UCODE_RUNTIME_WRAPPER_PID"
+
+
+def _stop_with_wrapper(proc: _ChildProcess) -> None:
+    """On Windows, stop the runtime once ug's Node wrapper exits. VS Code stops the runtime by
+    terminating the wrapper, and Windows doesn't pass that on to the wrapper's children (here the
+    `ug.exe` launcher and this Python), so without this the runtime and the relay would outlive
+    VS Code. The launcher stays up, so the wrapper's id comes from the wrapper, not the parent."""
+    if sys.platform != "win32":
+        return
+    try:
+        wrapper_pid = int(os.environ.get(RUNTIME_WRAPPER_PID_ENV, ""))
+    except ValueError:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    # Its own instance, so these prototypes don't change other callers'.
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    synchronize, infinite = 0x00100000, 0xFFFFFFFF
+    wrapper = kernel32.OpenProcess(synchronize, False, wrapper_pid)
+    if not wrapper:
+        return
+
+    def wait() -> None:
+        try:
+            kernel32.WaitForSingleObject(wrapper, infinite)
+        finally:
+            kernel32.CloseHandle(wrapper)
+        proc.terminate()
+
+    threading.Thread(target=wait, name="ug-runtime-wrapper", daemon=True).start()
+
+
 def run_seat_runtime(
     state: dict, provider_service: str, runtime: str, runtime_args: list[str]
 ) -> int:
@@ -1474,6 +1515,7 @@ def run_seat_runtime(
     try:
         env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
         proc = subprocess_cross_os.popen([runtime, *runtime_args], env=env)
+        _stop_with_wrapper(proc)
         if not hasattr(signal, "SIGTERM"):
             return _wait_for_exit(proc)
         # VS Code stops the runtime by terminating this process, which must stop it too.
