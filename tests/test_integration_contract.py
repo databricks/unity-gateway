@@ -1597,25 +1597,28 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
 @pytest.mark.parametrize(
-    ("selection", "live", "package", "claude_mod", "integration_result", "passes"),
+    ("event", "selection", "live", "package", "claude_mod", "integration_result", "passes"),
     [
-        ("success", "true", "success", "success", "success", True),
-        ("success", "true", "success", "success", "failure", False),
-        ("success", "true", "success", "success", "cancelled", False),
-        ("success", "true", "success", "success", "skipped", False),
-        ("success", "true", "success", "skipped", "success", False),
-        ("success", "true", "success", "failure", "success", False),
-        ("success", "true", "failure", "success", "success", False),
-        # Pull requests run the hermetic package check; the merge queue runs the live suites.
-        ("success", "false", "success", "skipped", "skipped", True),
-        ("success", "false", "failure", "skipped", "skipped", False),
-        ("success", "false", "success", "skipped", "failure", False),
+        ("merge_group", "success", "true", "success", "success", "success", True),
+        ("merge_group", "success", "true", "success", "success", "failure", False),
+        ("merge_group", "success", "true", "success", "success", "cancelled", False),
+        ("merge_group", "success", "true", "success", "success", "skipped", False),
+        ("merge_group", "success", "true", "success", "skipped", "success", False),
+        ("merge_group", "success", "true", "success", "failure", "success", False),
+        ("merge_group", "success", "true", "failure", "success", "success", False),
+        # A fork PR's merge group skips the live suites but still runs the hermetic Claude mod.
+        ("merge_group", "success", "false", "success", "success", "skipped", True),
+        ("merge_group", "success", "false", "success", "skipped", "skipped", False),
+        # Pull requests run the hermetic package check; the merge queue runs the rest.
+        ("pull_request", "success", "false", "success", "skipped", "skipped", True),
+        ("pull_request", "success", "false", "failure", "skipped", "skipped", False),
+        ("pull_request", "success", "false", "success", "skipped", "failure", False),
         # A failed selection never counts as a skip.
-        ("failure", "", "success", "skipped", "skipped", False),
+        ("pull_request", "failure", "", "success", "skipped", "skipped", False),
     ],
 )
 def test_required_e2e_enforces_integration_result(
-    selection, live, package, claude_mod, integration_result, passes
+    event, selection, live, package, claude_mod, integration_result, passes
 ):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
     assert "    needs: [changes, package, claude-mod, e2e, integration]\n" in required
@@ -1624,6 +1627,7 @@ def test_required_e2e_enforces_integration_result(
         ["/bin/bash", "-c", textwrap.dedent(script)],
         env={
             **os.environ,
+            "EVENT_NAME": event,
             "SELECTION_RESULT": selection,
             "LIVE": live,
             "PACKAGE_RESULT": package,
@@ -1718,10 +1722,12 @@ def test_merge_queue_runs_every_live_suite():
     # The selector runs from the base revision, so a PR cannot choose its own coverage.
     assert 'git show "$BASE_SHA:scripts/ci_select.py" > "$selector"' in selection
     assert selection.count('echo "live=true" >> "$GITHUB_OUTPUT"') == 1
-    for job in ("e2e-shards", "integration", "claude-mod"):
+    for job in ("e2e-shards", "integration"):
         body = re.split(r"\n  [a-z0-9-]+:\n", ci.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
         assert "needs.changes.outputs.live == 'true'" in body
         assert "github.event_name != 'merge_group'" not in body
+    claude_mod = re.split(r"\n  [a-z0-9-]+:\n", ci.split("\n  claude-mod:\n", 1)[1], maxsplit=1)[0]
+    assert "    if: ${{ github.event_name != 'pull_request' }}\n" in claude_mod
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
@@ -1814,6 +1820,15 @@ def test_merge_group_checks_every_queued_pr(tmp_path, monkeypatch):
     git("commit", "-q", "--allow-empty", "-m", "an unattributed commit")
     with pytest.raises(SystemExit, match="Cannot attribute every merge group commit"):
         CI_SELECT["queued_prs"]("HEAD~3", "HEAD")
+
+
+def test_merge_group_selection_fails_closed(monkeypatch):
+    def unavailable(url, timeout):
+        raise urllib.error.HTTPError(url, 403, "rate limited", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    with pytest.raises(SystemExit, match="Could not look up PR #7"):
+        CI_SELECT["pr_is_from"]("7", "databricks/unity-gateway")
 
 
 def test_integration_requires_a_passing_security_gate():
