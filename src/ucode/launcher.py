@@ -7,6 +7,7 @@ import signal
 import sys
 from collections.abc import Mapping
 
+from ucode import metrics
 from ucode.os_compatibility import subprocess_cross_os
 
 
@@ -23,6 +24,7 @@ def exec_or_spawn(argv: list[str], *, env: Mapping[str, str] | None = None) -> N
     for it, and propagate its exit code — the same pattern the token-refreshing
     agents (gemini/opencode/copilot/pi) already use.
     """
+    metrics.agent_handoff()
     if os.name != "nt":
         if env is None:
             os.execvp(argv[0], argv)

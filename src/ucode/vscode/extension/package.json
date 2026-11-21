@@ -1,0 +1,40 @@
+{
+  "name": "unity-gateway",
+  "displayName": "Databricks Unity Gateway",
+  "description": "Chat with Databricks Unity Gateway models in VS Code through the ug CLI",
+  "version": "0.1.0",
+  "publisher": "databricks",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/databricks/unity-gateway.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.128.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "agentsWindow": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "databricks-unity-gateway",
+        "displayName": "Databricks",
+        "icon": "media/databricks.svg"
+      }
+    ]
+  }
+}

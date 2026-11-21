@@ -16,3 +16,6 @@ timeout_sec = 600.0
 build_timeout_sec = 600.0
 cpus = 1
 memory_mb = 2048
+# Smart Router's root pick varies by prompt, so pin the model that reliably polls background jobs.
+# A full ID: under smart routing, Claude's `opus` alias can resolve outside the gateway catalog.
+env = { UG_BENCH_CLAUDE_MODEL = "system.ai.claude-opus-4-8" }

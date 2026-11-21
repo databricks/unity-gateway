@@ -1,4 +1,4 @@
-"""Workspace-authenticated AI Gateway budget spend-status client."""
+"""Workspace-authenticated Unity Gateway budget spend-status client."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _BUDGET_SPEND_STATUS_PAGE_SIZE = 100
 
 @dataclass(frozen=True)
 class BudgetLimitStatus:
-    """The caller's live spend against one AI Gateway budget threshold."""
+    """The caller's live spend against one Unity Gateway budget threshold."""
 
     budget_id: str
     scope_type: str
@@ -70,7 +70,7 @@ def list_current_user_budget_spend_statuses(
     *,
     timeout: int = 10,
 ) -> tuple[list[BudgetLimitStatus], str | None]:
-    """List the caller's spend against blocking AI Gateway budget thresholds."""
+    """List the caller's spend against blocking Unity Gateway budget thresholds."""
     base_url = databricks.workspace_origin(workspace) + _BUDGET_SPEND_STATUS_API_PATH
     statuses: list[BudgetLimitStatus] = []
     page_token: str | None = None
@@ -79,7 +79,7 @@ def list_current_user_budget_spend_statuses(
         params: dict[str, int | str] = {"page_size": _BUDGET_SPEND_STATUS_PAGE_SIZE}
         if page_token is not None:
             params["page_token"] = page_token
-        with spinner("Checking AI Gateway spend limits..."):
+        with spinner("Checking Unity Gateway spend limits..."):
             payload, reason = databricks._http_get_json(
                 f"{base_url}?{urlencode(params)}", workspace_token, timeout=timeout
             )
@@ -94,13 +94,10 @@ def list_current_user_budget_spend_statuses(
         for raw_budget in raw_budgets:
             if not isinstance(raw_budget, dict):
                 return [], "budget spend status listing returned a malformed budget status"
-            budget_id = raw_budget.get("budget_id")
+            name = raw_budget.get("name")
+            budget_id = name.rsplit("/", 1)[-1] if isinstance(name, str) else ""
             raw_statuses = raw_budget.get("alert_spend_statuses")
-            if (
-                not isinstance(budget_id, str)
-                or not budget_id
-                or not isinstance(raw_statuses, list)
-            ):
+            if not budget_id or not isinstance(raw_statuses, list):
                 return [], "budget spend status listing returned a malformed budget status"
             for raw_status in raw_statuses:
                 status = _budget_limit_status(raw_status, budget_id)

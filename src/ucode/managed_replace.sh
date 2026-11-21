@@ -10,6 +10,8 @@ set -u
 set -f
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
+# Folders `mkdir -p` creates must stay readable to the agents whatever the caller's umask.
+umask 022
 
 mode=$1
 platform=$2
@@ -30,8 +32,29 @@ target_is_allowed() {
     case "$platform:$1" in
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
+        "linux:/etc/codex/ug-model-catalog.json"|\
+        "linux:/etc/unitygateway/managed-settings.json"|\
+        "linux:/etc/unitygateway/agents-state.json"|\
+        "linux:/etc/codex/requirements.toml"|\
+        "linux:/etc/codex/config.toml"|\
+        "linux:/etc/claude-code/ucode-plugins/.claude-plugin/marketplace.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/register.ts"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
-        "macos:/etc/codex/managed_config.toml") return 0 ;;
+        "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh"|\
+        "macos:/etc/codex/managed_config.toml"|\
+        "macos:/etc/codex/ug-model-catalog.json"|\
+        "macos:/etc/unitygateway/managed-settings.json"|\
+        "macos:/etc/unitygateway/agents-state.json"|\
+        "macos:/etc/codex/requirements.toml"|\
+        "macos:/etc/codex/config.toml"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/hooks.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/register.ts") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -70,12 +93,12 @@ replace_one() (
 
     source_is_valid() {
         [ -f "$source_path" ] && [ ! -L "$source_path" ] || return 1
-        [ -n "${SUDO_UID:-}" ] || return 1
         if [ "$platform" = macos ]; then
             source_owner=$(/usr/bin/stat -f %u "$source_path" 2>/dev/null) || return 1
         else
             source_owner=$(stat -c %u "$source_path" 2>/dev/null) || return 1
         fi
+        [ -n "${SUDO_UID:-}" ] || return 1
         [ "$source_owner" = "$SUDO_UID" ]
     }
 
@@ -135,6 +158,10 @@ replace_one() (
         run_step chown 0:0 "$parent"
         run_step chmod 0755 "$parent"
     fi
+    if [ "$target" = /etc/unitygateway/managed-settings.json ]; then
+        run_step chown 0:0 "$parent"
+        run_step chmod 0755 "$parent"
+    fi
 
     staging=$(mktemp "$staging_template") || exit "$?"
 
@@ -191,6 +218,22 @@ replace_one() (
         run_step chown 0:0 "$staging"
         run_step chmod 0644 "$staging"
     fi
+    if [ "$target" = /etc/unitygateway/managed-settings.json ]; then
+        run_step chown 0:0 "$staging"
+        run_step chmod 0644 "$staging"
+    fi
+
+    case "$platform:$target" in
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
+        "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh")
+            run_step chown 0:0 "$staging"
+            run_step chmod 0755 "$staging"
+            ;;
+        "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
+            run_step chown 0:0 "$staging"
+            run_step chmod 0644 "$staging"
+            ;;
+    esac
 
     if [ -L "$parent" ] || [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
         printf '%s\n' "Refusing to replace symlinked managed settings: $target" >&2
@@ -203,17 +246,126 @@ replace_one() (
     clear_flags=
 )
 
+remove_one() (
+    set -eu
+    source_path=$1
+    target=$2
+    parent=${target%/*}
+    if [ "$target" != /etc/unitygateway/managed-settings.json ] || ! target_is_allowed "$target"; then
+        printf '%s\n' "Refusing unexpected workspace-policy removal: $target" >&2
+        exit 1
+    fi
+    if [ -L "$parent" ] || [ -L "$target" ] || [ ! -f "$target" ]; then
+        printf '%s\n' "Refusing unsafe workspace-policy removal: $target" >&2
+        exit 1
+    fi
+    if [ ! -f "$source_path" ] || [ -L "$source_path" ]; then
+        printf '%s\n' "Refusing invalid workspace-policy source: $source_path" >&2
+        exit 1
+    fi
+    if [ "$platform" = macos ]; then
+        source_owner=$(/usr/bin/stat -f %u "$source_path") || {
+            printf '%s\n' "Cannot inspect workspace-policy source: $source_path" >&2
+            exit 1
+        }
+    else
+        source_owner=$(stat -c %u "$source_path") || {
+            printf '%s\n' "Cannot inspect workspace-policy source: $source_path" >&2
+            exit 1
+        }
+    fi
+    if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ] || ! cmp -s "$source_path" "$target"; then
+        printf '%s\n' "Workspace policy changed before removal: $target" >&2
+        exit 1
+    fi
+    rm -f "$target"
+    # The folder holds only the policy; rmdir leaves it in place if anything else is there.
+    rmdir "$(dirname "$target")" 2>/dev/null || true
+)
+
+replace_bundle() (
+    set -eu
+    source_path=$1
+    target=$2
+    if [ "$platform:$target" != "macos:/Library/Application Support/Claude/org-plugins/ug" ]; then
+        printf '%s\n' "Refusing unexpected Desktop plugin target: $target" >&2
+        exit 1
+    fi
+    parent=${target%/*}
+    for folder in /Library "/Library/Application Support" "$parent" "$target"; do
+        if [ -L "$folder" ] || { [ -e "$folder" ] && [ ! -d "$folder" ]; }; then
+            printf '%s\n' "Refusing linked or non-directory Desktop plugin path: $folder" >&2
+            exit 1
+        fi
+    done
+    if [ "$source_path" = - ]; then
+        rm -rf "$target" || exit 1
+        exit 0
+    fi
+    if [ ! -d "$source_path" ] || [ -L "$source_path" ]; then
+        printf '%s\n' "Invalid Desktop plugin source: $source_path" >&2
+        exit 1
+    fi
+    source_owner=$(/usr/bin/stat -f %u "$source_path") || exit 1
+    if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ]; then
+        printf '%s\n' "Invalid Desktop plugin source owner" >&2
+        exit 1
+    fi
+    invalid=$(find "$source_path" \( ! -user "$SUDO_UID" -o \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print) || exit 1
+    if [ -n "$invalid" ]; then
+        printf '%s\n' "Desktop plugin source must contain only caller-owned directories and regular files without hard links" >&2
+        exit 1
+    fi
+    mkdir -p "$parent" || exit 1
+    staging=$(mktemp -d "$parent/.ug-install.XXXXXX") || exit 1
+    trap 'rm -rf "$staging"' 0
+    cp -R -P "$source_path" "$staging/new" || exit 1
+    invalid=$(find "$staging/new" ! -type d ! -type f -print) || exit 1
+    if [ -n "$invalid" ]; then
+        printf '%s\n' "Desktop plugin contains non-regular files" >&2
+        exit 1
+    fi
+    for manifest in .claude-plugin/plugin.json version.json; do
+        if [ ! -f "$staging/new/$manifest" ]; then
+            printf 'Desktop plugin source is missing manifest: %s\n' "$manifest" >&2
+            exit 1
+        fi
+    done
+    chown -R 0:0 "$staging/new" || exit 1
+    find "$staging/new" -type d -exec chmod 0755 {} + || exit 1
+    find "$staging/new" -type f ! -perm -0100 -exec chmod 0644 {} + || exit 1
+    find "$staging/new" -type f -perm -0100 -exec chmod 0755 {} + || exit 1
+    if [ -e "$target" ]; then
+        mv "$target" "$staging/previous" || exit 1
+    fi
+    if ! mv "$staging/new" "$target"; then
+        if [ -d "$staging/previous" ]; then
+            mv "$staging/previous" "$target" || {
+                trap - 0
+                printf '%s\n' "Could not restore Desktop plugin; previous bundle retained at $staging/previous" >&2
+                exit 1
+            }
+        fi
+        exit 1
+    fi
+)
+
 case "$mode" in
     once)
         replace_one "$1" "$2"
         ;;
+    remove)
+        remove_one "$1" "$2"
+        ;;
     session)
         while IFS=' ' read -r operation request_id source_arg target_arg; do
             case "$operation" in
-                REPLACE)
+                REPLACE|BUNDLE)
                     source_path=$(decode_arg "$source_arg")
                     target=$(decode_arg "$target_arg")
-                    if error_output=$(replace_one "$source_path" "$target" 2>&1); then
+                    handler=replace_one
+                    if [ "$operation" = BUNDLE ]; then handler=replace_bundle; fi
+                    if error_output=$("$handler" "$source_path" "$target" 2>&1); then
                         printf 'OK %s\n' "$request_id"
                     else
                         status=$?

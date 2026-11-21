@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from ucode.agents import cursor
 
@@ -18,6 +21,24 @@ class TestMcpServerEntry:
         # the proxy authenticates itself.
         assert entry == {"command": "ucode", "args": PROXY_ARGV[1:]}
         assert "headers" not in entry
+
+    def test_http_entry_pins_cursor_cimd_client(self):
+        assert cursor.build_http_mcp_server_entry("https://ws/mcp", "https://cursor.com/id") == {
+            "url": "https://ws/mcp",
+            "auth": {"CLIENT_ID": "https://cursor.com/id"},
+        }
+
+    @pytest.mark.parametrize(
+        ("version", "supported"),
+        [("2026.01.23-abc", False), ("2026.10.22-abc", True)],
+    )
+    def test_native_cimd_requires_supported_cursor_build(self, monkeypatch, version, supported):
+        monkeypatch.setattr(
+            cursor.subprocess_cross_os,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout=version),
+        )
+        assert cursor.supports_cimd() is supported
 
 
 class TestWriteMcpServerConfig:
@@ -66,38 +87,6 @@ class TestWriteMcpServerConfig:
             json.loads(config_file.read_text())["mcpServers"]["databricks-sql"]["args"]
             == (PROXY_ARGV[1:])
         )
-
-
-AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
-
-
-class TestHttpMcpServerEntry:
-    def test_builds_url_plus_auth_entry_with_pinned_client(self):
-        entry = cursor.build_http_mcp_server_entry(AIGW_URL, "cursor-desktop")
-        # A direct OAuth HTTP server: url + auth.CLIENT_ID, no stdio command and no
-        # static bearer — Cursor drives the OAuth itself. Scopes come from the MCP
-        # protected-resource metadata, so none are hard-coded here.
-        assert entry == {"url": AIGW_URL, "auth": {"CLIENT_ID": "cursor-desktop"}}
-        assert "command" not in entry
-        assert "headers" not in entry
-
-    def test_write_merges_and_reports_replacement(self, tmp_path, monkeypatch):
-        config_file = tmp_path / "mcp.json"
-        monkeypatch.setattr(cursor, "CURSOR_MCP_CONFIG_PATH", config_file)
-        config_file.write_text(
-            json.dumps({"mcpServers": {"proxy": {"command": "keep"}}}),
-            encoding="utf-8",
-        )
-
-        removed = cursor.write_http_mcp_server_config("github", AIGW_URL, "cursor-desktop")
-
-        written = json.loads(config_file.read_text())
-        assert removed is False
-        assert written["mcpServers"]["proxy"] == {"command": "keep"}
-        assert written["mcpServers"]["github"] == {
-            "url": AIGW_URL,
-            "auth": {"CLIENT_ID": "cursor-desktop"},
-        }
 
 
 class TestRemoveMcpServerConfig:

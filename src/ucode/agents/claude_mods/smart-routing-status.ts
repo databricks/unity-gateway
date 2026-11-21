@@ -1,4 +1,5 @@
 import type { On } from 'claude-code'
+import { autoTarget, type AutoPicker } from './auto-model.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -11,6 +12,15 @@ const band = { isVisible: true, isHideArmed: false }
 export function showStatusBand(): void {
   band.isVisible = true
   band.isHideArmed = false
+}
+
+// Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
+// The register module owns the one turn.complete handler, which the routing cards share.
+export function endStatusBandTurn(): boolean {
+  if (!band.isHideArmed) return false
+  band.isVisible = false
+  band.isHideArmed = false
+  return true
 }
 
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
@@ -44,18 +54,11 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
+export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
+  let running = 0
+  let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
-    return next(e)
-  })
-
-  on('turn.complete', ($, e, next) => {
-    if (band.isHideArmed) {
-      band.isVisible = false
-      band.isHideArmed = false
-      $.ui.invalidate('ui.render')
-    }
     return next(e)
   })
 
@@ -63,7 +66,20 @@ export const registerStatusBand = (on: On): void => {
   // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const { enabled } = await readRoutingState($)
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}`
+    running = (await $.agent.list()).filter((agent) => agent.status === 'running').length
+    // Background agents can change state without changing Claude's cached hint props.
+    if (!refresh) refresh = $.clock.every(1000, async () => {
+      const count = (await $.agent.list()).filter((agent) => agent.status === 'running').length
+      if (count !== running) $.ui.invalidate('ui.render')
+    })
+    const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
+    let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    if (auto) {
+      // The static Auto row is the default variant's alias; name the session's main model.
+      const target = autoTarget(auto, await $.session.model())
+      const main = target === undefined ? undefined : auto.models.find((row) => row.model === target)
+      if (main) state = `Auto (${main.label}) · ${state}`
+    }
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
@@ -83,7 +99,7 @@ export const registerStatusBand = (on: On): void => {
           italic: true,
           children: ['— ' + (firstPrompt ? 'routing first prompt + subagents' : 'routing subagents')],
         })
-      : Text({ dimColor: true, children: ["— Reenable with '/smart-router on'"] })
+      : Text({ dimColor: true, children: [auto ? "— Reenable with Auto in '/model'" : "— Reenable with '/smart-router on'"] })
 
     const line = Box({
       flexDirection: 'row',

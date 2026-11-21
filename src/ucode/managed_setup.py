@@ -14,7 +14,7 @@ inverting that module's maps rather than restated, so a new agent or MCP type on
 once.
 
 Local persistence is not duplicated here: the config lives in the one local file,
-``~/.ucode/managed-config.json``, which the launch path pulls into via
+``/etc/unitygateway/managed-settings.json``, which configuration and launch refreshes update via
 :func:`ucode.managed_config.save_managed_state` / :func:`ucode.managed_config.load_managed_state`.
 
 These validation and serialization helpers are consumed on the launch/refresh side (notably by
@@ -32,7 +32,11 @@ from ucode.databricks import (
 )
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
+    AGENT_NATIVE_CONFIG_FIELD,
+    AGENT_NATIVE_CONFIG_VARIANTS,
+    mcp_source_kind,
 )
+from ucode.managed_resolve import static_model_list
 
 # ucode tool name -> CodingAgent proto enum. Inverted from the read side's map so the two directions
 # cannot drift: adding an agent to `managed_config._AGENT_ENUM_TO_TOOL` makes it serializable here
@@ -58,7 +62,7 @@ _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "codex": ("codex", "oss"),
     "opencode": ("claude", "codex", "gemini", "oss"),
     "pi": ("claude", "codex", "gemini", "oss"),
-    "copilot": ("claude", "codex", "gemini", "oss"),
+    "copilot": ("claude", "codex", "oss"),
     # omp mirrors pi (the multi-provider harness). It has no managed-config variant:
     # the server's CodingAgent proto carries no omp entry (see AGENT_ENUM_TO_TOOL).
     "omp": ("claude", "codex", "gemini", "oss"),
@@ -73,10 +77,7 @@ def model_families_for_agent(tool: str) -> tuple[str, ...]:
 def supports_provider_service(tool: str, provider_type: str) -> bool:
     """True when ``tool`` can route through a ``provider_type`` Model Provider Service.
 
-    Thin pass-through to :func:`ucode.databricks.tool_supports_provider_type` so the wizard has one
-    obvious place to ask. Only claude (anthropic / amazon_bedrock / bedrock_mantle) and codex
-    (openai / azure_openai / microsoft_foundry / amazon_bedrock / bedrock_mantle) have MPS support
-    today; the other harnesses are Databricks-hosted only.
+    See :func:`ucode.databricks.tool_supports_provider_type`.
     """
     return tool_supports_provider_type(tool, provider_type)
 
@@ -105,6 +106,11 @@ def model_options_for_agent(tool: str, state: dict) -> list[str]:
         models = state.get(key)
         if isinstance(models, list):
             options.extend(m for m in models if isinstance(m, str) and m)
+    if tool == "copilot":
+        from ucode.agents.copilot import classify_copilot_model
+
+        # The codex listing also carries models Copilot can't serve, such as gpt-oss.
+        options = [m for m in options if classify_copilot_model(m)]
     # dict.fromkeys de-duplicates while preserving first-seen order (a model can match more than
     # one family bucket, e.g. an OSS id that also appears in the codex listing).
     return list(dict.fromkeys(options))
@@ -176,16 +182,23 @@ def _model_config_payload(tool: str, model_config: dict) -> dict:
     """Build one agent's ``models`` object and ``default_models`` map for the wire.
 
     The wire has two per-agent fields: ``models`` (the source oneof, one of
-    model_provider_service / unity_catalog_location / model_services) and ``default_models``
-    (the overall default_model plus per-family slots). Internally, claude's family slots live
-    under ``default_models_by_model_family`` and flat-list agents under ``model_services``.
+    sources / model_provider_service / unity_catalog_location / model_services) and
+    ``default_models`` (the overall default_model plus per-family slots). Internally, claude's
+    family slots live under ``default_models_by_model_family``.
     """
     models_obj: dict = {}
-    # Exactly one model source (the API oneof), precedence provider > location > model_services.
+    # Exactly one model source (the API oneof), precedence
+    # sources > provider > location > model_services.
+    sources = model_config.get("sources")
     mps = model_config.get("model_provider_service")
     location = model_config.get("unity_catalog_location")
     model_services = model_config.get("model_services")
-    if isinstance(mps, str) and mps:
+    source_list = (
+        [m for m in sources if isinstance(m, str) and m] if isinstance(sources, list) else []
+    )
+    if source_list:
+        models_obj["sources"] = source_list
+    elif isinstance(mps, str) and mps:
         models_obj["model_provider_service"] = mps
     elif isinstance(location, str) and location:
         models_obj["unity_catalog_location"] = location
@@ -233,9 +246,19 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     tracing_enabled = agent_config.get("otel_tracing_enabled")
     if isinstance(tracing_enabled, bool):
         config["tracing"] = {"enabled": tracing_enabled}
+    vscode_enabled = agent_config.get("vscode_integration_enabled")
+    if isinstance(vscode_enabled, bool):
+        config["vscode_integration"] = {"enabled": vscode_enabled}
     settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
         config["agent_native_settings"] = settings
+    native_config = {
+        variant: native
+        for variant in AGENT_NATIVE_CONFIG_VARIANTS
+        if isinstance(native := agent_config.get(variant), dict) and native
+    }
+    if native_config:
+        config[AGENT_NATIVE_CONFIG_FIELD] = native_config
 
     entry: dict = {"agent": AGENT_TOOL_TO_ENUM[tool]}
     if config:
@@ -282,9 +305,9 @@ def _is_uc_fqn(name: str, *, parts: int) -> bool:
     return len(segments) == parts and all(segments)
 
 
-def _uc_names_or_location_payload(selector: dict) -> dict:
-    """Serialize the internal ``{names, unity_catalog_location}`` selector back to the wire
-    ``{names, unity_catalog_location}`` shape shared by ``mcp_servers`` and ``skills``."""
+def _uc_names_or_location_payload(selector: dict, *, allow_sources: bool = False) -> dict:
+    """Serialize the internal ``{names, unity_catalog_location, sources}`` selector back to the wire
+    shape shared by ``mcp_servers`` and ``skills``; only ``mcp_servers`` has ``sources``."""
     body: dict = {}
     names = selector.get("names")
     if isinstance(names, list):
@@ -294,14 +317,23 @@ def _uc_names_or_location_payload(selector: dict) -> dict:
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
         body["unity_catalog_location"] = location
+    sources = selector.get("sources") if allow_sources else None
+    if isinstance(sources, list):
+        clean_sources = [source for source in sources if isinstance(source, str) and source]
+        if clean_sources:
+            body["sources"] = clean_sources
     return body
 
 
-def _validate_uc_names_or_location(field: str, selector: dict) -> list[str]:
-    """Validate a ``{names, unity_catalog_location}`` selector (``mcp_servers`` or ``skills``).
+def _validate_uc_names_or_location(
+    field: str, selector: dict, *, allow_sources: bool = False
+) -> list[str]:
+    """Validate a ``{names, unity_catalog_location, sources}`` selector (``mcp_servers``/``skills``).
 
-    Exactly one of a non-empty ``names`` list or a ``unity_catalog_location`` must be set: ``names``
-    are 3-part ``<catalog>.<schema>.<name>`` FQNs, ``unity_catalog_location`` a 2-part ``<catalog>.<schema>``.
+    Exactly one of a non-empty ``names`` list, a ``unity_catalog_location``, or (``mcp_servers``
+    only, ``allow_sources``) a non-empty ``sources`` list must be set: ``names`` are 3-part
+    ``<catalog>.<schema>.<name>`` FQNs, ``unity_catalog_location`` a 2-part ``<catalog>.<schema>``,
+    and each ``sources`` entry an exact FQN or a ``<catalog>.<schema>.*`` pattern.
     Mirrors the server's enforcement so an admin catches it locally instead of via an
     ``INVALID_PARAMETER_VALUE`` round-trip, and keeps the serialize/normalize round-trip exact (a
     degenerate selector would serialize to nothing and not survive the round-trip).
@@ -327,10 +359,31 @@ def _validate_uc_names_or_location(field: str, selector: dict) -> list[str]:
         errors.append(
             f"{field}.unity_catalog_location must be a <catalog>.<schema> (got: {location})."
         )
-    if has_names and has_location:
-        errors.append(f"{field}: set either names or unity_catalog_location, not both.")
-    elif not has_names and not has_location and not errors:
-        errors.append(f"{field}: set either names or unity_catalog_location.")
+    has_sources = False
+    if selector.get("sources") and not allow_sources:
+        errors.append(f"{field}.sources is not supported; use names or unity_catalog_location.")
+    elif isinstance(selector.get("sources"), list):
+        sources = selector["sources"]
+        if any(not isinstance(source, str) or not source for source in sources):
+            errors.append(f"{field}.sources entries must be non-empty strings.")
+        clean_sources = [source for source in sources if isinstance(source, str) and source]
+        has_sources = bool(clean_sources)
+        bad = [source for source in clean_sources if mcp_source_kind(source) is None]
+        if bad:
+            errors.append(
+                f"{field}.sources must be <catalog>.<schema>.<name> or <catalog>.<schema>.* "
+                f"(got: {', '.join(bad)})."
+            )
+    choices = "names or unity_catalog_location" + (" (or sources)" if allow_sources else "")
+    set_count = sum((has_names, has_location, has_sources))
+    if set_count > 1:
+        errors.append(
+            f"{field}: set either names or unity_catalog_location (or sources), not more than one."
+            if allow_sources
+            else f"{field}: set either names or unity_catalog_location, not both."
+        )
+    elif set_count == 0 and not errors:
+        errors.append(f"{field}: set either {choices}.")
     return errors
 
 
@@ -339,8 +392,8 @@ def serialize_managed_config(manifest: dict) -> dict:
 
     The exact inverse of :func:`ucode.managed_config.normalize_managed_config`: tool names become
     ``CODING_AGENT_*`` enums, internal ``models`` slots become ``default_models`` map keys, and the
-    ``mcp_servers`` / ``skills`` ``{names, location}`` selectors become ``{names,
-    unity_catalog_location}``. Agents this build doesn't recognize are dropped, mirroring the read
+    ``mcp_servers`` / ``skills`` selectors become ``{names, unity_catalog_location}`` (plus
+    ``sources`` for ``mcp_servers``). Agents this build doesn't recognize are dropped, mirroring the read
     side.
 
     Output-only proto fields (``workspace_id``, ``retrieved_time``, user ids) are never emitted.
@@ -369,7 +422,7 @@ def serialize_managed_config(manifest: dict) -> dict:
 
     mcp_servers = manifest.get("mcp_servers")
     if isinstance(mcp_servers, dict):
-        selector = _uc_names_or_location_payload(mcp_servers)
+        selector = _uc_names_or_location_payload(mcp_servers, allow_sources=True)
         if selector:
             payload["mcp_servers"] = selector
 
@@ -438,14 +491,14 @@ def _validate_agent_models(tool: str, agent_config: dict, known: set[str]) -> li
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         referenced.extend(m for m in family_models.values() if isinstance(m, str) and m)
-    model_services = model_config.get("model_services")
-    if isinstance(model_services, list):
-        referenced.extend(m for m in model_services if isinstance(m, str) and m)
+    referenced.extend(static_model_list(model_config))
 
+    # A 4-part `catalog.schema.mps.model` ref names a model behind a Model Provider Service, which
+    # the workspace's UC model-service inventory doesn't list.
     return [
         f"{tool}: model '{model}' is not available on this workspace."
         for model in dict.fromkeys(referenced)
-        if model not in known
+        if model not in known and not _is_uc_fqn(model, parts=4)
     ]
 
 
@@ -458,8 +511,8 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
     - ``default_agent`` is required once any agent configuration is present, must appear in
       ``enabled_agents``, and that agent must have a non-empty ``default_model``;
     - every ``enabled_agents`` key must be an agent this ucode build knows;
-    - ``mcp_servers`` and ``skills`` each carry either non-empty ``names`` or a
-      ``unity_catalog_location``, not both;
+    - ``mcp_servers`` and ``skills`` each carry exactly one of non-empty ``names`` or a
+      ``unity_catalog_location`` (``mcp_servers`` may instead carry non-empty ``sources``);
     - ``smart_defaults`` needs a ``budget_id``, and each tier needs a ``spending_percentage`` in
       [0, 1] (unique across tiers), a ``recommended_agent`` that appears in ``enabled_agents``, and
       a ``recommended_model``.
@@ -505,7 +558,9 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
 
     mcp_servers = manifest.get("mcp_servers")
     if isinstance(mcp_servers, dict):
-        errors.extend(_validate_uc_names_or_location("mcp_servers", mcp_servers))
+        errors.extend(
+            _validate_uc_names_or_location("mcp_servers", mcp_servers, allow_sources=True)
+        )
 
     skills = manifest.get("skills")
     if isinstance(skills, dict):
@@ -521,7 +576,7 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     """Every model id an agent is configured with — its list plus its default.
 
     Claude's ``default_models_by_model_family`` is a family-slot dict; flat-list agents use
-    ``model_services`` (a list); codex has no list at all, only ``default_model``. Returns an empty
+    ``sources`` or ``model_services`` (a list); codex has no list at all, only ``default_model``. Returns an empty
     set when nothing is configured, which callers treat as "can't check" rather than "nothing is allowed".
     """
     model_config = agent_config.get("model_config")
@@ -531,9 +586,7 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         ids.update(v for v in family_models.values() if isinstance(v, str) and v)
-    model_services = model_config.get("model_services")
-    if isinstance(model_services, list):
-        ids.update(m for m in model_services if isinstance(m, str) and m)
+    ids.update(static_model_list(model_config))
     default_model = model_config.get("default_model")
     if isinstance(default_model, str) and default_model:
         ids.add(default_model)
@@ -559,7 +612,7 @@ def _validate_smart_defaults(smart_defaults: dict, enabled_agents: dict[str, dic
         except ValueError:
             errors.append(
                 f"smart_defaults.budget_id must be a UUID (got '{budget_id}'). Use the "
-                "budget_configuration_id from the workspace's AI Gateway budgets."
+                "budget_configuration_id from the workspace's Unity Gateway budgets."
             )
 
     percentages: list[float] = []

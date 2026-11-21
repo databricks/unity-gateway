@@ -2,15 +2,155 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from ucode import codex_config, custom_oauth
-from ucode.agents import LaunchOptions, codex
+from ucode import agents, codex_config, custom_oauth, managed_files
+from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
+
+
+@pytest.fixture(autouse=True)
+def native_catalog(monkeypatch, tmp_path):
+    prepare = codex_catalog.prepare_codex_catalog
+    monkeypatch.setattr(v2, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
+    monkeypatch.setattr(
+        codex_catalog,
+        "prepare_codex_catalog",
+        lambda binary, names, *, workspace, get_token, include_bundled: {
+            "models": [{"slug": name, "multi_agent_version": "v2"} for name in names]
+        },
+    )
+    return prepare
+
+
+def test_plaintext_catalog_preserves_source_menu_and_other_metadata(tmp_path):
+    source = tmp_path / "user.json"
+    original = {
+        "models": [
+            {
+                "slug": "gpt-6-luna",
+                "multi_agent_version": "v2",
+                "multi_agent_tools_in_code_mode": False,
+                "future": {"x": 1},
+            },
+            {"slug": "glm-5-3-flash", "multi_agent_version": None},
+            {"slug": "hidden-alias", "multi_agent_version": "v2", "visibility": "hide"},
+        ]
+    }
+    source.write_text(json.dumps(original))
+    before = source.read_bytes()
+    output = tmp_path / "session.json"
+    assert v2._codex_routing_catalog(
+        "codex", str(source), [], output, workspace=WS, get_token=lambda: "token"
+    ) == str(output)
+    expected = json.loads(before)
+    for model in expected["models"]:
+        model["multi_agent_tools_in_code_mode"] = True
+    assert json.loads(output.read_text()) == expected
+    assert source.read_bytes() == before
+
+
+def test_plaintext_catalog_uses_native_builder_without_existing_catalog(tmp_path, monkeypatch):
+    calls = []
+    token_calls = []
+
+    def get_token():
+        token_calls.append(True)
+        return "launch-token"
+
+    def prepare(binary, names, *, workspace, get_token, include_bundled):
+        calls.append((binary, names, workspace, get_token, get_token(), include_bundled))
+        return {"models": [{"slug": names[0], "multi_agent_version": "v2"}]}
+
+    monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", prepare)
+    output = tmp_path / "session.json"
+    v2._codex_routing_catalog(
+        "/native/codex", None, ["model-a"], output, workspace=WS, get_token=get_token
+    )
+    assert calls == [("/native/codex", ["model-a"], WS, get_token, "launch-token", True)]
+    assert token_calls == [True]
+    assert json.loads(output.read_text())["models"][0] == {
+        "slug": "model-a",
+        "multi_agent_version": "v2",
+        "multi_agent_tools_in_code_mode": True,
+    }
+
+
+def test_plaintext_catalog_rejects_unreadable_source(tmp_path):
+    with pytest.raises(RuntimeError, match="Cannot load the Codex model catalog"):
+        v2._codex_routing_catalog(
+            "codex",
+            str(tmp_path / "missing"),
+            [],
+            tmp_path / "out",
+            workspace=WS,
+            get_token=lambda: "token",
+        )
+
+
+@pytest.mark.parametrize("row", [None, "not-a-model"])
+def test_plaintext_catalog_rejects_non_object_rows(tmp_path, row):
+    source = tmp_path / "invalid.json"
+    source.write_text(json.dumps({"models": [row]}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Cannot load the Codex model catalog"):
+        v2._codex_routing_catalog(
+            "codex", source, [], tmp_path / "out", workspace=WS, get_token=lambda: "token"
+        )
+
+
+@pytest.mark.parametrize(
+    "mode,published", [(None, False), (True, False), (False, False), (False, True)]
+)
+def test_plaintext_catalog_respects_managed_precedence(tmp_path, monkeypatch, mode, published):
+    monkeypatch.setattr(
+        managed_files,
+        "published_agent_config_marker",
+        lambda: {"workspace": WS} if published else None,
+    )
+    source = tmp_path / "admin.json"
+    source.write_text(
+        json.dumps({"models": [{"slug": "admin-model", "multi_agent_tools_in_code_mode": mode}]})
+    )
+    before = source.read_bytes()
+    managed = tmp_path / "managed.toml"
+    managed.write_text('model_catalog_json = "admin.json"\n')
+    output = tmp_path / "session.json"
+    if mode is False:
+        command = "sudo ug configure --global" if published else "ug configure --agents codex"
+        with pytest.raises(RuntimeError, match=command) as error:
+            v2._codex_routing_catalog(
+                "codex",
+                tmp_path / "ignored-user.json",
+                [],
+                output,
+                workspace=WS,
+                get_token=lambda: "token",
+            )
+        if published:
+            assert "administrator" in str(error.value)
+            assert "ug configure --agents codex" not in str(error.value)
+        assert "use a Codex version with code-mode support" in str(error.value)
+        assert "configure preserves native capabilities" in str(error.value)
+        assert "skip routing encrypted assignments" in str(error.value)
+    else:
+        assert v2._codex_routing_catalog(
+            "codex",
+            tmp_path / "ignored-user.json",
+            [],
+            output,
+            workspace=WS,
+            get_token=lambda: "token",
+        ) == str(source)
+    assert source.read_bytes() == before
+    assert not output.exists()
 
 
 def test_smart_routing_switch_message_is_boxed():
@@ -42,28 +182,97 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 class TestLaunchCodex:
     @pytest.mark.parametrize(
+        ("installed_version", "accept_upgrade", "upgraded_version", "auto_upgrade"),
+        [
+            ("0.171.0", False, None, False),
+            ("0.170.0", True, "0.171.0", False),
+            ("0.170.0", True, "0.171.0", True),
+            ("0.170.0", False, None, False),
+            ("0.170.0", True, None, False),
+            ("0.170.0", True, "0.170.0", False),
+            ("unknown", True, "unknown", False),
+            ("unknown", True, "unknown", True),
+            ("0.170.0", True, "unknown", False),
+        ],
+        ids=[
+            "supported",
+            "upgraded",
+            "auto-upgraded",
+            "declined",
+            "failed",
+            "still-old",
+            "unknown",
+            "unknown-auto-upgrade",
+            "unknown-after-upgrade",
+        ],
+    )
+    @pytest.mark.parametrize(
         ("tool_args", "options"),
         [
             ([], LaunchOptions(launch_smart_routing=True)),
             (["fix the parser"], LaunchOptions(launch_smart_routing=True)),
         ],
     )
-    def test_codex_smart_routing_launch_dispatches_to_v2(self, monkeypatch, tool_args, options):
+    def test_codex_smart_routing_launch_dispatches_to_v2(
+        self,
+        monkeypatch,
+        tool_args,
+        options,
+        installed_version,
+        accept_upgrade,
+        upgraded_version,
+        auto_upgrade,
+    ):
         calls = []
+        prompts = []
+        updates = []
+        version = installed_version
+        monkeypatch.setattr(codex, "agent_version", lambda *args, **kwargs: version)
+        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "1" if auto_upgrade else "0")
+        monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr(
+            agents,
+            "prompt_yes_no_default",
+            lambda prompt, *, default: prompts.append((prompt, default)) or accept_upgrade,
+        )
+
+        def update_binary(argv, **kwargs):
+            nonlocal version
+            updates.append(argv)
+            if upgraded_version is None:
+                raise subprocess.CalledProcessError(1, argv)
+            version = upgraded_version
+            return subprocess.CompletedProcess(argv, 0)
+
+        # Exercise the shared updater without changing the installed agent binary.
+        monkeypatch.setattr(agents.subprocess_cross_os, "run", update_binary)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         def launch_v2(state, tool_args, **kwargs):
+            assert version == "0.171.0", "unsupported Codex reached execution"
             calls.append((state, tool_args, kwargs))
             raise SystemExit(0)
 
         monkeypatch.setattr(v2, "launch_codex", launch_v2)
         state = {"workspace": WS}
 
-        with pytest.raises(SystemExit) as exc:
+        allowed = installed_version == "0.171.0" or upgraded_version == "0.171.0"
+        with pytest.raises(SystemExit if allowed else RuntimeError) as exc:
             codex.launch(state, tool_args, options=options)
 
+        needs_upgrade = installed_version == "0.170.0"
+        assert prompts == (
+            [("Upgrade Codex if available?", True)] if needs_upgrade and not auto_upgrade else []
+        )
+        assert updates == ([["codex", "update"]] if needs_upgrade and accept_upgrade else [])
+        if not allowed:
+            assert "requires Codex 0.171.0" in str(exc.value)
+            if version == "unknown":
+                assert "codex --version" in str(exc.value)
+            assert calls == []
+            return
         assert exc.value.code == 0
         assert calls == [
             (
@@ -109,8 +318,51 @@ class TestLaunchCodex:
 
         assert launches == [["codex", "--config", 'model_provider="ucode-databricks"', *tool_args]]
 
+    @pytest.mark.parametrize(
+        ("installed_version", "routed"), [("0.170.0", False), ("0.171.0", True)]
+    )
+    def test_app_server_routes_only_from_codex_routing_floor(
+        self, tmp_path, monkeypatch, capsys, installed_version, routed
+    ):
+        launches = []
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text('model_provider = "ucode-databricks"\n', encoding="utf-8")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
+        monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kw: installed_version)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setattr(
+            agents, "prompt_yes_no_default", lambda *_args, **_kw: pytest.fail("prompted")
+        )
+        monkeypatch.setattr(
+            agents.subprocess_cross_os, "run", lambda *_args, **_kw: pytest.fail("updated")
+        )
+        monkeypatch.setattr(
+            v2, "launch_codex", lambda _state, args, **_kw: launches.append(("routed", args))
+        )
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(("plain", argv)))
+        tool_args = ["app-server", "--listen", "stdio://"]
+
+        codex.launch({"workspace": WS}, tool_args, options=LaunchOptions(launch_smart_routing=True))
+
+        warning = " ".join(capsys.readouterr().err.split())
+        if routed:
+            assert launches == [("routed", tool_args)]
+            assert "without smart routing" not in warning
+        else:
+            assert launches == [
+                ("plain", ["codex", "--config", 'model_provider="ucode-databricks"', *tool_args])
+            ]
+            assert (
+                "Smart routing requires Codex 0.171.0 or newer; found 0.170.0. "
+                "Running the app-server without smart routing."
+            ) in warning
+
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.171.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -155,7 +407,7 @@ class TestLaunchCodex:
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.171.0")
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
@@ -177,21 +429,35 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
+    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
+    @pytest.mark.parametrize("first_prompt", [False, True])
     @pytest.mark.parametrize(
-        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
+        "model_args",
+        [[], ["--model", "gpt-start"], ["--model=gpt-start"], ["-m", "gpt-start"]],
+        ids=["default-model", "split-model", "equals-model", "short-model"],
     )
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, monkeypatch, platform_name, tui_has_provider
+        self, tmp_path, monkeypatch, platform_name, first_prompt, model_args
     ):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        user_config = tmp_path / "config.toml"
+        saved_config = (
+            b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
+            b'root_agent_usage_hint_text = "user root hint"\n'
+            b'subagent_usage_hint_text = "user child hint"\n'
+        )
+        user_config.write_bytes(saved_config)
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if first_prompt else "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0" if first_prompt else "1")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(v2, "custom_catalog_path", lambda: None)
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
 
         class FakeProcess:
             def __init__(self, argv, **kwargs):
@@ -214,11 +480,11 @@ class TestLaunchCodex:
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
 
-        def get_token(workspace, profile):
+        def get_token(workspace, profile, **_kw):
             token_calls.append((workspace, profile))
             return f"token-{len(token_calls)}"
 
-        monkeypatch.setattr(v2, "get_databricks_token", get_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
 
@@ -237,7 +503,7 @@ class TestLaunchCodex:
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
                 },
-                ["--search"],
+                ["--search", *model_args],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
@@ -264,6 +530,25 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
         config_values = processes[0].argv[3:-2:2]
+        config = tomllib.loads("\n".join(config_values))
+        assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
+            v2.routing.configured_router_name()
+        )
+        native_overrides = config["features"]["multi_agent_v2"]
+        assert native_overrides["non_code_mode_only"] is False
+        assert "features.multi_agent_v2.non_code_mode_only=false" in config_values
+        for key, role in (
+            ("root_agent_usage_hint_text", "You are /root,"),
+            ("subagent_usage_hint_text", "You are a child agent"),
+        ):
+            prefix = f"features.multi_agent_v2.{key}="
+            hint = json.loads(
+                next(arg.removeprefix(prefix) for arg in config_values if arg.startswith(prefix))
+            )
+            assert hint.startswith(role)
+            assert v2.CODEX_V2_COLLABORATION_GUIDANCE in hint
+            assert native_overrides[key] == hint
+        assert user_config.read_bytes() == saved_config
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
@@ -277,16 +562,16 @@ class TestLaunchCodex:
             "ws://127.0.0.1:41001",
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
-        assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        assert processes[0].kwargs["env"]["CODEX_HOME"] == str(tmp_path)
         tui_argv = processes[1].argv
         expected_tui_args = [
             "--remote",
             "ws://127.0.0.1:41002",
-            "--model",
-            "gpt-start",
+            *([] if model_args else ["--model", "gpt-start"]),
             "--search",
+            *model_args,
         ]
-        if tui_has_provider:
+        if platform_name == "nt":
             assert tui_argv[:4] == [
                 "codex",
                 "--config",
@@ -303,13 +588,301 @@ class TestLaunchCodex:
             "system.ai.gpt-5-6-sol",
             "system.ai.glm-5-2",
         ]
-        assert interposer_args["kwargs"]["workspace"] == WS
+        assert interposer_args["kwargs"]["session_controls"] == Path(
+            os.environ["UCODE_SESSION_ENV_FILE"]
+        )
+        assert interposer_args["kwargs"]["workspace"] == (WS if first_prompt else None)
         assert token_calls == [(WS, "myprof")]
-        assert interposer_args["kwargs"]["token_provider"]() == "token-2"
-        assert token_calls == [(WS, "myprof"), (WS, "myprof")]
+        if first_prompt:
+            assert interposer_args["kwargs"]["token_provider"]() == "token-2"
+            assert token_calls == [(WS, "myprof"), (WS, "myprof")]
+        else:
+            assert interposer_args["kwargs"]["token_provider"] is None
+        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == ("0" if first_prompt else "1")
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
+
+    @pytest.mark.parametrize("managed_model", [None, "admin-model"])
+    def test_app_server_launch_runs_the_given_command_with_routing_settings(
+        self, monkeypatch, managed_model
+    ):
+        launches = []
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setattr(
+            v2.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("started another process")
+        )
+
+        def hand_off(argv):
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "exec_or_spawn", hand_off)
+        app_server_args = [
+            "-c",
+            'model="gpt-5-5"',
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:4310",
+        ]
+        state = {"workspace": WS, "profile": "myprof", "codex_models": ["system.ai.gpt-5-6-sol"]}
+        if managed_model:
+            state["codex_default_model"] = managed_model
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                state,
+                app_server_args,
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+        [argv] = launches
+        assert argv[0] == "codex"
+        assert argv[-len(app_server_args) :] == app_server_args
+        routing_args = argv[1 : -len(app_server_args)]
+        assert set(routing_args[0::2]) == {"--config"}
+        config = tomllib.loads("\n".join(routing_args[1::2]))
+        # Only the managed default, which the caller's later `-c model` overrides; never ug's pick.
+        assert config.get("model") == managed_model
+        assert config["model_provider"] == "Databricks"
+        assert config["features"]["hooks"] is True
+        [spawn_hook] = config["hooks"]["PreToolUse"]
+        assert "codex-router-hook route-subagent" in spawn_hook["hooks"][0]["command"]
+        assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
+            v2.routing.configured_router_name()
+        )
+        assert config["shell_environment_policy"]["set"] == {
+            "UCODE_SESSION_ENV_FILE": os.environ["UCODE_SESSION_ENV_FILE"],
+            "UCODE_SMART_ROUTER_PYTHON": os.environ["UCODE_SMART_ROUTER_PYTHON"],
+        }
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+
+    def _run_app_server_launch_case(
+        self,
+        tmp_path,
+        monkeypatch,
+        native_catalog,
+        *,
+        source_model,
+        catalog_source,
+        launch_source,
+        failure=None,
+        rendered_overlay=False,
+    ):
+        launches = []
+        token_calls = []
+        empty_discovery = source_model is None and catalog_source is None and failure is None
+        if empty_discovery:
+            monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", native_catalog)
+            monkeypatch.setattr(
+                codex_catalog,
+                "_run_catalog_command",
+                lambda *_args: subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        {"models": [{"slug": name} for name in ("gpt-start", "gpt-alternative")]}
+                    ),
+                ),
+            )
+
+        def get_token(*_args, **_kwargs):
+            token_calls.append(True)
+            return "token"
+
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
+
+        catalogs = {}
+        for name in (catalog_source, launch_source):
+            if name and name not in catalogs:
+                path = tmp_path / f"{name}.json"
+                path.write_text(
+                    json.dumps({"models": [{"slug": f"{name}-model", "source": name}]}),
+                    encoding="utf-8",
+                )
+                catalogs[name] = path
+        monkeypatch.setattr(v2, "custom_catalog_path", lambda: catalogs.get(catalog_source))
+        session_env_path = tmp_path / "session.env"
+        monkeypatch.setattr(v2, "_prepare_smart_router_session", lambda _agent: session_env_path)
+        monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, "python")
+
+        warnings = []
+        monkeypatch.setattr(v2, "print_warning", warnings.append)
+        builder_calls = []
+        if failure == "builder":
+
+            def fail_builder(binary, names, *, workspace, get_token, include_bundled):
+                builder_calls.append((workspace, get_token()))
+                raise RuntimeError("catalog builder failed")
+
+            monkeypatch.setattr(codex_catalog, "prepare_codex_catalog", fail_builder)
+        elif failure == "write":
+
+            def fail_write(*_args, **_kwargs):
+                raise OSError("catalog write failed")
+
+            monkeypatch.setattr(v2, "write_json_file", fail_write)
+
+        def hand_off(argv):
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "exec_or_spawn", hand_off)
+        launch_config = {"model_provider": "Databricks"}
+        if source_model:
+            launch_config["model"] = source_model
+        if launch_source:
+            launch_config["model_catalog_json"] = str(catalogs[launch_source])
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_codex(
+                {"workspace": WS},
+                ["app-server"],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=lambda *_args, **_kw: (
+                    dict(launch_config)
+                    if rendered_overlay
+                    else pytest.fail("rendered the default overlay")
+                ),
+                launch_config=None if rendered_overlay else launch_config,
+                available_models=[] if empty_discovery else ["mps-primary"],
+            )
+
+        assert exc.value.code == 0
+        [argv] = launches
+        assert argv[-1] == "app-server"
+        config = tomllib.loads("\n".join(argv[1:-1][1::2]))
+        assert config.get("model") == source_model
+        return {
+            "builder_calls": builder_calls,
+            "catalogs": catalogs,
+            "config": config,
+            "empty_discovery": empty_discovery,
+            "output": session_env_path.with_suffix(".models.json"),
+            "token_calls": token_calls,
+            "warnings": warnings,
+        }
+
+    @pytest.mark.parametrize(
+        ("source_model", "catalog_source", "launch_source", "expected_source"),
+        [
+            pytest.param(None, None, None, None, id="default-model"),
+            pytest.param("mps-primary", None, None, None, id="explicit-model"),
+            pytest.param(None, "user", None, "user", id="user-catalog"),
+            pytest.param(None, "managed", "explicit", "explicit", id="launch-catalog-wins"),
+        ],
+    )
+    def test_app_server_launch_catalog_precedence(
+        self,
+        tmp_path,
+        monkeypatch,
+        native_catalog,
+        source_model,
+        catalog_source,
+        launch_source,
+        expected_source,
+    ):
+        result = self._run_app_server_launch_case(
+            tmp_path,
+            monkeypatch,
+            native_catalog,
+            source_model=source_model,
+            catalog_source=catalog_source,
+            launch_source=launch_source,
+        )
+
+        if expected_source:
+            assert Path(result["config"]["model_catalog_json"]) == result["output"]
+            assert json.loads(result["output"].read_text(encoding="utf-8")) == {
+                "models": [
+                    {
+                        "slug": f"{expected_source}-model",
+                        "source": expected_source,
+                        "multi_agent_tools_in_code_mode": True,
+                    }
+                ]
+            }
+            assert json.loads(result["catalogs"][expected_source].read_text(encoding="utf-8")) == {
+                "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
+            }
+
+        if result["empty_discovery"]:
+            assert Path(result["config"]["model_catalog_json"]) == result["output"]
+            assert json.loads(result["output"].read_text(encoding="utf-8")) == {
+                "models": [
+                    {"slug": name, "multi_agent_tools_in_code_mode": True}
+                    for name in ("gpt-start", "gpt-alternative")
+                ]
+            }
+            assert len(result["warnings"]) == 1
+            assert "model metadata is unavailable" in result["warnings"][0]
+        else:
+            assert result["warnings"] == []
+
+    def test_app_server_launch_builder_failure_keeps_launch_config(
+        self, tmp_path, monkeypatch, native_catalog
+    ):
+        result = self._run_app_server_launch_case(
+            tmp_path,
+            monkeypatch,
+            native_catalog,
+            source_model=None,
+            catalog_source=None,
+            launch_source=None,
+            failure="builder",
+        )
+
+        assert "model_catalog_json" not in result["config"]
+        assert not result["output"].exists()
+        assert result["token_calls"] == [True]
+        assert result["builder_calls"] == [(WS, "token")]
+        assert len(result["warnings"]) == 1
+        assert "Could not enable plaintext Codex task routing" in result["warnings"][0]
+        assert "catalog builder failed" in result["warnings"][0]
+
+    @pytest.mark.parametrize(
+        ("catalog_source", "launch_source", "rendered_overlay", "expected_source"),
+        [
+            pytest.param("managed", "explicit", False, "explicit", id="launch-catalog"),
+            pytest.param("user", None, False, "user", id="configured-catalog"),
+            pytest.param("user", None, True, "user", id="rendered-catalog"),
+        ],
+    )
+    def test_app_server_launch_write_failure_keeps_source_catalog(
+        self,
+        tmp_path,
+        monkeypatch,
+        native_catalog,
+        catalog_source,
+        launch_source,
+        rendered_overlay,
+        expected_source,
+    ):
+        result = self._run_app_server_launch_case(
+            tmp_path,
+            monkeypatch,
+            native_catalog,
+            source_model=None,
+            catalog_source=catalog_source,
+            launch_source=launch_source,
+            failure="write",
+            rendered_overlay=rendered_overlay,
+        )
+
+        assert result["config"]["model_catalog_json"] == str(result["catalogs"][expected_source])
+        assert not result["output"].exists()
+        assert json.loads(result["catalogs"][expected_source].read_text(encoding="utf-8")) == {
+            "models": [{"slug": f"{expected_source}-model", "source": expected_source}]
+        }
+        assert len(result["warnings"]) == 1
+        assert "Could not enable plaintext Codex task routing" in result["warnings"][0]
+        assert "catalog write failed" in result["warnings"][0]
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -336,7 +909,7 @@ class TestLaunchCodex:
                 pass
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(
@@ -363,59 +936,6 @@ class TestLaunchCodex:
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
-
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
-            codex_interposer,
-            "start_interposer_thread",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
-        )
-        execd = []
-
-        def fake_exec(argv):
-            execd.append(argv)
-            raise SystemExit(0)
-
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
-
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
-                binary="codex",
-                start_model="gpt-start",
-                render_overlay=codex.render_overlay,
-            )
-
-        assert exc.value.code == 0
-        (argv,) = execd
-        assert argv[0] == "codex"
-        assert argv[-1] == "--search"
-        assert 'model="gpt-start"' in argv
-        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
-        assert "codex-router-hook route-subagent" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert (
-            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
-        ) in argv
-        assert (
-            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
-            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
-        ) in argv
-        # The hook subprocesses inherit the launch environment and pass the routing gate.
-        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
-        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
@@ -473,7 +993,9 @@ class TestLaunchCodex:
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda workspace, profile: "token")
+        monkeypatch.setattr(
+            custom_oauth, "get_databricks_token", lambda workspace, profile, **_kw: "token"
+        )
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
@@ -608,19 +1130,30 @@ class TestCustomCatalogModels:
             "system.ai.gpt-5-6-luna",
         ]
 
-    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("write_fails", [False, True])
+    def test_launch_prefers_catalog_over_cached_models(
+        self, tmp_path, monkeypatch, capsys, write_fails
+    ):
         self._settings(
             tmp_path,
             monkeypatch,
             cli=self._catalog(tmp_path / "cli.json", ["gpt-6-astra", "gpt-6-b"]),
         )
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.156.0")
         monkeypatch.setattr(codex, "ug_version", lambda: "test")
         launched = []
+        warnings = []
+        monkeypatch.setattr(v2, "print_warning", warnings.append)
+        if write_fails:
+
+            def fail_write(*_args, **_kwargs):
+                raise OSError("catalog write failed")
+
+            monkeypatch.setattr(v2, "write_json_file", fail_write)
 
         class FakeProcess:
             def __init__(self, argv, **kwargs):
@@ -655,7 +1188,23 @@ class TestCustomCatalogModels:
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
-        assert catalog_override == "model_catalog_json=" + json.dumps(str(tmp_path / "cli.json"))
+        session_catalog = Path(json.loads(catalog_override.split("=", 1)[1]))
+        source_catalog = tmp_path / "cli.json"
+        if write_fails:
+            assert session_catalog == source_catalog
+            assert len(warnings) == 1
+            assert "catalog write failed" in warnings[0]
+        else:
+            assert session_catalog != source_catalog
+            expected = json.loads(source_catalog.read_text())
+            for model in expected["models"]:
+                model["multi_agent_tools_in_code_mode"] = True
+            assert json.loads(session_catalog.read_text()) == expected
+            assert warnings == []
+        assert all(
+            "multi_agent_tools_in_code_mode" not in row
+            for row in json.loads(source_catalog.read_text())["models"]
+        )
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override
@@ -664,6 +1213,7 @@ class TestCustomCatalogModels:
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):
         calls = []
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.171.0")
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
@@ -796,7 +1346,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="claude-opus-4-8",
-                    raw_model="claude-opus-4-8",
                     rationale="Task classified as bugfix.",
                 ),
                 None,
@@ -822,7 +1371,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="system.ai.gpt-5-6-luna",
-                    raw_model="gpt-5-6-luna",
                     rationale="Trivial task.",
                 ),
                 None,
@@ -852,7 +1400,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="system.ai.glm-5-2",
-                    raw_model="glm-5-2",
                     rationale="Short isolated task.",
                 ),
                 None,
@@ -895,7 +1442,6 @@ class TestInterposerSession:
             route_decision=lambda _p: (
                 codex_interposer.routing.RoutingDecision(
                     model="gpt-5.6-luna",
-                    raw_model="gpt-5-6-luna",
                     rationale="trivial",
                 ),
                 None,
@@ -932,7 +1478,9 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     captured = {}
     logged = []
 
-    def select_route(workspace, token, task, route_options, resolve, *, router_name, timeout):
+    def select_route(
+        workspace, token, task, route_options, *, router_name, timeout, attribution_headers
+    ):
         captured.update(
             workspace=workspace,
             token=token,
@@ -943,8 +1491,7 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
         )
         return (
             codex_interposer.routing.RoutingDecision(
-                model=resolve("gpt-5-6-sol"),
-                raw_model="gpt-5-6-sol",
+                model="system.ai.gpt-5-6-sol",
                 rationale="Bugfix needs deeper reasoning.",
             ),
             None,
@@ -974,10 +1521,10 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
         "router_name": codex_routing.routing.ROUTER_NAME,
         "timeout": codex_routing.REQUEST_TIMEOUT_S,
         "route_options": [
-            ("kimi-k3-neo", "codex"),
-            ("gpt-5-6-sol", "codex"),
-            ("gpt-5-6-luna", "codex"),
-            ("glm-5-2", "codex"),
+            ("system.ai.kimi-k3-neo", "codex"),
+            ("system.ai.gpt-5-6-sol", "codex"),
+            ("system.ai.gpt-5-6-luna", "codex"),
+            ("system.ai.glm-5-2", "codex"),
         ],
     }
     assert len(logged) == 1
@@ -985,10 +1532,10 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     request_payload = json.loads(logged[0].split(": ", 1)[1])
     assert request_payload == {
         "route_options": [
-            {"model": "kimi-k3-neo", "harness": "codex"},
-            {"model": "gpt-5-6-sol", "harness": "codex"},
-            {"model": "gpt-5-6-luna", "harness": "codex"},
-            {"model": "glm-5-2", "harness": "codex"},
+            {"model": "system.ai.kimi-k3-neo", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-luna", "harness": "codex"},
+            {"model": "system.ai.glm-5-2", "harness": "codex"},
         ],
         "task": {"prompt": "Fix the parser"},
         "route_selector": {"router_name": codex_routing.routing.ROUTER_NAME},
@@ -996,10 +1543,12 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     assert "same-oauth-token" not in logged[0]
 
 
-def test_routing_request_deduplicates_equivalent_gpt_spellings(monkeypatch):
+def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
     captured = {}
 
-    def select_route(workspace, token, task, route_options, resolve, *, router_name, timeout):
+    def select_route(
+        workspace, token, task, route_options, *, router_name, timeout, attribution_headers
+    ):
         captured["route_options"] = list(route_options)
         return None, "not selected"
 
@@ -1012,12 +1561,13 @@ def test_routing_request_deduplicates_equivalent_gpt_spellings(monkeypatch):
         [
             "system.ai.gpt-5-6-sol",
             "gpt-5.6-sol",
+            "system.ai.gpt-5-6-sol",
             "system.ai.gpt-5-6-luna",
-            "gpt-5.6-luna",
         ],
     )
 
     assert captured["route_options"] == [
-        ("gpt-5-6-sol", "codex"),
-        ("gpt-5-6-luna", "codex"),
+        ("system.ai.gpt-5-6-sol", "codex"),
+        ("gpt-5.6-sol", "codex"),
+        ("system.ai.gpt-5-6-luna", "codex"),
     ]

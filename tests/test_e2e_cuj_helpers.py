@@ -17,6 +17,7 @@ from tests.e2e_cuj.helpers.constants import (
     CLAUDE,
     CLAUDE_HAIKU_MODEL,
     CODEX,
+    COPILOT,
     INFERENCE_PATHS,
     CodingAgent,
 )
@@ -34,6 +35,7 @@ from tests.e2e_cuj.helpers.session import (
     dirty_runner_message,
     record_machine_wide_leak,
 )
+from tests.e2e_cuj.helpers.skills import codex_exec_final_answer
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
 from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
@@ -127,6 +129,59 @@ def _fake_ug(tmp_path, body):
         script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_ug.py" "$@"\n')
         script.chmod(0o755)
     return UserSession(tmp_path, script, tmp_path / "artifacts", "token")
+
+
+@requires_pty
+@pytest.mark.parametrize(
+    ("version", "review_hooks"),
+    [("0.154.0", False), ("0.165.0", False), ("0.165.0", True)],
+)
+def test_codex_boot_waits_for_session_after_startup_draft(tmp_path, version, review_hooks):
+    """Replay startup screens offline; the draft can precede native hook review."""
+    cwd = tmp_path / "project with spaces"
+    header = f"  >_ OpenAI Codex (v{version})\n     {cwd}"
+    draft = header + "\n\n\n› Ask Codex to do anything\n\n  ? for shortcuts"
+    if version == "0.154.0":
+        draft = draft.replace(str(cwd), "loading")
+    status = f"  GPT-6-Sol default · {cwd}"
+    ready = header + f"\n\n› Ask Codex to do anything\n\n{status}\n  ? for shortcuts"
+    review = (
+        "  Hooks need review\n  2 hooks are new or changed.\n"
+        "  Hooks can run outside the sandbox after you trust them.\n\n"
+        "› 1. Review hooks\n  2. Trust all and continue\n"
+        "  3. Continue without trusting (hooks won't run)\n\n"
+        "  enter confirm · esc skip"
+    )
+    selected = review.replace("› 1.", "  1.").replace("  2.", "› 2.")
+    session = _fake_ug(
+        tmp_path,
+        f"""import sys, time, tty
+tty.setraw(sys.stdin.fileno())
+def show(text):
+    print("\\x1b[2J\\x1b[H" + text.replace("\\n", "\\r\\n"), end="", flush=True)
+show({draft!r})
+time.sleep(1.5)
+if {review_hooks!r}:
+    show({review!r})
+    assert sys.stdin.read(3) == "\\x1b[B"
+    show({selected!r})
+    assert sys.stdin.read(1) == "\\r"
+show({ready!r})
+typed = ""
+while True:
+    key = sys.stdin.read(1)
+    if key == "\\r":
+        break
+    typed += key
+    show({ready!r}.replace("Ask Codex to do anything", typed))
+assert typed == "ready check", repr(typed)
+""",
+    )
+    with Terminal(session, "codex-startup", [], agent=CODEX) as tui:
+        tui.boot(timeout=10)
+        assert status in tui.visible
+        tui.submit("ready check")
+        tui.finish(timeout=5)
 
 
 @pytest.mark.parametrize(
@@ -229,13 +284,27 @@ time.sleep(30)
     [
         "empty",
         "completed",
+        "completed_empty_history",
+        "completed_latest",
+        "running_latest",
+        "mixed_latest",
+        "scheduled_latest",
+        "partial_latest",
+        "empty_latest",
+        "transcript_latest",
         "detail",
+        "routed_detail",
         "resumed",
         "running",
         "detail_running",
+        "routed_detail_running",
+        "detail_transcript",
         "mixed",
+        "mixed_empty_history",
         "scheduled",
         "partial",
+        "partial_empty_history",
+        "nonempty_history",
         "transcript",
     ],
 )
@@ -282,8 +351,43 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         ),
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
+    for name in ("detail", "detail_running"):
+        views[f"routed_{name}"] = views[name].replace(
+            "agent ›", "ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 ›"
+        )
+    views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
+    for name in ("completed", "mixed", "partial"):
+        views[f"{name}_empty_history"] = views[name].replace(
+            "↑/↓ to select", "  Earlier in this session (0)\n\n↑/↓ to select"
+        )
+    views["nonempty_history"] = views["completed_empty_history"].replace(
+        "Earlier in this session (0)", "Earlier in this session (1)"
+    )
+    for name in ("completed", "running", "mixed", "scheduled", "partial", "transcript"):
+        views[f"{name}_latest"] = (
+            views[name]
+            .replace("Completed (2)", "Completed")
+            .replace("Completed (1)", "Completed")
+            .replace("↑/↓ to select", "↑/↓ to navigate")
+        )
+    views["completed_latest"] = views["completed_latest"].replace(
+        "↑/↓ to navigate", "  Earlier in this session (0)\n\n↑/↓ to navigate"
+    )
+    views["partial_latest"] = views["partial_latest"].replace("done · Sonnet 5", "")
+    views["empty_latest"] = (
+        "Background\n\nCompleted\n\n↑/↓ to navigate · Enter to view · Esc to close"
+    )
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "detail", "resumed")
+    complete = view in (
+        "empty",
+        "completed",
+        "completed_empty_history",
+        "completed_latest",
+        "nonempty_history",
+        "detail",
+        "routed_detail",
+        "resumed",
+    )
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -338,7 +442,12 @@ def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     healthy = "\n".join(
         rows[0] for rows in mcp_registration._expected_fixture_server_rows().values()
     )
-    failed = healthy.replace(f"{CLAUDE}, {CODEX} connected", f"{CLAUDE}:failed {CODEX}:enabled", 1)
+    failed = healthy.replace(
+        f"{CLAUDE}, {COPILOT}, {CODEX} connected",
+        f"{CLAUDE}:failed {COPILOT}:enabled {CODEX}:enabled",
+        1,
+    )
+    assert failed != healthy
     outputs = [failed, failed, healthy, "unused"]
     session = SimpleNamespace(
         run=lambda *args, timeout: SimpleNamespace(stdout=outputs.pop(0), stderr="")
@@ -687,59 +796,244 @@ def test_assert_models_maps_native_aliases():
         assert_models([CLAUDE_HAIKU_MODEL, "system.ai.claude-sonnet-4-6"], CLAUDE_HAIKU_MODEL)
 
 
+def _mcp_native_records(task, agent):
+    calls, results = [], []
+    for service, tool in mcp_registration.SERVICES.items():
+        if agent == CLAUDE:
+            calls.append(
+                {
+                    "type": "tool_use",
+                    "id": tool,
+                    "name": f"mcp__{mcp_registration.registered_name(service)}__{tool}",
+                    "input": {"run_id": task.run_id},
+                }
+            )
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool,
+                    "content": json.dumps({"result": task.expected[tool]}),
+                }
+            )
+        else:
+            calls.append(
+                {
+                    "type": "function_call",
+                    "call_id": tool,
+                    "namespace": f"mcp__{mcp_registration.registered_name(service).replace('-', '_')}",
+                    "name": tool,
+                    "arguments": json.dumps({"run_id": task.run_id}),
+                }
+            )
+            results.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": tool,
+                    "output": "Wall time: 0.1 seconds\nOutput:\n"
+                    + json.dumps({"result": task.expected[tool]}),
+                }
+            )
+    if agent == CLAUDE:
+        records = [
+            {"type": "user", "sessionId": "s", "message": {"content": task.prompt}},
+            {
+                "type": "assistant",
+                "sessionId": "s",
+                "message": {"role": "assistant", "model": CLAUDE_HAIKU_MODEL, "content": calls},
+            },
+            {"type": "user", "message": {"content": results}},
+            {
+                "type": "assistant",
+                "sessionId": "s",
+                "message": {
+                    "role": "assistant",
+                    "id": "answer",
+                    "model": CLAUDE_HAIKU_MODEL,
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": task.value}],
+                },
+            },
+        ]
+    else:
+        records = [
+            {"type": "session_meta", "payload": {"id": "s", "source": "cli"}},
+            {"type": "turn_context", "payload": {"turn_id": "t", "model": "gpt-5"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t"}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": task.prompt}},
+            *({"type": "response_item", "payload": part} for part in calls + results),
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "t",
+                    "last_agent_message": task.value,
+                },
+            },
+        ]
+    return records, calls, results
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_mcp_completion_reads_full_native_receipts_without_an_assistant_copy(monkeypatch, agent):
+    task = mcp_registration.McpFixtureTask()
+    records, _, _ = _mcp_native_records(task, agent)
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": records})
+
+    assert all(receipt not in task.prompt for receipt in task.expected.values())
+    assert task._receipts(agent, records) == task.expected
+    assert task.completed(None, agent)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
-    "shape",
-    ["bare", "native_keys", "raw_result_string", "raw_result_object"],
+    "damage",
+    [
+        "truncated_receipt",
+        "extra_result_field",
+        "wrong_server",
+        "wrong_tool",
+        "wrong_run_id",
+        "wrong_call_id",
+        "missing_result",
+        "result_before_call",
+        "missing_completion",
+        "failure_answer",
+        "wrong_prompt",
+        "child_session",
+    ],
 )
-def test_mcp_receipts_accept_native_keys_and_raw_tool_results(shape):
+def test_mcp_completion_rejects_incomplete_or_unrelated_native_evidence(monkeypatch, agent, damage):
     task = mcp_registration.McpFixtureTask()
-    native = {tool: key for key, tool in task.aliases.items()}
-    observed = {
-        "bare": dict(task.expected),
-        "native_keys": {native[tool]: value for tool, value in task.expected.items()},
-        "raw_result_string": {
-            tool: json.dumps({"result": value}) for tool, value in task.expected.items()
-        },
-        "raw_result_object": {tool: {"result": value} for tool, value in task.expected.items()},
-    }[shape]
-
-    assert task._receipts(observed) == task.expected
-
-
-def test_mcp_receipts_reject_wrong_extra_or_duplicate_receipts():
-    task = mcp_registration.McpFixtureTask()
-    describe, read = task.expected
-    native = {tool: key for key, tool in task.aliases.items()}
-
-    assert task._receipts({**task.expected, read: "0" * 64}) != task.expected
-    assert task._receipts({**task.expected, "extra": "x"}) != task.expected
-    assert (
-        task._receipts(
-            {describe: {"result": task.expected[describe], "x": 1}, read: task.expected[read]}
+    records, calls, results = _mcp_native_records(task, agent)
+    call, result = calls[-1], results[-1]
+    content_key = "content" if agent == CLAUDE else "output"
+    if damage == "truncated_receipt":
+        result[content_key] = result[content_key].replace(
+            task.expected["read_fixture"], task.expected["read_fixture"][:-1]
         )
-        != task.expected
-    )
-    assert task._receipts({**task.expected, native[describe]: task.expected[describe]}) is None
-    assert task._receipts(["not", "a", "mapping"]) is None
+    elif damage == "extra_result_field":
+        result[content_key] = json.dumps(
+            {"result": task.expected["read_fixture"], "error": "failed"}
+        )
+    elif damage == "wrong_server":
+        key = "name" if agent == CLAUDE else "namespace"
+        call[key] = call[key].replace("fixture_reader", "fixture_decoy")
+    elif damage == "wrong_tool":
+        call["name"] += "_other"
+    elif damage == "wrong_run_id":
+        call["input" if agent == CLAUDE else "arguments"] = (
+            {"run_id": "other"} if agent == CLAUDE else '{"run_id":"other"}'
+        )
+    elif damage == "wrong_call_id":
+        result["tool_use_id" if agent == CLAUDE else "call_id"] = "other"
+    elif damage == "missing_result":
+        result.clear()
+    elif damage == "result_before_call":
+        if agent == CLAUDE:
+            records[1], records[2] = records[2], records[1]
+        else:
+            records[4:8] = records[6:8] + records[4:6]
+    elif damage == "missing_completion":
+        records.pop()
+    elif damage == "failure_answer":
+        answer = f"Could not {task.value}: timeout"
+        if agent == CLAUDE:
+            records[-1]["message"]["content"] = [{"type": "text", "text": answer}]
+        else:
+            records[-1]["payload"]["last_agent_message"] = answer
+    elif damage == "wrong_prompt":
+        if agent == CLAUDE:
+            records[0]["message"]["content"] = "other prompt"
+        else:
+            records[3]["payload"]["message"] = "other prompt"
+    elif damage == "child_session" and agent == CODEX:
+        records[0]["payload"]["source"] = {"subagent": {}}
+    path = "session/subagents/child.jsonl" if damage == "child_session" and agent == CLAUDE else "s"
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {path: records})
+
+    assert not task.completed(None, agent)
 
 
-def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
+def test_mcp_completion_rejects_failed_claude_tool_results(monkeypatch):
     task = mcp_registration.McpFixtureTask()
-    reply = "```json\n" + json.dumps(task.expected) + "\n```"
-    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": []})
-    monkeypatch.setattr(mcp_registration, "assistant_answers", lambda agent, records: [reply])
+    records, _, results = _mcp_native_records(task, CLAUDE)
+    results[-1]["is_error"] = True
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": records})
 
-    assert task.completed(None, "claude")
+    assert not task.completed(None, CLAUDE)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_mcp_completion_does_not_pool_results_from_different_sessions(monkeypatch, agent):
+    task = mcp_registration.McpFixtureTask()
+    first, _, first_results = _mcp_native_records(task, agent)
+    second, _, second_results = _mcp_native_records(task, agent)
+    first_results[0].clear()
+    second_results[1].clear()
+    monkeypatch.setattr(
+        mcp_registration, "agent_sessions", lambda session, agent: {"s1": first, "s2": second}
+    )
+
+    assert not task.completed(None, agent)
+
+
+@pytest.mark.parametrize(
+    "native_apis, accepted",
+    [
+        (["openai/v1/responses"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        (["openai/v1/responses", "openai/v1/chat/completions"], True),
+        (["openai/v1/chat/completions"], False),
+        (["openai/v1/chat/completions", "openai/v1/responses", "openai/v1/embeddings"], False),
+        ([], False),
+        (None, False),
+    ],
+)
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
+    services = {}
+    for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
+        name = f"model-provider-services/{name}"
+        services[name] = SimpleNamespace(
+            name=name,
+            config=SimpleNamespace(
+                allow_all_targets=False,
+                provider_type=(
+                    "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"
+                    if agent == CLAUDE
+                    else "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"
+                ),
+                targets=[
+                    SimpleNamespace(
+                        model=model,
+                        native_api_types=["anthropic/v1/messages"]
+                        if agent == CLAUDE
+                        else native_apis,
+                    )
+                ],
+            ),
+        )
+    gateway = SimpleNamespace(
+        list_model_provider_services=lambda **kwargs: services.values(),
+        get_model_provider_service=services.__getitem__,
+    )
+    workspace = SimpleNamespace(client=SimpleNamespace(ai_gateway=gateway))
+    if accepted:
+        cuj2._assert_mps_catalog(workspace)
+    else:
+        with pytest.raises(AssertionError):
+            cuj2._assert_mps_catalog(workspace)
 
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
     suffix = ".EXE" if sys.platform == "win32" else ""
-    for agent in (CLAUDE, CODEX):
+    for agent in (CLAUDE, CODEX, COPILOT):
         (tmp_path / f"{agent}{suffix}").write_text("#!/bin/sh\n")
         (tmp_path / f"{agent}{suffix}").chmod(0o755)
     banner = "Checking MCP server health…\n\n\n"
-    rows = f"{cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)}: ug mcp-proxy - ✓ Connected\n"
-    outputs = {CLAUDE: [banner, rows], CODEX: [rows]}
+    name = cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)
+    rows = f"{name}: ug mcp-proxy - ✓ Connected\n"
+    copilot_rows = f"User servers:\n  {name} (http)\n"
+    outputs = {CLAUDE: [banner, rows], CODEX: [rows], COPILOT: [copilot_rows]}
     calls = []
 
     def run(*args, binary, timeout):
@@ -750,4 +1044,26 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
-    assert calls == [CLAUDE, CLAUDE, CODEX]
+    assert calls == [CLAUDE, CLAUDE, CODEX, COPILOT]
+
+
+def _codex_events(*events):
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def test_codex_exec_final_answer_reads_the_last_message_of_a_completed_turn():
+    stdout = _codex_events(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "I'll fetch it."}},
+        {"type": "item.completed", "item": {"type": "command_execution", "command": "cat"}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ugsum-4c1e9a"}},
+        {"type": "turn.completed", "usage": {}},
+    )
+    assert codex_exec_final_answer("Reading prompt from stdin...\n" + stdout) == "ugsum-4c1e9a"
+
+
+def test_codex_exec_final_answer_is_empty_without_a_completed_turn():
+    stdout = _codex_events(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ugsum-4c1e9a"}},
+        {"type": "turn.failed", "error": {"message": "boom"}},
+    )
+    assert codex_exec_final_answer(stdout) == ""

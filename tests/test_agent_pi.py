@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from ucode.agents import pi
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -107,7 +108,7 @@ class TestRenderOverlayUserAgent:
             codex_models=["gpt-5"],
             gemini_models=["gemini-2"],
         )
-        expected = "ucode/0.1.0 pi/0.74.0"
+        expected = f"ucode/0.1.0 pi/0.74.0 {client_platform()}"
         for name in ("databricks-claude", "databricks-openai", "databricks-gemini"):
             assert overlay["providers"][name]["headers"]["User-Agent"] == expected
 

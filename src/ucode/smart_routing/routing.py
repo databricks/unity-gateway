@@ -1,16 +1,18 @@
-"""Shared AI Gateway routing helpers for coding-agent sessions and subagents.
+"""Shared Unity Gateway routing helpers for coding-agent sessions and subagents.
 
 Both the Codex and Claude Code integrations route through the workspace's
 configured router at ``/ai-gateway/routing/v1/routes:select``. The
 harness-agnostic mechanics live here — the gateway call, the decision shape,
-model-name normalization, and the canary/audit/decision bookkeeping. Each
-harness module (``codex_routing`` / ``claude_routing``) supplies its own route
-arms, spawn-tool detector, model-id translation, and artifact paths.
+and the canary/audit/decision bookkeeping. Each harness supplies its own route
+options, spawn-tool detector, model-id translation, and artifact paths.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import math
 import os
 import re
 import textwrap
@@ -18,23 +20,30 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from ucode import metrics
+from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.smart_routing.rationale import format_rationale
+from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import parse_header_line, ug_headers
+from ucode.workspace import workspace_headers
 
-ROUTER_NAME = "task_v3"
+ROUTER_NAME = "stable"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
+MAX_ROUTE_OPTIONS = 128
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
 ROUTING_BOX_WIDTH = 73
-_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
+_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
+_EXPLANATION_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}")
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -72,16 +81,22 @@ def format_subagent_message(
 
 
 def _format_box(lines: list[str]) -> str:
-    wrapped_lines = [
-        wrapped
-        for line in lines
-        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
-    ]
+    return draw_box(
+        [
+            wrapped
+            for line in lines
+            for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+        ]
+    )
+
+
+def draw_box(fitted_lines: list[str]) -> str:
+    """Draw lines already no wider than ROUTING_BOX_WIDTH in the routing-card box."""
     border = "─" * (ROUTING_BOX_WIDTH + 2)
     return "\n".join(
         [
             f"┌{border}┐",
-            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in fitted_lines),
             f"└{border}┘",
         ]
     )
@@ -89,14 +104,14 @@ def _format_box(lines: list[str]) -> str:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """One model selection returned by the AI Gateway router."""
+    """One model selection returned by the Unity Gateway router."""
 
     model: str
-    raw_model: str
     rationale: str = ""
     route_options: tuple[tuple[str, str | None], ...] = ()
     router_name: str = ""
     raw_rationale: str | None = None
+    explanation: dict[str, Any] | None = None
 
     def display_message(
         self,
@@ -182,20 +197,6 @@ def _plaintext_string(value: Any) -> str | None:
     return text
 
 
-def normalize_model(model: str) -> str:
-    """Strip provider prefixes so router arms and workspace ids compare equal.
-
-    ``system.ai.claude-opus-4-8`` and ``databricks-claude-opus-4-8`` both
-    normalize to ``claude-opus-4-8`` — the router's canonical arm vocabulary.
-    """
-    tail = model.rsplit("/", 1)[-1]
-    for prefix in ("databricks-", "system.ai."):
-        if tail.startswith(prefix):
-            tail = tail[len(prefix) :]
-            break
-    return tail.lower()
-
-
 def unwrap_anthropic_gateway_model(model: str) -> str:
     """Strip Claude's synthetic Anthropic gateway prefix from a model id."""
     if match := _ANTHROPIC_AIGW_MODEL_RE.fullmatch(model):
@@ -203,29 +204,272 @@ def unwrap_anthropic_gateway_model(model: str) -> str:
     return model
 
 
+def _explanation_model_id(model: str) -> str:
+    model = unwrap_anthropic_gateway_model(model)
+    if model.startswith("system.ai."):
+        return model.removeprefix("system.ai.").removesuffix("[1m]")
+    # Brackets can be part of a catalog-qualified custom service name.
+    return model if len(model.split(".")) >= 3 else model.removesuffix("[1m]")
+
+
+def _safe_explanation_text(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()[:limit]
+    return clean or None
+
+
+def _valid_explanation_number(value: Any, *, non_negative: bool = False) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and abs(value) <= 1e12
+        and math.isfinite(value)
+        and (not non_negative or value >= 0)
+    )
+
+
+def _valid_explanation_details(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) <= 8
+        and all(
+            isinstance(key, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,63}", key)
+            and _valid_explanation_number(number)
+            for key, number in value.items()
+        )
+    )
+
+
+def _parse_routing_explanation(
+    value: Any,
+    routed_model: str,
+    offered_routes: tuple[tuple[str, str | None], ...],
+) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            if len(value.encode("utf-8")) > 65536:
+                return None
+            value = json.loads(value)
+        except (UnicodeEncodeError, ValueError, RecursionError):
+            return None
+    if not isinstance(value, dict) or len(value) > 32:
+        return None
+    try:
+        if len(json.dumps(value, allow_nan=False).encode("utf-8")) > 65536:
+            return None
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        return None
+
+    selected_model = value.get("selected_model")
+    summary = _safe_explanation_text(value.get("summary"), 2000)
+    task_understanding = value.get("task_understanding")
+    models = value.get("models")
+    if not isinstance(task_understanding, list) or len(task_understanding) > 8:
+        return None
+    normalized_task_understanding = []
+    for item in task_understanding:
+        text = _safe_explanation_text(item, 240)
+        if not text:
+            return None
+        normalized_task_understanding.append(text)
+    if (
+        not isinstance(selected_model, str)
+        or not _EXPLANATION_MODEL_ID_RE.fullmatch(selected_model)
+        or selected_model != _explanation_model_id(routed_model)
+        or not summary
+        or not isinstance(models, list)
+        or len(models) < 1
+    ):
+        return None
+
+    offered_models = {_explanation_model_id(model) for model, _ in offered_routes}
+    model_ids: list[str] = []
+    selected_ids: list[str] = []
+    numeric_fields = {
+        "quality_estimate": False,
+        "estimated_cost_usd": True,
+        "routing_score": False,
+    }
+    detail_fields = ("components", "difference_from_winner")
+    normalized_models = []
+    for candidate in models:
+        if not isinstance(candidate, dict):
+            return None
+        model_id = candidate.get("id")
+        name = _safe_explanation_text(candidate.get("name"), 128)
+        reason = _safe_explanation_text(candidate.get("reason"), 1200)
+        selected = candidate.get("selected")
+        considered = candidate.get("considered")
+        if (
+            not isinstance(model_id, str)
+            or not _EXPLANATION_MODEL_ID_RE.fullmatch(model_id)
+            or not name
+            or not reason
+            or not isinstance(selected, bool)
+            or not isinstance(considered, bool)
+            or (selected and not considered)
+        ):
+            return None
+        model_ids.append(model_id)
+        if selected:
+            selected_ids.append(model_id)
+        if any(
+            field in candidate
+            and not _valid_explanation_number(candidate[field], non_negative=non_negative)
+            for field, non_negative in numeric_fields.items()
+        ):
+            return None
+        if any(
+            field in candidate and not _valid_explanation_details(candidate[field])
+            for field in detail_fields
+        ):
+            return None
+        normalized_candidate = {
+            "id": model_id,
+            "name": name,
+            "selected": selected,
+            "considered": considered,
+            "reason": reason,
+        }
+        normalized_candidate.update(
+            {field: candidate[field] for field in numeric_fields if field in candidate}
+        )
+        normalized_candidate.update(
+            {field: dict(candidate[field]) for field in detail_fields if field in candidate}
+        )
+        normalized_models.append(normalized_candidate)
+
+    if (
+        len(model_ids) != len(offered_models)
+        or set(model_ids) != offered_models
+        or len(model_ids) != len(set(model_ids))
+        or selected_ids != [selected_model]
+    ):
+        return None
+    normalized = {
+        "selected_model": selected_model,
+        "summary": summary,
+        "task_understanding": normalized_task_understanding,
+        "models": normalized_models,
+    }
+    if "formula" in value:
+        formula = _safe_explanation_text(value["formula"], 500)
+        if not formula:
+            return None
+        normalized["formula"] = formula
+
+    identity_fields = ("session_id", "tool_use_id")
+    evidence = value.get("evidence")
+    normalized_evidence = {}
+    for source, destination in ((value, normalized), (evidence, normalized_evidence)):
+        if not isinstance(source, dict):
+            continue
+        for field in identity_fields:
+            if field not in source:
+                continue
+            identity = source[field]
+            if identity is None:
+                destination[field] = None
+                continue
+            if (
+                not isinstance(identity, str)
+                or len(identity.encode("utf-16-le", errors="surrogatepass")) // 2 > 256
+                or re.search(r"[\x00-\x1f\x7f-\x9f]", identity)
+            ):
+                return None
+            destination[field] = identity
+    if normalized_evidence:
+        normalized["evidence"] = normalized_evidence
+    return normalized
+
+
+def _explanation_matches_request_ids(explanation: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Reject explanation identities that do not describe this spawn request."""
+    evidence = explanation.get("evidence")
+    sources = (explanation, evidence) if isinstance(evidence, dict) else (explanation,)
+    for field in ("session_id", "tool_use_id"):
+        identities = [
+            source[field] for source in sources if field in source and source[field] is not None
+        ]
+        if not identities:
+            continue
+        expected = payload.get(field)
+        if (
+            not isinstance(expected, str)
+            or not expected
+            or any(identity != expected for identity in identities)
+        ):
+            return False
+    return True
+
+
 def configured_router_name() -> str:
-    """Return the environment-selected router, falling back to ``task_v3``."""
+    """Return the environment-selected router, falling back to ``stable``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
 
 
+def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, str]]:
+    """Return one ``(model, harness)`` option per distinct model id, unchanged and in order."""
+    return [(model, harness) for model in dict.fromkeys(models)]
+
+
+# Per-harness session and subagent header names that AI Gateway reads.
+_SESSION_HEADER_NAMES = {
+    "claude": ("x-claude-code-session-id", "x-claude-code-agent-id"),
+    "codex": ("session-id", "thread-id"),
+}
+
+
+def attribution_headers(
+    harness: str,
+    *,
+    session_id: Any = None,
+    agent_id: Any = None,
+    harness_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Headers that attribute a routing call to the harness session and subagent that made it.
+
+    ``harness_headers`` are the custom headers the harness sends on its own inference requests;
+    without a User-Agent there, it names ucode. Session and agent IDs come from the hook payload.
+    Absent or unsendable values are omitted, never sent empty.
+    """
+    session_name, agent_name = _SESSION_HEADER_NAMES[harness]
+    ids = {session_name: session_id, agent_name: agent_id}
+    headers: dict[str, tuple[str, str]] = {}
+    for name, value in [*(harness_headers or {}).items(), *ids.items()]:
+        parsed = parse_header_line(f"{name}: {value}") if isinstance(value, str) else None
+        if parsed:
+            headers[parsed[0].casefold()] = parsed
+    headers.setdefault("user-agent", ("User-Agent", ucode_user_agent(ug_version())))
+    return dict(headers.values())
+
+
+@metrics.timed(
+    metrics.ROUTING_DECISION_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def select_route(
     workspace: str,
     token: str,
     task: str,
     route_options: Iterable[tuple[str, str | None]],
-    resolve: Callable[[str], str | None],
     *,
     router_name: str,
+    provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
+    attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
-    """POST one ``routes:select`` request and resolve the router's pick.
+    """POST one ``routes:select`` request and return the router's pick.
 
-    ``route_options`` are ``(model, harness)`` pairs offered to the router (the
-    frozen menu the caller's harness scenario requires). ``resolve`` maps the
-    router's chosen arm back to a model id the workspace can serve, returning
-    None when the arm is unservable. Returns ``(decision, error)``; a failed
-    call yields ``(None, reason)`` so callers can fail open.
+    ``route_options`` are ``(model, harness)`` pairs sent as given. The gateway
+    canonicalizes model names itself and returns the option it was sent, so a
+    pick that was not offered is rejected. Returns ``(decision, error)``; a
+    failed call yields ``(None, reason)`` so callers can fail open.
     """
+    metrics.annotate(routing_trigger=metrics.routing_trigger())
     offered_routes = tuple(route_options)
     body = {
         "route_options": [
@@ -238,15 +482,23 @@ def select_route(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
         headers={
+            **(attribution_headers or {}),
+            **ug_headers(),
+            **workspace_headers(workspace),
+            **({MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else {}),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
         method="POST",
     )
+    request_started = time.perf_counter()
+    status = None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", None)
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        status = exc.code
         detail = ""
         try:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -258,24 +510,41 @@ def select_route(
         return None, reason
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
         return None, f"router request failed: {exc}"
+    finally:
+        metrics.record(
+            metrics.HTTP_REQUEST_DURATION_MS,
+            (time.perf_counter() - request_started) * 1000,
+            workspace=workspace,
+            api_operation=metrics.api_operation(request.full_url),
+            http_method="POST",
+            http_status_code=status,
+            attempt=1,
+        )
+        metrics.annotate(http_status_code=status)
 
-    raw_model = _selected_model(payload)
-    if raw_model is None:
-        return None, "router returned no model selection"
-    model = resolve(raw_model)
+    model = _selected_model(payload)
     if model is None:
-        return None, f"router selected unsupported model {raw_model!r}"
+        return None, "router returned no model selection"
+    if model not in {offered for offered, _ in offered_routes}:
+        return None, f"router selected a model it was not offered: {model!r}"
     raw_rationale = payload.get("rationale")
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
+    params = payload["route_selection"][0].get("params")
+    raw_explanation = params.get("routing_explanation") if isinstance(params, dict) else None
+    explanation = _parse_routing_explanation(raw_explanation, model, offered_routes)
+    if raw_explanation is not None and explanation is None:
+        logging.getLogger(__name__).debug(
+            "Discarded routing explanation: invalid schema or offered-model identities"
+        )
     return (
         RoutingDecision(
             model=model,
-            raw_model=raw_model,
             rationale=rationale,
             route_options=offered_routes,
             router_name=router_name,
             raw_rationale=raw_rationale if rationale != raw_rationale else None,
+            explanation=explanation,
         ),
         None,
     )
@@ -286,7 +555,6 @@ def resolve_spawn_route(
     *,
     is_spawn_agent: Callable[[Any], bool],
     decision_fn: Callable[[str], tuple[RoutingDecision | None, str | None]],
-    default_task_label: str,
     model_id_mapper: Callable[[str], str],
 ) -> SpawnRoute | None:
     """Resolve one subagent-spawn payload to a routed model."""
@@ -295,23 +563,34 @@ def resolve_spawn_route(
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
-    # Derive the routing task from the first available plaintext field. The
-    # harness-specific names are tried in order: `prompt`/`description` (Claude
-    # Code's Agent tool), `message` (Codex's spawn_agent — encrypted at
-    # send-time but readable here because the PreToolUse hook fires before
-    # that), then `task_name` / `agent_name` (weaker labels), then the generic
-    # default.
+    # Agent names and encrypted messages carry no assignment the router can judge.
     task = next(
         (
             value
-            for field in ("prompt", "description", "message", "task_name", "agent_name")
-            if (value := _plaintext_string(tool_input.get(field))) is not None
+            for field in ("prompt", "description", "message")
+            if (value := _plaintext_string(tool_input.get(field))) is not None and value.strip()
         ),
-        default_task_label,
+        None,
     )
-    decision, _ = decision_fn(task)
-    if decision is None:
+    if task is None:
+        logging.getLogger(__name__).debug(
+            "Smart Router skipped subagent: no plaintext assignment text"
+        )
         return None
+    with metrics.subagent_routing():
+        decision, reason = decision_fn(task)
+    if decision is None:
+        logging.getLogger(__name__).debug(
+            "Smart Router could not route subagent: %s", reason or "no routing decision"
+        )
+        return None
+    if decision.explanation is not None and not _explanation_matches_request_ids(
+        decision.explanation, payload
+    ):
+        logging.getLogger(__name__).debug(
+            "Discarded routing explanation: session or tool-call identity does not match request"
+        )
+        decision = replace(decision, explanation=None)
     routed_model = model_id_mapper(decision.model)
     return SpawnRoute(tool_input, task, decision, routed_model)
 
@@ -321,10 +600,8 @@ def route_spawn_tool(
     *,
     is_spawn_agent: Callable[[Any], bool],
     decision_fn: Callable[[str], tuple[RoutingDecision | None, str | None]],
-    default_task_label: str,
     model_id_mapper: Callable[[str], str],
     notice_config: SubagentNoticeConfig,
-    skip_arms: dict[str, str] | None = None,
     record_decision: Callable[[dict[str, Any], str, RoutingDecision, str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Route one subagent-spawn tool call, rewriting its ``model`` input."""
@@ -332,18 +609,13 @@ def route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent,
         decision_fn=decision_fn,
-        default_task_label=default_task_label,
         model_id_mapper=model_id_mapper,
     )
     if route is None:
         return None
-    if skip_arms and route.decision.raw_model in skip_arms:
-        return {"systemMessage": skip_arms[route.decision.raw_model]}
     if record_decision is not None:
         record_decision(payload, route.task, route.decision, route.routed_model)
     # Include the same routing notice in both hook response fields.
-    # Claude launches OSS models with an `anthropic-aigw-...` alias, but the notice
-    # displays the shorter `system.ai...` model ID.
     routing_message = notice_config.message(
         route.decision,
         route.routed_model,
@@ -413,20 +685,40 @@ def write_decision_record(
     task_name: str,
     decision: RoutingDecision,
     requested_model: str,
+    *,
+    include_task_text: bool = True,
 ) -> None:
     """Record a routing decision so a later SubagentStart can reconcile it."""
+    tool_input = payload.get("tool_input")
+    original_input = tool_input if isinstance(tool_input, dict) else {}
+    task_fields = (
+        {"task_name": task_name}
+        if include_task_text
+        else {
+            "task_sha256": hashlib.sha256(task_name.encode("utf-8")).hexdigest(),
+            "task_length": len(task_name),
+        }
+    )
     _append_jsonl(
         decisions_path,
         {
             "decision_id": uuid.uuid4().hex,
             "session_id": payload.get("session_id"),
-            "task_name": task_name,
-            "router_model": decision.raw_model,
+            "tool_use_id": payload.get("tool_use_id"),
+            "original_model": original_input.get("model"),
+            "original_subagent_type": original_input.get("subagent_type"),
+            **task_fields,
+            "router_model": decision.model,
             "requested_model": requested_model,
             "route_options": [
                 {"model": model, "harness": harness} for model, harness in decision.route_options
             ],
             "router_name": decision.router_name,
+            **(
+                {"explanation": decision.explanation}
+                if include_task_text and decision.explanation is not None
+                else {}
+            ),
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
             "rationale": decision.rationale,

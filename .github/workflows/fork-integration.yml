@@ -1,9 +1,10 @@
 name: Fork integration
 
-# Fork PRs get no secrets on `pull_request`. After reviewing a PR, an org member
-# comments `/integration-test` to run the Integration workflow with secrets on the PR
-# head, or `/integration-test <sha>` to run only if the head is still the reviewed
-# commit. Workflow definitions always come from the default branch.
+# Only org members can run it, on any PR; outside contributors ask a member,
+# who reviews the changes first.
+# `/integration-test [sha]` pins the current head, or requires the named reviewed commit.
+# The shared Security Scan must pass for that commit before CI secrets are supplied.
+# Workflow definitions always come from the default branch.
 on:
   issue_comment:
     types: [created]
@@ -65,7 +66,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
   reject:
-    name: Reject non-member request
+    name: Reject unauthorized request
     if: >-
       ${{
         github.event.issue.pull_request &&
@@ -80,18 +81,28 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - name: Reply with the member-only notice
+      - name: Explain who can request integration tests
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
-            "Sorry @$COMMENTER, only Databricks org members can run integration tests. A maintainer will run \`/integration-test\` after reviewing the changes."
+            "Sorry @$COMMENTER, only Databricks org members can run integration tests. A maintainer can run \`/integration-test\` after reviewing the changes."
+
+  security-gate:
+    name: Security Gate
+    needs: authorize
+    permissions:
+      actions: read
+    uses: ./.github/workflows/security-gate.yml
+    with:
+      pr-number: ${{ github.event.issue.number }}
+      head-sha: ${{ needs.authorize.outputs.sha }}
 
   integration:
     name: Integration
-    needs: authorize
+    needs: [authorize, security-gate]
     # Job-level so ordinary PR comments, which skip this job, never cancel a run.
     concurrency:
       group: fork-integration-${{ github.event.issue.number }}
@@ -103,7 +114,7 @@ jobs:
 
   report:
     name: Report fork integration
-    needs: [authorize, integration]
+    needs: [authorize, security-gate, integration]
     if: ${{ always() && needs.authorize.result == 'success' }}
     runs-on:
       group: databricks-protected-runner-group
@@ -119,9 +130,13 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           SHA: ${{ needs.authorize.outputs.sha }}
           RESULT: ${{ needs.integration.result }}
+          SCAN_RESULT: ${{ needs.security-gate.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ "$SCAN_RESULT" != success ]; then
+            RESULT="blocked by Security Scan ($SCAN_RESULT)"
+          fi
           state=$([ "$RESULT" = success ] && echo success || echo failure)
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
             -f state="$state" -f context="Fork integration" \

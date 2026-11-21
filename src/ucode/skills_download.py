@@ -14,6 +14,7 @@ from pathlib import Path
 
 import questionary
 
+from ucode import metrics
 from ucode.databricks import get_databricks_token, workspace_org_id
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
 from ucode.skills_api import (
@@ -50,6 +51,7 @@ from ucode.ui import (
     prompt_yes_no,
     scrolling_checkbox,
 )
+from ucode.ui.interactive_picker import CatalogChoice, picker_details
 
 # `.claude/skills` (Claude) + `.agents/skills` (the alias other agents read).
 SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
@@ -592,14 +594,23 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             (deleted if _record_dirs_all_missing(record) else present).append(record)
         forget(deleted)
         if present:
-            print_note("Checking Unity Catalog for downloaded skill updates...")
-            token = get_databricks_token(workspace, state.get("profile"))
-            deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
-            pairs = _refs_needing_refresh(workspace, token, present, deadline)
-            updated = _update_stale_skills(workspace, token, pairs, deadline)
-            if updated:
-                print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
+            with metrics.measure(
+                metrics.SKILLS_REFRESH_DURATION_MS,
+                workspace=workspace,
+                operation=metrics.SKILLS_REFRESH_OPERATION,
+                deadline_reached=False,
+                continued_with_fallback=True,
+            ):
+                print_note("Checking Unity Catalog for downloaded skill updates...")
+                token = get_databricks_token(workspace, state.get("profile"))
+                deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
+                pairs = _refs_needing_refresh(workspace, token, present, deadline)
+                updated = _update_stale_skills(workspace, token, pairs, deadline)
+                metrics.annotate(deadline_reached=time.monotonic() >= deadline)
+                if updated:
+                    print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
+        metrics.failure(metrics.SKILLS_REFRESH_OPERATION, exc, continued_with_fallback=True)
         print_note(f"Skipped checking for skill updates: {exc}")
 
 
@@ -639,17 +650,60 @@ def configure_selected_skills_download_command(fqns: list[str], path: str | None
 # --- Interactive picker (selective download) --------------------------------
 
 
-def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choice:
-    """Picker row for one skill: value is its FQN, title flags an on-disk bundle.
+def _skill_download_choice(
+    ref: SkillRef,
+    roots: list[Path],
+    *,
+    workspace: str | None = None,
+    downloads: list[dict] | None = None,
+) -> questionary.Choice:
+    """Distinguish an attributed UC install from an unrelated bundle-name collision.
 
-    On-disk skills stay selectable, since re-downloading is a legitimate update and
-    the existing overwrite prompt confirms it. The detail footer previews the
-    description behind a bold bundle-name label (the row itself shows the FQN, so the
-    bundle name is the one identifier not otherwise on screen).
+    A checkmark requires this UC source's record at every target root and SKILL.md
+    still on disk. Older workspace-only records are usable only in the same workspace.
+    Installed skills remain selectable for updates; overwrite confirmation still applies.
     """
-    on_disk = " (on disk)" if existing_skill_on_disk(roots, ref.bundle_name) else ""
-    description = f"{ref.bundle_name}: {ref.description}" if ref.description else None
-    return questionary.Choice(title=f"{ref.fqn}{on_disk}", value=ref.fqn, description=description)
+    targets = {str((root / ref.bundle_name).resolve()) for root in roots}
+    records = list_downloaded() if downloads is None else downloads
+    attributed: set[str] = set()
+    for record in records:
+        if record.get("fqn") != ref.fqn or record.get("bundle_name") != ref.bundle_name:
+            continue
+        if ref.metastore_id:
+            if record.get("metastore_id") != ref.metastore_id:
+                continue
+        elif workspace is None or record.get("workspace", "").rstrip("/") != workspace.rstrip("/"):
+            continue
+        if ref.skill_id and record.get("skill_id") and record["skill_id"] != ref.skill_id:
+            continue
+        attributed.update(str(Path(directory).resolve()) for directory in record.get("dirs") or [])
+    installed = (
+        bool(targets)
+        and targets <= attributed
+        and all((Path(target) / "SKILL.md").is_file() for target in targets)
+    )
+    status = "✓ Installed" if installed else "✗ Not installed"
+    description = (
+        picker_details(
+            ref.fqn,
+            ref.description,
+            created_by=ref.created_by,
+            create_time=ref.create_time,
+            update_time=ref.uc_update_time,
+            bundle_name=ref.bundle_name,
+        )
+        + f"\nStatus: {status}"
+    )
+    if not installed and existing_skill_on_disk(roots, ref.bundle_name):
+        description += "\nLocal bundle: Already on disk; UC source does not match or installation is incomplete"
+    return CatalogChoice(
+        title=ref.fqn,
+        value=ref.fqn,
+        name=ref.securable_name,
+        location=f"{ref.catalog}.{ref.schema}",
+        status=status,
+        description=description,
+    )
 
 
 def _skills_download_background_loader(
@@ -660,14 +714,33 @@ def _skills_download_background_loader(
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> str | None:
+        downloads_by_fqn: dict[str, list[dict]] = {}
+        for record in list_downloaded():
+            downloads_by_fqn.setdefault(record.get("fqn", ""), []).append(record)
+
         def on_skills(refs: list[SkillRef]) -> None:
-            append([_skill_download_choice(ref, roots) for ref in refs])
+            append(
+                [
+                    _skill_download_choice(
+                        ref, roots, workspace=workspace, downloads=downloads_by_fqn.get(ref.fqn, [])
+                    )
+                    for ref in refs
+                ]
+            )
 
         found, reason = list_all_skills(
             workspace, token, on_skills=on_skills, cancel_event=cancel_event
         )
-        if reason == _SKILLS_WALK_TIMEOUT_REASON:
-            return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
+        if not cancel_event.is_set() and reason not in (None, "no skills found"):
+            detail = (
+                f"Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s"
+                if reason == _SKILLS_WALK_TIMEOUT_REASON
+                else "Discovery stopped before the full list loaded"
+            )
+            return (
+                f"⚠ {detail}; found {len(found)} skills. "
+                "Use `ug skills add --names <catalog.schema.skill>` to add a known skill."
+            )
         return None
 
     return loader
@@ -683,11 +756,12 @@ def prompt_for_skill_download_choices(
     selection = scrolling_checkbox(
         "Skills:",
         choices=[],
-        instruction="(space to toggle, ctrl-a all, enter to save, type to filter)",
+        instruction="(space toggle, ^A all, enter save, type filter, pgup/pgdn details)",
         style=picker_style(),
         background_loader=background_loader,
         loading_noun="skills",
         show_description=True,
+        table=True,
     ).ask()
     if selection is None:
         return None

@@ -23,9 +23,12 @@ dependencies = [
   # request, via the SDK's stdio server + streamable-HTTP client. Works against
   # both mcp 1.x (httpx) and mcp 2.x (httpx2) — see mcp_proxy for the shared path.
   "mcp>=1.28.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
+  "opentelemetry-sdk>=1.44.0,<2",
   "pyyaml>=6.0.0",
   "questionary>=2.0.0",
   "tomlkit>=0.13.0",
+  "truststore>=0.10.0",
   "typer>=0.26.0",
   # enable changing codex model after first prompt
   "websockets>=13",
@@ -58,7 +61,9 @@ fallback-version = "0.0.0"
 
 [dependency-groups]
 dev = [
+    "cryptography>=49.0.0",
     "pytest>=9.0.3",
+    "pytest-rerunfailures>=16.7",
     "pexpect>=4.9.0",
     "pyte>=0.8.2",
     "pywinpty==3.0.5; sys_platform == 'win32'",

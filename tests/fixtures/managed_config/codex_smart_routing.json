@@ -7,13 +7,12 @@
       "config": {
         "models": {
           "model_services": [
-            "system.ai.gpt-5-6-sol",
-            "system.ai.gpt-5-6-terra",
-            "system.ai.gpt-5-6-luna"
+            "system.ai.gpt-6-sol",
+            "system.ai.gpt-6-luna"
           ]
         },
         "default_models": {
-          "default_model": "system.ai.gpt-5-6-sol"
+          "default_model": "system.ai.gpt-6-sol"
         },
         "smart_routing": {
           "enabled": true

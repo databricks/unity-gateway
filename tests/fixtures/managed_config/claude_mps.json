@@ -6,7 +6,7 @@
       "agent": "CODING_AGENT_CLAUDE_CODE",
       "config": {
         "models": {
-          "model_provider_service": "main.default.ci_e2e_anthropic_mps"
+          "model_provider_service": "main.ucode.dont_delete_ci_company_anthropic_mps"
         }
       }
     }

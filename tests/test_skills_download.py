@@ -1000,18 +1000,21 @@ class _FakePrompt:
 
 
 class TestSkillDownloadPicker:
-    def test_choice_value_is_fqn_flags_on_disk_and_carries_description(self, tmp_path):
+    def test_choice_value_is_fqn_and_unattributed_bundle_is_not_installed(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))
 
         fresh = sd._skill_download_choice(ref("triage", description="Routes tickets."), roots)
         assert fresh.value == "main.default.triage"
-        assert "(on disk)" not in fresh.title
-        assert fresh.description == "triage: Routes tickets."
+        assert fresh.status == "✗ Not installed"
+        assert "Full name: main.default.triage" in fresh.description
+        assert "Bundle: triage" in fresh.description
+        assert "Description: Routes tickets." in fresh.description
 
         write_skill(roots, ref("triage"), {"SKILL.md": b"x"})
         existing = sd._skill_download_choice(ref("triage"), roots)
         assert existing.value == "main.default.triage"
-        assert "(on disk)" in existing.title
+        assert existing.status == "✗ Not installed"
+        assert "Local bundle: Already on disk" in existing.description
 
     def test_choice_description_labels_by_bundle_name_not_securable(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))
@@ -1019,12 +1022,15 @@ class TestSkillDownloadPicker:
 
         choice = sd._skill_download_choice(diverging, roots)
 
-        assert choice.description == "task-triage: Ranks work."
+        assert "Bundle: task-triage" in choice.description
+        assert "Description: Ranks work." in choice.description
 
-    def test_choice_without_description_has_no_footer_text(self, tmp_path):
+    def test_choice_without_description_still_shows_metadata(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))
 
-        assert sd._skill_download_choice(ref("triage"), roots).description is None
+        details = sd._skill_download_choice(ref("triage"), roots).description
+        assert "No description provided" in details
+        assert "Created by: Not available" in details
 
     def test_background_loader_streams_the_walk_in_as_choices(self, tmp_path, monkeypatch):
         roots = skill_dir_roots(str(tmp_path))
@@ -1059,7 +1065,26 @@ class TestSkillDownloadPicker:
             lambda choices: None, threading.Event()
         )
 
-        assert message == "⚠ Timed out after 30s, found 2 skills"
+        assert message == (
+            "⚠ Timed out after 30s; found 2 skills. "
+            "Use `ug skills add --names <catalog.schema.skill>` to add a known skill."
+        )
+
+    def test_background_loader_reports_incomplete_listing(self, tmp_path, monkeypatch):
+        roots = skill_dir_roots(str(tmp_path))
+        monkeypatch.setattr(
+            sd,
+            "list_all_skills",
+            lambda *args, **kwargs: ([], "HTTP 503 Service Unavailable"),
+        )
+
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            lambda choices: None, threading.Event()
+        )
+
+        assert message is not None
+        assert "Discovery stopped before the full list loaded" in message
+        assert "ug skills add --names" in message
 
     def test_prompt_returns_selected_fqns(self, tmp_path, monkeypatch):
         roots = skill_dir_roots(str(tmp_path))

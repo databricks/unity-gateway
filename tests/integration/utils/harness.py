@@ -74,6 +74,9 @@ def clean_environment(home: Path) -> dict[str, str]:
             "CODEX_HOME": str(home / ".codex"),
             "DATABRICKS_CONFIG_FILE": str(home / ".databrickscfg"),
             "DISABLE_AUTOUPDATER": "1",
+            # agy requires the literal "true"; "1" leaves background updates enabled.
+            "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
+            "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
@@ -120,16 +123,26 @@ class UserSession:
         self.cwd.mkdir()
         self.binary = binary
         self.env = clean_environment(self.home)
+        router_name = os.environ.get("UG_INTEGRATION_SMART_ROUTER_NAME", "").strip()
+        if router_name:
+            self.env["SMART_ROUTER_NAME"] = router_name
         self.artifacts = artifacts
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.commands = 0
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
         # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
-        for name in ("DATABRICKS_BEARER", "DATABRICKS_SECOND_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
+        for name in (
+            "DATABRICKS_BEARER",
+            "DATABRICKS_SECOND_BEARER",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            "UG_INTEGRATION_CODEX_ACCESS_TOKEN",
+        ):
             for token in (os.environ.get(name), self.env.get(name)):
-                if token:
-                    text = text.replace(token, "<redacted>")
+                if token and token.strip():
+                    text = text.replace(token, "<redacted>").replace(token.strip(), "<redacted>")
         return ANSI.sub("", text) if strip_ansi else text
 
     def run(

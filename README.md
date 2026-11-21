@@ -1,8 +1,8 @@
 # Unity Gateway (`ug`)
 
-Unity Gateway runs coding agents through Databricks AI Gateway. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, and Oh My
-Pi, and can register Databricks MCP servers for Cursor Agent.
+Unity Gateway runs coding agents through your Databricks workspace. It configures
+Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, Oh My Pi,
+and Google Antigravity CLI, and can register Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
 package is still named `ucode` for compatibility.
@@ -20,6 +20,10 @@ uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
 ug --help
 ```
+
+Behind a TLS-inspection proxy, add `--system-certs` (`--native-tls` on older uv) so uv trusts the
+operating system's certificates; see
+[TLS certificates behind an inspection proxy](#tls-certificates-behind-an-inspection-proxy).
 
 `--version` reports installed package metadata without loading the CLI. Use
 `ug --help` (or `ucode --help`) to verify that the CLI's startup imports work;
@@ -50,9 +54,11 @@ ug codex
 ug claude
 ug gemini
 ug opencode
+ug kilo
 ug copilot
 ug pi
 ug omp
+ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
 ug cursor   # Cursor Agent, MCP-only
 ```
 
@@ -64,32 +70,99 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
+Codex smart routing now requires 0.171.0, including existing managed-enabled
+workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
+for upgrade offers and automatic fallback when managed routing is unavailable.
+
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
-`ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
-API for GPT-5 and newer model IDs, and Chat Completions for other models. The
-model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
-because it overrides the model sent to the gateway. Restart Copilot through `ug`
-to change the wire model or API; in-session model selection does not rebuild its
-provider configuration.
+`ug antigravity` (or `ug agy`) runs Google's Antigravity CLI 1.2.15 or later in its
+Enterprise Gateway mode, so it never asks for Google sign-in. It offers the workspace's
+Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-flash` is
+`gemini-3.8-flash`) and explicitly selects the newest for each launch, including headless
+sessions. A local proxy refreshes the Databricks token
+for the whole session and maps each name back to its Databricks model. `--model` accepts
+either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
+`--provider` routes through a Gemini Enterprise Model Provider Service, as with
+`ug gemini`; choosing External Models in `ug configure` saves one. When the service declares
+several models, configure starts on the newest; when it serves any model without declaring
+one, configure asks which to start on. `--model` picks another at launch. Claude, GPT, and open-source models aren't offered, because Antigravity runs
+tools only for models it recognizes. `ug` installs the CLI with Google's installer when it
+is missing (macOS and Linux). On a workspace with a managed config, which can't enable
+Antigravity yet, run `ug agents add antigravity` to use it self-managed.
+
+`ug copilot` lists every Claude and GPT model you can use on the workspace in
+Copilot's `/model` picker, by readable names such as "Claude Opus 5.5", and you can
+switch between them mid-session. Claude
+models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
+GPT models use Chat Completions. Gemini and open-source models aren't offered, except under
+`--model-location` (below).
+`ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
+own `databricks/claude-opus-5-5`) picks the model a session starts on;
+an unknown or unsupported model fails before Copilot starts and lists the
+available ones. ug passes Copilot a per-session model registry, so your own
+`~/.copilot/providers.json` and `COPILOT_PROVIDER_*` settings apply only to plain
+`copilot`. Use plain `/model`, not `/model --global`, inside `ug copilot`: a
+global choice is saved for plain `copilot` too, where the Databricks models don't
+exist. Requires Copilot CLI 1.0.91 or newer.
 
 `ug copilot` runs Copilot against a loopback proxy for the session. Copilot holds only
-a random session secret; the proxy adds a fresh Databricks token to each gateway
-request, so OAuth sessions keep working past token expiry without a restart, and no
-token is written to `~/.copilot/ucode.env`. If the Databricks sign-in itself expires,
+a random session secret, kept in the session's `~/.copilot/ug-providers-<id>.json`
+registry (readable only by you, deleted when the session ends); the proxy adds a fresh Databricks token to
+each gateway request, so OAuth sessions keep working past token expiry without a
+restart, and no Databricks token is written to disk. If the Databricks sign-in itself expires,
 Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
+
+So that AI Gateway's usage table can tell sessions and subagents apart, the proxy sends each request
+a `session-id` header: the UUID of the session you resume with `--session-id` or `--resume`, or for
+a new session a new one that ug passes to Copilot as `--session-id`. A session picked another way
+(by name, `--continue`) gets an id of that launch only. A subagent's requests also get a
+`thread-id` of that session and the subagent. Copilot Chat in VS Code sends its chat's id as
+`session-id`.
+
+`ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
+Service instead, and `/model` lists that service's models: Claude models of an Anthropic or
+Bedrock service, and the chat models of an OpenAI, Azure OpenAI or Microsoft Foundry service. For a service that
+allows every model, `/model` lists the models the gateway reports for it, which the provider
+account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
+`ug configure` offers the matching services under **External Models**, and a managed workspace
+config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>` uses the model
+services of one schema instead: services named like Claude or GPT models use their usual API, and
+the rest go through the gateway's Anthropic endpoint, as for Claude Code.
+
+`ug claude --provider <catalog>.<schema>.<name>` and `ug codex --provider ...` also
+accept custom Model Provider Services. The upstream endpoint must natively support
+Anthropic Messages for Claude or OpenAI Responses for Codex; MPS calls do not translate
+between APIs. Declare those APIs on the service's targets. Custom deployment names are
+preserved and can be selected with `--model`.
+
+For every supported provider, Codex accepts only targets declared with OpenAI Responses
+(`openai/v1/responses`). Restricted services with no compatible targets are hidden from
+the provider picker and rejected when selected explicitly.
+
+`ug codex --provider <catalog>.<schema>.<name>` on an Amazon Bedrock (runtime) service turns off Codex's
+built-in `web_search` for that launch, because Bedrock's Responses API rejects it, and registers the
+`system.ai.web_search` MCP service instead. Nothing is added if that service is already configured
+for Codex. Bedrock Mantle and other providers keep the built-in tool.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+`ug claude --provider <catalog>.<schema>.<name>` also supports Claude deployments on
+Microsoft Foundry. For every provider, Claude uses only targets declared with Anthropic Messages
+(`anthropic/v1/messages`); MPS requests do not translate other APIs to Messages. Restricted
+services with no compatible targets are rejected. Deployment names are passed unchanged.
+When no target identifies a Claude family, the first compatible target becomes the default.
+Use `--model <deployment>` to select another deployment or a model on an allow-all service
+without declared targets.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
-Claude Code and Codex alongside Databricks Hosted and External Models. The choice is saved
-with the rest of the configuration, so later `ug claude` / `ug codex` launches use it; an
+Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
+with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an
 explicit `--provider` or `--model-location` still overrides it for that launch.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes
@@ -98,6 +171,17 @@ for Codex App. Managed static lists use the same path during `ug configure`. The
 latest refresh supplies the app's catalog; custom catalogs (including Isaac's) and
 custom providers are preserved. The app's gateway provider and authentication must
 already be configured. Validation covers the local Codex binary.
+
+For custom model services in a managed static list, UG reads the downstream model IDs
+from the service's routing configuration and uses their native Codex metadata. The full
+service name remains the request model. This covers external and pay-per-token
+destinations, including primary routes and fallbacks. Mixed-model services use shared
+reasoning levels and input types, the smallest context limits, and common optional features
+with ordinary tools. Incompatible reasoning levels or input types produce an actionable error.
+UG warns and keeps generic defaults if destinations are unreadable or do not expose a model ID
+(including provisioned endpoints).
+Lookups share a five-second budget. Offline `--from-file` previews keep generic metadata
+without signing in; authentication failures also warn and retain generic metadata.
 
 Codex loads the catalog at app-server startup. When ug reports a catalog change,
 finish active tasks, restart the app server on the **connected host**, then reconnect.
@@ -116,12 +200,160 @@ ug configure
 ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
+ug configure --user
+ug configure --agent claude --model-location main.models
+ug configure --agents claude,codex --provider main.default.anthropic
 ```
 
+`--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
+source without the interactive picker, so a script can configure it. `--model-location` applies to
+Claude Code, Codex, and Copilot (CLI and VS Code); `--provider` also applies to Gemini CLI. Either
+needs `--agent`/`--agents`, and they cannot be combined. Cursor may share the run but takes no
+source. The choice is saved for later launches, and each one replaces the other. A bad Copilot
+source fails before anything is saved. A managed config that enables agents names the source itself
+and rejects both flags.
+
+By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
+Codex managed settings with sudo, with or without a terminal: run headless as root (or with
+passwordless sudo), since a write that can't be authorized fails the command.
+`--global` writes only the machine-wide managed settings and leaves every per-user setting alone:
+`~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
+servers, skills, Databricks AI Tools, and Desktop/Cowork user settings. Claude Code and Codex
+(0.134.0 or newer) have machine-wide CLI settings; macOS also supports Desktop MDM provisioning.
+Other CLI agents are skipped with a note, so a run that names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
+(checked through symlinks), since every user's agents run them: install ug in a shared location
+first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and
+`UV_PYTHON_INSTALL_DIR`. Workspace MCP servers that only user settings can hold, the
+web_search MCP server, and a static Codex model list are skipped with a warning. ug still saves its
+own state in `~/.ucode` and your Databricks login. Only that run is limited: each user's first
+launch writes their per-user settings as usual.
+`--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
+`ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
+there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
+precedence; later launches use whatever files are present.
+The choice is saved for launches after a successful configure; `ug configure` without `--user`
+and `ug revert` return to the default, which writes both.
+`--user` also fails for a workspace that publishes a managed config, which must be installed
+machine-wide: run `ug configure` without `--user`, or ask your administrator to run
+`ug configure --global`.
+
+For Claude Desktop, default `ug configure` and `--user` both write only the user's
+3P JSON profile, generated marketplace, and native Cowork registration/cache. They leave
+root files untouched. Explicit `--global` skips those user-level Desktop writers; machine
+policy and plugin provisioning use the macOS MDM path. CLI-agent scope handling is
+unchanged. If Desktop has not initialized a Cowork account directory, ordinary configure
+skips plugin setup until that directory exists. See
+[Desktop plugin installation](docs/claude-desktop.md#cowork-workspace-skills-and-mcp-servers).
+
+For macOS MDM deployment, run `ug configure --agents claude --global --workspace <url>`
+with a preinstalled shared runtime. Machine writes request sudo when needed. This publishes Desktop's managed plist with
+connectors/tool search and an organization plugin containing skills/hooks. Desktop loads
+the plugin directly; no LaunchAgent or per-user marketplace refresh is installed.
+It leaves Desktop's user profile and marketplace source unchanged. Windows and Linux skip
+Desktop under `--global`.
+Desktop provisioning failures warn without failing CLI setup. Ordinary `ug revert` attempts
+user and MDM cleanup, requesting sudo for machine files when needed.
+Provisioning credentials stay separate from users' Desktop authentication.
+See [MDM prerequisites, deployment, and validation](docs/claude-desktop-mdm.md).
+
+### Hosts that serve several workspaces
+
+An account custom URL (such as `https://acme.cloud.databricks.com`) serves every workspace of the
+account. Select the workspace the way the Databricks CLI does:
+
+```bash
+ug configure --workspace 'https://acme.cloud.databricks.com/?w=1234567890123456'
+ug configure --profile acme   # a profile whose host is the custom URL and that has a workspace_id
+ug claude --workspace 'https://acme.cloud.databricks.com/?w=1234567890123456'
+```
+
+`?o=` and `?workspace_id=` work too. ug keeps the custom URL as the workspace URL, gets the account
+token from the profile, and sends the workspace id as `X-Databricks-Org-Id` and
+`X-Databricks-Workspace-Id` on every request to that host: its own requests, its proxies, and the
+headers it writes for each agent. On a host that serves one workspace the id is ignored. With no
+profile for the host yet, the first login names one `ug-<name>`.
+
+Not supported yet on these hosts: disaster-recovery stable connection ids, signing in to an MCP
+service connection that needs your own login, and the MDM bootstrap script. MCP servers are
+registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
+
+### Server-side web search for Claude Code
+
+ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the Unity Gateway's server-side search,
+writing no file. If the OS-managed settings, their `managed-settings.d`
+drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
+To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
+omitting the flag keeps the saved choice). An explicit `ug configure` then also removes a bare
+`WebSearch` deny from the OS-managed settings unless your admin settings request it, and `ug revert`
+restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
+Relayed launches are unaffected.
+
+### TLS certificates behind an inspection proxy
+
+`ug`'s own HTTPS requests verify servers against the operating system's trust store (Keychain on
+macOS, the certificate store on Windows, the system CA bundle on Linux). That is where an
+enterprise TLS-inspection proxy's root certificate is installed, so `ug` trusts what curl and your
+browser trust. To use Python's own certificate chain instead:
+
+```bash
+ug configure --tls-trust-store python   # saved as tls_trust_store in ~/.ucode/state.json
+UG_TLS_TRUST_STORE=python ug claude     # one command; overrides the saved choice
+```
+
+| Value | Certificates trusted |
+|-------|----------------------|
+| `os` (default) | The operating system's trust store |
+| `python` | Python's own chain. `SSL_CERT_FILE` / `SSL_CERT_DIR` add a CA bundle for most requests; the Databricks SDK and metrics upload use `requests`, which reads `REQUESTS_CA_BUNDLE` instead, so set both |
+
+`UG_TLS_TRUST_STORE` wins over the saved `tls_trust_store`, which wins over the default; an unknown
+value warns and is ignored. `--tls-trust-store os` switches back, and `ug revert` clears the saved
+choice. The setting covers every request `ug` and its helpers (`ug mcp-proxy`, tracing, usage
+reporting) make. A certificate verification error names the trust store in use and how to
+change it. On macOS and Windows the OS store also applies the platform's own TLS rules, so it can
+refuse a certificate that Python's chain accepts (macOS, for example, requires a server
+certificate to list the server-authentication usage); `python` is the way out.
+
+With `os` in effect, `ug upgrade` also has uv read the OS trust store (`UV_SYSTEM_CERTS=1`, and
+`UV_NATIVE_TLS=1` for older uv). The first install runs before `ug` exists, so behind an inspection
+proxy pass it yourself: `uv tool install --system-certs git+https://github.com/databricks/unity-gateway`
+(`--native-tls` on older uv).
+
+Agents and the Databricks CLI are separate programs with their own trust settings. An agent built
+on Node.js that uses Node's bundled roots reads the OS store with `NODE_USE_SYSTEM_CA=1`, or one
+extra bundle with `NODE_EXTRA_CA_CERTS`.
+
+### Extra headers for one session
+
+```bash
+ug --header "x-databricks-traffic-id: testenv://liteswap/<pod>" claude
+UG_HEADERS="X-Team: eng" ug codex
+```
+
+`--header` (repeatable) and `UG_HEADERS` (one `Name: value` per line) add headers to that launch's
+Databricks requests only: Claude Code's and Codex's gateway requests, and ug's own requests
+(workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
+Nothing is written to a config file.
+
+`UG_HEADERS` is inherited by every child process, including an agent started from another agent's
+session, so an agent launch drops an inherited `Databricks-Custom-Coding-Agent` and the gateway
+attributes the session from ug's `User-Agent`. To name the coding agent yourself, pass
+`--header "Databricks-Custom-Coding-Agent: <name>"` on that launch.
+
+- **Codex**: added to the launch's `-c` provider headers.
+- **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
+  Only `ug configure` installs or upgrades it beside the managed settings (with sudo, or as an
+  administrator on Windows; not under `--user` or `UG_SKIP_OS_SETTINGS`); a launch never writes
+  there. Without a terminal, configure needs passwordless sudo and an existing managed file. Another
+  tool's copy of the mod, such as Isaac's, also counts. When none is enabled, or ug's is out of
+  date, the launch warns and Claude doesn't send them.
+
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`copilot`, `pi`, and `omp`. `cursor` can be included in `--agents` for MCP-only
-setup;
-Cursor models still run through your Cursor account.
+`kilo`, `copilot`, `pi`, `omp`, and `antigravity`. `cursor` can be included in `--agents` for
+MCP-only setup; Cursor models still run through your Cursor account. `vscode` can be included in
+`--agents` to install ug's extension for Copilot Chat in VS Code; it is configure-only, with no
+`ug vscode` launch command.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
@@ -133,11 +365,23 @@ without failing Claude Code configuration. See [Claude Desktop setup](docs/claud
 for authentication, profile preservation, and native validation limits.
 When managed Claude tracing is enabled, the same profile configures Desktop's native
 OTLP trace export with a refreshing headers helper; no background service is needed.
+Anthropic subscription relay profiles use one helper to supply the short-lived Claude
+subscription token and Databricks gateway token on macOS, Windows, and Linux.
 
 ## MCP Servers
 
-Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
-is MCP-only and is included when `cursor-agent` is installed:
+Use `ug mcp add` to register Databricks MCP servers for coding agents. Cursor
+Agent supports MCP only and requires `cursor-agent` on PATH.
+
+Run `ug mcp add` without options to browse services by name, UC location,
+and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
+Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
+what you select for this operation; `[-]` marks a read-only row.
+
+Highlight a service to see its description, creator, and creation/update dates. Type
+to filter names or UC locations, use Space to select, and Enter to save. Page Up/Down
+scrolls the detail pane. Narrow terminals shorten cells and show status symbols;
+the detail pane retains the full location and status.
 
 Use `ug mcp add` to add servers without removing existing registrations:
 
@@ -149,9 +393,15 @@ ug mcp add --agents cursor --names system.ai.github --workspace https://first.da
 ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
 
-With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
-or `--profile` to pick the workspace instead of the picker; it becomes the current
-workspace.
+`--agents` adds MCP servers without changing an agent's models. Claude Code and
+Codex work even if their CLI is not on PATH: UG writes their user MCP config
+directly. If that file already exists, UG detects the client without its CLI.
+This works on macOS, Windows, and Linux; other agents need their CLI on PATH.
+Without a CLI, status shows the saved config but cannot check the connection.
+
+`--workspace` or `--profile` selects the workspace on a fresh setup. To switch
+an existing setup, run `ug configure --workspace <url>` first. The switch uses
+that workspace's saved MCP servers; switching back restores the previous ones.
 
 Remove configured servers:
 
@@ -167,15 +417,33 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-Every Databricks MCP server is registered as a local stdio server that runs
-`ug mcp-proxy`; the proxy refreshes Databricks OAuth tokens from your CLI
-profile. V2 AI Gateway servers can be added with typed selectors such as
+Connection-backed Unity Gateway MCP services use native HTTP OAuth in Claude Code,
+Codex, and Cursor when the workspace publishes a compatible client. Claude Code
+uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
+the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
+Other servers and agents also use that proxy. When a proxied connection needs
+provider authentication, UG opens the workspace's MCP service sign-in page and
+waits up to five minutes for the selected CLI profile's user credential, then retries
+the original request. Use the same Databricks account in the browser and CLI profile.
+If no browser opens, use the URL in the MCP server log; click Login if the provider
+popup is blocked. This flow requires the workspace's MCP service login page and user-credential API;
+it does not require CLI `auth login --resource` or a CLI upgrade.
+V2 Unity Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+UG automatically shares the MCP proxy across agents to reduce memory usage while
+keeping each connection's session and credentials separate. No configuration changes
+are needed. If a proxy connection closes unexpectedly, reconnect the MCP server in
+your agent.
+
 Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
-requires an available Responses-capable model.
+requires an available Responses-capable model. Automatic selection prefers
+`system.ai.gpt-6-luna`, then `system.ai.gpt-5-mini`, then the first discovered
+model. This applies to both regular and provider-mode setup. A saved search-model
+override takes precedence when resolving the model; provider-mode configuration
+refreshes that saved value from discovery.
 
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
@@ -220,7 +488,15 @@ this contract does not make shared setup transactional.
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
-agent skill directories.
+agent skill directories. Run `ug skills add` without selectors to browse individual
+skills in the same table and metadata pane as the MCP browser, plus the bundle name.
+✓ Installed requires a recorded download of that exact UC skill with `SKILL.md` still
+present at every target agent directory (`--path`, or your home directory). A matching
+bundle name from another schema or metastore does not qualify. Unattributed local
+bundles and incomplete installations show ✗ Not installed, with an explanation in the
+detail pane. Installed skills remain selectable for updates.
+Missing metadata is shown explicitly. `Created by` is the UC creator, which may
+differ from the author of the bundle.
 
 ```bash
 # Set up the Databricks skills MCP so your agents can create and manage skills through ug.
@@ -267,9 +543,19 @@ ug skills remove --location main.default --via mcp
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
-| `ug usage` | Show AI Gateway spend and budget |
+| `ug usage` | Show Unity Gateway spend and budget |
+| `ug web` | Open the Unity Gateway page for your workspace in a browser |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
+
+`ug usage` shows up to five Unity Gateway budget limits with the highest usage
+percentages, with a short budget ID on each entry. It tells you when more limits
+exist. Run `ug usage --all` to show every limit. Both commands use your configured
+workspace login.
+
+A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent config that
+`ug configure` last saved and does not refetch it. After an admin changes that config, run
+`ug configure` to pick it up.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
@@ -296,12 +582,205 @@ Claude and Codex routing reasons summarize the task profile in plain language, s
 "This task has a clear target and limited scope." A separate sentence explains when
 model availability requires a higher tier. Custom gateway notices are retained, and
 older or unrecognized responses keep their original wording. Diagnostic records keep
-the displayed reason in `rationale` and the gateway's full explanation in `raw_rationale`.
+the displayed reason in `rationale` and the gateway's explanation in `raw_rationale`.
+Codex decision records cap each reason at 1,000 characters and identify the assignment
+by `task_sha256` (SHA-256 of its UTF-8 text) and `task_length` (characters). The router
+and native child still receive the complete assignment. Reasons can quote task content,
+so these logs may still contain sensitive details. Claude's audit format is unchanged.
+
+Smart-routed Claude and Codex sessions also write a per-session log at
+`~/.ucode/smart-router/sessions/<harness>-<session_id>.jsonl` (for Codex, the root session id
+that its subagents share). Each record keeps a 160-character first-line preview of the
+assignment, its SHA-256 and length, the full reason, the candidate models, and the routing
+time. Files are created with `0600` permissions. Logs older than 30 days are removed
+when a new session log is created. Unlike the
+decision records above, the reason is not capped, and it can quote task content. Claude's
+`/smart-router logs` pane reads this log. In Codex, `$smart-router logs` prints a table of
+the last 20 decisions, and `$smart-router logs --id <ID>` shows one.
+
+### Auto in Claude Code
+
+Auto visibility is opt-in. Enable the new config version for configure and launch:
+
+```bash
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent claude
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
+```
+
+Auto requires this version for both configure and launch. The version derives
+`ENABLE_SMART_ROUTER_AUTO_MODE` internally; setting that flag directly does not enable Auto.
+Managed smart routing alone does not opt into Auto.
+
+With the Auto version and managed Claude smart routing, configure keeps
+`replaceBuiltInOptions=true` on the UG-owned static catalog and serves Auto from
+one row inside it, listed first after Claude's native Default row. The row uses the
+default variant's alias, with its `modelOverrides` mapping and aliases and targets
+in `availableModels`. With the Auto version but no managed routing, configure exposes
+Auto through the native custom-model slot. Without the Auto version, configure
+keeps the ordinary replacement picker.
+
+UG preserves pickers owned by other managers, including Isaac. Their manager must
+set `modelPicker.replaceBuiltInOptions=false` to expose Auto's native custom-model slot.
+When managed settings define neither `modelOverrides` nor `availableModels`, UG can
+supply Auto aliases for that session. Managed mappings and allowlists retain precedence
+and must already admit Auto. A foreign custom-model slot also prevents Auto.
+Changing machine-wide picker settings can require sudo; launching `ug claude` does
+not install or rewrite those settings.
+
+An installed Auto row does not enable Auto on a later launch without the version.
+Ordinary launches preserve machine-wide picker metadata, so an old row can remain
+visible until you reconfigure without the Auto version. Each `ug configure` removes
+UG Auto aliases and picker entries unless that exact version and effective smart
+routing are enabled. `ug revert` also removes them, including aliases restored from
+backups. Cleanup preserves unrelated settings and resolves a saved Auto selection
+to a permitted real model when possible. Both commands respect their configuration
+scope. An installed row does not activate the Auto mod by itself.
+`--disable-smart-routing`, an explicit `--model`, a budget recommendation and resume
+retain their precedence. Other versions keep their existing Smart Router controls.
+
+The native `/model` picker includes **Auto**:
+“Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
+enables UG's subagent router and opens the main-model picker. `/model auto` opens
+the same picker. Use the arrow keys to scroll through the full list and Enter to select.
+The current model appears first, followed by the remaining models in catalog order.
+
+With the Auto config version, fresh sessions start in Auto with the managed default
+model, or the first available model if no default is configured. An explicit ordinary model
+stays selected and disables routing; resume keeps native model precedence.
+Claude's standard model display is retained.
+A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosing
+a main model through `/model auto` changes the model used by the main agent,
+keeping the checkmark on Auto. The chooser has no effort controls; use native `/effort`
+to change effort separately.
+Escape keeps the current selection. Saving updates the Auto hint without adding a chat message.
+Each running session keeps its
+own selected profile, even when another session saves a different preference.
+Model-switch echoes and confirmations use Auto. Native `/status` and the header for non-Claude models still show the internal
+alias because Claude 2.1.290 does not expose a model-name display hook.
+
+This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
+wrapper. Configure writes these fixed aliases only for UG-owned model
+pickers, preserving foreign administrator pickers and custom model options. In the
+default Auto mode it enables
+Claude's native custom-model row (`replaceBuiltInOptions: false`); under managed
+routing with the Auto config version it keeps the replacement static catalog
+(`replaceBuiltInOptions: true`) and shows Auto as one row inside it instead. This also exposes
+native built-in choices when no `availableModels` restriction is configured; existing
+`availableModels` and `deniedModels` policies still apply. The mod points that one row at the current Auto variant within each process; it never rewrites a
+shared capability profile. In the static-catalog mode native stays on the
+catalog's Auto row, so `/model` keeps Auto checked whichever main model you choose; the
+mod remembers the main model per workspace and starts a fresh session on it. Claude's
+context window and effort settings follow the Auto row's default model in that mode.
+Launch settings supply the catalog and routing baseline;
+the routing mod resolves the selected variant to its real model before inference. No synthetic model ID is sent to the gateway. Selecting
+an ordinary model switches off routing through UG's existing atomic session
+controls. Launches do not edit managed files or install a custom status-line script.
+
+The Auto flow applies only to opted-in interactive subagent-routing launches. First-prompt-routing presets, headless runs,
+provider launches without routing support, and Isaac's feedback-gated controls
+retain their existing flows. `--disable-smart-routing` launches without the Auto routing mod. The configured row
+is supplied by routed UG launches; a saved alias outside that flow maps to its
+configured real model without enabling routing.
+The Auto flow hides the old `/smart-router` command. The Smart Router band and
+footer show ON in Auto and OFF after an ordinary model selection.
+The Codex integration is unchanged.
+
+Fresh launches using the Auto version start in Auto with the managed default model. Resume uses
+Claude's native model precedence without UG injecting a new Auto selection. A configured
+`ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
+uses the exact Claude ID or an explicit admin `behavesAs` hint. For other Auto aliases without a native
+profile, UG uses the catalog's input limit for Claude's launch-only compaction window, up to
+1M tokens. When the catalog omits the limit, UG uses 200k tokens.
+If the catalog reports a limit below Claude’s 100k minimum, UG leaves compaction to Claude. Explicit native
+window settings take precedence.
+Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
+uses the managed Claude catalog. Native Windows/macOS execution and actual compaction
+require separate validation.
 
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
+
+`--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
+through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
+`subagent_orch_v0`. That routes subagents and enables Smart Router Orchestrator for Claude
+and Codex while each main session keeps its starting model. Saved Model Provider Services
+work with both agents, including without a workspace-managed configuration. UG discovers the
+provider's own model catalog and sends its provider header to routing and inference requests.
+Routing requests offer at most 128 models; oversized catalogs prioritize current Claude family
+targets or numbered GPT targets for Codex before filling the remaining positions.
+Like any version, the preset overrides individually set routing env vars.
+`--disable-smart-routing` turns routing off for the launch, including over a workspace config.
+
+In the Auto flow, an explicit ordinary `--model` starts with routing off. In other
+smart-routing launches, an explicit `--model`, from `ug claude --model` or a launcher
+such as Omnigent, keeps subagent routing when first-prompt routing is off.
+With first-prompt routing on, an explicit model still skips routing.
+
+When a model response launches a subagent, UG buffers that step and removes
+premature model claims before displaying or storing them. After launch, UG renders
+the parent's report directly from that request's child records: animal name,
+verified model, completion state and the recorded child answer. No special parent
+output format or Stop-hook retry is required. This replaces free-form parent
+summaries for that delegated request. Tool calls remain available, background
+completion follows the same path, and a fresh main-agent request replies normally.
+Routing-enabled responses are buffered until each model step completes.
+
+### Codex smart-routing compatibility
+
+Smart-routed terminal launches require Codex **0.171.0 or newer**. For earlier
+versions, including 0.171.0 prereleases, UG offers its usual upgrade prompt and
+checks the result before enabling routing. When routing comes from the workspace's
+managed default, declining or failing the upgrade warns and launches Codex without
+smart routing. An update that leaves Codex below the routing minimum takes the same
+fallback. Explicit routing requests remain blocked until the upgrade succeeds or
+the user passes `--disable-smart-routing`.
+`UG_AUTO_UPGRADE_AGENT=1` runs that upgrade without asking. The stable floor provides
+native delegation and status-line provider support. Ordinary launches retain the
+0.156.0 minimum; routing CI pins 0.171.0.
+
+A routed `ug codex app-server` cannot prompt because its stdin carries the client's
+protocol. On a known older Codex it warns on stderr and runs without smart routing.
+
+An inconclusive Codex version probe is retried once with a longer timeout. If the
+version is still unknown, managed routing warns and launches without routing;
+explicit routing requests stop and ask you to check `codex --version`. Neither case
+offers or runs an update. `--disable-smart-routing` also bypasses this routing version check.
+
+For a routed launch, UG's `-c` overrides take precedence over saved values for
+`features.multi_agent_v2.non_code_mode_only` (set to `false`),
+`features.multi_agent_v2.root_agent_usage_hint_text`, and
+`features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
+Custom values for these fields do not apply during that session. The saved config
+files are unchanged, as are native delegation-mode controls. Requests use the
+configured Databricks provider directly. Routed Codex terminal launches use the app-server
+interposer, including subagent-only presets. First-prompt model selection still follows
+the selected preset. A routed `ug codex app-server` instead runs that command with UG's
+routing settings. Of models, UG passes only the workspace's managed default, or the model
+a Model Provider Service or Unity Catalog location launch pins, and a model the caller
+passes with `-c` takes precedence. The caller connects its own clients, so
+subagents are routed but no interposer or first-prompt routing runs.
+
+Smart Router toggles keep every conversation loaded and do not interrupt any turn.
+The toggle turn finishes normally with its original routing attribution; the next
+main turn receives the new state. UG adds no user prompt or automatic continuation.
+Existing subagents keep running with their original attribution; new children,
+including descendants spawned by an old child, get the latest state through the
+spawn hook. Repeating the current state leaves session controls unchanged.
+
+Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
+`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`),
+except under a routed `ug codex app-server`, which has no interposer.
+The hook stamps child task names with `__sr_on` or `__sr_off`, which Codex places in
+`agent_name`. Parse only the final path segment: `/root/old__sr_on/new__sr_off`
+means off for that grandchild. A child's marker takes precedence over main state.
+Off is recorded as `DISABLED`; on uses the recipe name. Older clients can fall back
+to `Databricks-Smart-Router-Recipe`. These values describe client-requested routing,
+not proof that the router selected a different model. Native internal agents that
+bypass `spawn_agent` have no guaranteed marker. Reserve `smart_router_state` for
+per-turn metadata; a static Codex `responses_api_metadata` entry with that name
+would override dynamic values.
 
 ### Smart Router Orchestrator
 
@@ -309,36 +788,39 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
 use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
-| --- | --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
-| `subagent_only_v0` | Claude, Codex | On | Off | Off |
-| `subagent_only_v1` | Claude, Codex | On | Off | Off |
-| `subagent_orch_v0` | Claude, Codex | On | Off | On |
-| `subagent_orch_v1` | Claude, Codex | On | Off | On |
-| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker |
+| --- | --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
+| `subagent_auto_v0_claude_only` | Claude | On | Off | On | On |
 
-`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
-and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
-`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
-
-`subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
-`ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
-so first-prompt routing remains off; orchestration is also off.
-
-`subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
-subagents rather than the first prompt, and it additionally enables orchestration.
+`first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
+orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. Every other version routes subagents only;
+`subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
-and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
-managed default model, without routing or orchestration. Explicit launch/session
-on/off controls retain their existing precedence over presets.
+and sets all routing flags to `"0"` for Codex. Codex uses its ordinary launch and
+managed default model, without routing or orchestration. `--enable-smart-routing` and
+workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
+like a plain `ug codex`, without the Smart Router skills or routing hooks.
+
+Managed smart routing offers an upgrade when Codex is too old. If the upgrade is declined,
+fails, or leaves Codex too old, the same launch warns and continues without smart routing.
+An unknown version or a ChatGPT subscription relay also falls back, without an upgrade
+prompt. Explicit routing requests still require a supported version and direct provider.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
-For example:
+`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0`, which
+installs both skills for Claude and Codex. An explicit Claude-only version still leaves Codex
+unrouted. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
@@ -346,13 +828,15 @@ SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 
 The version takes precedence over conflicting legacy flags. Once the agent is selected,
 UG expands its mapping into
-`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
-unset or empty, these legacy flags retain their existing behavior, including
-first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
+`ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_SMART_ROUTER_AUTO_MODE` for the launched session. When the version is
+unset or empty, the routing and orchestrator flags retain their existing behavior,
+including first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. The Auto flag is
+derived only from its config version and cannot enable Auto independently. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
-Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
-Workspace smart-routing defaults do not rewrite the selected version's flags.
+`--disable-smart-routing` and session on/off controls apply after expansion;
+`--enable-smart-routing` and workspace smart routing keep a known version.
+Ordinary launches keep routing and orchestration off unless enabled explicitly or by workspace policy.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
@@ -376,6 +860,11 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
+If Codex cannot read or write the private session controls due to permissions, the skill requests native
+approval for the exact toggle command. Declining leaves routing unchanged;
+the directory permissions and sandbox configuration are preserved.
+Other write failures, such as a full disk, report the underlying error without
+requesting approval.
 Stored skill files do not activate orchestration without an opted-in configuration,
 or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
@@ -395,15 +884,38 @@ preferences are ignored and their files are left untouched. See the bundled
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS), `C:\ProgramData\OpenAI\Codex\requirements.toml` (Windows, written only from an elevated terminal; enforced by Codex 0.156.0 and later) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` and `/etc/codex/ug-model-catalog.json` (Linux and macOS), `C:\ProgramData\OpenAI\Codex\requirements.toml` (Windows, written only from an elevated terminal; enforced by Codex 0.156.0 and later) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
-| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
+| Kilo | `~/.ucode/kilo-xdg/kilo/kilo.json`, `~/.ucode/kilo-xdg/kilo/plugin/ucode-auth.js` |
+| GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Oh My Pi | `~/.ucode/omp-home/.omp/agent/models.yml`, `~/.ucode/omp-home/.omp/agent/config.yml`, `~/.ucode/omp-home/.omp/agent/mcp.json` |
+| Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
-| Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+| VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents vscode`, uninstalled by `ug revert`; your `settings.json` is never edited |
+| Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+
+Workspace policy is root-owned but readable without sudo. Configure installs it only when the
+workspace publishes a policy; launches check for updates every five minutes. Launches never
+write workspace policy, even as root: they warn about changes and keep the installed policy
+until `ug configure` (by an administrator or an IT provisioning run) updates it. Each distinct pending change warns once.
+The installed workspace is authoritative: selecting a different one fails launch instead of
+falling back to unmanaged behavior.
+Refresh timestamps and pending-change hashes live in user-owned `~/.ucode/refresh_ts.json`,
+not in the protected policy file.
+This policy is separate from agent-file backups and is not removed by `ug revert`.
+See [managed workspace policy](docs/managed-workspace-policy.md) for permissions and trade-offs.
+Managed policy headers must not contain secrets: the policy is readable by all local users.
+
+### Codex desktop ChatGPT relay
+
+When `ug configure` sets up Codex with a relayed OpenAI provider, it also points the Codex app's
+`~/.codex/config.toml` at a loopback relay served by the same login service below (plain `codex`
+then uses it too). Like Claude Desktop, `ug codex --provider` doesn't change the app. Restart the
+app and sign in with ChatGPT. A provider you already set is left alone; `ug revert` removes ug's
+entries.
 
 ### Codex desktop tracing
 
@@ -417,6 +929,7 @@ An exporter you already set is left alone. Disabling tracing or `ug revert` remo
 |----|---------|-------------|
 | Linux | systemd user service `ug-codex-otel.service` | `journalctl --user -u ug-codex-otel.service` |
 | macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
+| Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
 ## Development
 
@@ -460,10 +973,10 @@ auth helper retains its existing shared deadline.
 
 ## Documentation
 
-- [Databricks AI Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
-- [Databricks AI Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
+- [Databricks Unity Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
+- [Databricks Unity Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
 - [Databricks CLI authentication](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)
-- [Monitor AI Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
+- [Monitor Unity Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
 
 ## Security
 
@@ -473,3 +986,21 @@ opening a public issue.
 ## License
 
 See [LICENSE.md](./LICENSE.md) and [NOTICE.md](./NOTICE.md).
+
+## Publish skills from GitHub
+
+Use the [Publish skills action](actions/publish-skills/README.md) to sync skill
+folders in your GitHub repository to Unity Catalog on each push. No notebook, job,
+or Unity Gateway CLI installation is required. After configuring Databricks
+authentication and UC permissions, add this step to your workflow:
+
+```yaml
+- uses: databricks/unity-gateway/actions/publish-skills@main
+  with:
+    skills-directory: skills
+    target-schema: acme.team_skills
+```
+
+The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
+workflows, custom folder mappings, sharing permissions, and verification steps.
+Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.

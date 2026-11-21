@@ -4,5 +4,7 @@
 !tests/
 !tests/integration/
 !tests/integration/**
+!tests/fixtures/
+!tests/fixtures/**
 tests/integration/__pycache__/
 tests/integration/.pytest_cache/

@@ -1,3 +1,6 @@
+import base64
+import io
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -18,11 +21,79 @@ def test_secrets_are_redacted_from_build_output():
     )
 
 
+def test_m2m_token_uses_workspace_client_credentials(monkeypatch):
+    def token_response(request, timeout):
+        assert request.full_url == "https://workspace.example/oidc/v1/token"
+        assert request.data == b"grant_type=client_credentials&scope=all-apis"
+        assert request.get_header("Authorization") == (
+            "Basic " + base64.b64encode(b"client:secret").decode()
+        )
+        assert timeout == 30
+        return io.BytesIO(b'{"access_token":"workspace-token"}')
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+
+    assert runner.mint_m2m_token("https://workspace.example/", "client", "secret") == (
+        "workspace-token"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            '{"error":"invalid_client","error_description":"secret"}',
+            '{"error":"invalid_client","error_description":"<redacted>"}',
+        ),
+        (
+            "<html>IP access denied; secret; Y2xpZW50OnNlY3JldA==</html>",
+            "<html>IP access denied; <redacted>; <redacted></html>",
+        ),
+    ],
+)
+def test_m2m_token_reports_http_error_without_credentials(monkeypatch, body, expected):
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", denied)
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as error:
+        runner.mint_m2m_token("https://workspace.example", "client", "secret")
+
+    assert str(error.value) == (
+        "Service-principal OAuth token request to https://workspace.example/oidc/v1/token "
+        "failed (HTTP 403): " + expected
+    )
+    assert "secret" not in str(error.value)
+    assert "Y2xpZW50OnNlY3JldA==" not in str(error.value)
+
+
+def test_m2m_token_redacts_before_truncating_error_body(monkeypatch):
+    secret = "sensitive-client-secret"
+    body = "x" * 1990 + secret + "x" * 2000
+
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", denied)
+
+    with pytest.raises(RuntimeError) as error:
+        runner.mint_m2m_token("https://workspace.example", "client", secret)
+
+    detail = str(error.value).split("(HTTP 403): ", 1)[1]
+    assert detail == "x" * 1990 + "<redacted>"
+
+
 def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
     assert runner.integration_test_targets(
         tmp_path,
         ["claude", "codex"],
         platform_name="nt",
+        desktop_app=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -36,6 +107,7 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
         tmp_path,
         ["copilot"],
         platform_name="posix",
+        desktop_app=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -45,21 +117,305 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
     assert args.copilot_version == "1.0.91"
 
 
+def test_antigravity_build_selects_its_headless_node_and_version(tmp_path):
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["antigravity"],
+        platform_name="posix",
+        desktop_app=False,
+        installation_only=False,
+        headless_only=True,
+    ) == [
+        f"{tmp_path / 'test_ug_antigravity_headless.py'}"
+        "::test_ug_antigravity_headless_completes_file_task"
+    ]
+    args = runner.arguments(
+        ["--antigravity-build", "1.4.9-4962164969177088", "--installation-only"], environment={}
+    )
+    assert args.antigravity_build == "1.4.9-4962164969177088"
+    assert args.antigravity_version == "1.4.9"
+
+
+@pytest.mark.parametrize("build", ["1.4.9", "latest", "1.4.9-abc", "v1.4.9-1"])
+def test_antigravity_build_must_be_exact(build):
+    with pytest.raises(SystemExit):
+        runner.arguments(["--antigravity-build", build, "--installation-only"], environment={})
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "path"),
+    [
+        ("linux", "x86_64", "linux-x64/cli_linux_x64.tar.gz"),
+        ("linux", "aarch64", "linux-arm/cli_linux_arm64.tar.gz"),
+        ("darwin", "arm64", "darwin-arm/cli_mac_arm64.tar.gz"),
+    ],
+)
+def test_antigravity_archive_url_matches_googles_release_layout(system, machine, path):
+    # Captured from the release manifests for 1.4.9.
+    assert runner.antigravity_archive_url("1.4.9-4962164969177088", system, machine) == (
+        "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+        f"1.4.9-4962164969177088/{path}"
+    )
+
+
+def _archive(tmp_path, member_name="antigravity"):
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        data = b"#!/bin/sh\necho 1.4.9\n"
+        info = tarfile.TarInfo(member_name)
+        info.size = len(data)
+        bundle.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _serve(monkeypatch, payload):
+    import io
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(payload))
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner.platform, "machine", lambda: "x86_64")
+
+
+def test_antigravity_install_checks_the_pinned_sha512_before_extracting(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _archive(tmp_path)
+    _serve(monkeypatch, payload)
+    digest = hashlib.sha512(payload).hexdigest()
+
+    installed = runner.install_native_agent(
+        "antigravity", "1.4.9-4962164969177088", tmp_path / "bin", sha512=digest
+    )
+
+    assert installed["sha512"] == digest
+    assert (tmp_path / "bin/agy").read_bytes().startswith(b"#!/bin/sh")
+
+
+def test_antigravity_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
+    # The real pinned digest cannot match this stand-in archive.
+    _serve(monkeypatch, _archive(tmp_path))
+
+    with pytest.raises(RuntimeError, match="expected 1431a409"):
+        runner.install_native_agent("antigravity", "1.5.4-5037094733742080", tmp_path / "bin")
+
+    assert not (tmp_path / "bin/agy").exists()
+
+
+def test_antigravity_install_reports_a_missing_binary(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _archive(tmp_path, member_name="other")
+    _serve(monkeypatch, payload)
+
+    with pytest.raises(RuntimeError, match="has no antigravity binary"):
+        runner.install_native_agent(
+            "antigravity",
+            "1.4.9-4962164969177088",
+            tmp_path / "bin",
+            sha512=hashlib.sha512(payload).hexdigest(),
+        )
+
+
+def test_antigravity_unpinned_build_needs_an_explicit_sha512():
+    with pytest.raises(RuntimeError, match="--antigravity-sha512"):
+        runner.antigravity_expected_sha512("1.5.0-1", "linux", "x86_64")
+    assert runner.antigravity_expected_sha512("1.5.0-1", "linux", "x86_64", "AB" * 64) == (
+        "ab" * 64
+    )
+
+
+def test_antigravity_has_no_windows_build():
+    with pytest.raises(RuntimeError, match="No Antigravity CLI build"):
+        runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
+
+
+def test_vscode_version_is_exact_and_needs_a_pinned_copilot(capsys):
+    args = runner.arguments(
+        ["--copilot-version", "1.0.91", "--vscode-version", "1.144.0", "--installation-only"],
+        environment={},
+    )
+    assert args.vscode_version == "1.144.0"
+    for version in ("1.144", "latest", "v1.144.0", "1.144.0-insider"):
+        with pytest.raises(SystemExit):
+            runner.arguments(
+                ["--copilot-version", "1.0.91", "--vscode-version", version, "--installation-only"],
+                environment={},
+            )
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        runner.arguments(["--vscode-version", "1.144.0", "--installation-only"], environment={})
+    assert "--vscode-version requires --copilot-version" in capsys.readouterr().err
+
+
+def test_vscode_has_no_headless_journey():
+    with pytest.raises(SystemExit):
+        runner.arguments(
+            ["--copilot-version", "1.0.91", "--vscode-version", "1.144.0", "--headless-only"],
+            environment={"DATABRICKS_BEARER": "bearer", "UCODE_TEST_WORKSPACE": "https://x"},
+        )
+
+
+def test_vscode_archive_url_matches_the_update_service_layout():
+    assert runner.vscode_archive_url("1.144.0", "linux", "x86_64") == (
+        "https://update.code.visualstudio.com/1.144.0/linux-x64/stable"
+    )
+    assert runner.vscode_archive_url("1.144.0", "win32", "AMD64") == (
+        "https://update.code.visualstudio.com/1.144.0/win32-x64-archive/stable"
+    )
+    for system, machine in (("darwin", "arm64"), ("linux", "aarch64")):
+        with pytest.raises(RuntimeError, match="No pinned VS Code archive"):
+            runner.vscode_archive_url("1.144.0", system, machine)
+
+
+def _vscode_archive(*, copilot=True):
+    import io
+    import json
+    import tarfile
+
+    buffer = io.BytesIO()
+    files = {"VSCode-linux-x64/bin/code": b"#!/bin/sh\necho 1.144.0\n"}
+    if copilot:
+        # The real file is UTF-8 with localized text, not the Windows code page.
+        files["VSCode-linux-x64/resources/app/extensions/copilot/package.json"] = json.dumps(
+            {"version": "0.72.0", "description": "\u0440\u0443\u0441\u0441\u043a\u0438\u0439"},
+            ensure_ascii=False,
+        ).encode("utf-8")
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755
+            bundle.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def test_vscode_install_checks_the_pinned_sha256_and_reports_copilot_chat(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _vscode_archive()
+    _serve(monkeypatch, payload)
+    digest = hashlib.sha256(payload).hexdigest()
+
+    installed = runner.install_vscode("1.144.0", tmp_path / "vscode", sha256=digest)
+
+    assert installed["sha256"] == digest
+    assert installed["copilot_chat"] == "0.72.0"
+    assert installed["path"] == str(tmp_path / "vscode/VSCode-linux-x64/bin/code")
+    assert not (tmp_path / "vscode/vscode.tar.gz").exists()
+
+
+def test_vscode_windows_install_finds_code_cmd_and_the_versioned_copilot_chat(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import io
+    import json
+    import zipfile
+
+    buffer = io.BytesIO()
+    # The Windows archive is flat, with the app under a folder named for the build's commit.
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("Code.exe", b"MZ")
+        bundle.writestr("bin/code.cmd", b"@echo off")
+        bundle.writestr(
+            "2c33b50b16/resources/app/extensions/copilot/package.json",
+            json.dumps(
+                {"version": "0.72.0", "description": "\u0440\u0443\u0441"}, ensure_ascii=False
+            ),
+        )
+    payload = buffer.getvalue()
+    _serve(monkeypatch, payload)
+    monkeypatch.setattr(runner.sys, "platform", "win32")
+    monkeypatch.setattr(runner.platform, "machine", lambda: "AMD64")
+
+    installed = runner.install_vscode(
+        "1.144.0", tmp_path / "vscode", sha256=hashlib.sha256(payload).hexdigest()
+    )
+
+    assert installed["path"] == str(tmp_path / "vscode/VSCode-win32-x64/bin/code.cmd")
+    assert installed["copilot_chat"] == "0.72.0"
+    assert (tmp_path / "vscode/VSCode-win32-x64/Code.exe").is_file()
+
+
+def test_vscode_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
+    # The real pinned digest cannot match this stand-in archive.
+    _serve(monkeypatch, _vscode_archive())
+
+    with pytest.raises(RuntimeError, match="expected 17b72a7e"):
+        runner.install_vscode("1.144.0", tmp_path / "vscode")
+
+    assert not (tmp_path / "vscode/VSCode-linux-x64").exists()
+
+
+def test_vscode_install_requires_the_bundled_copilot_chat(tmp_path, monkeypatch):
+    import hashlib
+
+    payload = _vscode_archive(copilot=False)
+    _serve(monkeypatch, payload)
+
+    with pytest.raises(RuntimeError, match="bundles no Copilot Chat"):
+        runner.install_vscode(
+            "1.144.0", tmp_path / "vscode", sha256=hashlib.sha256(payload).hexdigest()
+        )
+
+
+def test_vscode_unpinned_version_needs_an_explicit_sha256():
+    with pytest.raises(RuntimeError, match="--vscode-sha256"):
+        runner.vscode_expected_sha256("1.145.0", "linux", "x86_64")
+    assert runner.vscode_expected_sha256("1.145.0", "linux", "x86_64", "AB" * 32) == "ab" * 32
+
+
+def test_vscode_version_output_is_its_first_line():
+    assert runner.agent_version_output("vscode", "1.144.0\n2c33b50b\nx64\n") == "1.144.0"
+
+
+def test_bedrock_defaults_use_service_credential_fixtures_and_frontier_models():
+    args = runner.arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
+
+    assert args.claude_bedrock_provider == "main.ucode.ci_bedrock_runtime_svc_cred_filtered_models"
+    assert (
+        args.claude_bedrock_allow_all_provider
+        == "main.ucode.ci_bedrock_runtime_svc_cred_all_models"
+    )
+    assert args.claude_bedrock_allow_all_model == "us.anthropic.claude-sonnet-5-5"
+    assert args.claude_bedrock_mantle_provider == "main.ucode.ci_bedrock_mantle_svc_cred_claude"
+    assert args.claude_bedrock_mantle_model == "anthropic.claude-opus-5-5"
+    assert (
+        args.codex_bedrock_runtime_provider == "main.ucode.ci_bedrock_runtime_svc_cred_all_models"
+    )
+    assert args.codex_bedrock_runtime_model == "us.openai.gpt-5.6-terra"
+    assert args.codex_bedrock_mantle_provider == "main.ucode.ci_bedrock_mantle_svc_cred_gpt"
+    assert args.codex_bedrock_mantle_model == "openai.gpt-5.6-terra"
+
+
 def test_copilot_version_output_matches_the_pinned_version():
     output = "GitHub Copilot CLI 1.0.91.\nRun 'copilot update' to check for updates.\n"
     assert runner.agent_version_output("copilot", output) == "GitHub Copilot CLI 1.0.91"
     assert runner.agent_version_output("codex", "codex-cli 0.154.0") == "codex-cli 0.154.0"
 
 
-def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path):
+def test_desktop_app_flag_keeps_its_old_macos_name():
+    # /integration-test runs the default branch's workflow, which may still pass the old name.
+    for flag in ("--desktop-app", "--macos-desktop"):
+        argv = ["--codex-version", "0.154.0", flag, "--workspace", "https://example.test"]
+        assert runner.arguments(argv, environment=windows_live_environment()).desktop_app
+
+
+def test_live_runs_select_every_module_except_unsupported_and_desktop_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
     (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
+    (tmp_path / "test_ug_codex_desktop_macos.py").write_text("import json\n")
+    (tmp_path / "test_ug_codex_desktop_windows.py").write_text("import json\n")
 
     assert runner.integration_test_targets(
         tmp_path,
         ["claude"],
         platform_name="nt",
+        desktop_app=False,
         installation_only=False,
         headless_only=False,
     ) == [
@@ -71,9 +427,37 @@ def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path)
         tmp_path,
         ["claude"],
         platform_name="posix",
+        desktop_app=False,
+        installation_only=False,
+        headless_only=False,
+    ) == [
+        str(tmp_path),
+        f"--ignore={tmp_path / 'test_ug_codex_desktop_macos.py'}",
+        f"--ignore={tmp_path / 'test_ug_codex_desktop_windows.py'}",
+    ]
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["codex"],
+        platform_name="posix",
+        desktop_app=True,
         installation_only=False,
         headless_only=False,
     ) == [str(tmp_path)]
+    # The desktop job's marker then picks this platform's journey.
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["codex"],
+        platform_name="nt",
+        desktop_app=True,
+        installation_only=False,
+        headless_only=False,
+    ) == [
+        str(tmp_path / "test_headless.py"),
+        str(tmp_path / "test_tui.py"),
+        str(tmp_path / "test_ug_codex_desktop_macos.py"),
+        str(tmp_path / "test_ug_codex_desktop_windows.py"),
+        *(f"--deselect={node}" for node in sorted(runner.WINDOWS_UNSUPPORTED_NODES)),
+    ]
 
 
 def test_headless_only_is_mutually_exclusive_with_installation_only():
@@ -133,9 +517,30 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
     assert paths == (
+        Path("C:/ProgramData/UnityGateway/managed-settings.json"),
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("system_platform", "claude_path"),
+    [
+        ("linux", "/etc/claude-code/managed-settings.json"),
+        ("darwin", "/Library/Application Support/ClaudeCode/managed-settings.json"),
+    ],
+)
+def test_posix_policy_paths_include_the_installed_workspace_policy(system_platform, claude_path):
+    paths = runner.managed_policy_paths(
+        ["claude", "codex"], {}, platform_name="posix", system_platform=system_platform
+    )
+
+    assert paths == (
+        Path("/etc/unitygateway/managed-settings.json"),
+        Path("/etc/codex/managed_config.toml"),
+        Path("/etc/codex/requirements.toml"),
+        Path(claude_path),
     )
 
 

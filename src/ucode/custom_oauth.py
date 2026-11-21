@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
+from ucode import metrics
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
@@ -139,14 +140,21 @@ def _custom_cli_profile(workspace: str, client_id: str) -> str:
 def ensure_custom_oauth_cli_token(
     workspace: str,
     config: CustomOAuthConfig,
+    workspace_id: str | None = None,
 ) -> str:
-    """Create/reuse the custom-client CLI profile and return its access token."""
+    """Create/reuse the custom-client CLI profile and return its access token.
+
+    ``workspace_id`` selects the workspace on a host that serves several, so the CLI doesn't
+    prompt for one after sign-in.
+    """
     ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
     workspace = normalize_workspace_url(workspace)
     profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
     config["profile"] = profile
     if external_bearer_configured():
-        save_databricks_cli_oauth_profile(workspace, profile, config["client_id"])
+        save_databricks_cli_oauth_profile(
+            workspace, profile, config["client_id"], workspace_id=workspace_id
+        )
     if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
     login_args = [
@@ -154,7 +162,7 @@ def ensure_custom_oauth_cli_token(
         "auth",
         "login",
         "--host",
-        workspace,
+        f"{workspace}?w={workspace_id}" if workspace_id else workspace,
         "--profile",
         profile,
         "--client-id",
@@ -163,7 +171,14 @@ def ensure_custom_oauth_cli_token(
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
     try:
-        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+        metrics.mark_login()
+        with metrics.measure(
+            metrics.DATABRICKS_LOGIN_DURATION_MS,
+            workspace=workspace,
+            operation=metrics.DATABRICKS_LOGIN_OPERATION,
+            login_method="cli",
+        ):
+            run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
     finally:
         clear_databricks_token_cache()
     return get_databricks_token(workspace, profile)
@@ -187,57 +202,74 @@ def get_custom_client_token(
     # `databricks.sdk` eagerly imports every service module (~0.7s); only the SDK backend needs it.
     from databricks.sdk import oauth
 
-    try:
-        endpoints = oauth.get_workspace_endpoints(workspace)
-        cache = oauth.TokenCache(
-            host=workspace,
-            oidc_endpoints=endpoints,
-            client_id=config["client_id"],
-            redirect_url=config["redirect_url"],
-            scopes=config["scopes"],
-        )
-        with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
-            # Read only after acquiring the lock: another helper may have just
-            # completed login or rotated the refresh token while we waited.
-            credentials = cache.load()
-            if credentials is not None:
-                try:
-                    if force_refresh:
-                        credentials = oauth.SessionCredentials(
-                            token=credentials.refresh(),
-                            token_endpoint=endpoints.token_endpoint,
-                            client_id=config["client_id"],
-                            redirect_url=config["redirect_url"],
+    with metrics.measure(
+        metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS,
+        workspace=workspace,
+        operation=metrics.DATABRICKS_TOKEN_FETCH_OPERATION,
+        token_source="sdk",
+        in_process_cache_hit=False,
+    ):
+        try:
+            endpoints = oauth.get_workspace_endpoints(workspace)
+            cache = oauth.TokenCache(
+                host=workspace,
+                oidc_endpoints=endpoints,
+                client_id=config["client_id"],
+                redirect_url=config["redirect_url"],
+                scopes=config["scopes"],
+            )
+            with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
+                # Read only after acquiring the lock: another helper may have just
+                # completed login or rotated the refresh token while we waited.
+                credentials = cache.load()
+                if credentials is not None:
+                    try:
+                        if force_refresh:
+                            credentials = oauth.SessionCredentials(
+                                token=credentials.refresh(),
+                                token_endpoint=endpoints.token_endpoint,
+                                client_id=config["client_id"],
+                                redirect_url=config["redirect_url"],
+                            )
+                        credentials.token()
+                    except Exception:
+                        print_warning_err(
+                            "Cached OAuth token could not be refreshed. Sign in again."
                         )
-                    credentials.token()
-                except Exception:
-                    print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
-                    credentials = None
-            if credentials is None:
-                client = oauth.OAuthClient(
-                    oidc_endpoints=endpoints,
-                    client_id=config["client_id"],
-                    redirect_url=config["redirect_url"],
-                    scopes=config["scopes"],
-                )
-                consent = client.initiate_consent()
-                err_console.print(
-                    f"Sign in using your browser: {consent.authorization_url}",
-                    markup=False,
-                    soft_wrap=True,
-                )
-                credentials = consent.launch_external_browser()
-            token = credentials.token().access_token
-            if not token:
-                raise ValueError("OAuth returned no access token")
-            cache.save(credentials)
-            return token
-    except Exception as exc:
-        raise RuntimeError(
-            "Custom-client OAuth failed. Check the workspace, client ID, and registered "
-            f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
-            "the SDK token cache is writable, then retry."
-        ) from exc
+                        credentials = None
+                if credentials is None:
+                    client = oauth.OAuthClient(
+                        oidc_endpoints=endpoints,
+                        client_id=config["client_id"],
+                        redirect_url=config["redirect_url"],
+                        scopes=config["scopes"],
+                    )
+                    consent = client.initiate_consent()
+                    err_console.print(
+                        f"Sign in using your browser: {consent.authorization_url}",
+                        markup=False,
+                        soft_wrap=True,
+                    )
+                    metrics.mark_login()
+                    with metrics.measure(
+                        metrics.DATABRICKS_LOGIN_DURATION_MS,
+                        workspace=workspace,
+                        operation=metrics.DATABRICKS_LOGIN_OPERATION,
+                        login_method="sdk",
+                    ):
+                        credentials = consent.launch_external_browser()
+                token = credentials.token().access_token
+                if not token:
+                    raise ValueError("OAuth returned no access token")
+                cache.save(credentials)
+                metrics.bind(workspace, token)
+                return token
+        except Exception as exc:
+            raise RuntimeError(
+                "Custom-client OAuth failed. Check the workspace, client ID, and registered "
+                f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
+                "the SDK token cache is writable, then retry."
+            ) from exc
 
 
 def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:

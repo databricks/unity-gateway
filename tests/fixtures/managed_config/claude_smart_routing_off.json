@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CLAUDE_CODE",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CLAUDE_CODE",
+      "config": {
+        "models": {
+          "model_services": [
+            "system.ai.deepseek-v4-1-flash-1017",
+            "system.ai.claude-sonnet-5-5",
+            "system.ai.claude-sonnet-4-6"
+          ]
+        },
+        "default_models": {
+          "default_model": "system.ai.claude-sonnet-5-5"
+        }
+      }
+    }
+  ]
+}

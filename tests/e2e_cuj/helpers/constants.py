@@ -5,12 +5,16 @@ from pathlib import Path
 
 CLAUDE = "claude"
 CODEX = "codex"
+COPILOT = "copilot"
 MANAGED_PATHS = (
     Path("/etc/claude-code/managed-settings.json"),
     Path("/etc/codex/managed_config.toml"),
     Path("/etc/codex/requirements.toml"),
     Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
 )
+# Unity Gateway's installed workspace policy. Any `ug configure` may install it (with sudo), so it
+# is not a leaked agent setting; CUJ teardown removes it.
+WORKSPACE_POLICY_PATH = Path("/etc/unitygateway/managed-settings.json")
 INFERENCE_PATHS = {
     CLAUDE: "/ai-gateway/anthropic/v1/messages",
     CODEX: "/ai-gateway/codex/v1/responses",
@@ -22,8 +26,10 @@ CLAUDE_HAIKU_MODEL = "system.ai.claude-haiku-4-5"
 NATIVE_MODEL_ALIASES = {
     "system.ai.anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_HAIKU_MODEL,
 }
+CLAUDE_GPT_LUNA_MODEL = "system.ai.gpt-6-luna"
+CLAUDE_GPT_SOL_MODEL = "system.ai.gpt-6-1-sol"
 CODEX_SOL_MODEL = "system.ai.gpt-5-6-sol"
-CODEX_LUNA_MODEL = "system.ai.gpt-5-6-luna"
+CODEX_LUNA_MODEL = "system.ai.gpt-6-luna"
 # TuiRequestRecorder lowercases recorded header names.
 RUN_HEADER = "x-ug-e2e-run"
 AGENT_HEADER = "x-ug-e2e-agent"
@@ -33,16 +39,18 @@ PROVIDER_HEADER = "databricks-model-provider-service"
 class CodingAgent(StrEnum):
     CLAUDE_CODE = "CODING_AGENT_CLAUDE_CODE"
     CODEX = "CODING_AGENT_CODEX"
+    GITHUB_COPILOT = "CODING_AGENT_GITHUB_COPILOT"
 
 
 CODING_AGENT_BY_CLI_NAME = {
     CLAUDE: CodingAgent.CLAUDE_CODE,
     CODEX: CodingAgent.CODEX,
+    COPILOT: CodingAgent.GITHUB_COPILOT,
 }
 
 MODEL_PROVIDER_SERVICE_FIXTURES = {
-    CLAUDE: ("ug_e2e.providers.anthropic", "claude-haiku-4-5-20251001"),
-    CODEX: ("ug_e2e.providers.openai", "gpt-5-nano"),
+    CLAUDE: ("ug_e2e.providers.anthropic", "claude-haiku-5-5"),
+    CODEX: ("ug_e2e.providers.openai", "gpt-6-luna"),
 }
 
 SANDBOX_MCP_SERVICE_NAME = "system.ai.sandbox"
@@ -64,3 +72,14 @@ FIXTURE_NOTES_SKILL_NAME = "ug_e2e.skills.fixture-notes"
 FIXTURE_CATALOG_LOOKUP_SKILL_NAME = "ug_e2e.skills.fixture-catalog-lookup"
 FIXTURE_DECOY_SKILL_NAME = "ug_e2e.other_skills.fixture-decoy"
 SKILLS_LOCATION = "ug_e2e.skills"
+
+SOURCE_SCHEMA = "ug_e2e.other_models"
+SOURCE_CLAUDE_ALIAS = f"{SOURCE_SCHEMA}.claude_decoy"
+SOURCE_CODEX_ALIAS = f"{SOURCE_SCHEMA}.codex_decoy"
+SOURCE_ANTHROPIC_PROVIDER = "ug_e2e.providers.anthropic"
+SOURCE_OPENAI_PROVIDER = "ug_e2e.providers.openai"
+SOURCE_ANTHROPIC_TARGET = "claude-haiku-5-5"
+SOURCE_OPENAI_TARGET = "gpt-6-luna"
+SOURCE_CLAUDE_PROVIDER_MODEL = f"{SOURCE_ANTHROPIC_PROVIDER}.{SOURCE_ANTHROPIC_TARGET}"
+SOURCE_CODEX_PROVIDER_MODEL = f"{SOURCE_OPENAI_PROVIDER}.{SOURCE_OPENAI_TARGET}"
+SOURCE_COPILOT_DEFAULT_MODEL = "system.ai.gpt-6-luna"

@@ -1,4 +1,4 @@
-"""Report downloaded skills to AI Gateway, which counts them toward UC skill popularity.
+"""Report downloaded skills to Unity Gateway, which counts them toward UC skill popularity.
 
 Reports are sent by a detached child process, so no command waits on the network and exiting
 doesn't cut a report short.
@@ -13,10 +13,12 @@ import sys
 from contextlib import suppress
 from typing import Any
 
+from ucode import tls
 from ucode.databricks import _http_post_json, workspace_hostname
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import SkillRef
-from ucode.telemetry import ug_version
+from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.workspace import pin, workspace_id_args
 
 _REPORT_SKILL_USAGE_PATH = "/ai-gateway/skills:reportSkillUsage"
 _REPORT_REQUEST_ENV_VAR = "UCODE_SKILL_USAGE_REPORT"
@@ -41,7 +43,11 @@ def report_skill_usage_in_background(workspace: str, token: str, refs: list[Skil
     skills = [{"full_name": ref.fqn, "id": ref.skill_id} for ref in refs if ref.skill_id]
     if not skills:
         return
-    request = json.dumps({"workspace": workspace, "skills": skills})
+    payload: dict[str, object] = {"workspace": workspace, "skills": skills}
+    workspace_args = workspace_id_args(workspace)
+    if workspace_args:
+        payload["workspace_id"] = workspace_args[1]
+    request = json.dumps(payload)
     with suppress(OSError):
         reporter = subprocess_cross_os.popen(
             [sys.executable, "-P", "-m", "ucode.skills_usage"],
@@ -59,10 +65,13 @@ def report_skill_usage_in_background(workspace: str, token: str, refs: list[Skil
 
 def main() -> None:
     """Send the handed over request, one report per 50 skills, stopping at the first failure."""
+    tls.apply()
     token = sys.stdin.read()
     request = json.loads(os.environ[_REPORT_REQUEST_ENV_VAR])
+    if request.get("workspace_id"):
+        pin(request["workspace"], request["workspace_id"])
     url = f"https://{workspace_hostname(request['workspace'])}{_REPORT_SKILL_USAGE_PATH}"
-    headers = {"User-Agent": f"ucode/{ug_version()}"}
+    headers = {"User-Agent": ucode_user_agent(ug_version())}
     skills = request["skills"]
     for start in range(0, len(skills), _MAX_SKILLS_PER_REPORT):
         report = {"skills": skills[start : start + _MAX_SKILLS_PER_REPORT]}

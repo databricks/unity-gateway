@@ -155,6 +155,14 @@ class TestAgentsAdd:
         assert result.exit_code == 1
         assert "Unknown agent" in result.output
 
+    def test_antigravity_can_be_self_managed(self):
+        # The managed config has no Antigravity agent, so self-managed is its only path.
+        managed = {"enabled_agents": {"claude": {}}}
+        result, setup_spy, add_spy, _ = self._run(["antigravity"], managed=managed)
+        assert result.exit_code == 0, result.output
+        assert setup_spy.called
+        assert add_spy.called
+
     def test_no_workspace_exits_1(self):
         result, setup_spy, *_ = self._run(["opencode"], state={})
         assert result.exit_code == 1

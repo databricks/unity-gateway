@@ -3,10 +3,12 @@
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
 from ucode import cli
 from ucode import state as state_store
@@ -75,7 +77,7 @@ def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, ca
     ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "system.ai.claude-haiku-4-5"},
+        {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"},
     ]
     assert profile["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert profile["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
@@ -363,9 +365,9 @@ def test_configure_filters_claude_names_without_changing_source(desktop, monkeyp
 
     desktop_setup.configure_claude_desktop(state)
 
-    assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": model_id} for model_id in claude_models
-    ]
+    assert [
+        model["name"] for model in configured_profile(desktop)["inferenceModels"]
+    ] == claude_models
     assert model_ids == original_ids
 
 
@@ -431,7 +433,9 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     refreshed = configured_profile(desktop)
     original_metadata["entries"][0]["name"] = "Unity Gateway - updated-profile"
     assert json.loads(metadata_path.read_text()) == original_metadata
-    assert refreshed["inferenceModels"] == [{"name": "main.models.claude-sonnet-5-desktop"}]
+    assert refreshed["inferenceModels"] == [
+        {"name": "main.models.claude-sonnet-5-desktop", "labelOverride": "Claude Sonnet 5 Desktop"}
+    ]
     assert refreshed["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert refreshed["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
     assert refreshed["inferenceCredentialHelperArgs"][-2:] == ["--profile", "updated-profile"]
@@ -479,24 +483,62 @@ def test_configure_overwrites_reserved_uuid_without_ownership_record(desktop, ca
     }
 
 
-def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
-    def forbidden(*args, **kwargs):
-        pytest.fail("A managed static catalog must not trigger discovery")
+def test_managed_static_catalog_uses_discovery_only_for_labels(desktop, monkeypatch):
+    haiku = "main.models.claude-haiku-4-5"
+    extra = "system.ai.claude-sonnet-5"
+    calls = []
 
-    monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", forbidden)
+    def catalog(workspace, token, **kwargs):
+        calls.append((workspace, token, kwargs))
+        return AnthropicModelCatalog(
+            model_ids=[extra, haiku],
+            model_id_to_display_name={haiku: "Claude Haiku 4.5", extra: "Claude Sonnet 5"},
+        )
+
+    monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", catalog)
     desktop_setup.configure_claude_desktop(
         {
             "workspace": "https://workspace.example",
             "profile": "chosen-profile",
-            "claude_static_models": ["main.models.claude-haiku-4-5", "main.models.gpt-5-6-sol"],
+            "claude_static_models": [haiku, "main.models.gpt-5-6-sol"],
             "claude_http_headers": {"X-Admin": "configured"},
         }
     )
+    assert calls == [
+        (
+            "https://workspace.example",
+            "component-token",
+            {"provider": None, "parent_schema": None},
+        )
+    ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "main.models.claude-haiku-4-5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
     ]
     assert profile["inferenceCustomHeaders"]["X-Admin"] == "configured"
+
+
+def test_managed_static_catalog_keeps_ids_when_label_discovery_fails(desktop, monkeypatch):
+    haiku = "main.models.claude-haiku-4-5"
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="Discovery unavailable"
+        ),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_static_models": [haiku],
+        }
+    )
+
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"}
+    ]
 
 
 def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
@@ -519,8 +561,8 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
 
     assert configured_profile(desktop)["inferenceModels"] == [
         {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
-        {"name": opus},
-        {"name": haiku},
+        {"name": opus, "labelOverride": "Claude Opus 5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
         {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
     ]
     assert model_ids == original_ids
@@ -532,7 +574,7 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
     assert configured_profile(desktop)["inferenceModels"] == [
         {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
         {"name": opus, "labelOverride": "Claude Opus 5"},
-        {"name": haiku},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
         {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
     ]
 
@@ -540,9 +582,79 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
     display_names[opus] = ""
     desktop_setup.configure_claude_desktop(state)
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": model_id} for model_id in [sonnet, opus, haiku, sonnet]
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
+        {"name": opus, "labelOverride": "Claude Opus 5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
     ]
     assert model_ids == original_ids
+
+
+@pytest.mark.parametrize(
+    "model_id,label",
+    [
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+        ("anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
+        ("anthropic.claude-opus-4-8", "Claude Opus 4.8"),
+        ("system.ai.claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("databricks-claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("main.models.claude-sonnet-5-desktop", "Claude Sonnet 5 Desktop"),
+    ],
+)
+@pytest.mark.parametrize("echoed_id", [False, True])
+def test_provider_models_get_readable_labels_when_discovery_names_are_missing_or_ids(
+    desktop, monkeypatch, model_id, label, echoed_id
+):
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            [model_id], {model_id: model_id} if echoed_id else {}
+        ),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "provider_services": {"claude": "main.models.provider"},
+        }
+    )
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceModels"] == [{"name": model_id, "labelOverride": label}]
+    assert (
+        profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == "main.models.provider"
+    )
+
+
+@pytest.mark.parametrize("catalog_labels", [False, True])
+def test_model_label_collisions_keep_distinct_routes_visible(desktop, monkeypatch, catalog_labels):
+    us = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    eu = "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    haiku = "claude-haiku-4-5"
+    model_ids = [us, haiku, eu, us]
+    names = {us: "Claude Sonnet 4.5"} if catalog_labels else {}
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(model_ids, names),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    )
+
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": us, "labelOverride": us},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
+        {"name": eu, "labelOverride": eu},
+        {"name": us, "labelOverride": us},
+    ]
 
 
 @pytest.mark.parametrize("parent", [None, "main.models"])
@@ -588,9 +700,7 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("claude_relayed", True),
         ("custom_oauth", {"client_id": "custom"}),
-        ("use_pat", True),
         ("profile", None),
     ],
 )
@@ -601,6 +711,92 @@ def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key,
     assert (desktop / "_meta.json").read_bytes() == before
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert "Could not configure Claude Desktop" in capsys.readouterr().out
+
+
+def test_pat_profile_helpers_read_the_profile_pat(desktop):
+    state = {"workspace": "https://workspace.example/", "profile": "pat-profile", "use_pat": True}
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceCredentialHelperArgs"][-3:] == [
+        "--profile",
+        "pat-profile",
+        "--use-pat",
+    ]
+    assert "component-token" not in json.dumps(profile)
+
+
+def test_pat_profile_otel_helper_reads_the_profile_pat(desktop):
+    state = {
+        "workspace": "https://workspace.example/",
+        "profile": "pat-profile",
+        "use_pat": True,
+        "claude_otel_tracing": True,
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"]).read_text()
+    assert "--use-pat" in helper
+
+
+def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, monkeypatch):
+    claude_binary = os.path.abspath(os.path.join("bin", "claude"))
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: claude_binary)
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_relayed": True,
+        "provider_services": {"claude": "main.models.subscription"},
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceGatewayBaseUrl"] == ("https://workspace.example/ai-gateway/anthropic")
+    assert profile["inferenceCredentialHelperArgs"][-3:] == [
+        "--relay",
+        "--claude-binary",
+        claude_binary,
+    ]
+    assert profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == (
+        "main.models.subscription"
+    )
+
+
+def test_relay_for_cli_model_services_keeps_desktop_on_gateway_auth(desktop, monkeypatch):
+    # Relay-backed model services in a static list are CLI-only: Desktop has no per-model proxy.
+    monkeypatch.setattr(
+        desktop_setup.shutil, "which", lambda binary: pytest.fail("no relay helper expected")
+    )
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_relayed": True,
+        "claude_relayed_for_model_services": True,
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    assert "--relay" not in configured_profile(desktop)["inferenceCredentialHelperArgs"]
+
+
+def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):
+    before = (desktop / "_meta.json").read_bytes()
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: None)
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_relayed": True,
+        }
+    )
+
+    assert (desktop / "_meta.json").read_bytes() == before
+    assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
+    assert "Install Claude Code" in capsys.readouterr().out
 
 
 def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch, capsys):
@@ -646,7 +842,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     assert "retry" in output
 
 
-def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeypatch, capsys):
+def test_revert_failure_retains_workspace_state_and_allows_retry(desktop, monkeypatch):
     previous_id = "12345678-1234-4abc-8def-123456789abc"
     (desktop / f"{previous_id}.json").write_text("{}")
     metadata_path = desktop / "_meta.json"
@@ -662,26 +858,48 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
     state_store.save_state(state)
 
     # Other agents' cleanup must not touch host configuration.
+    monkeypatch.setattr(cli.copilot_agent, "COPILOT_CONFIG_DIR", claude_desktop.APP_DIR / "copilot")
     monkeypatch.setattr(cli, "restore_file", lambda *args: False)
     monkeypatch.setattr(cli, "revert_mcp_configs", lambda state: {})
     monkeypatch.setattr(cli, "revert_legacy_shared_config", lambda: False)
     monkeypatch.setattr(cli.claude_agent, "revert_managed_settings", lambda: "unchanged")
     monkeypatch.setattr(cli.codex_agent, "revert_managed_config", lambda: "unchanged")
+    monkeypatch.setattr(
+        cli.claude_agent,
+        "managed_settings_path",
+        lambda: claude_desktop.APP_DIR / "claude-managed.json",
+    )
+    monkeypatch.setattr(
+        cli.codex_agent,
+        "codex_managed_config_path",
+        lambda: claude_desktop.APP_DIR / "codex-managed.toml",
+    )
 
     def lock_timeout(handle, *, timeout):
         raise TimeoutError("Lock is held by another operation")
 
+    runner = CliRunner()
     with monkeypatch.context() as blocked:
         blocked.setattr(desktop_config, "acquire_exclusive_file_lock", lock_timeout)
-        assert cli.revert() == 1
+        failed = runner.invoke(cli.app, ["revert"])
 
-    assert state_store.load_state() == {}
-    assert state_store.load_full_state()["workspaces"] == {}
+    assert failed.exit_code == 1, failed.output
+    warnings = [line for line in failed.output.splitlines() if line.startswith("! ")]
+    assert len(warnings) == 2, failed.output
+    assert "Could not revert Claude Desktop" in warnings[0]
+    assert (
+        warnings[1] == "! ug state retained. Fix the Claude Desktop error and run ug revert again."
+    )
+    assert "Claude Desktop profile: failed" in failed.output
+
+    assert state_store.load_state()["workspace"] == state["workspace"]
+    assert state["workspace"] in state_store.load_full_state()["workspaces"]
     assert selection_path.read_bytes() == selection_before
     assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == profiles_before
-    assert "ug state cleared" in capsys.readouterr().out
 
-    assert cli.revert() == 0
+    retried = runner.invoke(cli.app, ["revert"])
+    assert retried.exit_code == 0, retried.output
+    assert state_store.load_state() == {}
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
     assert not selection_path.exists()
     assert json.loads(metadata_path.read_text()) == {
@@ -689,7 +907,8 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
         "appliedId": previous_id,
     }
     assert (desktop / f"{previous_id}.json").read_text() == "{}"
-    assert cli.revert() == 0
+    repeated = runner.invoke(cli.app, ["revert"])
+    assert repeated.exit_code == 0, repeated.output
 
 
 def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
@@ -719,6 +938,7 @@ def test_missing_app_warns_before_model_discovery(platform, monkeypatch, tmp_pat
     directory = root / "configLibrary"
     monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(claude_desktop, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(claude_desktop, "_claude_desktop_installed", lambda: False)
 
     def reject_token_fetch(*_args):
         pytest.fail("Missing Desktop must be detected before external authentication")
@@ -746,6 +966,13 @@ def test_revert_without_desktop_ownership_leaves_existing_settings_untouched(des
     assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
 
 
+def test_revert_cleans_cowork_when_native_desktop_is_unavailable(monkeypatch):
+    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: None)
+    monkeypatch.setattr(desktop_setup, "revert_claude_cowork", lambda: "removed")
+
+    assert desktop_setup.revert_desktop() == "removed"
+
+
 def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     desktop_setup.configure_claude_desktop(state)
@@ -761,7 +988,7 @@ def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
 
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": "system.ai.claude-haiku-4-5"},
+        {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"},
     ]
     assert {path.name for path in desktop.glob("*.json")} == {
         "_meta.json",
@@ -797,3 +1024,66 @@ def test_switching_workspace_replaces_one_reserved_profile(desktop):
     }
     assert desktop_setup.revert_desktop() == "removed"
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
+
+
+@pytest.mark.parametrize("desktop", ["win32"], indirect=True)
+@pytest.mark.parametrize(
+    "installation",
+    [
+        "installed",
+        "slow_installed",
+        "missing",
+        "timeout",
+        "query_unavailable",
+        "query_failed",
+        "query_startup_failed",
+    ],
+)
+def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, capsys):
+    (desktop / "_meta.json").unlink()
+    desktop.rmdir()
+    desktop.parent.rmdir()
+
+    def query_installed_package(args, **kwargs):
+        # Simulate the Windows package query while keeping real configuration writes.
+        if installation == "timeout" or (
+            installation == "slow_installed" and kwargs["timeout"] < 20
+        ):
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        if installation == "query_unavailable":
+            raise FileNotFoundError("PowerShell unavailable")
+        if installation == "query_failed":
+            return subprocess.CompletedProcess(
+                args, 2, stderr="AppX package registration unavailable"
+            )
+        if installation == "query_startup_failed":
+            return subprocess.CompletedProcess(args, 1, stderr="PowerShell initialization failed")
+        return subprocess.CompletedProcess(
+            args, 0 if installation in ("installed", "slow_installed") else 3
+        )
+
+    monkeypatch.setattr(claude_desktop.subprocess_cross_os, "run", query_installed_package)
+    desktop_setup.configure_claude_desktop(
+        {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    )
+
+    if installation in ("installed", "slow_installed"):
+        profile = configured_profile(desktop)
+        assert profile["inferenceProvider"] == "gateway"
+        assert profile["inferenceModels"] == [
+            {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"}
+        ]
+        return
+    output = " ".join(capsys.readouterr().out.split())
+    expected = {
+        "missing": "Open Claude Desktop once",
+        "timeout": "Checking the installed Claude Desktop package timed out after 30 seconds",
+        "query_unavailable": "Could not start PowerShell",
+        "query_failed": "PowerShell exit code 2): AppX package registration unavailable",
+        "query_startup_failed": "PowerShell exit code 1): PowerShell initialization failed",
+    }
+    assert expected[installation] in output
+    if installation != "missing":
+        assert "Open Claude Desktop once" not in output
+    assert not desktop.parent.exists()
+    assert not claude_desktop.APP_DIR.exists()

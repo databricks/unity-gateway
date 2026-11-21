@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import io
+import threading
 from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +36,69 @@ from ucode.ui import (
     render_box_table,
     status_badge,
 )
+
+
+class TestSpinner:
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_exit_wakes_the_frame_wait_and_clears_the_line(self, monkeypatch, raises):
+        output = io.StringIO()
+        monkeypatch.setattr(output, "isatty", lambda: True)
+        monkeypatch.setattr(ui_mod.sys, "stdout", output)
+        waiting = threading.Event()
+        awakened = threading.Event()
+
+        class FrameEvent(threading.Event):
+            def wait(self, timeout=None):
+                waiting.set()
+                # Hold the frame until the context exits, independent of the animation interval.
+                # The bound only prevents a broken cleanup from leaving a thread behind.
+                result = super().wait(5)
+                if result:
+                    awakened.set()
+                return result
+
+        stop = FrameEvent()
+        threads = []
+
+        def start_thread(**kwargs):
+            thread = threading.Thread(**kwargs)
+            threads.append(thread)
+            return thread
+
+        # Keep Thread's own startup Event untouched by replacing only ui's module reference.
+        monkeypatch.setattr(
+            ui_mod, "threading", SimpleNamespace(Event=lambda: stop, Thread=start_thread)
+        )
+
+        def operation():
+            with ui_mod.spinner("Loading..."):
+                assert waiting.wait(5), "spinner frame did not enter an interruptible wait"
+                if raises:
+                    raise RuntimeError("operation failed")
+
+        if raises:
+            with pytest.raises(RuntimeError, match="operation failed"):
+                operation()
+        else:
+            operation()
+
+        assert awakened.is_set()
+        assert len(threads) == 1
+        assert not threads[0].is_alive()
+        assert output.getvalue() == "\r\033[2m|\033[0m Loading...\033[K\r\033[K"
+
+    def test_redirected_output_does_not_start_an_animation(self, monkeypatch):
+        output = io.StringIO()
+        monkeypatch.setattr(ui_mod.sys, "stdout", output)
+
+        def unexpected_thread(**_kwargs):
+            pytest.fail("redirected output must not start a spinner thread")
+
+        monkeypatch.setattr(ui_mod, "threading", SimpleNamespace(Thread=unexpected_thread))
+        with ui_mod.spinner("Loading..."):
+            output.write("operation output")
+
+        assert output.getvalue() == "operation output"
 
 
 class TestPrintSuccess:

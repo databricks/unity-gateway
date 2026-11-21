@@ -10,6 +10,7 @@ import pytest
 
 from ucode.agents import kilo
 from ucode.agents.args import LaunchOptions
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -178,7 +179,7 @@ class TestRenderOverlay:
         model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
             "headers"
         ]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/7.3.1"
+        assert model_headers["User-Agent"] == f"ucode/0.1.0 kilo/7.3.1 {client_platform()}"
 
     def test_user_agent_header_gemini(self, monkeypatch):
         monkeypatch.setattr(kilo, "ug_version", lambda: "0.1.0")
@@ -186,7 +187,7 @@ class TestRenderOverlay:
         models = {"gemini": ["gemini-2"]}
         overlay, _ = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
         model_headers = overlay["provider"]["databricks-google"]["models"]["gemini-2"]["headers"]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/7.3.1"
+        assert model_headers["User-Agent"] == f"ucode/0.1.0 kilo/7.3.1 {client_platform()}"
 
     def test_provider_level_headers_only_authorization(self, monkeypatch):
         models = {"anthropic": ["claude-sonnet"]}
@@ -194,6 +195,30 @@ class TestRenderOverlay:
         provider_headers = overlay["provider"]["databricks-anthropic"]["options"]["headers"]
         assert "User-Agent" not in provider_headers
         assert provider_headers["Authorization"] == "Bearer tok"
+
+    def test_request_tags_header_added_per_model_when_env_set(self, monkeypatch):
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        models = {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"], "oss": ["gpt-oss"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        for provider, model in (
+            ("databricks-anthropic", "claude-sonnet"),
+            ("databricks-google", "gemini-2"),
+            ("databricks-oss", "gpt-oss"),
+        ):
+            model_headers = overlay["provider"][provider]["models"][model]["headers"]
+            assert model_headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+        provider_headers = overlay["provider"]["databricks-anthropic"]["options"]["headers"]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in provider_headers
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
+            "headers"
+        ]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in model_headers
 
     def test_managed_keys_include_model(self):
         _, keys = kilo.render_overlay("model", "tok", _base_urls(), {})

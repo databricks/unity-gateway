@@ -2,13 +2,15 @@
 
 Launchers such as isaac run ``ug --version`` on every start. Importing ``ucode.cli`` (Typer, Rich,
 questionary, every subcommand module) costs far more than printing the version, so a bare version
-request is answered here without importing it. Every other invocation goes to ``ucode.cli.main``.
+request is answered here without importing it. The per-agent MCP proxy also skips agent setup
+imports. Other invocations go to ``ucode.cli.main``.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
@@ -58,6 +60,7 @@ def _read_installed_version() -> str | None:
 
 
 def main() -> None:
+    started = time.perf_counter()
     if sys.argv[1:] in _VERSION_ARGV:
         version = _read_installed_version()
         if version is None:
@@ -67,6 +70,26 @@ def main() -> None:
         print(version)
         return
 
-    from ucode.cli import main as cli_main
+    from ucode import metrics, tls
 
-    cli_main()
+    # Before any import that could open a connection, so every client sees the same trust store.
+    tls.apply()
+    is_mcp_proxy = sys.argv[1:2] == ["mcp-proxy"]
+    enabled = not any(arg in {"--help", "-h"} for arg in sys.argv[1:])
+    if enabled:
+        metrics.begin("mcp-proxy" if is_mcp_proxy else metrics.COMMAND_OPERATION, started)
+    try:
+        import_started = time.perf_counter()
+        if is_mcp_proxy:
+            from ucode.mcp_proxy_runtime import main as command_main
+        else:
+            from ucode.cli import main as command_main
+        metrics.record(
+            metrics.CLI_IMPORT_DURATION_MS, (time.perf_counter() - import_started) * 1000
+        )
+        command_main()
+    except BaseException as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
+        raise
+    finally:
+        metrics.finish()

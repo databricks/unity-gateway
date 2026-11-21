@@ -146,6 +146,26 @@ def test_cuj_evidence_completed_native_turn(tmp_path, agent):
     assert result["selected_model"] == model
 
 
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize("answer", ["Hello!", "", " \n "])
+def test_cuj_inference_requires_nonempty_final_answer(agent, answer):
+    task = SimpleNamespace(prompt="Reply with a short greeting. Request ID: unique-id.", value=None)
+    rows = records(agent, SimpleNamespace(prompt=task.prompt, value=answer), "model")
+    turn = completed_turn(agent, rows, task)
+    if answer.strip():
+        assert turn is not None
+        assert turn.answer == answer
+    else:
+        assert turn is None
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_cuj_file_task_still_requires_hidden_value(tmp_path, agent):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    rows = records(agent, SimpleNamespace(prompt=task.prompt, value="Hello!"), "model")
+    assert completed_turn(agent, rows, task) is None
+
+
 def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
     task = SimpleNamespace(
         prompt="Delegate reading the file to one subagent.", value="hidden-value"
@@ -165,6 +185,7 @@ def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
 
 
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize("require_value", [True, False], ids=["file", "inference"])
 @pytest.mark.parametrize(
     "failure",
     [
@@ -174,11 +195,13 @@ def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
         "child",
     ],
 )
-def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
+def test_cuj_evidence_rejects_false_positives(tmp_path, agent, require_value, failure):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
     model = {CLAUDE: "system.ai.claude-opus-4-8", CODEX: "system.ai.gpt-6-sol"}[agent]
     boundary = SessionEvidence(tmp_path, agent)
     rows = records(agent, task, model)
+    if not require_value:
+        task.value = None
     if failure == "no_prompt":
         rows = [
             row
@@ -204,9 +227,12 @@ def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
         )
 
 
-def test_cuj_evidence_codex_rejects_wrong_turn(tmp_path):
+@pytest.mark.parametrize("require_value", [True, False], ids=["file", "inference"])
+def test_cuj_evidence_codex_rejects_wrong_turn(tmp_path, require_value):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
     rows = records(CODEX, task, "gpt-6-sol")
+    if not require_value:
+        task.value = None
     wrong_turn = copy.deepcopy(rows)
     wrong_turn[-1]["payload"]["turn_id"] = "different-turn"
     assert completed_turn(CODEX, wrong_turn, task) is None
@@ -349,12 +375,13 @@ def test_cuj_task_inference_only_allows_claude_child_transport_newline(agent, af
             _task_inference_request([request], agent, prompt, after=after)
 
 
-def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
+@pytest.mark.parametrize("suffix", ["", "__sr_on"])
+def test_cuj_codex_encrypted_child_inference_matches_routed_task_name(suffix):
     request = _inference_request(CODEX, 3, "parent prompt", [{"name": "exec"}])
     message = {
         "type": "agent_message",
         "author": "/root",
-        "recipient": "/root/read_file",
+        "recipient": "/root/read_file" + suffix,
         "content": [{"type": "encrypted_content", "encrypted_content": "gAAAAAopaque"}],
     }
     request.payload["input"].append(message)
@@ -365,6 +392,8 @@ def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
     for change in (
         {"type": "message", "role": "user"},
         {"recipient": "/root/another_task"},
+        {"recipient": "/root/read_file__sr_off"},
+        {"recipient": "/root/read_file_other"},
         {"content": [{"type": "input_text", "text": "read_file"}]},
         {"content": [{"type": "encrypted_content", "encrypted_content": ""}]},
     ):
@@ -377,6 +406,60 @@ def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
     request.payload["tools"] = []
     with pytest.raises(AssertionError, match="No tool-capable"):
         _task_inference_request([request], CODEX, "read_file", after=2)
+
+
+@pytest.mark.parametrize("lite", [False, True], ids=["top-level-tools", "responses-lite"])
+def test_cuj_codex_plaintext_child_inference_matches_routed_task(lite):
+    prompt = "Read input-file.txt using a tool.\nReturn only its contents. Do not delegate."
+    request = _inference_request(CODEX, 3, "parent prompt", [{"name": "exec"}])
+    tool_holder = request.payload
+    if lite:
+        tool_holder = {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": request.payload.pop("tools"),
+        }
+        request.payload["input"].insert(0, tool_holder)
+    assignment = (
+        "Message Type: NEW_TASK\nTask name: /root/read_file\nSender: /root\nPayload:\n" + prompt
+    )
+    message = {
+        "type": "agent_message",
+        "author": "/root",
+        "recipient": "/root/read_file",
+        "content": [{"type": "input_text", "text": assignment}],
+    }
+    request.payload["input"].append(message)
+
+    assert _task_inference_request([request], CODEX, prompt, after=2) is request
+    for expected, after in (
+        ("read_file", 2),
+        (prompt + " Different task.", 2),
+        (prompt, 0),
+        (prompt, 3),
+    ):
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, expected, after=after)
+    for change in (
+        {"type": "message", "role": "user"},
+        {"author": "/root/another_parent"},
+        {"author": None},
+        {"recipient": "/root/another_task"},
+        {"recipient": None},
+        {"content": [{"type": "input_text", "text": prompt}]},
+        {"content": [{"type": "input_text", "text": assignment + "\n"}]},
+        {"content": [{"type": "input_text", "text": assignment.replace("NEW_TASK", "MESSAGE")}]},
+    ):
+        original = message.copy()
+        message.update(change)
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, prompt, after=2)
+        message.clear()
+        message.update(original)
+    for invalid_tools in ([], {}, None):
+        tool_holder["tools"] = invalid_tools
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, prompt, after=2)
 
 
 def test_cuj_evidence_ignores_existing_session(tmp_path):
@@ -427,6 +510,27 @@ def test_cuj_uses_shared_file_task_without_exposing_answer(tmp_path):
     assert (tmp_path / task.filename).read_text().strip() == task.value
     assert task.value not in task.prompt
     assert "Do not delegate." in task.prompt
+
+
+@pytest.mark.parametrize("answer", ["complete", "truncated", "tool-only"])
+def test_copilot_file_task_requires_complete_hidden_answer(tmp_path, answer):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    assert len(task.value) == 6
+    content = task.value[:-1] if answer == "truncated" else task.value
+    message = (
+        {"type": "tool.execution_complete", "data": {"result": {"content": content}}}
+        if answer == "tool-only"
+        else {"type": "assistant.message", "data": {"content": content}}
+    )
+    result = SimpleNamespace(
+        returncode=0,
+        stdout="\n".join(json.dumps(row) for row in [message, {"type": "assistant.turn_end"}]),
+    )
+    if answer == "complete":
+        task.assert_headless_answer("copilot", result)
+    else:
+        with pytest.raises(AssertionError):
+            task.assert_headless_answer("copilot", result)
 
 
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])

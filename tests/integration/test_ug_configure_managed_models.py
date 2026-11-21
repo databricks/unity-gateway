@@ -6,12 +6,15 @@ tests/AGENTS.md rule 4.
 """
 
 import json
+import os
 import re
+import sys
+from pathlib import Path
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.evidence import FileTask
-from utils.managed import use_managed_config_fixture
+from utils.managed import use_managed_config_fixture, use_smart_routing_fixture
 from utils.provider_catalog import fetch_anthropic_parent_catalog, fetch_anthropic_provider_catalog
 from utils.terminal import AgentTerminal, TerminalProcess
 
@@ -25,12 +28,28 @@ MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+if sys.platform == "win32":
+    CLAUDE_MANAGED_SETTINGS_PATH = (
+        Path(
+            os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+        )
+        / "ClaudeCode"
+        / "managed-settings.json"
+    )
+elif sys.platform == "darwin":
+    CLAUDE_MANAGED_SETTINGS_PATH = Path(
+        "/Library/Application Support/ClaudeCode/managed-settings.json"
+    )
+else:
+    CLAUDE_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
+FIRST_PROMPT_SELECTOR = "first_prompt_and_subagent_no_orch_v0"
 
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
+@pytest.mark.anthropic_mps
 def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace):
     """Scenario: launch Claude under an injected config with defaults and MPS discovery.
 
@@ -61,11 +80,7 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
         terminal.finish(timeout=240)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-    os_managed_settings = json.loads(
-        session.run(
-            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
-        ).stdout
-    )
+    os_managed_settings = json.loads(CLAUDE_MANAGED_SETTINGS_PATH.read_text(encoding="utf-8"))
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
@@ -123,11 +138,7 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         terminal.finish(timeout=240)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-    os_managed_settings = json.loads(
-        session.run(
-            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
-        ).stdout
-    )
+    os_managed_settings = json.loads(CLAUDE_MANAGED_SETTINGS_PATH.read_text(encoding="utf-8"))
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
@@ -180,7 +191,11 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+@pytest.mark.parametrize(
+    "routing",
+    ["0", pytest.param("1", marks=pytest.mark.codex_smart_routing)],
+    ids=["routing-off", "routing-on"],
+)
 def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, routing):
     """Scenario: configure Codex from an injected model list containing an unknown GPT model.
 
@@ -206,7 +221,12 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     assert fallback.get("tool_mode") is None, fallback
     assert fallback.get("input_modalities") == ["text"], fallback
     assert fallback.get("context_window") == 32768, fallback
-    assert fallback.get("default_reasoning_level") == "none", fallback
+    assert fallback.get("default_reasoning_level") == "medium", fallback
+    assert fallback.get("supported_reasoning_levels") == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ], fallback
 
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
     with AgentTerminal(
@@ -226,36 +246,28 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-@pytest.mark.parametrize(
-    "SMART_ROUTER_CONFIG_VERSION",
-    [None, "first_prompt_and_subagent_no_orch_v0"],
-    ids=["managed-default", "first_prompt_and_subagent_no_orch_v0"],
-)
 @pytest.mark.harness_latest
-def test_managed_fixture_claude_smart_routing_banner(
-    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
-):
-    """Scenario: an admin config lists Claude models and launch uses its default or the
-    customer first-prompt-and-subagent selector.
+def test_managed_fixture_claude_smart_routing_banner(live_session, workspace):
+    """Scenario: an admin config lists Claude models with smart routing enabled, and launch uses
+    the first-prompt-and-subagent selector.
 
-    Expected: `ug configure` applies the config without the personal agent selector, and both
-    launch modes route the first real prompt: the TUI shows the Unity Gateway Smart Router
-    banner naming the selected model, the routed answer completes the file task, and the session
-    exits normally.
+    Expected: `ug configure` applies the config without the personal agent selector, and the
+    selector routes the first real prompt: the TUI shows the Unity Gateway Smart Router banner
+    naming the selected model, the routed answer completes the file task, and the session exits
+    normally. The managed default alone routes only subagents; the skill toggle journeys cover it.
     """
     session = live_session
     task = FileTask(session)
-    use_managed_config_fixture(session, "claude_smart_routing")
+    use_smart_routing_fixture(session, "claude", workspace)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    if SMART_ROUTER_CONFIG_VERSION is not None:
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = FIRST_PROMPT_SELECTOR
 
     with AgentTerminal(
         session,
         "claude",
         [str(session.binary), "claude"],
-        f"managed-smart-routing-{SMART_ROUTER_CONFIG_VERSION or 'managed-default'}",
+        f"managed-smart-routing-{FIRST_PROMPT_SELECTOR}",
     ) as tui:
         tui.boot()
         tui.submit(task.prompt)
@@ -272,36 +284,29 @@ def test_managed_fixture_claude_smart_routing_banner(
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-@pytest.mark.parametrize(
-    "SMART_ROUTER_CONFIG_VERSION",
-    [None, "first_prompt_and_subagent_no_orch_v0"],
-    ids=["managed-default", "first_prompt_and_subagent_no_orch_v0"],
-)
 @pytest.mark.harness_latest
-def test_managed_fixture_codex_smart_routing_banner(
-    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
-):
-    """Scenario: an admin config lists Codex models and launch uses its default or the
-    customer first-prompt-and-subagent selector.
+@pytest.mark.codex_smart_routing
+def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
+    """Scenario: an admin config lists Codex models with smart routing enabled, and launch uses
+    the first-prompt-and-subagent selector.
 
-    Expected: `ug configure` applies the config without the personal agent selector, and both
-    launch modes route the first real prompt: the TUI shows the Unity Gateway Smart Router
-    banner naming the selected model, the routed answer completes the file task, and the session
-    exits normally.
+    Expected: `ug configure` applies the config without the personal agent selector, and the
+    selector routes the first real prompt: the TUI shows the Unity Gateway Smart Router banner
+    naming the selected model, the routed answer completes the file task, and the session exits
+    normally. The managed default routes only subagents on supported Codex versions.
     """
     session = live_session
     task = FileTask(session)
-    use_managed_config_fixture(session, "codex_smart_routing")
+    use_smart_routing_fixture(session, "codex", workspace)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    if SMART_ROUTER_CONFIG_VERSION is not None:
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = FIRST_PROMPT_SELECTOR
 
     with AgentTerminal(
         session,
         "codex",
         [str(session.binary), "codex"],
-        f"managed-smart-routing-{SMART_ROUTER_CONFIG_VERSION or 'managed-default'}",
+        f"managed-smart-routing-{FIRST_PROMPT_SELECTOR}",
     ) as tui:
         tui.boot()
         tui.submit(task.prompt)

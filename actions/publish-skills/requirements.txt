@@ -1,0 +1,8 @@
+databricks-sdk==0.158.0
+PyYAML==6.0.3
+
+# Require the CA bundle release fixing PYSEC-2026-4320.
+certifi>=2026.10.23
+
+# SDK authentication dependency: fixes CVE-2026-119194 through CVE-2026-119197.
+pyasn1>=0.6.5

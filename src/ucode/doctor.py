@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from ucode.agents import (
     TOOL_SPECS,
+    copilot,
     tool_binary_installed,
     tool_version_error,
     update_tool_binary,
@@ -30,6 +31,8 @@ from ucode.databricks import (
     run_databricks_login,
     upgrade_databricks_cli,
 )
+from ucode.managed_config import load_managed_state
+from ucode.managed_resolve import resolve_state
 from ucode.state import load_state
 from ucode.telemetry import ug_version
 from ucode.ui import (
@@ -44,6 +47,7 @@ from ucode.ui import (
     spinner,
     status_badge,
 )
+from ucode.workspace import state_workspace_key
 
 # Env vars that shadow the credential ucode configures for Claude Code. Claude
 # warns when its own token and one of these are both set, so we surface them.
@@ -184,6 +188,29 @@ def _check_agent_clis() -> list[Check]:
     return checks
 
 
+def _check_copilot_models() -> Check | None:
+    """The models `ug copilot` registers for the current workspace, when Copilot is configured."""
+    state = load_state()
+    if "copilot" not in (state.get("available_tools") or []):
+        return None
+    managed = load_managed_state(state_workspace_key(state))
+    if managed:
+        state = resolve_state(managed, state, "copilot")
+    catalog = copilot.copilot_catalog(state)
+    if not catalog:
+        return Check(
+            "Copilot models",
+            "warn",
+            "none Copilot can use — run `ug configure --agents copilot` to rediscover them",
+        )
+    counts = ", ".join(
+        f"{sum(m.provider == provider for m in catalog)} {provider}"
+        for provider in copilot.PROVIDER_NAMES.values()
+        if any(m.provider == provider for m in catalog)
+    )
+    return Check("Copilot models", "ok", f"{len(catalog)} models ({counts})")
+
+
 def _check_databricks_auth() -> Check | None:
     """Validate the configured workspace's Databricks credentials.
 
@@ -225,12 +252,14 @@ def _check_databricks_auth() -> Check | None:
 
 
 def _check_anthropic_env_collision() -> Check | None:
-    """Warn when a Claude token env var is set that collides with ucode's own.
+    """Note a Claude token env var that would outrank ucode's own credential.
 
-    ucode authenticates Claude Code through the gateway; a stray
-    `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` in the environment shadows that
-    and makes Claude complain. We can't unset a parent shell's env, so this is
-    advisory (no fix). Returns None when nothing collides.
+    Claude Code ranks `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` above ucode's
+    `apiKeyHelper`. `ug configure` and `ug claude` blank both in ucode's Claude
+    settings, so Claude launched via ug ignores the shell's value; a bare `claude`
+    sees the blanks only once `ug configure` has written them to the managed file.
+    Says so, and names the supported ways to use your own token. Advisory (no fix).
+    Returns None when nothing collides.
     """
     set_vars = [name for name in _CLAUDE_TOKEN_ENV_VARS if os.environ.get(name, "").strip()]
     if not set_vars:
@@ -238,8 +267,10 @@ def _check_anthropic_env_collision() -> Check | None:
     joined = ", ".join(set_vars)
     return Check(
         "Claude auth env",
-        "warn",
-        f"{joined} is set and can collide with ucode's Claude auth; unset it in your shell",
+        "info",
+        f"{joined} is set; Claude Code launched via ug ignores it. To use your own Databricks "
+        "token, set DATABRICKS_BEARER or run `ug configure --profile <name> --use-pat` "
+        "(re-run `ug configure` if bare `claude` still fails with a 401)",
     )
 
 
@@ -256,7 +287,7 @@ def _gather_checks() -> list[Check]:
     checks: list[Check] = [_check_uv(), _check_npm(), _check_databricks_cli(), _check_workspace()]
     # These return None when they don't apply (no workspace, no env collision),
     # so drop the Nones before display.
-    optional = [_check_databricks_auth(), _check_anthropic_env_collision()]
+    optional = [_check_databricks_auth(), _check_anthropic_env_collision(), _check_copilot_models()]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
     checks.append(_check_ug())

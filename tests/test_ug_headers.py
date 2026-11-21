@@ -1,0 +1,127 @@
+"""Tests for the `ug --header` / `UG_HEADERS` parser."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+
+import pytest
+from anyio import to_thread
+from typer.testing import CliRunner
+
+from ucode.cli import app
+from ucode.ug_headers import scoped_ug_headers, ug_headers
+
+
+def test_concurrent_sessions_keep_headers_in_their_auth_workers(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "X-Agent: inherited")
+
+    async def read_session(value):
+        with scoped_ug_headers(f"X-Agent: {value}"):
+            await asyncio.sleep(0)
+            return await to_thread.run_sync(ug_headers)
+
+    async def scenario():
+        assert await asyncio.gather(read_session("first"), read_session("second")) == [
+            {"X-Agent": "first"},
+            {"X-Agent": "second"},
+        ]
+
+    asyncio.run(scenario())
+    assert ug_headers() == {"X-Agent": "inherited"}
+
+
+def test_ug_headers_parse_one_per_line(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a\n\nX-B:  2 ")
+    assert ug_headers() == {"x-databricks-traffic-id": "testenv://liteswap/a", "X-B": "2"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "not a header",
+        "x-databricks-traffic-id:  ",
+        "bad name: 1",
+        "X-Control: a\x01b",
+        "X-Unicode: 日本",
+    ],
+)
+def test_ug_headers_skip_invalid_line(monkeypatch, line):
+    monkeypatch.setenv("UG_HEADERS", f"{line}\nX-Ok: 1")
+    assert ug_headers() == {"X-Ok": "1"}
+
+
+def test_ug_headers_keep_tab_and_latin1_values(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "X-Tab: a\tb\nX-Latin: caf\xe9")
+    assert ug_headers() == {"X-Tab": "a\tb", "X-Latin": "caf\xe9"}
+
+
+def test_later_line_replaces_same_name_in_any_case(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "X-A: 1\nx-a: 2")
+    assert ug_headers() == {"x-a": "2"}
+
+
+def test_header_flag_appends_to_ug_headers(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "X-Env: 1")
+    result = CliRunner().invoke(
+        app, ["--header", "X-Flag: 2", "--header", "Authorization Bearer secret-tok", "status"]
+    )
+    assert result.exit_code == 1
+    assert "--header #2: expected `Name: value`" in result.output
+    # The value may be a token, so the error must not echo it.
+    assert "secret-tok" not in result.output
+
+    # The rejected launch exits ug in real use; reset what it left in this shared process.
+    monkeypatch.setenv("UG_HEADERS", "X-Env: 1")
+    # `--help` on the subcommand still runs ug's own callback, which sets the variable, first.
+    result = CliRunner().invoke(app, ["--header", "X-Flag: 2", "status", "--help"])
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "X-Env: 1\nX-Flag: 2"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["copilot", "--help"], ["agy", "--help"], ["cursor", "--help"], []],
+    ids=["agent command", "alias command", "cursor (not in TOOL_ALIASES)", "bare ug"],
+)
+def test_agent_launch_drops_an_inherited_coding_agent(monkeypatch, args):
+    # `--help` still runs ug's own callback, the code under test, without launching the agent.
+    monkeypatch.setattr("ucode.cli._launch_managed_default", lambda *_, **__: None)
+    monkeypatch.setenv(
+        "UG_HEADERS",
+        "x-databricks-traffic-id: abc\ndatabricks-custom-coding-agent: claude-code\nX-Env: 1",
+    )
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "x-databricks-traffic-id: abc\nX-Env: 1"
+
+
+def test_agent_launch_keeps_its_own_coding_agent_header(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: codex")
+    result = CliRunner().invoke(
+        app, ["--header", "Databricks-Custom-Coding-Agent: claude-code", "claude", "--help"]
+    )
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "Databricks-Custom-Coding-Agent: claude-code"
+
+
+def test_helper_subcommand_keeps_the_inherited_coding_agent(monkeypatch):
+    # `ug mcp-proxy` runs under the agent its parent ug launched, so the value it inherits is right.
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: claude-code")
+    result = CliRunner().invoke(app, ["mcp-proxy", "--help"])
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "Databricks-Custom-Coding-Agent: claude-code"
+
+
+def test_agent_launch_clears_ug_headers_left_with_only_a_coding_agent(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: claude-code")
+    result = CliRunner().invoke(app, ["codex", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "UG_HEADERS" not in os.environ
+
+
+def test_bad_inherited_line_never_blocks_a_command(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "Authorization Bearer secret-tok\nX-Ok: 1")
+    result = CliRunner().invoke(app, ["revert", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "secret-tok" not in result.output

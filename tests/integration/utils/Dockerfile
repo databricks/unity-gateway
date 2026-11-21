@@ -1,6 +1,6 @@
 # Build using the documented minimal archive. Only the runner and tests enter the image;
 # pass a release version or mount a prebuilt wheel at runtime.
-FROM ghcr.io/astral-sh/uv:0.9.8 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 FROM node:22.19.0-bookworm-slim AS node
 FROM python:3.12.10-slim-bookworm
 
@@ -20,6 +20,8 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 WORKDIR /opt/ug-integration
 COPY scripts/run_integration.py scripts/run_integration.py
 COPY tests/integration tests/integration
+# Managed-config journeys (and the smart-routing module at import) read these fixtures.
+COPY tests/fixtures tests/fixtures
 RUN mkdir /results && chown integration:integration /results
 USER integration
 ENV HOME=/home/integration

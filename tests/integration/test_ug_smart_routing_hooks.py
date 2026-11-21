@@ -8,54 +8,60 @@ an agent choosing to spawn a subagent. The TUI journeys additionally invoke the 
 Smart Router skill and spawn real children before and after its session-local toggles.
 """
 
+import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
+from utils.agents.claude import (
+    assert_follow_up_spawned_nothing,
+    assert_follow_ups_resumed,
+    assert_one_delegated_task,
+    child_id,
+    child_paths,
+    claude_delivered_child_answers,
+    parent_tool_calls,
+)
+from utils.agents.codex import completed_smart_router_results, routed_assignment_digests
 from utils.evidence import (
+    FileTask,
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
     assistant_answers,
+    codex_routing_display_for_task,
     is_child_session,
     read_jsonl,
-    tool_outputs,
 )
-from utils.managed import use_managed_config_fixture
-from utils.request_recorder import TuiRequestRecorder, served_inference_request
+from utils.harness import ANSI
+from utils.managed import (
+    MANAGED_CONFIG_FIXTURES,
+    use_managed_config_fixture,
+    use_smart_routing_fixture,
+)
+from utils.request_recorder import record_claude_response_protocol, served_inference_request
 from utils.terminal import AgentTerminal
 
 pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
-CLAUDE_MODELS = [
-    "system.ai.claude-opus-5",
-    "system.ai.claude-sonnet-5",
-    "system.ai.claude-haiku-4-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
-]
-CODEX_MODELS = [
-    "system.ai.gpt-6-astra",
-    "system.ai.gpt-5-6-sol",
-    "system.ai.gpt-5-6-terra",
-    "system.ai.gpt-5-6-luna",
-    "system.ai.gpt-5-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
-]
-# Codex launches subagents on its bundled catalog slugs, not the workspace model id, so
-# the routed model in the hook response must be one of these slugs.
-CODEX_MODEL_SLUGS = {
-    "gpt-6-astra",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "glm-5-3",
-    "kimi-k3",
-}
+# No selector or legacy flag: the managed config's smart_routing.enabled alone turns routing on.
+MANAGED_DEFAULT = "managed-default"
+
+
+# Use the same task_v3-compatible menu for direct hooks and managed TUI journeys.
+# Direct hooks run in the US workspace; managed TUI inputs are assigned by workspace.
+def _fixture_routing_models(agent: str) -> list[str]:
+    config = json.loads((MANAGED_CONFIG_FIXTURES / f"{agent}_smart_routing.json").read_text())
+    return config["enabled_agents"][0]["config"]["models"]["model_services"]
+
+
+CLAUDE_MODELS = _fixture_routing_models("claude")
+CODEX_MODELS = _fixture_routing_models("codex")
+# Expected native Codex slugs, independently of the application's model mapper.
+CODEX_MODEL_SLUGS = {"gpt-6-sol", "gpt-6-luna"}
 SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 
 
@@ -91,20 +97,7 @@ def _routing_display_for_task(
     lines = screen.splitlines()
     if agent == "claude":
         return _claude_routing_row_for_task(lines, marker)
-    for index, line in enumerate(lines):
-        if SMART_ROUTING_SUBAGENT_NOTICE not in line:
-            continue
-        panel = []
-        for panel_line in lines[index : index + 12]:
-            panel.append(panel_line)
-            if "└" in panel_line:
-                break
-        # Rich can wrap the marker between any two characters in a narrow TUI.
-        # Compare without rendered whitespace so the banner remains attributable.
-        text = "".join("\n".join(panel).split())
-        if marker in text and (not orchestrator_on or "[orchestratoron]" in text):
-            return True
-    return False
+    return codex_routing_display_for_task(screen, marker, orchestrator_on=orchestrator_on)
 
 
 def _run_calculation(
@@ -119,7 +112,11 @@ def _run_calculation(
 ):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
-    tui.submit(task.prompt)
+    prompt = task.prompt
+    if agent == "claude":
+        # Native forks inherit their model and deliberately bypass Smart Router.
+        prompt += ' Use the Agent tool with subagent_type "general-purpose"; do not fork or resume.'
+    tui.submit(prompt)
 
     if routed:
         tui.wait_for(
@@ -133,6 +130,13 @@ def _run_calculation(
             timeout=120,
         )
     tui.wait_for_task(task, timeout=180)
+    # A parent may report the requested value while its background child is still
+    # running. Require the child's own persisted answer before asserting completion.
+    tui.wait_for(
+        lambda _: task.completed(session, agent, child=True),
+        f"the child assistant answer for {task.marker}",
+        timeout=180,
+    )
     task.assert_completed(session, agent)
     task.assert_completed(session, agent, child=True)
 
@@ -145,9 +149,13 @@ def _run_calculation(
         assert not new_decisions, new_decisions
         return task
 
-    assert len(new_decisions) == 1, new_decisions
+    assert new_decisions, new_decisions
+    if agent == "codex":
+        assignments = routed_assignment_digests(agent_sessions(session, agent), task.marker)
+        assert all(row["task_sha256"] in assignments for row in new_decisions), new_decisions
+    else:
+        assert all(task.marker in row.get("task_name", "") for row in new_decisions), new_decisions
     decision = new_decisions[0]
-    assert task.marker in decision.get("task_name", ""), decision
     if agent == "claude":
         model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
         rationale = decision["rationale"]
@@ -166,22 +174,28 @@ def _run_calculation(
         session,
         agent,
         task,
-        decision_ids={decision["decision_id"]},
+        decision_ids={decision["decision_id"] for decision in new_decisions},
     )
 
     return task
 
 
-def _toggle_with_skill(
-    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
-) -> None:
+def _installed_skills(session, agent: str) -> list[str]:
     skill_root = session.home / SKILL_ROOTS[agent]
+    if not skill_root.is_dir():
+        return []
     ignored_skills = {".system"} if agent == "codex" else set()
-    installed_skills = sorted(
+    return sorted(
         path.name
         for path in skill_root.iterdir()
         if path.is_dir() and path.name not in ignored_skills
     )
+
+
+def _toggle_with_skill(
+    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
+) -> None:
+    installed_skills = _installed_skills(session, agent)
     expected_skills = (
         ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
     )
@@ -209,35 +223,45 @@ def _toggle_with_skill(
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         }
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    def completion_counts():
-        answers = confirmations = 0
+    action = "on" if enabled else "off"
+
+    def confirmation_count():
+        confirmations = 0
         for path, records in agent_sessions(session, agent).items():
             if is_child_session(agent, path, records):
                 continue
-            answers += len(assistant_answers(agent, records))
-            confirmations += sum(confirmation in output for output in tool_outputs(agent, records))
-        return answers, confirmations
+            outputs = completed_smart_router_results(records, action)
+            confirmations += sum(confirmation in output.get("message", "") for output in outputs)
+        return confirmations
 
-    before_answers, before_confirmations = completion_counts()
+    before_confirmations = confirmation_count()
+
+    def root_answer_count():
+        return sum(
+            len(assistant_answers(agent, records))
+            for path, records in agent_sessions(session, agent).items()
+            if not is_child_session(agent, path, records)
+        )
+
+    before_answers = root_answer_count()
     tui.submit(invocation)
 
     def toggled(screen):
-        if tui.approve_windows_command(screen):
-            return False
+        assert "Would you like to run the following command" not in screen, screen
         try:
             controls_now = json.loads(controls[0].read_text())
         except PermissionError:
             # Windows denies reads while ug replaces the controls file; try again next frame.
             return False
-        answers, confirmations = completion_counts()
         return (
             controls_now == expected
-            and confirmations > before_confirmations
-            and answers > before_answers
+            and confirmation_count() == before_confirmations + 1
+            and root_answer_count() > before_answers
         )
 
     tui.wait_for(
@@ -272,9 +296,8 @@ def test_smart_routing_claude_route_subagent_hook(
     """Scenario: the Claude mod's routing CLI receives an Agent call under legacy
     subagent routing or each supported selector.
 
-    Expected: the shared Python client calls the real router and returns model,
-    rationale, and an updated input naming the dispatched ``ucode-route-`` agent while
-    preserving the task, so the mod labels the row with the agent that actually runs.
+    Expected: the shared Python client calls the real router and returns only the
+    spawn-ready model and rationale, leaving the mod's reviewed tool input intact.
     One decision is audited for the session. This checks the mod's CLI protocol;
     no native mod or agent decides to spawn.
     """
@@ -302,15 +325,11 @@ def test_smart_routing_claude_route_subagent_hook(
         input_text=json.dumps(payload),
         timeout=60,
     )
+    assert result.stdout.strip(), f"Routing hook returned no decision: {result.stderr}"
     output = json.loads(result.stdout)
     assert output["model"] in CLAUDE_MODELS, output
     assert isinstance(output["rationale"], str), output
-    updated = output["updatedInput"]
-    assert "model" not in updated, updated
-    assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
-    assert updated["prompt"] == payload["tool_input"]["prompt"], updated
-    assert updated["description"] == payload["tool_input"]["description"], updated
-    assert "general-purpose" not in json.dumps(output), output
+    assert set(output) == {"model", "rationale"}, output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -379,6 +398,7 @@ def test_smart_routing_codex_route_subagent_hook(
         input_text=json.dumps(payload),
         timeout=60,
     )
+    assert result.stdout.strip(), f"Routing hook returned no decision: {result.stderr}"
     output = json.loads(result.stdout)
     hook = output["hookSpecificOutput"]
     assert hook["hookEventName"] == "PreToolUse", output
@@ -387,7 +407,7 @@ def test_smart_routing_codex_route_subagent_hook(
     updated = hook["updatedInput"]
     assert updated["model"] in CODEX_MODEL_SLUGS, updated
     assert updated["message"] == payload["tool_input"]["message"], updated
-    assert updated["task_name"] == payload["tool_input"]["task_name"], updated
+    assert updated["task_name"] == payload["tool_input"]["task_name"] + "__sr_on", updated
 
     decisions_path = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -396,14 +416,48 @@ def test_smart_routing_codex_route_subagent_hook(
     assert len(rows) == 1, rows
     row = rows[0]
     assert row["session_id"] == payload["session_id"], row
-    assert row["task_name"] == payload["tool_input"]["message"], row
+    assignment = payload["tool_input"]["message"]
+    assert row["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest(), row
+    assert row["task_length"] == len(assignment), row
+    assert "task_name" not in row, row
     assert row["requested_model"] == updated["model"], row
 
 
-@pytest.mark.live
-@pytest.mark.claude
-@pytest.mark.managed_fixture
-@pytest.mark.parametrize(
+SMART_ROUTER_CASES = [
+    (False, None),
+    (True, None),
+    (True, MANAGED_DEFAULT),
+    (False, "subagent_only_v0"),
+    (False, "subagent_only_v1"),
+    (True, "subagent_orch_v0"),
+]
+SMART_ROUTER_CASE_IDS = [
+    "routing-only",
+    "orchestration",
+    MANAGED_DEFAULT,
+    "subagent_only_v0",
+    "subagent_only_v1",
+    "subagent_orch_v0",
+]
+SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    SMART_ROUTER_CASES,
+    ids=SMART_ROUTER_CASE_IDS,
+)
+
+# GLM child sessions intermittently fail SubagentHandback, so GLM stays out of the shared Claude
+# routing menu and gets one launch case whose menu offers only GLM.
+CLAUDE_GLM_ROUTING_FIXTURE = "claude_smart_routing_glm"
+CLAUDE_AT_LAUNCH_VERSIONS = pytest.mark.parametrize(
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION, routing_fixture",
+    [
+        *((*case, None) for case in SMART_ROUTER_CASES),
+        (False, "subagent_only_v0", CLAUDE_GLM_ROUTING_FIXTURE),
+    ],
+    ids=[*SMART_ROUTER_CASE_IDS, "subagent_only_v0-glm"],
+)
+
+CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
     "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
     [
         (False, None),
@@ -420,34 +474,240 @@ def test_smart_routing_codex_route_subagent_hook(
         "subagent_orch_v0",
     ],
 )
-def test_smart_router_skill_toggles_claude_subagent_routing(
-    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
-):
-    """Scenario: launch Claude with the legacy flags or a subagent selector, spawn a child, invoke
-    the installed Smart Router skill to turn routing off, spawn another child, turn routing
-    back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI.
-    All three uniquely tagged calculations complete in native parent and child sessions;
-    their recorded inference payloads carry smart_router_recipe_name with the launch
-    recipe, DISABLED, then the launch recipe again, without a recipe header, and receive
-    non-empty HTTP 200 responses (including verified native
-    compatibility retries). Only the first and third show native model/rationale rows
-    and produce live gateway decisions correlated with those children. Claude's native
-    task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
+
+def _select_smart_router_version(
+    session,
+    agent: str,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    config_version,
+    routing_fixture: str | None = None,
+) -> None:
+    """Choose the legacy flags, a subagent selector, or the managed default; install the fixture.
+
+    ``routing_fixture`` replaces the workspace's shared routing fixture for a selector case.
     """
-    session = live_session
     session.env["TMPDIR"] = str(tmp_path)
-    if SMART_ROUTER_CONFIG_VERSION is None:
+    if config_version is None:
         session.env["ENABLE_SMART_ROUTING_V2"] = "1"
         session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
         if orchestration_enabled:
             session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    elif config_version != MANAGED_DEFAULT:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = config_version
+    if routing_fixture is not None:
+        assert config_version is not None, "a routing fixture enables managed smart routing"
+        use_managed_config_fixture(session, routing_fixture)
+        return
+    # Managed smart routing would override the legacy env vars set above.
+    use_smart_routing_fixture(session, agent, workspace, smart_routing=config_version is not None)
+
+
+def _assert_claude_calculation_requests(
+    recorder,
+    checkpoint,
+    task,
+    *,
+    routed: bool,
+    launch_recipe: str | None,
+    orchestration_enabled: bool,
+) -> str:
+    """Assert the recorded gateway traffic for one Claude calculation; return its recipe."""
+    requests = recorder.requests_after(checkpoint)
+    inferences = [
+        request
+        for request in requests
+        if request.method == "POST"
+        and request.path == "/ai-gateway/anthropic/v1/messages"
+        and request.payload.get("tools")
+        and task.marker in json.dumps(request.payload.get("messages", []))
+    ]
+    assert inferences, f"No recorded inference for {task.marker}"
+    if routed:
+        routes = [
+            request
+            for request in requests
+            if request.method == "POST"
+            and request.path == "/ai-gateway/routing/v1/routes:select"
+            and task.marker in request.payload.get("task", {}).get("prompt", "")
+        ]
+        assert routes, (task.marker, routes)
+        assert any(
+            "Smart Router launch:" in json.dumps(request.payload.get("messages", []))
+            for request in inferences
+        ), "Parent inference must receive the routed child's launch identity"
+        recipe = routes[0].payload.get("route_selector", {}).get("router_name")
+        assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
+            task.marker,
+            routes[0].sequence,
+            routes[0].payload.get("route_selector"),
+        )
+        if launch_recipe is not None:
+            assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
     else:
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
-    use_managed_config_fixture(session, "claude_smart_routing")
-    with TuiRequestRecorder(workspace) as recorder:
+        recipe = "DISABLED"
+    for request in inferences:
+        for tool in request.payload["tools"]:
+            if tool.get("name") not in {"Agent", "Task"}:
+                continue
+            description = tool["description"]
+            if orchestration_enabled and routed:
+                assert "before gathering source evidence" in description, description
+                assert "notification in a later turn" in description
+                assert "end the current turn and wait for that notification" in description
+                assert "To continue a previously spawned agent, use SendMessage" in description
+                assert "starts a fresh agent with no memory of prior runs" in description
+                assert "When in doubt, don't spawn" not in description, description
+                assert "A fresh agent costs more than it looks" not in description, description
+            else:
+                assert "under the active Smart Router Orchestrator workflow" not in description
+        assert request.payload.get("smart_router_recipe_name") == recipe, (
+            task.marker,
+            request.sequence,
+            request.payload.get("smart_router_recipe_name"),
+            recipe,
+        )
+        assert "databricks-smart-router-recipe" not in request.headers, (
+            task.marker,
+            request.sequence,
+        )
+        served_inference_request(recorder, requests, request, "claude")
+    return recipe
+
+
+def _assert_claude_session_finished(session, tui) -> str:
+    """Drain native tasks, exit the TUI, and return its transcript."""
+    tui.wait_for_background_tasks()
+    tui.exit_normally()
+    return "".join(tui.output)
+
+
+def _assert_claude_not_wrapped(session, transcript: str) -> None:
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    session.assert_not_routed()
+    canary = session.home / ".ucode" / "claude-smart-routing-canary.json"
+    assert canary.is_file(), f"routing hooks were not armed: {canary}"
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+def test_smart_router_claude_resumes_same_subagent_with_send_message(
+    live_session, workspace, tmp_path
+):
+    """Scenario: with orchestration on, spawn one Claude child, then give it a follow-up.
+
+    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue a routed
+    child. Both hidden file values appear in that child's completed answers and reach
+    the parent, without requiring the parent to restate them. The follow-up creates
+    no child session or Agent/Task call, and SendMessage resolves to a pre-existing child.
+    """
+    session = live_session
+    _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    first = FileTask(session)
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "smart-router-resume-child"
+    ) as tui:
+        tui.boot()
+        tui.submit(
+            first.delegate_prompt
+            + " Spawn exactly one agent in total. If Agent reports a background launch, "
+            "end your turn and wait for its actual completion notification. Do not call "
+            "Agent again to wait, or write a completion notification yourself."
+        )
+        tui.wait_for_task(
+            first,
+            completion=lambda: bool(
+                claude_delivered_child_answers(agent_sessions(session, "claude"), first.value)
+            ),
+            description="the child's answer delivered to the parent",
+        )
+        tui.wait_for_background_tasks()
+        pre_followup = agent_sessions(session, "claude")
+        session.record("agent-sessions-before-followup.json", pre_followup)
+        assert_one_delegated_task(pre_followup)
+
+        second = FileTask(session)
+        tui.submit(
+            "Continue the same subagent using SendMessage and ask it to do this follow-up: "
+            f"{second.prompt} Do not spawn another agent or read the file yourself. "
+            "Wait for that agent's answer and reply with only the value it returned."
+        )
+        tui.wait_for_task(
+            second,
+            completion=lambda: bool(
+                claude_delivered_child_answers(agent_sessions(session, "claude"), second.value)
+            ),
+            description="the follow-up child answer delivered to the parent",
+        )
+        _assert_claude_session_finished(session, tui)
+
+    sessions = agent_sessions(session, "claude")
+    session.record("agent-sessions.json", sessions)
+    # The follow-up must resume an existing child: no new child session or spawn.
+    assert_follow_up_spawned_nothing(pre_followup, sessions)
+    followups = parent_tool_calls(sessions, {"SendMessage"})
+    assert followups, "the follow-up sent no SendMessage"
+    resumed_child = assert_follow_ups_resumed(
+        list(followups.values()), [r for records in sessions.values() for r in records]
+    )
+    assert any(child_id(path) == resumed_child for path in child_paths(pre_followup)), (
+        f"the follow-up resumed {resumed_child}, which is not one of the spawned children"
+    )
+    for task in (first, second):
+        assert resumed_child in claude_delivered_child_answers(sessions, task.value), (
+            f"Child {resumed_child} did not answer and deliver {task.value}"
+        )
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+@pytest.mark.soft_fail
+@CLAUDE_AT_LAUNCH_VERSIONS
+def test_smart_router_routes_claude_subagent_at_launch(
+    live_session,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    SMART_ROUTER_CONFIG_VERSION,
+    routing_fixture,
+):
+    """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
+    config's smart routing default and, without touching the Smart Router skill, spawn one child in
+    the real TUI. The ``subagent_only_v0-glm`` case offers only GLM, so its parent and routed
+    child both run on GLM.
+
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. The uniquely tagged calculation completes in native parent and
+    child sessions; its recorded inference payloads carry smart_router_recipe_name with the
+    launch recipe, without a recipe header, and receive non-empty HTTP 200 responses
+    (including verified native compatibility retries). The child shows the native
+    model/rationale row and produces one live gateway decision correlated with it. Claude's
+    native task view reports no running tasks before /exit. No first-prompt routing wrapper
+    starts.
+    """
+    session = live_session
+    _select_smart_router_version(
+        session,
+        "claude",
+        workspace,
+        tmp_path,
+        orchestration_enabled,
+        SMART_ROUTER_CONFIG_VERSION,
+        routing_fixture,
+    )
+    with record_claude_response_protocol(session, workspace) as recorder:
         # Configure through the forwarding URL using the public CLI, keeping ug state real.
         session.run(
             "configure",
@@ -458,130 +718,190 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             "--disable-databricks-ai-tools",
         )
         with AgentTerminal(
-            session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
+            session, "claude", [str(session.binary), "claude"], "smart-router-launch"
         ) as tui:
             tui.boot()
-            launch_recipe = None
-            for expression, result, routed in [
-                ("1+1", "2", True),
-                ("1+2", "3", False),
-                ("2+2", "4", True),
-            ]:
-                if expression != "1+1":
-                    _toggle_with_skill(
-                        tui,
-                        session,
-                        "claude",
-                        enabled=routed,
-                        orchestration_enabled=orchestration_enabled,
-                    )
-                checkpoint = recorder.checkpoint()
-                task = _run_calculation(
-                    tui,
-                    session,
-                    "claude",
-                    expression,
-                    result,
-                    orchestration_enabled if routed else False,
-                    routed=routed,
-                )
-                requests = recorder.requests_after(checkpoint)
-                inferences = [
-                    request
-                    for request in requests
-                    if request.method == "POST"
-                    and request.path == "/ai-gateway/anthropic/v1/messages"
-                    and request.payload.get("tools")
-                    and task.marker in json.dumps(request.payload.get("messages", []))
-                ]
-                assert inferences, f"No recorded inference for {task.marker}"
-                if routed:
-                    routes = [
-                        request
-                        for request in requests
-                        if request.method == "POST"
-                        and request.path == "/ai-gateway/routing/v1/routes:select"
-                        and task.marker in request.payload.get("task", {}).get("prompt", "")
-                    ]
-                    assert len(routes) == 1, (task.marker, routes)
-                    recipe = routes[0].payload.get("route_selector", {}).get("router_name")
-                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
-                        task.marker,
-                        routes[0].sequence,
-                        routes[0].payload.get("route_selector"),
-                    )
-                    if launch_recipe is None:
-                        launch_recipe = recipe
-                    else:
-                        assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
-                else:
-                    recipe = "DISABLED"
-                for request in inferences:
-                    assert request.payload.get("smart_router_recipe_name") == recipe, (
-                        task.marker,
-                        request.sequence,
-                        request.payload.get("smart_router_recipe_name"),
-                        recipe,
-                    )
-                    assert "databricks-smart-router-recipe" not in request.headers, (
-                        task.marker,
-                        request.sequence,
-                    )
-                    served_inference_request(recorder, requests, request, "claude")
-            tui.wait_for_background_tasks()
-            tui.exit_normally()
-            transcript = "".join(tui.output)
-    assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
-    canary = session.home / ".ucode" / "claude-smart-routing-canary.json"
-    assert canary.is_file(), f"routing hooks were not armed: {canary}"
+            checkpoint = recorder.checkpoint()
+            task = _run_calculation(
+                tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True
+            )
+            _assert_claude_calculation_requests(
+                recorder,
+                checkpoint,
+                task,
+                routed=True,
+                launch_recipe=None,
+                orchestration_enabled=orchestration_enabled,
+            )
+            transcript = _assert_claude_session_finished(session, tui)
+    _assert_claude_not_wrapped(session, transcript)
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+@pytest.mark.soft_fail
+@SMART_ROUTER_VERSIONS
+def test_smart_router_skill_turns_claude_subagent_routing_off(
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
+    config's smart routing default, invoke the installed Smart Router skill to turn routing off,
+    then spawn a child in the same real TUI session.
+
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. The local invocation confirms "Smart Router is off" in the TUI.
+    The uniquely tagged calculation completes in native parent and child sessions; its recorded
+    inference payloads carry smart_router_recipe_name DISABLED, without a recipe header, and
+    receive non-empty HTTP 200 responses (including verified native compatibility retries).
+    No native model/rationale row is shown, no route is selected, and no live gateway decision
+    is recorded. Claude's native task view reports no running tasks before /exit. No
+    first-prompt routing wrapper starts.
+    """
+    session = live_session
+    _select_smart_router_version(
+        session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+    )
+    with record_claude_response_protocol(session, workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "claude", [str(session.binary), "claude"], "smart-router-skill-off"
+        ) as tui:
+            tui.boot()
+            _toggle_with_skill(
+                tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
+            )
+            checkpoint = recorder.checkpoint()
+            task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
+            recipe = _assert_claude_calculation_requests(
+                recorder,
+                checkpoint,
+                task,
+                routed=False,
+                launch_recipe=None,
+                orchestration_enabled=orchestration_enabled,
+            )
+            assert recipe == "DISABLED", recipe
+            transcript = _assert_claude_session_finished(session, tui)
+    _assert_claude_not_wrapped(session, transcript)
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+@pytest.mark.soft_fail
+@SMART_ROUTER_VERSIONS
+def test_smart_router_skill_turns_claude_subagent_routing_back_on(
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
+    config's smart routing default, spawn a child, invoke the installed Smart Router skill to turn
+    routing off, spawn a second child, turn routing back on, and spawn a third child in the same
+    real TUI session.
+
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. All
+    uniquely tagged calculations complete in native parent and child sessions. The second
+    child's recorded inference payloads carry smart_router_recipe_name DISABLED, with no
+    native model/rationale row and no live gateway decision. The first and third children show
+    native model/rationale rows with live gateway decisions correlated with them; the third is
+    routed again with the same recipe as the first, and both carry that recipe. All payloads
+    omit a recipe header and receive non-empty HTTP 200 responses (including verified native
+    compatibility retries). Claude's native task view reports no running tasks before /exit.
+    No first-prompt routing wrapper starts.
+    """
+    session = live_session
+    _select_smart_router_version(
+        session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+    )
+    with record_claude_response_protocol(session, workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "claude", [str(session.binary), "claude"], "smart-router-skill-back-on"
+        ) as tui:
+            tui.boot()
+            checkpoint = recorder.checkpoint()
+            launch_task = _run_calculation(
+                tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True
+            )
+            launch_recipe = _assert_claude_calculation_requests(
+                recorder,
+                checkpoint,
+                launch_task,
+                routed=True,
+                launch_recipe=None,
+                orchestration_enabled=orchestration_enabled,
+            )
+            _toggle_with_skill(
+                tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
+            )
+            # Prove "off" takes effect after a routed child before turning routing back on.
+            checkpoint = recorder.checkpoint()
+            off_task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
+            recipe = _assert_claude_calculation_requests(
+                recorder,
+                checkpoint,
+                off_task,
+                routed=False,
+                launch_recipe=None,
+                orchestration_enabled=orchestration_enabled,
+            )
+            assert recipe == "DISABLED", recipe
+            _toggle_with_skill(
+                tui, session, "claude", enabled=True, orchestration_enabled=orchestration_enabled
+            )
+            checkpoint = recorder.checkpoint()
+            task = _run_calculation(
+                tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True
+            )
+            _assert_claude_calculation_requests(
+                recorder,
+                checkpoint,
+                task,
+                routed=True,
+                launch_recipe=launch_recipe,
+                orchestration_enabled=orchestration_enabled,
+            )
+            transcript = _assert_claude_session_finished(session, tui)
+    _assert_claude_not_wrapped(session, transcript)
 
 
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
-@pytest.mark.parametrize(
-    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
-    [
-        (False, None),
-        (True, None),
-        (False, "subagent_only_v0"),
-        (False, "subagent_only_v1"),
-        (True, "subagent_orch_v0"),
-    ],
-    ids=[
-        "routing-only",
-        "orchestration",
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
-)
-def test_smart_router_skill_toggles_codex_subagent_routing(
+@pytest.mark.codex_smart_routing
+@CODEX_SMART_ROUTER_VERSIONS
+def test_smart_router_skill_turns_codex_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Codex with the legacy flags or a subagent selector, spawn a child, invoke
-    the installed Smart Router skill to turn routing off, spawn another child, turn routing
-    back on through the skill, and spawn a third child in the same real TUI session.
+    """Scenario: launch Codex with the legacy flags or a subagent selector, invoke the installed
+    Smart Router skill to turn routing off, then spawn a child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each invocation records the CLI
-    confirmation in the native transcript and changes the saved routing controls, even with
-    collapsed terminal output; all three uniquely tagged calculations complete in native child
-    sessions; only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. No first-prompt interposer starts.
-    With orchestration enabled, both routed banners must include [orchestrator on].
+    Smart Router Orchestrator. The invocation records the CLI confirmation in the native
+    transcript and changes the saved routing controls, even with collapsed terminal output.
+    The uniquely tagged calculation completes in a native child session, shows no
+    subagent-routing banner, and produces no live gateway decision. First-prompt
+    model selection stays disabled; the metadata interposer remains active.
     """
     session = live_session
-    session.env["TMPDIR"] = str(tmp_path)
-    if SMART_ROUTER_CONFIG_VERSION is None:
-        session.env["ENABLE_SMART_ROUTING_V2"] = "1"
-        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
-        if orchestration_enabled:
-            session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
-    else:
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
-    use_managed_config_fixture(session, "codex_smart_routing")
+    _select_smart_router_version(
+        session, "codex", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+    )
     session.run(
         "configure",
         "--workspace",
@@ -591,27 +911,175 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         "--disable-databricks-ai-tools",
     )
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "smart-router-skill-toggle"
+        session, "codex", [str(session.binary), "codex"], "smart-router-skill-off"
+    ) as tui:
+        tui.boot()
+        _toggle_with_skill(
+            tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
+        )
+        _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
+        tui.exit_normally()
+        transcript = "".join(tui.output)
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    assert "[ROUTE]" not in session.routing_log("codex")
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+@CODEX_SMART_ROUTER_VERSIONS
+def test_smart_router_skill_turns_codex_subagent_routing_back_on(
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: launch Codex with the legacy flags or a subagent selector, spawn a child, invoke the
+    installed Smart Router skill to turn routing off, spawn a second child, turn routing back on,
+    and spawn a third child in the same real TUI session.
+
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. Each invocation records the CLI confirmation in the native
+    transcript and changes the saved routing controls (off, then restored), even with collapsed
+    terminal output. Each uniquely tagged calculation completes in a native child session. The
+    first and third show the subagent-routing banner (including [orchestrator on] when
+    orchestration is enabled) and produce one live gateway decision correlated with that child;
+    the second shows no banner and produces no decision. First-prompt model selection
+    stays disabled; the metadata interposer remains active.
+    """
+    session = live_session
+    _select_smart_router_version(
+        session, "codex", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+    )
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
         _toggle_with_skill(
-            tui,
-            session,
-            "codex",
-            enabled=False,
-            orchestration_enabled=orchestration_enabled,
+            tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
         )
+        # Prove "off" takes effect after a routed child before turning routing back on.
         _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
         _toggle_with_skill(
-            tui,
-            session,
-            "codex",
-            enabled=True,
-            orchestration_enabled=orchestration_enabled,
+            tui, session, "codex", enabled=True, orchestration_enabled=orchestration_enabled
         )
         _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "[ROUTE]" not in session.routing_log("codex")
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+def test_smart_router_managed_default_matches_codex_version_at_launch(
+    live_session, workspace, tmp_path
+):
+    """Scenario: launch the installed Codex with managed smart routing and no explicit opt-in.
+
+    Expected: a native child and parent complete the tagged calculation. Before Codex 0.171.0,
+    declining the offered upgrade warns and continues in the same launch, permitting native
+    child work without routing skills or a routing decision. Supported versions
+    install both skills and complete the child with a correlated decision and orchestration
+    notice. Neither version routes the first prompt.
+    """
+    session = live_session
+    version_output = session.run("--version", binary=session.which("codex")).stdout
+    version_match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", version_output)
+    assert version_match is not None, version_output
+    routing_supported = tuple(int(part) for part in version_match.groups()) >= (0, 171, 0)
+    _select_smart_router_version(
+        session, "codex", workspace, tmp_path, routing_supported, MANAGED_DEFAULT
+    )
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    if routing_supported:
+        # TODO: remove once the latest recipe supports codex
+        session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
+    with AgentTerminal(
+        session,
+        "codex",
+        [str(session.binary), "codex"],
+        "smart-router-managed-default",
+    ) as tui:
+        if not routing_supported:
+            tui.wait_for(
+                lambda screen: "Upgrade Codex if available?" in screen,
+                "the offered managed-routing upgrade",
+            )
+            tui.send("n\r", "decline the offered upgrade and continue without routing")
+        tui.boot()
+        installed_skills = _installed_skills(session, "codex")
+        assert ("smart-router" in installed_skills) is routing_supported, installed_skills
+        assert ("smart-router-orchestrator" in installed_skills) is routing_supported, (
+            installed_skills
+        )
+        _run_calculation(
+            tui, session, "codex", "1+1", "2", routing_supported, routed=routing_supported
+        )
+        tui.exit_normally()
+        transcript = "".join(tui.output)
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    launch_text = " ".join(ANSI.sub("", transcript).split())
+    assert ("Upgrade Codex if available?" in launch_text) is not routing_supported, transcript
+    if routing_supported:
+        assert "Running without smart routing." not in launch_text, transcript
+        assert "[ROUTE]" not in session.routing_log("codex")
+    else:
+        assert "Codex smart routing requires Codex 0.171.0 or newer" in launch_text, transcript
+        assert "Running without smart routing." in launch_text, transcript
+        assert session.run("--version", binary=session.which("codex")).stdout == version_output
+        session.assert_not_routed()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_managed_default_routes_supported_codex_at_launch(
+    live_session, workspace, tmp_path
+):
+    """Scenario: launch supported Codex with managed smart routing and no explicit selector.
+
+    Expected: both routing skills are installed, and a tagged native child and parent complete
+    the calculation with a correlated live routing decision and orchestration notice. The
+    shared default routes subagents only, so no first-prompt routing request is made.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, True, MANAGED_DEFAULT)
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    # TODO: remove once the latest recipe supports codex
+    session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "smart-router-managed-default-supported"
+    ) as tui:
+        tui.boot()
+        installed_skills = _installed_skills(session, "codex")
+        assert "smart-router" in installed_skills, installed_skills
+        assert "smart-router-orchestrator" in installed_skills, installed_skills
+        _run_calculation(tui, session, "codex", "1+1", "2", True, routed=True)
+        tui.exit_normally()
+        transcript = "".join(tui.output)
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    assert "[ROUTE]" not in session.routing_log("codex")

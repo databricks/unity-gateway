@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import subprocess
@@ -10,14 +11,16 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import parse_qs
 
 import pytest
 
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
+from tests.conftest import metric_observations
+from ucode import metrics
 from ucode.databricks import (
-    CODING_AGENT_RECOMMEND_MODEL_PATH,
     _format_subprocess_result,
     _parse_databricks_cli_version,
     _run_databricks_cli_installer,
@@ -47,7 +50,6 @@ from ucode.databricks import (
     install_databricks_cli,
     list_databricks_apps,
     list_workspace_budgets,
-    resolve_current_budget_spend,
     upgrade_databricks_cli,
     workspace_hostname,
     workspace_origin,
@@ -59,6 +61,8 @@ WS_HOST = "example.databricks.com"
 
 class _FakeResponse:
     """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
+
+    status = 200
 
     def __init__(self, payload: dict | bytes):
         self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
@@ -447,6 +451,37 @@ class TestDiscoverClaudeModels:
             )
         ]
 
+    def test_keeps_the_listed_token_limits(self, monkeypatch):
+        payload = {
+            "data": [
+                {
+                    "id": "system.ai.claude-opus-4-8",
+                    "max_input_tokens": 1000000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-481f0baa-system.ai.gpt-6-luna",
+                    "max_input_tokens": 922000,
+                    "max_tokens": 128000,
+                },
+                {
+                    "id": "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                    "max_input_tokens": 0,
+                    "max_tokens": 0,
+                },
+                {"id": "system.ai.claude-odd", "max_input_tokens": True, "max_tokens": 64000},
+                {"id": "system.ai.claude-unlisted"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_id_to_limits == {
+            "system.ai.claude-opus-4-8": (1000000, 128000),
+            "anthropic-aigw-481f0baa-system.ai.gpt-6-luna": (922000, 128000),
+        }
+
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {
             "data": [
@@ -718,6 +753,34 @@ class TestDiscoverModelServices:
         assert ids == ["system.ai.gpt-5"]
         assert calls["n"] == 3  # two failures, third succeeds
 
+    def test_entries_keep_the_advertised_api_types(self, monkeypatch):
+        service = {
+            **_model_service("system.ai.gte-large-en"),
+            "supported_api_types": ["mlflow/v1/embeddings", 3],
+        }
+
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [service]}, None),
+        )
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert reason is None
+        assert entries == [
+            db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
+        ]
+        assert db_mod.cached_model_service_entries(WS) == entries
+
+    def test_failed_listing_is_not_cached(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_get_model_services_page", lambda url, token: (None, "HTTP 503")
+        )
+
+        assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
+        assert db_mod.cached_model_service_entries(WS) is None
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):
@@ -803,18 +866,25 @@ class TestListModelProviderServices:
         "model_provider_services": [
             {
                 "name": "model-provider-services/main.schema1.anthropic-svc",
-                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"},
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                    "allow_all_targets": True,
+                },
             },
             {
                 "name": "model-provider-services/main.schema1.claude-max-svc",
                 "config": {
                     "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
                     "anthropic": {"relayed": {}},
+                    "allow_all_targets": True,
                 },
             },
             {
                 "name": "model-provider-services/main.schema1.openai-svc",
-                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"},
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI",
+                    "allow_all_targets": True,
+                },
             },
             {
                 "name": "model-provider-services/main.schema2.bedrock-svc",
@@ -850,7 +920,8 @@ class TestListModelProviderServices:
             "name": "main.schema1.anthropic-svc",
             "provider_type": "anthropic",
             "targets": [],
-            "allow_all_targets": False,
+            "target_api_types": {},
+            "allow_all_targets": True,
             "relayed": False,
         }
         assert {s["provider_type"] for s in services} == {
@@ -868,6 +939,34 @@ class TestListModelProviderServices:
         assert by_name["main.schema1.claude-max-svc"]["relayed"] is True
         assert by_name["main.schema1.anthropic-svc"]["relayed"] is False
 
+    def test_flags_relayed_openai(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.chatgpt",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI",
+                    "openai": {"relayed": {}},
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "openai"
+
+    def test_flags_relayed_github_copilot(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.copilot-seats",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_GITHUB_COPILOT",
+                    "github_copilot": {"relayed": {}},
+                    "targets": [{"model": "claude-sonnet-5.5"}],
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "github_copilot"
+        assert entry["targets"] == ["claude-sonnet-5.5"]
+
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
@@ -878,6 +977,33 @@ class TestListModelProviderServices:
             "us.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-8",
         ]
+
+    def test_keeps_each_targets_declared_api_types(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.foundry-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY",
+                        "targets": [
+                            {"model": "gpt-5.4-nano", "native_api_types": ["openai/v1/responses"]},
+                            {"model": "embed-v-4-0", "native_api_types": ["openai/v1/embeddings"]},
+                            {"model": "plain"},
+                        ],
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+
+        services, _ = db_mod.list_model_provider_services(WS, "token")
+
+        assert services[0]["target_api_types"] == {
+            "gpt-5.4-nano": ("openai/v1/responses",),
+            "embed-v-4-0": ("openai/v1/embeddings",),
+        }
 
     def test_returns_reason_on_failure(self, monkeypatch):
         monkeypatch.setattr(
@@ -902,17 +1028,12 @@ class TestListModelProviderServices:
             "main.schema2.bedrock-svc",
         ]
 
-    def test_codex_includes_openai_and_bedrock(self, monkeypatch):
+    def test_codex_excludes_services_without_responses_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
         )
         names, _ = db_mod.list_tool_provider_services("codex", WS, "token")
-        # Codex pins no Claude family, so a Bedrock service is usable whatever its targets.
-        assert names == [
-            "main.schema1.openai-svc",
-            "main.schema2.bedrock-svc",
-            "main.schema2.bedrock-titan-svc",
-        ]
+        assert names == ["main.schema1.openai-svc"]
 
 
 class TestMapClaudeFamilyModels:
@@ -1021,6 +1142,12 @@ class TestResolveProviderLaunchModel:
         assert db_mod.resolve_provider_launch_model("claude-3-7-sonnet", models) == (
             "claude-3-7-sonnet"
         )
+
+    def test_custom_default_does_not_invent_a_family(self):
+        with pytest.raises(
+            RuntimeError, match="does not offer a 'sonnet' model.*available families: none"
+        ):
+            db_mod.resolve_provider_launch_model("sonnet", {"default": "team-coding"})
 
     def test_no_models_and_no_override_is_none(self):
         assert db_mod.resolve_provider_launch_model(None, {}) is None
@@ -1222,13 +1349,57 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilots_supported_list_leaves_out_github_copilot(self):
+        error = db_mod._provider_service_unusable_reason(
+            "copilot", {"provider_type": "gemini_enterprise"}, "main.a.gemini"
+        )
+        assert error is not None and "(supported: anthropic," in error
+        assert "github_copilot" not in error
+
+    def test_copilot_accepts_openai(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.openai-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "openai"
+
+    def test_copilot_rejects_bedrock_without_claude(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no compatible models for copilot" in error
+
+    def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.relay-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                        "anthropic": {"relayed": {}},
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.relay-svc", WS, "token"
+        )
+        assert service is None
+        assert "only Claude Code can use" in error
+
     def test_bedrock_without_claude_rejected(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
             "claude", "main.schema2.bedrock-titan-svc", WS, "token"
         )
         assert service is None
-        assert "no Claude models" in error
+        assert "no compatible models for claude" in error
 
     def test_bedrock_allow_all_targets_ok(self, monkeypatch):
         # allow_all_targets routes any model, so no explicit Claude target is needed — the model id
@@ -1261,7 +1432,12 @@ class TestResolveProviderService:
                     "name": "model-provider-services/main.schema2.mantle-svc",
                     "config": {
                         "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_BEDROCK_MANTLE",
-                        "targets": [{"model": "anthropic.claude-haiku-4-5"}],
+                        "targets": [
+                            {
+                                "model": "anthropic.claude-haiku-4-5",
+                                "native_api_types": ["anthropic/v1/messages"],
+                            }
+                        ],
                     },
                 }
             ]
@@ -1289,7 +1465,12 @@ class TestResolveProviderService:
                     "name": "model-provider-services/main.schema2.gpt-oss-svc",
                     "config": {
                         "provider_type": provider_type,
-                        "targets": [{"model": "openai.gpt-oss-120b"}],
+                        "targets": [
+                            {
+                                "model": "openai.gpt-oss-120b",
+                                "native_api_types": ["openai/v1/responses"],
+                            }
+                        ],
                     },
                 }
             ]
@@ -1305,7 +1486,59 @@ class TestResolveProviderService:
         _, claude_error = db_mod.resolve_provider_service(
             "claude", "main.schema2.gpt-oss-svc", WS, "token"
         )
-        assert "no Claude models" in claude_error
+        assert "no compatible models for claude" in claude_error
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        [
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+            "amazon_bedrock",
+            "bedrock_mantle",
+            "custom",
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("api_types", "usable"),
+        [
+            (None, False),
+            ([], False),
+            (["anthropic/v1/messages"], False),
+            (["openai/v1/chat/completions"], False),
+            (["openai/v1/embeddings"], False),
+            (["openai/v1/responses"], True),
+            (["openai/v1/chat/completions", "openai/v1/responses"], True),
+        ],
+    )
+    def test_codex_requires_responses_targets(self, monkeypatch, provider_type, api_types, usable):
+        target = {"model": "team-coding"}
+        if api_types is not None:
+            target["native_api_types"] = api_types
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.test.models",
+                    "config": {"provider_type": provider_type, "targets": [target]},
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **kw: (payload, None))
+
+        names, reason = db_mod.list_tool_provider_services("codex", WS, "token")
+        service, error = db_mod.resolve_provider_service("codex", "main.test.models", WS, "token")
+
+        assert reason is None
+        assert names == (["main.test.models"] if usable else [])
+        if usable:
+            assert error is None
+            assert service["targets"] == ["team-coding"]
+        else:
+            assert service is None
+            assert error == (
+                "Model provider service 'main.test.models' exposes no compatible models for codex — "
+                "add compatible targets, enable allow_all_targets, or pick a different service."
+            )
 
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
@@ -1344,7 +1577,225 @@ class TestResolveProviderService:
         assert service["targets"] == ["gemini-3.5-flash"]
 
 
+class TestListProviderServiceModels:
+    @pytest.mark.parametrize(
+        ("provider_type", "response", "expected"),
+        [
+            (
+                "amazon_bedrock",
+                ({"data": [{"id": "us.anthropic.claude-sonnet-4-6"}]}, None),
+                (["us.anthropic.claude-sonnet-4-6"], None),
+            ),
+            ("anthropic", ({"data": []}, None), ([], None)),
+            ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
+            ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
+            ("openai", ({"models": []}, None), ([], None)),
+            ("microsoft_foundry", ({"models": []}, None), ([], None)),
+        ],
+    )
+    def test_reports_failures_but_not_empty_listings(
+        self, monkeypatch, provider_type, response, expected
+    ):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kw: response)
+
+        assert (
+            db_mod.list_provider_service_models(WS, "token", "main.a.b", provider_type) == expected
+        )
+
+    def test_reports_a_codex_listing_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: (None, "HTTP 503 Service Unavailable"),
+        )
+
+        ids, reason = db_mod.list_provider_service_models(WS, "token", "main.a.b", "openai")
+
+        assert ids == []
+        assert "HTTP 503" in reason
+
+
+@pytest.mark.parametrize(
+    ("model", "name"),
+    [
+        ("system.ai.claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("System.AI.Claude-Opus-4-7[1m]", "claude-opus-4-7"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5-20250929-v1:0"),
+        ("anthropic.claude-opus-4-8", "claude-opus-4-8"),
+        ("databricks-claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("main.ucode.claude_haiku", "claude_haiku"),
+        ("gpt-5.5", "gpt-5.5"),
+        ("main.default.gpt-5.5", "gpt-5.5"),
+        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "claude-haiku-5-5"),
+        ("main.default.lill-oai.gpt-6.1-sol", "gpt-6.1-sol"),
+        ("main.default.lill-oai.gpt-6.1-terra", "gpt-6.1-terra"),
+        ("system.ai.claude-opus-4-7[foo.bar]", "claude-opus-4-7"),
+        # An Azure deployment names its region with a slash.
+        ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
+        ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
+        ("mistralai/Mistral-7B", "mistral-7b"),
+        # Only the leading segment is a region; anything deeper is left alone.
+        ("publishers/google/models/gemini-4", "google/models/gemini-4"),
+    ],
+)
+def test_bare_model_name(model, name):
+    assert db_mod.bare_model_name(model) == name
+
+
+@pytest.mark.parametrize(
+    ("tool", "provider_type"),
+    [
+        ("copilot", "anthropic"),
+        ("copilot", "microsoft_foundry"),
+    ],
+)
+def test_provider_targets_preserve_other_tool_combinations(tool, provider_type):
+    targets = ["claude-sonnet-5-5", "gpt-5.4"]
+    service = {
+        "provider_type": provider_type,
+        "targets": targets,
+        "target_api_types": {
+            "claude-sonnet-5-5": ("anthropic/v1/messages",),
+            "gpt-5.4": ("openai/v1/responses",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool(tool, service) == targets
+
+
+@pytest.mark.parametrize(
+    "provider_type",
+    ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"],
+)
+def test_claude_provider_targets_use_messages_metadata_not_names(provider_type):
+    service = {
+        "provider_type": provider_type,
+        "targets": ["team-coding", "claude-sonnet-99", "claude-haiku-5-5", "gpt-5.4"],
+        "target_api_types": {
+            "team-coding": ("anthropic/v1/messages",),
+            "claude-sonnet-99": ("openai/v1/responses",),
+            "gpt-5.4": ("openai/v1/responses",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool("claude", service) == ["team-coding"]
+    assert db_mod.service_usable_for_tool("claude", service)
+
+
+@pytest.mark.parametrize(
+    "provider_type",
+    ["openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle", "custom"],
+)
+def test_codex_provider_targets_use_responses_metadata_not_names(provider_type):
+    service = {
+        "provider_type": provider_type,
+        "targets": ["team-coding", "backup-coding", "gpt-5.4", "gpt-5-nano", "claude-sonnet-5-5"],
+        "target_api_types": {
+            "team-coding": ("openai/v1/responses",),
+            "backup-coding": ("openai/v1/chat/completions", "openai/v1/responses"),
+            "gpt-5.4": ("openai/v1/chat/completions",),
+            "claude-sonnet-5-5": ("anthropic/v1/messages",),
+        },
+    }
+
+    assert db_mod.provider_targets_for_tool("codex", service) == ["team-coding", "backup-coding"]
+    assert db_mod.service_usable_for_tool("codex", service)
+
+
 class TestServiceUsableForTool:
+    @pytest.mark.parametrize(
+        ("tool", "provider_type"),
+        [
+            ("claude", "anthropic"),
+            ("claude", "microsoft_foundry"),
+            ("claude", "custom"),
+            ("codex", "openai"),
+            ("codex", "custom"),
+            ("copilot", "microsoft_foundry"),
+            ("gemini", "gemini_enterprise"),
+        ],
+    )
+    def test_empty_restricted_services_are_unusable(self, tool, provider_type):
+        service = {"provider_type": provider_type, "targets": []}
+
+        assert not db_mod.service_usable_for_tool(tool, service)
+        service["allow_all_targets"] = True
+        assert db_mod.service_usable_for_tool(tool, service)
+
+    @pytest.mark.parametrize(
+        ("tool", "provider_type"),
+        [
+            ("claude", "anthropic"),
+            ("claude", "microsoft_foundry"),
+            ("claude", "custom"),
+            ("claude", "amazon_bedrock"),
+            ("claude", "bedrock_mantle"),
+            ("copilot", "amazon_bedrock"),
+            ("copilot", "bedrock_mantle"),
+            ("vscode", "amazon_bedrock"),
+            ("vscode", "bedrock_mantle"),
+        ],
+    )
+    def test_missing_compatible_targets_error(self, tool, provider_type):
+        service = {
+            "provider_type": provider_type,
+            "targets": ["gpt-5.4"],
+            "target_api_types": {"gpt-5.4": ("openai/v1/responses",)},
+        }
+
+        reason = db_mod._provider_service_unusable_reason(tool, service, "main.test.models")
+
+        assert reason == (
+            f"Model provider service 'main.test.models' exposes no compatible models for {tool} — "
+            "add compatible targets, enable allow_all_targets, or pick a different service."
+        )
+        service["allow_all_targets"] = True
+        assert db_mod._provider_service_unusable_reason(tool, service, "main.test.models") is None
+
+    @pytest.mark.parametrize(
+        ("targets", "target_api_types", "allow_all", "claude_usable", "codex_usable"),
+        [
+            (["claude-opus-5-5"], {}, False, False, False),
+            (["team-coding"], {"team-coding": ("anthropic/v1/messages",)}, False, True, False),
+            (["gpt-5-nano"], {"gpt-5-nano": ("openai/v1/responses",)}, False, False, True),
+            (
+                ["claude-sonnet-5-5"],
+                {"claude-sonnet-5-5": ("openai/v1/responses",)},
+                False,
+                False,
+                True,
+            ),
+            ([], {}, False, False, False),
+            ([], {}, True, True, True),
+        ],
+    )
+    def test_foundry_requires_targets_for_the_tools_api(
+        self, targets, target_api_types, allow_all, claude_usable, codex_usable
+    ):
+        service = {
+            "provider_type": "microsoft_foundry",
+            "targets": targets,
+            "target_api_types": target_api_types,
+            "allow_all_targets": allow_all,
+        }
+        assert db_mod.service_usable_for_tool("claude", service) is claude_usable
+        assert db_mod.service_usable_for_tool("codex", service) is codex_usable
+        assert db_mod.service_usable_for_tool("copilot", service) is bool(targets or allow_all)
+
+    def test_custom_responses_service_is_codex_only(self):
+        service = {
+            "provider_type": "custom",
+            "targets": ["team-coding"],
+            "target_api_types": {"team-coding": ("openai/v1/responses",)},
+        }
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("claude", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_claude_still_rejects_azure_openai(self):
+        service = {"provider_type": "azure_openai", "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("claude", service)
+
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
         assert db_mod.service_usable_for_tool("claude", service)
@@ -1362,10 +1813,118 @@ class TestServiceUsableForTool:
         service = {
             "provider_type": provider_type,
             "targets": ["openai.gpt-oss-120b"],
+            "target_api_types": {"openai.gpt-oss-120b": ("openai/v1/responses",)},
             "allow_all_targets": False,
         }
         assert not db_mod.service_usable_for_tool("claude", service)
         assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        [
+            "anthropic",
+            "amazon_bedrock",
+            "bedrock_mantle",
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+        ],
+    )
+    def test_copilot_routes_anthropic_and_openai_services(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize("provider_type", ["gemini_enterprise", "custom"])
+    def test_copilot_skips_other_provider_types(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_openai_relay_is_codex_only(self):
+        service = {
+            "provider_type": "openai",
+            "targets": [],
+            "relayed": True,
+            "allow_all_targets": True,
+        }
+        assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert "ChatGPT" in db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        anthropic = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        assert not db_mod.service_usable_for_tool("codex", anthropic)
+
+    def test_copilot_skips_a_subscription_relay(self):
+        service = {
+            "provider_type": "anthropic",
+            "targets": [],
+            "relayed": True,
+            "allow_all_targets": True,
+        }
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("claude", service)
+
+    _COPILOT_RELAY = {
+        "name": "main.s.copilot-seats",
+        "provider_type": "github_copilot",
+        "targets": ["claude-sonnet-5.5"],
+        "relayed": True,
+    }
+
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_for_copilot_and_vscode(self, tool):
+        assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
+        assert not db_mod.service_usable_for_tool("claude", self._COPILOT_RELAY)
+
+    def test_choices_label_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        choices, reason = db_mod.tool_provider_service_choices("copilot", WS, "tok")
+
+        assert reason is None
+        assert choices == [
+            ("main.s.anthropic", "main.s.anthropic"),
+            ("main.s.copilot-seats", "main.s.copilot-seats (GitHub Copilot subscription)"),
+        ]
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
+    def test_other_agents_refuse_a_github_copilot_relay(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "'github_copilot' provider" in reason
+
+    def test_github_copilot_without_a_relay_is_refused(self):
+        service = {**self._COPILOT_RELAY, "relayed": False}
+        reason = db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        assert reason is not None
+        assert "doesn't relay a subscription" in reason
+
+    def test_provider_flag_resolves_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
+        )
+
+        service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
+
+        assert error is None
+        assert service is not None and db_mod.is_copilot_seat_relay(service)
+
+    def test_picker_lists_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
+            ["main.s.anthropic", "main.s.copilot-seats"],
+            None,
+        )
 
 
 class TestModelProviderFeatureUnavailable:
@@ -1515,6 +2074,61 @@ class TestListMcpServices:
 
         assert reason is None
         assert names == ["main.schema3.github", "main.schema3.slack"]
+
+    @staticmethod
+    def _paged(monkeypatch, second_page):
+        """Serve a first page of `main.s.a` with a next token, then ``second_page``."""
+
+        def fake_get(url, token, timeout=30):
+            if "page_token" in url:
+                return second_page
+            return {"mcp_services": [{"name": "main.s.a"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+    @pytest.mark.parametrize(
+        "second_page",
+        [
+            (None, "HTTP 404 Not Found: NOT_FOUND"),
+            (None, "HTTP 500 Internal Server Error"),
+            (None, None),
+            (["not", "a", "dict"], None),
+            ({"mcp_services": {"name": "main.s.b"}}, None),
+            # The same token again: the listing would loop rather than finish.
+            ({"mcp_services": [], "next_page_token": "p2"}, None),
+        ],
+    )
+    def test_strict_reports_every_incomplete_scoped_listing(self, monkeypatch, second_page):
+        self._paged(monkeypatch, second_page)
+        lenient = db_mod.list_mcp_services(WS, "token", parent="main.s")
+        strict = db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True)
+        assert lenient == (["main.s.a"], None)
+        # A later-page failure is marked incomplete, so it never reads as a missing schema.
+        assert strict[0] == ["main.s.a"]
+        assert strict[1] and strict[1].startswith("incomplete listing: ")
+
+    def test_strict_reports_the_page_limit(self, monkeypatch):
+        tokens = iter(range(10))
+
+        def fake_get(url, token, timeout=30):
+            return {"mcp_services": [], "next_page_token": f"t{next(tokens)}"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        _names, reason = db_mod.list_mcp_services(
+            WS, "token", parent="main.s", max_pages=3, strict=True
+        )
+        assert reason == "incomplete listing: MCP listing exceeded 3 pages"
+
+    def test_strict_rejects_a_malformed_first_page(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: ({"mcp_services": "main.s.a"}, None),
+        )
+        assert db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True) == (
+            [],
+            "unexpected MCP listing response",
+        )
 
     def test_http_404_reason_surfaces_for_invalid_parent(self, monkeypatch):
         monkeypatch.setattr(
@@ -1674,9 +2288,171 @@ class TestWalkCatalogSchemas:
         assert reason == "no user UC catalogs found"
         assert probed == []
 
+    def test_streams_probe_before_other_catalog_finishes_listing(self, monkeypatch):
+        slow_catalog_started = threading.Event()
+        release_slow_catalog = threading.Event()
+        first_result = threading.Event()
+        collected: list[str] = []
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": "fast"}, {"name": "slow"}], None
+            if kwargs["extra_params"]["catalog_name"] == "slow":
+                slow_catalog_started.set()
+                release_slow_catalog.wait(timeout=5)
+                return [{"name": "later"}], None
+            return [{"name": "first"}], None
+
+        def collect(result, done, total):
+            collected.append(result)
+            first_result.set()
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=lambda catalog, schema: f"{catalog}.{schema}",
+                    collect=collect,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert slow_catalog_started.wait(timeout=2)
+            assert first_result.wait(timeout=2)
+            assert collected[0] == "fast.first"
+        finally:
+            release_slow_catalog.set()
+            thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert not failures
+        assert set(collected) == {"fast.first", "slow.later"}
+
+    def test_busy_probe_queue_does_not_starve_catalog_listing(self, monkeypatch):
+        third_catalog_started = threading.Event()
+        release_probes = threading.Event()
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": name} for name in ("first", "second", "third")], None
+            catalog = kwargs["extra_params"]["catalog_name"]
+            if catalog == "third":
+                third_catalog_started.set()
+            return ([{"name": f"s{i}"} for i in range(30)] if catalog == "first" else []), None
+
+        def probe(catalog, schema):
+            release_probes.wait(timeout=3)
+            return f"{catalog}.{schema}"
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=probe,
+                    collect=lambda *args: None,
+                    max_workers=2,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert third_catalog_started.wait(timeout=1.5)
+        finally:
+            release_probes.set()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not failures
+
 
 class TestListAllMcpServices:
-    """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
+    """Metastore listing, with the catalog/schema walk as a compatibility fallback."""
+
+    def test_metastore_pages_stream_with_metadata_before_callbacks(self, monkeypatch):
+        urls = []
+        metadata = {}
+        emitted = []
+
+        def fake_get(url, token, timeout=30):
+            urls.append(url)
+            if len(urls) == 1:
+                return {
+                    "mcp_services": [
+                        {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                        {
+                            "name": "mcp-services/main.tools.inactive",
+                            "config": {"connection": {"status": "FAILED"}},
+                        },
+                    ],
+                    "next_page_token": "second",
+                }, None
+            return {
+                "mcp_services": [
+                    {"name": "mcp-services/other.ops.pager", "comment": "Pager"},
+                    {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                ]
+            }, None
+
+        def on_services(new_names):
+            emitted.append([(name, metadata[name]["comment"]) for name in new_names])
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", metadata=metadata, on_services=on_services
+        )
+
+        assert reason is None
+        assert names == ["main.tools.linear", "other.ops.pager"]
+        assert emitted == [
+            [("main.tools.linear", "Linear")],
+            [("other.ops.pager", "Pager")],
+        ]
+        assert len(urls) == 2
+        assert all("parent=" not in url and "view=BASIC" in url for url in urls)
+        assert "page_size=200" in urls[0]
+        assert "page_token=second" in urls[1]
+
+    def test_metastore_mid_page_failure_keeps_partial_result_and_reason(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, token, timeout=30):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/main.tools.linear"}],
+                    "next_page_token": "second",
+                }, None
+            return None, "HTTP 503 Service Unavailable"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        assert names == ["main.tools.linear"]
+        assert reason == "HTTP 503 Service Unavailable"
+        assert len(calls) == 2
+
+    def test_invalid_token_does_not_fall_back_to_schema_walk(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (None, "HTTP 401 Unauthorized"),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "walk_catalog_schemas",
+            lambda *args, **kwargs: pytest.fail("auth failure must not start schema walk"),
+        )
+        assert db_mod.list_all_mcp_services(WS, "bad-token") == ([], "HTTP 401 Unauthorized")
 
     def _fake_http(self, catalogs, schemas_by_catalog, services_by_schema):
         """Route `_http_get_json` by URL to the right stubbed payload."""
@@ -1688,6 +2464,8 @@ class TestListAllMcpServices:
                 cat = url.split("catalog_name=")[1].split("&")[0]
                 return {"schemas": [{"name": s} for s in schemas_by_catalog.get(cat, [])]}, None
             if "unity-catalog/mcp-services" in url:
+                if "parent=" not in url:
+                    return None, "HTTP 400 Bad Request: parent is required"
                 # parent is url-encoded as `schemas%2F<cat>.<schema>`
                 parent = url.split("parent=")[1].split("&")[0]
                 schema_ref = parent.replace("schemas%2F", "").replace("schemas/", "")
@@ -1751,6 +2529,26 @@ class TestListAllMcpServices:
         assert progress[-1][0] == 2
         assert progress[-1][2] == 2
 
+    def test_timeout_keeps_streamed_services_and_reports_partial_listing(self, monkeypatch):
+        def walk(workspace, token, *, probe, collect, **kwargs):
+            collect(probe("main", "tools"), 1, 2)
+            return "deadline exceeded while listing UC schemas"
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", walk)
+        monkeypatch.setattr(
+            db_mod,
+            "list_mcp_services",
+            lambda workspace, token, parent, **kwargs: (["main.tools.linear"], None),
+        )
+        streamed: list[list[str]] = []
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", on_services=streamed.append, on_progress=lambda *_: None
+        )
+
+        assert names == ["main.tools.linear"]
+        assert streamed == [["main.tools.linear"]]
+        assert reason == "deadline exceeded while listing MCP services"
+
     def test_skips_internal_catalogs(self, monkeypatch):
         monkeypatch.setattr(
             db_mod,
@@ -1769,7 +2567,13 @@ class TestListAllMcpServices:
 
     def test_returns_reason_when_no_catalogs(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, timeout=30: ({"catalogs": []}, None)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                ({"catalogs": []}, None)
+                if "unity-catalog/catalogs" in url
+                else (None, "HTTP 400 Bad Request: parent is required")
+            ),
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")
@@ -2464,6 +3268,28 @@ class TestGetDatabricksToken:
         )
         assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
 
+    def test_browser_login_failure_records_exit_without_skipping_refetch(
+        self, tmp_path, monkeypatch, metrics_recorder, capfd
+    ):
+        env = self._fake_databricks(tmp_path, "sys.exit(7)")
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        fetches = iter([("", None), ("recovered-token", 3600)])
+
+        assert db_mod._browser_login(WS, None, env, lambda: next(fetches)) == (
+            "recovered-token",
+            3600,
+        )
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["process_exit_code"] == 7
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["operation"] == metrics.DATABRICKS_LOGIN_OPERATION
+        assert error_labels["process_exit_code"] == 7
+        assert capfd.readouterr() == ("", "")
+
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
         # cache fail with "cache update: exit status 45". That's transient (the
@@ -2715,7 +3541,7 @@ class TestGetDatabricksToken:
         assert not any("--no-browser" in call for call in calls)
 
     def test_successful_token_is_memoized_and_force_refresh_bypasses_it(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, metrics_recorder
     ):
         counter = tmp_path / "count"
         counter.write_text("0")
@@ -2739,6 +3565,21 @@ class TestGetDatabricksToken:
         calls = log.read_text().splitlines()
         assert len(calls) == 3
         assert "--force-refresh" in calls[1]
+
+        labels = [
+            attrs
+            for _, attrs in metric_observations(
+                metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+            )
+        ]
+        assert [attrs["in_process_cache_hit"] for attrs in labels] == [
+            False,
+            True,
+            False,
+            True,
+            False,
+        ]
+        assert {attrs["token_source"] for attrs in labels} == {"cli"}
 
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
@@ -3216,7 +4057,7 @@ class TestGetDatabricksToken:
         db_mod.run_databricks_login(WS, "p")
         assert get_databricks_token(WS, "p") == "after-login"
 
-    def test_custom_oauth_cli_login_clears_shared_token_memo(self, monkeypatch):
+    def test_custom_oauth_cli_login_clears_shared_token_memo(self, monkeypatch, metrics_recorder):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
         config = {
@@ -3251,6 +4092,50 @@ class TestGetDatabricksToken:
         assert custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config) == "fresh"
         assert len(login_calls) == 1
         assert len(token_calls) == 1
+
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["login_method"] == "cli"
+        [(_, token_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert token_labels["token_source"] == "cli"
+        assert token_labels["in_process_cache_hit"] is False
+
+    @pytest.mark.parametrize(("workspace_id", "login_host"), [("111", f"{WS}?w=111"), (None, WS)])
+    def test_custom_oauth_cli_login_selects_the_workspace(
+        self, monkeypatch, workspace_id, login_host
+    ):
+        config = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020/callback",
+            "scopes": ["all-apis"],
+        }
+        login_calls = []
+        monkeypatch.setattr(custom_oauth_mod, "ensure_databricks_cli_version", lambda *_: None)
+        monkeypatch.setattr(custom_oauth_mod, "external_bearer_configured", lambda: False)
+        monkeypatch.setattr(custom_oauth_mod, "has_valid_databricks_auth", lambda *_: False)
+        monkeypatch.setattr(custom_oauth_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(
+            custom_oauth_mod, "run", lambda command, **kwargs: login_calls.append(command)
+        )
+        monkeypatch.setattr(custom_oauth_mod, "get_databricks_token", lambda *_: "token")
+
+        custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config, workspace_id)
+
+        command = login_calls[0]
+        assert command[command.index("--host") + 1] == login_host
+
+    def test_saved_custom_oauth_profile_records_the_workspace(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "databrickscfg"
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        db_mod.save_databricks_cli_oauth_profile(WS, "ug-oauth", "client", workspace_id="111")
+        db_mod.save_databricks_cli_oauth_profile(WS, "plain", "client")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(cfg)
+        assert parser["ug-oauth"]["workspace_id"] == "111"
+        assert "workspace_id" not in parser["plain"]
 
 
 class TestGetDatabricksProfiles:
@@ -3308,6 +4193,100 @@ class TestGetDatabricksProfiles:
     def test_returns_empty_on_non_zero_exit(self, monkeypatch):
         self._patched_run(monkeypatch, {"profiles": []}, returncode=1)
         assert get_databricks_profiles() == []
+
+    def test_lists_metadata_without_validating_other_workspaces(self, monkeypatch):
+        entries = [
+            {"name": "mine", "host": WS, "auth_type": "databricks-cli", "valid": False},
+            {
+                "name": "unreachable",
+                "host": "https://unreachable.example.com",
+                "auth_type": "databricks-cli",
+                "valid": False,
+            },
+            {"name": "pat", "host": WS, "auth_type": "pat", "valid": False},
+        ]
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            # Without this flag the CLI authenticates against every profile's host,
+            # even though ug only needs local metadata for selection and PAT filtering.
+            assert "--skip-validate" in args
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"profiles": entries}))
+
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+
+        assert get_databricks_profiles() == [
+            (WS, "mine"),
+            ("https://unreachable.example.com", "unreachable"),
+        ]
+        assert db_mod.profile_auth_type("pat") == "pat"
+        assert all(args[:3] == ["databricks", "auth", "profiles"] for args in calls)
+
+    @pytest.mark.parametrize("missing_auth_type", [None, ""])
+    def test_infers_implicit_pat_locally_without_default_inheritance(
+        self, monkeypatch, tmp_path, missing_auth_type
+    ):
+        config = tmp_path / "databrickscfg"
+        config.write_text(
+            f"[DEFAULT]\nhost = {WS}\ntoken = default-pat\n"
+            f"[implicit-pat]\nhost = {WS}\ntoken = named-pat\n"
+            f"[implicit-oauth]\nhost = {WS}\n"
+            f"[explicit-oauth]\nhost = {WS}\nauth_type = databricks-cli\ntoken = stale-pat\n"
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        entries = [
+            {"name": name, "host": WS, "auth_type": missing_auth_type, "valid": False}
+            for name in ("DEFAULT", "implicit-pat", "implicit-oauth")
+        ]
+        entries.append({"name": "explicit-oauth", "host": WS, "auth_type": "databricks-cli"})
+        self._patched_run(monkeypatch, {"profiles": entries})
+
+        assert get_databricks_profiles() == [(WS, "implicit-oauth"), (WS, "explicit-oauth")]
+        assert db_mod.resolve_pat_token("implicit-pat") == "named-pat"
+        assert db_mod.resolve_pat_token("DEFAULT") == "default-pat"
+        assert db_mod.resolve_pat_token("explicit-oauth") is None
+
+    @pytest.mark.parametrize("contents", [b"[malformed", b"# invalid comment: \xff\n"])
+    def test_optional_local_inference_failure_keeps_cli_metadata(
+        self, monkeypatch, tmp_path, contents
+    ):
+        config = tmp_path / "databrickscfg"
+        config.write_bytes(contents)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        self._patched_run(monkeypatch, {"profiles": [{"name": "mine", "host": WS}]})
+
+        assert get_databricks_profiles() == [(WS, "mine")]
+
+    @pytest.mark.parametrize("authenticated", [True, False])
+    def test_unvalidated_metadata_still_checks_selected_profile(self, monkeypatch, authenticated):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["auth", "profiles"]:
+                payload = {
+                    "profiles": [
+                        {"name": "mine", "host": WS, "auth_type": "databricks-cli", "valid": False},
+                        {"name": "other", "host": "https://other.example.com", "valid": False},
+                    ]
+                }
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+            assert args[1:3] == ["auth", "token"]
+            assert args[args.index("--host") + 1] == WS
+            assert args[args.index("--profile") + 1] == "mine"
+            payload = {"access_token": "selected-workspace-token"} if authenticated else {}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "_log_auth_diagnostics", lambda: None)
+
+        assert db_mod.check_databricks_auth(WS) is authenticated
+        assert [args[1:3] for args in calls] == [["auth", "profiles"], ["auth", "token"]]
 
 
 class TestListDatabricksApps:
@@ -3410,7 +4389,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_probe_preserves_workspace_scheme_and_port(self, monkeypatch):
         calls = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
 
@@ -3423,7 +4402,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_resource_returns_success(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
 
@@ -3447,7 +4426,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return next(responses)
 
@@ -3473,7 +4452,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return next(responses)
 
@@ -3496,7 +4475,7 @@ class TestProbeUnityGatewayCapabilities:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token: ({}, None),
+            lambda url, token, **kwargs: ({}, None),
         )
 
         model_service_probe = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
@@ -3510,7 +4489,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_unavailable_raises(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 404: model services unavailable"
 
@@ -3527,10 +4506,74 @@ class TestProbeUnityGatewayCapabilities:
         assert "legacy" not in message.lower()
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
 
+    def test_non_404_non_transient_failure_does_not_claim_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 400 Bad Request: malformed"),
+        )
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "HTTP 400 Bad Request: malformed" in message
+        assert "not enabled" not in message
+        assert "transient" not in message
+
+    def test_successful_probe_is_memoized_per_workspace_and_failures_are_not(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                (None, "HTTP 400 Bad Request: malformed"),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        with pytest.raises(RuntimeError):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        first = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        second = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert first.resource_available
+        assert second == first
+        assert len(calls) == 2
+
+    def test_probe_cache_is_keyed_by_token_and_skips_empty_listings(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                ({"model_services": []}, None),
+                ({"model_services": []}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(token)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert not db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-a").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token-b").resource_available
+
+        assert calls == ["token-a", "token-a", "token-a", "token-b"]
+
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 401: Unauthorized"
 
@@ -3544,7 +4587,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_missing_scope_403_routes_to_reauth_not_grants(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, (
                 "HTTP 403 Forbidden: Provided OAuth token does not have required "
@@ -3569,7 +4612,7 @@ class TestProbeUnityGatewayCapabilities:
                 (None, "HTTP 500: Internal Server Error"),
             ]
         )
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(responses))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: next(responses))
 
         assert db_mod._probe_model_services(WS, "fake-token") == db_mod.GatewayProbe(
             True, "reachable", conclusive=False
@@ -3580,7 +4623,7 @@ class TestProbeUnityGatewayCapabilities:
     ):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"next_page_token": "more"}, None
 
@@ -3599,7 +4642,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(responses))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: next(responses))
 
         assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
             True, "reachable", conclusive=False
@@ -3641,7 +4684,7 @@ class TestProbeUnityGatewayCapabilities:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token: (None, "HTTP 403 Forbidden: Invalid access token."),
+            lambda url, token, **kwargs: (None, "HTTP 403 Forbidden: Invalid access token."),
         )
         with pytest.raises(RuntimeError, match="rejected the access token"):
             db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
@@ -3649,7 +4692,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_forbidden_reports_permission_error(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 403: Missing Unity Catalog grants"
 
@@ -3667,6 +4710,96 @@ class TestProbeUnityGatewayCapabilities:
         assert "rejected the access token" not in message
         assert "not enabled" not in message
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
+
+    def test_probe_retries_transient_499_then_succeeds(self, monkeypatch):
+        sleeps: list[float] = []
+        outcomes = iter(
+            [
+                TestHttpGetJsonRetries._http_error(499, "Unknown"),
+                _FakeResponse({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}),
+            ]
+        )
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
+            True, "reachable, accessible model service returned", True
+        )
+        assert len(sleeps) == 1
+
+    def test_probe_requests_bounded_retries(self, monkeypatch):
+        seen: list[int] = []
+
+        def fake_get(url, token, **kwargs):
+            seen.append(kwargs.get("max_retries"))
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        assert seen == [db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES]
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "HTTP 429 Too Many Requests",
+            "HTTP 499 Unknown",
+            "HTTP 502 Bad Gateway",
+            "HTTP 503 Service Unavailable: try later",
+            "HTTP 504 Gateway Timeout",
+            "network error: timed out",
+        ],
+    )
+    def test_persistent_transient_failure_is_not_reported_as_not_enabled(self, monkeypatch, reason):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: (None, reason))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "is not enabled on this workspace" not in message
+        assert reason in message
+        assert "retry" in message
+        assert "--skip-preflight" in message
+
+    def test_persistent_499_after_retries_is_transient_error(self, monkeypatch):
+        calls: list[object] = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            raise TestHttpGetJsonRetries._http_error(499, "Unknown")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda s: None)
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert "HTTP 499 Unknown" in str(excinfo.value)
+        assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+
+    def test_transient_classification_matches_retryable_statuses(self):
+        for code in db_mod._HTTP_GET_RETRYABLE_STATUS_CODES:
+            assert db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
+        assert db_mod._looks_like_transient_failure("network error: connection reset")
+        for code in (400, 404, 500, 501):
+            assert not db_mod._looks_like_transient_failure(f"HTTP {code} Whatever")
+
+    def test_404_still_reports_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 404 Not Found: NOT_FOUND"),
+        )
+
+        with pytest.raises(RuntimeError, match="is not enabled on this workspace"):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
 
 
 class TestHttpGetJsonReason:
@@ -3713,6 +4846,59 @@ class TestHttpGetJsonRetries:
         from urllib.error import HTTPError
 
         return HTTPError(url="", code=code, msg=message, hdrs=headers or {}, fp=None)
+
+    @pytest.mark.parametrize(
+        ("max_retries", "recovers", "attempts", "delays"),
+        [(0, False, 1, []), (2, False, 3, [1.25, 2.5]), (2, True, 2, [1.25])],
+    )
+    def test_truncated_response_obeys_retry_budget(
+        self, monkeypatch, max_retries, recovers, attempts, delays
+    ):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock
+
+        truncated = MagicMock()
+        truncated.__enter__.return_value = truncated
+        # Even a valid JSON prefix is incomplete and must never be returned or cached.
+        truncated.read.side_effect = IncompleteRead(b'{"partial": true}', 100)
+        responses = [truncated, _FakeResponse({"complete": True})] if recovers else None
+        urlopen = MagicMock(side_effect=responses, return_value=truncated)
+        sleeps = []
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=max_retries)
+
+        assert urlopen.call_count == attempts
+        assert truncated.__exit__.call_count == (1 if recovers else attempts)
+        assert sleeps == delays
+        if recovers:
+            assert payload == {"complete": True}
+            assert reason is None
+        else:
+            assert payload is None
+            assert reason == "network error: IncompleteRead(17 bytes read, 100 more expected)"
+
+    @pytest.mark.parametrize("error_type", ["BadStatusLine", "LineTooLong"])
+    def test_retries_protocol_errors_before_response_body(self, monkeypatch, error_type):
+        import http.client
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(
+            side_effect=[
+                getattr(http.client, error_type)("invalid HTTP response"),
+                _FakeResponse({"complete": True}),
+            ]
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
+
+        assert payload == {"complete": True}
+        assert reason is None
+        assert urlopen.call_count == 2
 
     def test_retries_429_after_retry_after_delay(self, monkeypatch):
         outcomes = iter(
@@ -3764,6 +4950,59 @@ class TestHttpGetJsonRetries:
         assert reason is None
         assert sleeps == [1.25]
 
+    @pytest.mark.parametrize("code", [499, 502, 503, 504])
+    def test_retries_transient_gateway_status_then_succeeds(
+        self, monkeypatch, code, metrics_recorder
+    ):
+        outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload == {"ok": True}
+        assert reason is None
+        assert sleeps == [1.25]
+
+        attempts = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert [attrs["http_status_code"] for _, attrs in attempts] == [code, 200]
+        assert [attrs["attempt"] for _, attrs in attempts] == [1, 2]
+        assert (
+            sum(
+                value
+                for value, _ in metric_observations(metrics_recorder, metrics.HTTP_RETRY_COUNT)
+            )
+            == 1
+        )
+
+    @pytest.mark.parametrize("code", [400, 404, 500, 501])
+    def test_does_not_retry_other_statuses(self, monkeypatch, code):
+        calls = []
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            raise self._http_error(code, "Nope")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload is None
+        assert reason == f"HTTP {code} Nope"
+        assert len(calls) == 1
+        assert sleeps == []
+
     def test_stops_after_configured_retries(self, monkeypatch):
         calls = []
         sleeps = []
@@ -3788,7 +5027,7 @@ class TestHttpGetJsonRetries:
 
         def fake_urlopen(request, timeout=None):
             calls.append(request)
-            raise self._http_error(503, "Service Unavailable")
+            raise self._http_error(500, "Internal Server Error")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         monkeypatch.setattr(
@@ -3800,7 +5039,7 @@ class TestHttpGetJsonRetries:
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
 
         assert payload is None
-        assert reason == "HTTP 503 Service Unavailable"
+        assert reason == "HTTP 500 Internal Server Error"
         assert len(calls) == 1
 
     def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
@@ -3821,6 +5060,45 @@ class TestHttpGetJsonRetries:
         assert reason is None
 
 
+class TestHttpUgHeaders:
+    def test_get_and_send_carry_ug_headers(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("X-databricks-traffic-id") for request in requests] == [
+            "testenv://liteswap/abc",
+            "testenv://liteswap/abc",
+        ]
+
+    def test_ug_headers_never_replace_auth_or_content_type(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "authorization: other\ncontent-type: text/plain")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("Authorization") for request in requests] == [
+            "Bearer tok",
+            "Bearer tok",
+        ]
+        assert requests[1].get_header("Content-type") == "application/json"
+
+
 class TestParseDatabricksCliVersion:
     def test_parses_standard_format(self):
         assert _parse_databricks_cli_version("Databricks CLI v0.299.2") == (0, 299, 2)
@@ -3839,7 +5117,8 @@ class TestDatabricksCliResolution:
     the version-read subprocess directly — no real Databricks CLI is needed."""
 
     @pytest.fixture(autouse=True)
-    def _fresh_databricks_cli_cache(self):
+    def _fresh_databricks_cli_cache(self, monkeypatch):
+        monkeypatch.setattr(db_mod.sys, "platform", "win32" if os.name == "nt" else "linux")
         clear_databricks_cli_cache()
         yield
         clear_databricks_cli_cache()
@@ -3902,6 +5181,50 @@ class TestDatabricksCliResolution:
         exe = tmp_path / "databricks.exe"
         exe.write_text("matches PATHEXT's .exe")
         assert db_mod._iter_databricks_executables() == [str(exe)]
+
+    @pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"])
+    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("HOME", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        gui_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", gui_path)
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        candidate = os.path.join(os.path.expanduser(directory), name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value == candidate)
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda value: (1, 20, 0))
+
+        assert databricks_cli_path() == os.path.abspath(candidate)
+        assert os.environ.get("PATH") == gui_path
+
+    def test_macos_preserves_cli_found_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        configured = str(tmp_path / name)
+        homebrew = os.path.join("/opt/homebrew/bin", name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value in {configured, homebrew})
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        probes = Mock(side_effect=lambda value: (1, 0, 0) if value == configured else (1, 20, 0))
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probes)
+
+        assert databricks_cli_path() == configured
+        probes.assert_called_once_with(configured)
+
+    @pytest.mark.parametrize("platform", ["linux", "win32"])
+    def test_standard_macos_locations_are_not_searched_on_other_platforms(
+        self, monkeypatch, platform
+    ):
+        monkeypatch.setattr(db_mod.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        files = Mock(return_value=True)
+        monkeypatch.setattr(db_mod.os.path, "isfile", files)
+
+        assert db_mod._iter_databricks_executables() == []
+        files.assert_not_called()
 
     # -- _discover_databricks_clis -------------------------------------------
 
@@ -4121,6 +5444,63 @@ class TestEnsureDatabricksCliVersion:
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
 
+    def test_launch_checks_probe_a_sufficient_cli_once(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        probes = []
+        original_run = db_mod.run
+
+        def record_probe(args, **kwargs):
+            probes.append(args)
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
+
+        assert databricks_cli_installed() is True
+        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        assert Path(db_mod.databricks_cli_path()).parent == tmp_path
+        assert len(probes) == 1
+
+    def test_insufficient_cached_version_rechecks_before_upgrading(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+
+        # Another process upgraded the same executable after the first check.
+        self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("the installed CLI already meets the higher floor"),
+        )
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+
+    def test_installer_invalidates_cached_version(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: "/usr/bin/brew")
+        installer_calls = []
+
+        def install(args, **kwargs):
+            installer_calls.append(args)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+
+        # Replace only the external installer process; exercise its cache invalidation.
+        with monkeypatch.context() as installer_patch:
+            installer_patch.setattr(db_mod, "run", install)
+            db_mod._run_databricks_cli_installer(brew_subcommand="upgrade")
+
+        # Check before ensure's higher-floor refresh can hide stale installer state.
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert db_mod.databricks_cli_version() == (1, 20, 0)
+        assert installer_calls == [["brew", "upgrade", "databricks/tap/databricks"]]
+
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
 
@@ -4148,8 +5528,19 @@ class TestEnsureDatabricksCliVersion:
     def test_raises_when_version_unparseable(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "completely broken output")
         monkeypatch.setattr("os.environ", env)
+        probes = []
+        original_run = db_mod.run
+
+        def record_probe(args, **kwargs):
+            probes.append(args)
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
+
+        # One discovery probe plus the existing raw-output read for the error message.
+        assert len(probes) == 2
 
     def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
@@ -4647,12 +6038,22 @@ class TestModelProviderServicesCache:
                         "name": "model-provider-services/main.j.ant",
                         "config": {
                             "provider_type": "ANTHROPIC",
-                            "targets": [{"model": "claude-opus-5"}],
+                            "targets": [
+                                {
+                                    "model": "claude-opus-5",
+                                    "native_api_types": ["anthropic/v1/messages"],
+                                }
+                            ],
                         },
                     },
                     {
                         "name": "model-provider-services/main.j.oai",
-                        "config": {"provider_type": "OPENAI", "targets": [{"model": "gpt-5"}]},
+                        "config": {
+                            "provider_type": "OPENAI",
+                            "targets": [
+                                {"model": "gpt-5", "native_api_types": ["openai/v1/responses"]}
+                            ],
+                        },
                     },
                 ]
             }, None
@@ -4779,7 +6180,7 @@ class TestHttpDelete:
         response.status = 200
         return response
 
-    def test_empty_body_is_success_not_a_decode_error(self, monkeypatch):
+    def test_empty_body_is_success_not_a_decode_error(self, monkeypatch, metrics_recorder):
         # Without `allow_empty_body` this would fail with "response was not valid JSON".
         monkeypatch.setattr(
             db_mod.urllib_request, "urlopen", lambda request, timeout=None: self._empty_response()
@@ -4787,6 +6188,12 @@ class TestHttpDelete:
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is None
         assert payload is None
+
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "DELETE"
+        assert labels["http_status_code"] == 200
+        assert labels["attempt"] == 1
+        assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []
 
     def test_empty_json_object_is_also_success(self, monkeypatch):
         monkeypatch.setattr(
@@ -4811,7 +6218,7 @@ class TestHttpDelete:
         assert seen["method"] == "DELETE"
         assert seen["data"] is None
 
-    def test_http_error_surfaces_the_body(self, monkeypatch):
+    def test_http_error_surfaces_the_body(self, monkeypatch, metrics_recorder):
         import io
         from unittest.mock import MagicMock
         from urllib.error import HTTPError
@@ -4829,9 +6236,17 @@ class TestHttpDelete:
         assert "403" in reason
         assert "PERMISSION_DENIED" in reason
 
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "DELETE"
+        assert labels["http_status_code"] == 403
+        assert labels["attempt"] == 1
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["error_code"] == "http_403"
+
 
 class TestHttpPatchJson:
-    def test_uses_the_patch_verb_and_sends_the_body(self, monkeypatch):
+    def test_uses_the_patch_verb_and_sends_the_body(self, monkeypatch, metrics_recorder):
         from unittest.mock import MagicMock
 
         seen = {}
@@ -4854,6 +6269,10 @@ class TestHttpPatchJson:
         assert seen["method"] == "PATCH"
         assert json.loads(seen["data"]) == {"k": "v"}
         assert seen["content_type"] == "application/json"
+
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "PATCH"
+        assert labels["http_status_code"] == 200
 
 
 class TestHttpPostJson:
@@ -4989,127 +6408,45 @@ class TestCodingAgentConfigCrudClients:
         assert reason == "HTTP 404 Not Found"
 
 
-class TestResolveCurrentBudgetSpend:
-    def test_parses_spend_and_threshold(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"current_spend": "12.34", "effective_threshold": "100"},
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal("12.34"), Decimal("100"))
-        assert reason is None
+class TestGetUsageDashboardUrl:
+    def test_fetches_published_url_with_workspace_token(self, monkeypatch):
+        dashboard_url = f"{WS}/dashboardsv3/dashboard/published?o=123"
+        requests = []
 
-    def test_posts_to_recommend_model_with_no_available_models(self, monkeypatch):
-        captured = {}
+        def urlopen(request, timeout):
+            requests.append((request, timeout))
+            return _FakeResponse({"dashboard_id": "dashboard", "dashboard_url": dashboard_url})
 
-        def fake_post(url, token, payload, timeout=10):
-            captured["url"] = url
-            captured["payload"] = payload
-            return {"current_spend": "1", "effective_threshold": "2"}, None
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
 
-        monkeypatch.setattr(db_mod, "_http_post_json", fake_post)
-        resolve_current_budget_spend("https://ws.example.com", "token")
-        assert captured["url"] == (f"https://ws.example.com{CODING_AGENT_RECOMMEND_MODEL_PATH}")
-        # Empty list applies no availability filter; we want the spend only.
-        assert captured["payload"] == {"available_models": []}
+        assert db_mod.get_usage_dashboard_url(WS, "workspace-token") == dashboard_url
+        assert len(requests) == 1
+        request, timeout = requests[0]
+        assert request.full_url == f"{WS}/api/ai-gateway/v2/usage-analytics-dashboard"
+        assert request.get_method() == "GET"
+        assert request.get_header("Authorization") == "Bearer workspace-token"
+        assert timeout == 10
 
-    def test_ignores_recommended_models(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {
-                    "recommended_models": ["system.ai.claude-sonnet-4-5"],
-                    "current_spend": "12.34",
-                    "effective_threshold": "100",
-                },
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal("12.34"), Decimal("100"))
-        assert reason is None
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            [],
+            {},
+            {"dashboard_id": "dashboard"},
+            {"dashboard_url": None},
+            {"dashboard_url": ""},
+            {"dashboard_url": "  "},
+            {"dashboard_url": 123},
+        ],
+    )
+    def test_omits_link_without_a_nonempty_url(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
 
-    def test_recommendation_without_spend_is_no_spend(self, monkeypatch):
-        # A config with no matching budget still recommends models, but both
-        # spend fields come back unset.
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"recommended_models": ["system.ai.claude-sonnet-4-5"]},
-                None,
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "no coding-agent budget spend" in reason
-
-    def test_feature_disabled_returns_reason(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                None,
-                "HTTP 400 Bad Request: FEATURE_DISABLED",
-            ),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "FEATURE_DISABLED" in reason
-
-    def test_unset_fields_treated_as_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_post_json", lambda url, token, payload, timeout=10: ({}, None)
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "no coding-agent budget spend" in reason
-
-    def test_spend_without_threshold_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: ({"current_spend": "12.34"}, None),
-        )
-        spend, _ = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-
-    def test_threshold_without_spend_is_zero_spend(self, monkeypatch):
-        # A per-user threshold with no spend yet this period is $0 spent, not "no budget" — the
-        # developer should still see their budget rather than a blank.
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: ({"effective_threshold": "100"}, None),
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend == (Decimal(0), Decimal("100"))
-        assert reason is None
-
-    def test_malformed_decimal_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_post_json",
-            lambda url, token, payload, timeout=10: (
-                {"current_spend": "not-a-number", "effective_threshold": "100"},
-                None,
-            ),
-        )
-        spend, _ = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-
-    def test_non_object_payload_is_no_spend(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_post_json", lambda url, token, payload, timeout=10: ([], None)
-        )
-        spend, reason = resolve_current_budget_spend("https://ws", "token")
-        assert spend is None
-        assert "not a JSON object" in reason
+    def test_lookup_failure_omits_optional_link(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (None, "HTTP 403 Forbidden"))
+        assert db_mod.get_usage_dashboard_url(WS, "token") is None
 
 
 class TestListWorkspaceBudgets:
@@ -5347,12 +6684,20 @@ class TestBearerCommand:
         path = _write_fake_executable(tmp_path, "broker", body)
         return f'"{path}"' if " " in path else path
 
-    def test_serves_the_command_output_without_touching_the_cli(self, tmp_path, monkeypatch):
+    def test_serves_the_command_output_without_touching_the_cli(
+        self, tmp_path, monkeypatch, metrics_recorder
+    ):
         broker = self._broker(tmp_path, 'print("brokered-token")')
         marker = self._env(tmp_path, monkeypatch, broker)
 
         assert get_databricks_token(WS) == "brokered-token"
         assert not marker.exists()
+
+        [(_, labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert labels["token_source"] == "command"
+        assert labels["in_process_cache_hit"] is False
 
     def test_reruns_the_command_on_every_fetch(self, tmp_path, monkeypatch):
         # The whole point: a static env var cannot be rewritten in a running
@@ -5492,7 +6837,7 @@ class TestWalkCatalogSchemasCancellation:
             return f"{cat}.{schema}"
 
         start = time.monotonic()
-        db_mod.walk_catalog_schemas(
+        reason = db_mod.walk_catalog_schemas(
             WS,
             "tok",
             deadline=start + 0.1,
@@ -5501,6 +6846,7 @@ class TestWalkCatalogSchemasCancellation:
         )
         assert time.monotonic() - start < 1.5
         assert len(collected) < N
+        assert reason == "deadline exceeded while listing UC schemas"
 
     def test_all_probes_collected_on_full_success(self, monkeypatch):
         N = 20
@@ -5634,3 +6980,384 @@ def test_importing_the_cli_does_not_load_the_databricks_sdk():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+class TestSharedHostProfiles:
+    SHARED = "https://acme.cloud.databricks.com"
+    ENTRIES = [
+        {"name": "other", "host": "https://acme.cloud.databricks.com", "workspace_id": "222"},
+        {"name": "mine", "host": "https://acme.cloud.databricks.com/", "workspace_id": "111"},
+        {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+    ]
+
+    def test_prefers_the_workspace_profile(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "111") == "mine"
+
+    def test_falls_back_to_another_profile_on_the_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "333") == "other"
+
+    def test_without_an_id_matches_by_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: "first")
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, None) == "first"
+
+    def _capture_login(self, monkeypatch, entries):
+        calls = []
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: entries)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kwargs: calls.append(cmd))
+        return calls
+
+    def test_first_login_names_a_profile_and_selects_the_workspace(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [{"name": "ug-acme", "host": "https://x.com"}])
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            [
+                "databricks",
+                "auth",
+                "login",
+                "--host",
+                f"{self.SHARED}?w=111",
+                "--profile",
+                "ug-acme-2",
+            ]
+        ]
+
+    def test_login_reuses_a_profile_on_the_host(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, self.ENTRIES)
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", self.SHARED, "--profile", "mine"]
+        ]
+
+    def test_classic_login_argv_is_unchanged(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [])
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: None)
+        db_mod.run_databricks_login("https://dbc-1.cloud.databricks.com")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
+        ]
+
+
+class TestModelServiceDestinationModels:
+    def test_malformed_primary_keeps_known_relay_providers_but_not_catalog_identity(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        None,
+                        {
+                            "traffic_percentage": 100,
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            },
+                        },
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) is None
+
+    def test_single_primary_without_traffic_is_live_for_both_consumers(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
+
+    @pytest.mark.parametrize(
+        "destination,expected",
+        [
+            ({"external_model_config": {"target": {"model": "gpt-6-luna"}}}, "gpt-6-luna"),
+            (
+                {"pay_per_token_config": {"model": "models/system.ai.gpt-6-luna"}},
+                "system.ai.gpt-6-luna",
+            ),
+        ],
+    )
+    def test_reads_model_identity_from_each_destination_type(self, destination, expected):
+        service = {"config": {"routing": {"destinations": [destination]}}}
+        assert db_mod.model_service_destination_models(service) == [expected]
+
+    def test_includes_error_and_budget_fallbacks_but_ignores_idle_and_deleted(self):
+        def external(model, **kwargs):
+            return {"external_model_config": {"target": {"model": model}}, **kwargs}
+
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        external("gpt-6-luna", traffic_percentage=100),
+                        external("gpt-4o", traffic_percentage=0),
+                        external("gpt-4o", traffic_percentage=100, is_deleted=True),
+                    ],
+                    "fallback": {
+                        "destinations": [
+                            external("gpt-6-astra"),
+                            external("gpt-4o", is_deleted=True),
+                        ]
+                    },
+                    "budget_fallbacks": [{"destination": external("gpt-6-sol")}],
+                }
+            }
+        }
+
+        assert db_mod.model_service_destination_models(service) == [
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+        ]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {},
+            {"config": None},
+            {"config": {"routing": {"destinations": []}}},
+            {"config": {"routing": {"destinations": [{"external_model_config": {"target": {}}}]}}},
+            {"config": {"routing": {"destinations": [{"pay_per_token_config": {"model": 123}}]}}},
+            {"config": {"routing": {"destinations": [{"traffic_percentage": "100"}]}}},
+            {
+                "config": {
+                    "routing": {
+                        "destinations": [
+                            {
+                                "provisioned_throughput_config": {
+                                    "model_serving_endpoint": "serving-endpoints/custom"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        ],
+    )
+    def test_incomplete_identity_is_not_inferred(self, service):
+        assert db_mod.model_service_destination_models(service) is None
+
+
+class TestModelServicesNeedSubscriptionRelay:
+    """A static model-service list launches relayed when a service routes to a relayed MPS."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        db_mod.clear_model_services_cache()
+        yield
+        db_mod.clear_model_services_cache()
+
+    @staticmethod
+    def _service(name: str, *destinations: dict) -> dict:
+        return {
+            "name": f"model-services/{name}",
+            "config": {"routing": {"destinations": list(destinations)}},
+        }
+
+    @staticmethod
+    def _external(mps: str, traffic: int = 100) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_EXTERNAL_FOUNDATION_MODEL",
+            "traffic_percentage": traffic,
+            "external_model_config": {"model_provider_service": f"model-provider-services/{mps}"},
+        }
+
+    @staticmethod
+    def _hosted(model: str) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL",
+            "traffic_percentage": 100,
+            "pay_per_token_config": {"model": f"models/{model}"},
+        }
+
+    @staticmethod
+    def _mps(name: str, *, relayed: bool, provider_type: str = "anthropic") -> dict:
+        return {"name": name, "provider_type": provider_type, "relayed": relayed}
+
+    def _patch(
+        self,
+        monkeypatch,
+        services: dict,
+        relayed: set[str],
+        *,
+        openai: frozenset[str] = frozenset(),
+    ) -> list[tuple[str, float]]:
+        calls: list[tuple[str, float]] = []
+
+        def get_service(name, _ws, _token, *, timeout):
+            calls.append((name, timeout))
+            return (services.get(name), None if name in services else "404")
+
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, _ws, _token, *, timeout: (
+                self._mps(
+                    name,
+                    relayed=name in relayed,
+                    provider_type="openai" if name in openai else "anthropic",
+                ),
+                None,
+            ),
+        )
+        return calls
+
+    def test_service_on_a_relayed_provider_needs_the_relay(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.oss": self._service(
+                    "main.default.oss", self._hosted("system.ai.kimi")
+                ),
+                "main.default.sonnet": self._service(
+                    "main.default.sonnet", self._external("main.default.anthropic")
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.oss", "main.default.sonnet[1m]"]
+        )
+        # Lookups use the short relay timeout, not the 30s default.
+        assert {timeout for _name, timeout in calls} == {db_mod._RELAY_LOOKUP_TIMEOUT_S}
+
+    def test_hosted_api_key_and_missing_services_are_not_relayed(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.keyed": self._service(
+                    "main.default.keyed",
+                    self._external("main.default.keyed-mps"),
+                    # Idle or deleted destinations on a relayed provider don't count.
+                    self._external("main.default.anthropic", traffic=0),
+                    {**self._external("main.default.anthropic"), "is_deleted": True},
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert (
+            lookup("https://ws", "tok", "system.ai.claude-sonnet-5-5")
+            is db_mod.RelayLookup.NOT_RELAYED
+        )
+        assert lookup("https://ws", "tok", "main.default.keyed") is db_mod.RelayLookup.NOT_RELAYED
+        assert lookup("https://ws", "tok", "main.default.gone") is db_mod.RelayLookup.UNKNOWN
+        # system.* ids are never looked up, and a confirmed answer is cached.
+        lookup("https://ws", "tok", "main.default.keyed")
+        assert [name for name, _timeout in calls] == ["main.default.keyed", "main.default.gone"]
+
+    def test_relayed_openai_provider_does_not_need_the_claude_relay(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "main.default.gpt": self._service(
+                    "main.default.gpt", self._external("main.default.chatgpt")
+                )
+            },
+            {"main.default.chatgpt"},
+            openai=frozenset({"main.default.chatgpt"}),
+        )
+        assert not db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"]
+        )
+
+    def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        outcomes = iter([(None, "503"), (service, None)])
+        calls: list[str] = []
+
+        def get_service(name, *_a, timeout):
+            calls.append(name)
+            return next(outcomes)
+
+        now = [1000.0]
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, *_a, timeout: (self._mps(name, relayed=True), None),
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        # Within the retry window the failure is reused, so a per-request caller isn't stalled.
+        now[0] += db_mod._RELAY_LOOKUP_RETRY_AFTER_S - 1
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        assert calls == ["main.default.sonnet"]
+        now[0] += 2
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.RELAYED
+        assert calls == ["main.default.sonnet", "main.default.sonnet"]
+
+    def test_failed_provider_lookup_is_unknown(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        monkeypatch.setattr(db_mod, "get_model_service", lambda *_a, timeout: (service, None))
+        monkeypatch.setattr(
+            db_mod, "get_model_provider_service", lambda *_a, timeout: (None, "timeout")
+        )
+        assert (
+            db_mod.model_service_relay_lookup("https://ws", "tok", "main.default.sonnet")
+            is db_mod.RelayLookup.UNKNOWN
+        )
+
+    def test_relay_candidates_are_custom_three_part_names(self):
+        models = [
+            "system.ai.kimi",
+            "main.default.sonnet[1m]",
+            "main.default.mps.claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "main.default.oss",
+        ]
+        assert db_mod.custom_model_services(models) == [
+            "main.default.sonnet[1m]",
+            "main.default.oss",
+        ]
+
+
+def test_model_service_backing_model_reads_the_first_live_foundation_model():
+    from ucode.databricks import model_service_backing_model
+
+    service = {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {
+                        "is_deleted": True,
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {"model": "models/system.ai.old"},
+                    },
+                    {
+                        "traffic_percentage": 0,
+                        "pay_per_token_config": {"model": "models/system.ai.idle"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "external_model_config": {"model_provider_service": "main.x.mps"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {
+                            "model": "models/system.ai.databricks-claude-sonnet-4-6"
+                        },
+                    },
+                ]
+            }
+        }
+    }
+
+    assert model_service_backing_model(service) == "system.ai.databricks-claude-sonnet-4-6"
+    assert model_service_backing_model({"config": {}}) is None

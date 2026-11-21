@@ -7,6 +7,7 @@ import pytest
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -19,26 +20,31 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
 }
 
@@ -171,6 +177,96 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        (None, False),
+        ("", False),
+        ("   ", False),
+        ("unsupported_version", False),
+        (f" {config.SUBAGENT_ONLY_V0} ", True),
+        *((version, True) for version in sorted(config._VERSIONS)),
+    ],
+)
+def test_known_version(selector, expected):
+    env = {} if selector is None else {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: selector}
+    assert config.known_version(env) is expected
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
+def test_enabled_version_selects_shared_preset_over_legacy_flags(agent, selector):
+    inherited = {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        "INHERITED_SETTING": "preserved",
+    }
+    if selector is not None:
+        inherited[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
+    applied = inherited.copy()
+
+    previous = config.apply_enabled_version(applied, agent=agent)
+
+    expected = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+    assert applied == {
+        **expected,
+        "INHERITED_SETTING": "preserved",
+    }
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("version", sorted(config._VERSIONS))
+def test_enabled_version_keeps_a_known_version(agent, version):
+    inherited = {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    }
+    applied = inherited.copy()
+
+    previous = config.apply_enabled_version(applied, agent=agent)
+
+    assert applied == config.resolve_environment(inherited, agent=agent)
+    assert applied[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] == (
+        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE else "0"
+    )
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited
+
+
+@pytest.mark.parametrize(
+    ("selector", "routes"),
+    [
+        (None, {AGENT_CLAUDE: True, AGENT_CODEX: True}),
+        ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: True}),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        *(
+            (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
+            for version in sorted(
+                set(config._VERSIONS)
+                - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY}
+            )
+        ),
+    ],
+)
+def test_enabled_version_routes(selector, routes):
+    env = {ENABLE_SMART_ROUTING_ENV_VAR: "1", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
+    if selector is not None:
+        env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
+    before = env.copy()
+
+    for agent, expected in routes.items():
+        assert config.enabled_version_routes(env, agent=agent) is expected
+        applied = env.copy()
+        config.apply_enabled_version(applied, agent=agent)
+        assert v2.smart_routing_enabled(applied, default=False, agent=agent) is expected
+    assert env == before
+
+
 @pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
 def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabled, tmp_path):
     monkeypatch.setitem(
@@ -180,6 +276,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -187,6 +284,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
@@ -200,3 +298,118 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         session_env.SESSION_ENV_VAR: str(control),
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
     }
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{invalid")
+    source = {session_env.SESSION_ENV_VAR: str(controls), "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}
+    assert session_env.effective_environment(source, agent=agent) == source
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("shell_value", ["0", "1"])
+@pytest.mark.parametrize(
+    ("version", "harnesses"),
+    [
+        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ONLY_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ONLY_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+    ],
+)
+def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: f" {version} ",
+        **dict.fromkeys(
+            (
+                ENABLE_SMART_ROUTING_ENV_VAR,
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+            ),
+            shell_value,
+        ),
+    }
+    original = source.copy()
+
+    assert v2.describe_routing(source) == v2.RoutingDescription(harnesses=harnesses)
+    assert source == original
+
+
+@pytest.mark.parametrize(
+    ("source", "harnesses"),
+    [
+        ({}, ()),
+        ({SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "  "}, ()),
+        ({ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1"}, ()),
+        (
+            {
+                SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "unsupported_version",
+                ENABLE_SMART_ROUTING_ENV_VAR: "1",
+            },
+            (AGENT_CLAUDE, AGENT_CODEX),
+        ),
+        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, (AGENT_CLAUDE, AGENT_CODEX)),
+    ],
+)
+def test_describe_routing_without_a_known_version_reports_shell_flags(source, harnesses):
+    assert v2.describe_routing(source) == v2.RoutingDescription(harnesses=harnesses)
+
+
+def test_enabled_version_routes_ignores_uncovered_agent():
+    env = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_CLAUDE_ONLY}
+
+    assert config.enabled_version_routes(env, agent="opencode") is False
+    assert config.enabled_version_routes({}, agent="opencode") is False
+
+
+def test_auto_flag_alone_does_not_enable_routing():
+    assert not v2.smart_routing_enabled(
+        {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
+    )
+
+
+@pytest.mark.parametrize("version", [None, "", "unknown_v99", *config._VERSIONS])
+@pytest.mark.parametrize("legacy_flag", ["0", "1"])
+def test_auto_requires_exact_version(version, legacy_flag):
+    env = {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: legacy_flag}
+    if version is not None:
+        env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = version
+    assert config.auto_mode_enabled(env) is (version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+
+
+def test_version_scope_retains_identity_without_reapplying_flags(monkeypatch):
+    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    with config.version_scope():
+        previous = config.apply_config(agent=AGENT_CLAUDE)
+        try:
+            monkeypatch.setenv(ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0")
+            with config.version_scope():
+                assert config.auto_mode_enabled()
+                assert not config.auto_mode_enabled({})
+                assert (
+                    config.resolve_environment(agent=AGENT_CLAUDE)[ENABLE_SUBAGENT_ROUTING_ENV_VAR]
+                    == "0"
+                )
+        finally:
+            v2.restore_smart_routing_env(previous)
+    monkeypatch.delenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+    assert not config.auto_mode_enabled()
+
+
+@pytest.mark.parametrize("override", ["", "unknown_v99", config.SUBAGENT_ONLY_V0])
+def test_nested_version_scope_overrides_and_restores_identity(monkeypatch, override):
+    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    with config.version_scope():
+        monkeypatch.delenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+        with pytest.raises(RuntimeError, match="stop"):
+            with monkeypatch.context() as inner:
+                inner.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, override)
+                with config.version_scope():
+                    assert not config.auto_mode_enabled()
+                    raise RuntimeError("stop")
+        assert config.auto_mode_enabled()
+    assert not config.auto_mode_enabled()

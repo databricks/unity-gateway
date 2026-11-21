@@ -1,0 +1,69 @@
+name: Publish Unity Catalog skills
+description: Publish mapped skill folders from a checkout to Databricks Unity Catalog.
+author: UC Skills Action contributors
+branding:
+  icon: upload-cloud
+  color: red
+inputs:
+  mapping-file:
+    description: Optional YAML mappings; defaults to skills.yaml when directory inputs are absent.
+    default: ''
+  skills-directory:
+    description: Publish every immediate skill folder under this directory, without a mapping file.
+    default: ''
+  target-schema:
+    description: Target catalog.schema for skills-directory.
+    default: ''
+  source-directory:
+    description: Root of the checked-out source repository.
+    default: '.'
+  dry-run:
+    description: Validate locally without contacting Databricks.
+    default: 'false'
+  prune-files:
+    description: Remove remote files absent from mapped folders. Never deletes a skill.
+    default: 'false'
+  workers:
+    description: Maximum number of skills to publish concurrently (1-8).
+    default: '4'
+outputs:
+  report-file:
+    description: JSON result report, including per-skill status and source commit.
+    value: ${{ steps.publish.outputs.report-file }}
+runs:
+  using: composite
+  steps:
+    - id: python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.12'
+        update-environment: false
+    - name: Install isolated publisher dependencies
+      shell: bash
+      env:
+        ACTION_DIR: ${{ github.action_path }}
+        PYTHON: ${{ steps.python.outputs.python-path }}
+      run: |
+        "$PYTHON" -m venv "$RUNNER_TEMP/uc-skills-action-venv"
+        "$RUNNER_TEMP/uc-skills-action-venv/bin/python" -m pip install --disable-pip-version-check -r "$ACTION_DIR/requirements.txt"
+    - name: Publish mapped skills
+      id: publish
+      shell: bash
+      env:
+        ACTION_DIR: ${{ github.action_path }}
+        SOURCE_DIR: ${{ inputs.source-directory }}
+        MAPPING_FILE: ${{ inputs.mapping-file }}
+        SKILLS_DIRECTORY: ${{ inputs.skills-directory }}
+        TARGET_SCHEMA: ${{ inputs.target-schema }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        PRUNE_FILES: ${{ inputs.prune-files }}
+        WORKERS: ${{ inputs.workers }}
+      run: |
+        args=(--source-directory "$SOURCE_DIR" --workers "$WORKERS" --report "$RUNNER_TEMP/uc-skills-report.json")
+        if [[ -n "$MAPPING_FILE" ]]; then args+=(--mapping-file "$MAPPING_FILE"); fi
+        if [[ -n "$SKILLS_DIRECTORY" ]]; then args+=(--skills-directory "$SKILLS_DIRECTORY"); fi
+        if [[ -n "$TARGET_SCHEMA" ]]; then args+=(--target-schema "$TARGET_SCHEMA"); fi
+        case "$DRY_RUN" in true) args+=(--dry-run);; false) ;; *) echo 'dry-run must be true or false'; exit 1;; esac
+        case "$PRUNE_FILES" in true) args+=(--prune-files);; false) ;; *) echo 'prune-files must be true or false'; exit 1;; esac
+        echo "report-file=$RUNNER_TEMP/uc-skills-report.json" >> "$GITHUB_OUTPUT"
+        "$RUNNER_TEMP/uc-skills-action-venv/bin/python" "$ACTION_DIR/publish.py" "${args[@]}"

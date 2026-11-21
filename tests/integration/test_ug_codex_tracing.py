@@ -7,7 +7,7 @@ import pytest
 from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask, fresh_id
 from utils.managed import use_managed_config_fixture
-from utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
+from utils.sql import resolve_trace_table, resolve_warehouse_id, wait_for_count
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
@@ -56,7 +56,7 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace):
         "WHERE time > current_timestamp() - INTERVAL 10 MINUTES "
         "AND variant_get(attributes, '$[\"ug_integration_marker\"]', 'STRING') = :marker"
     )
-    count = query_count(
+    count = wait_for_count(
         workspace,
         bearer,
         warehouse_id,
@@ -65,7 +65,7 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace):
     )
     # The span must also carry Codex's `model` attribute matching the model that ran,
     # so the trace is attributable to a specific model and not just to this test run.
-    model_count = query_count(
+    model_count = wait_for_count(
         workspace,
         bearer,
         warehouse_id,

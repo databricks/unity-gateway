@@ -1,5 +1,6 @@
 """Behavioral coverage for session-local Smart Router controls."""
 
+import errno
 import json
 import os
 import re
@@ -18,10 +19,59 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_hook_activates_in_fresh_process(tmp_path, agent):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{}")
+    result = subprocess.run(
+        [sys.executable, "-m", "ucode.smart_routing.orchestrator", "--agent", agent],
+        input=json.dumps({"hook_event_name": "UserPromptSubmit"}),
+        env={
+            **os.environ,
+            "SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0",
+            session_env.SESSION_ENV_VAR: str(controls),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert output["hookEventName"] == "UserPromptSubmit"
+    assert "Smart Router Orchestrator is on for this session." in output["additionalContext"]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_subagent_audit_mismatch_is_silent(monkeypatch, caplog, agent):
+    caplog.set_level("DEBUG", logger="ucode.cli")
+    audit = Mock(
+        return_value={
+            "matches_router_decision": False,
+            "requested_model": "requested",
+            "model": "launched",
+        }
+    )
+    monkeypatch.setattr(f"ucode.smart_routing.{agent}_routing.record_subagent_start", audit)
+    result = runner.invoke(
+        cli.app,
+        [f"{agent}-router-hook", "record-subagent"],
+        input="{}",
+        env={"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == result.stderr == ""
+    audit.assert_called_once_with({})
+    assert "router requested requested" in caplog.text
+    assert "started launched" in caplog.text
+
+
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.
     monkeypatch.setattr(skills, "_skills_source", lambda: Path(__file__).parents[1] / "skills")
+    monkeypatch.setattr(session_env, "CONTROLS_READ_RETRY_SECONDS", 0)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -40,8 +90,8 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch, agent):
+def test_claude_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch):
+    agent = "claude"
     # Keep the venv path (including spaces), not its resolved system Python symlink.
     installation = tmp_path / "launch installation"
     installation.symlink_to(sys.prefix, target_is_directory=True)
@@ -75,6 +125,7 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
                 v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
                 v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
                 v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+                v2.ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
             }
             if action == "disable"
             else {}
@@ -82,7 +133,19 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
         assert json.loads(session_path.read_text()) == expected
 
 
-def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "write_step,error_number",
+    [
+        ("mkstemp", errno.EACCES),
+        ("mkstemp", errno.EROFS),
+        ("mkdir", errno.EACCES),
+        ("replace", errno.EPERM),
+        ("replace", errno.EROFS),
+        ("mkstemp", errno.ENOSPC),
+        ("replace", errno.ENOSPC),
+    ],
+)
+def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, error_number):
     session_file = tmp_path / "env.json"
     session_file.write_text("{}")
     env = {
@@ -103,6 +166,54 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     ]
     payload = '{"tool_name":"collaboration.spawn_agent","tool_input":{"message":"fix it"}}'
 
+    before = session_file.read_bytes()
+    with monkeypatch.context() as denied:
+        # Model a sandbox-denied read while leaving the actual controls available for comparison.
+        denied.setattr(session_env, "_read", Mock(side_effect=PermissionError("sandbox denied")))
+        for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            result = runner.invoke(cli.app, ["codex", flag], env=env)
+            assert result.exit_code == 1
+            assert "Request native command approval" in " ".join(result.output.split())
+            assert "Smart Router is" not in result.output
+            assert session_file.read_bytes() == before
+
+    with monkeypatch.context() as denied:
+        # Inject filesystem failures at the raw and wrapped atomic-write boundaries.
+        target = {"mkstemp": config_io.tempfile, "mkdir": Path, "replace": config_io.os}[write_step]
+        original = getattr(target, write_step)
+
+        def fail_session_write(*args, **kwargs):
+            path = (
+                kwargs["dir"]
+                if write_step == "mkstemp"
+                else args[-1 if write_step == "replace" else 0]
+            )
+            if Path(path) in (session_file, session_file.parent):
+                raise OSError(error_number, os.strerror(error_number))
+            return original(*args, **kwargs)
+
+        denied.setattr(target, write_step, fail_session_write)
+        for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            current = (
+                {}
+                if flag == "--disable-smart-routing"
+                else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+            )
+            session_file.write_text(json.dumps(current))
+            before = session_file.read_bytes()
+            result = runner.invoke(cli.app, ["codex", flag], env=env)
+            assert result.exit_code == 1
+            output = " ".join(result.output.split())
+            assert "writing Smart Router session controls" in output
+            assert ("Request native command approval" in output) == (error_number != errno.ENOSPC)
+            if error_number == errno.ENOSPC:
+                assert os.strerror(errno.ENOSPC) in output
+            assert "Smart Router is" not in output
+            assert isinstance(result.exception, SystemExit)
+            assert session_file.read_bytes() == before
+            assert not list(session_file.parent.glob(".env.json.*.tmp"))
+
+    session_file.write_text("{}")
     assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_not_called()
@@ -110,3 +221,56 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "launch_mode,reason,turned_off",
+    [
+        ("omni", None, True),
+        (None, None, False),
+        ("direct", "too short", False),
+        (None, "the router picked a weak model", True),
+    ],
+)
+def test_omni_launches_turn_routing_off_without_a_reason(tmp_path, launch_mode, reason, turned_off):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    env = {
+        session_env.SESSION_ENV_VAR: str(session_file),
+        "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+        "ISAAC_LAUNCH_MODE": launch_mode,
+    }
+    args = ["claude", "--disable-smart-routing"]
+    if reason is not None:
+        args += ["--smart-router-feedback", reason]
+
+    result = runner.invoke(cli.app, args, env=env)
+
+    assert result.exit_code == (0 if turned_off else 2), result.output
+    saved = json.loads(session_file.read_text())
+    assert saved == (dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if turned_off else {})
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_session_controls_reply_with_the_session_state(tmp_path, agent):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    env = {session_env.SESSION_ENV_VAR: str(session_file)}
+    replies = []
+
+    for flag in (
+        "--disable-smart-routing",
+        "--disable-smart-routing",
+        "--enable-smart-routing",
+        "--enable-smart-routing",
+    ):
+        result = runner.invoke(cli.app, [agent, flag], env=env)
+        assert result.exit_code == 0, result.output
+        replies.append(" ".join(result.output.split()))
+
+    assert replies == [
+        "✔ Smart Router is off for this session",
+        "✔ Smart Router is already off for this session",
+        "✔ Smart Router is on for this session",
+        "✔ Smart Router is already on for this session",
+    ]

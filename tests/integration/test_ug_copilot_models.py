@@ -1,0 +1,194 @@
+"""CUJs for discovering and switching between Databricks models in GitHub Copilot CLI through ug."""
+
+import pytest
+from utils.constants import (
+    CLAUDE_TEST_MODEL,
+    CLAUDE_TEST_MODEL_LABEL,
+    COPILOT_DEEPSEEK_TEST_MODEL,
+    COPILOT_GLM_TEST_MODEL,
+    COPILOT_GPT_TEST_MODEL,
+    COPILOT_HEADLESS_FLAGS,
+    COPILOT_KIMI_TEST_MODEL,
+)
+from utils.evidence import (
+    FileTask,
+    assert_completed_task_model,
+    assert_no_session_registry_left,
+    copilot_ref,
+    copilot_selected_models,
+    fresh_id,
+)
+from utils.terminal import AgentTerminal
+
+pytestmark = [pytest.mark.live, pytest.mark.copilot]
+
+
+def _configure(session, workspace):
+    session.run(
+        "configure",
+        "--agents",
+        "copilot",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+
+
+def test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref(live_session, workspace):
+    """Scenario: configure Copilot once, run a headless Claude task, then a headless GPT task
+    selected with Copilot's own `databricks-responses/<model>` form, without reconfiguring.
+
+    Expected: both completed answers contain their fixture values and were sent as the requested
+    models, the sessions started on `databricks` then `databricks-responses`, and no session registry
+    is left afterwards. The Claude model is older than its family's newest, so only the full
+    discovered catalog registers it for Copilot. When the gateway reports the GPT model's limits,
+    the saved catalog keeps them, above Copilot's 128K default.
+    """
+    session = live_session
+    claude_task = FileTask(session)
+    gpt_task = FileTask(session)
+    _configure(session, workspace)
+    session.record("copilot-models.json", {"models": [CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL]})
+
+    claude = session.run(
+        "copilot",
+        "--model",
+        CLAUDE_TEST_MODEL,
+        "-p",
+        claude_task.prompt,
+        *COPILOT_HEADLESS_FLAGS,
+        timeout=180,
+    )
+    gpt = session.run(
+        "copilot",
+        "--model",
+        copilot_ref("databricks-responses", COPILOT_GPT_TEST_MODEL),
+        "-p",
+        gpt_task.prompt_with_path,
+        *COPILOT_HEADLESS_FLAGS,
+        timeout=180,
+    )
+
+    claude_task.assert_headless_answer("copilot", claude)
+    gpt_task.assert_headless_answer("copilot", gpt)
+    assert_completed_task_model(session, "copilot", claude_task.value, CLAUDE_TEST_MODEL)
+    assert_completed_task_model(session, "copilot", gpt_task.value, COPILOT_GPT_TEST_MODEL)
+    selected = copilot_selected_models(session)
+    assert copilot_ref("databricks", CLAUDE_TEST_MODEL) in selected
+    assert copilot_ref("databricks-responses", COPILOT_GPT_TEST_MODEL) in selected
+    assert_no_session_registry_left(session)
+    gpt_limits = session.workspace_state()["copilot_catalog"].get("limits", {})
+    if COPILOT_GPT_TEST_MODEL in gpt_limits:
+        assert gpt_limits[COPILOT_GPT_TEST_MODEL][0] > 128_000
+
+
+def test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions(
+    live_session, workspace
+):
+    """Scenario: configure Copilot once, then run a headless task on a GLM, a Kimi and a DeepSeek
+    model, each named by its catalog id, without reconfiguring.
+
+    Expected: each completed answer contains its fixture value and was sent as the requested
+    model, every session started on `databricks-completions`, the saved catalog lists all three, and no
+    session registry is left afterwards. DeepSeek isn't on the gateway's Anthropic-route listing,
+    so it is registered from the model-services listing.
+    """
+    session = live_session
+    models = (COPILOT_GLM_TEST_MODEL, COPILOT_KIMI_TEST_MODEL, COPILOT_DEEPSEEK_TEST_MODEL)
+    tasks = {model: FileTask(session) for model in models}
+    _configure(session, workspace)
+    session.record("copilot-models.json", {"models": list(models)})
+
+    results = {
+        model: session.run(
+            "copilot",
+            "--model",
+            model,
+            "-p",
+            task.prompt,
+            *COPILOT_HEADLESS_FLAGS,
+            timeout=180,
+        )
+        for model, task in tasks.items()
+    }
+
+    assert set(models) <= set(session.workspace_state()["copilot_catalog"]["models"])
+    for model, task in tasks.items():
+        task.assert_headless_answer("copilot", results[model])
+        assert_completed_task_model(session, "copilot", task.value, model)
+    selected = copilot_selected_models(session)
+    for model in models:
+        assert copilot_ref("databricks-completions", model) in selected
+    assert_no_session_registry_left(session)
+
+
+def test_ug_copilot_unknown_model_lists_available_models(live_session, workspace):
+    """Scenario: configure Copilot, then launch it interactively with a model the workspace
+    doesn't have.
+
+    Expected: ug exits 1 before starting Copilot, and its error names the model and lists the
+    available ones, including the Claude and GPT test models but not `claude-opus-4-1`, which
+    Copilot can't use. No session registry is left.
+    """
+    session = live_session
+    _configure(session, workspace)
+    missing = f"system.ai.no-such-model-{fresh_id()}"
+
+    result = session.run("copilot", "--model", missing, ok=False, timeout=120)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"Model '{missing}' isn't available in ug copilot" in result.stderr
+    assert CLAUDE_TEST_MODEL in result.stderr
+    assert COPILOT_GPT_TEST_MODEL in result.stderr
+    assert "claude-opus-4-1" not in result.stderr
+    assert not list(session.home.glob(".copilot/session-state/*")), "Copilot started"
+    assert_no_session_registry_left(session)
+
+
+def test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command(live_session, workspace):
+    """Scenario: configure Copilot, start its TUI on a Claude model, complete a task, switch to a
+    GPT model with `/model databricks-responses/<model>`, and complete a second task in the same
+    session.
+
+    Expected: the folder-trust prompt is answered through its visible choice, the footer names the
+    Claude model by its readable label, both answers carry their fixture values and were sent as
+    the Claude then the GPT model, the switch notice names both models without `system.ai.`, the
+    session records the switch to the GPT ref, Copilot exits normally, and no session registry is
+    left.
+    """
+    session = live_session
+    claude_task = FileTask(session)
+    gpt_task = FileTask(session)
+    _configure(session, workspace)
+    session.record("copilot-models.json", {"models": [CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL]})
+    gpt_ref = copilot_ref("databricks-responses", COPILOT_GPT_TEST_MODEL)
+    command = [
+        str(session.binary),
+        "copilot",
+        "--model",
+        CLAUDE_TEST_MODEL,
+        "--allow-all-tools",
+        "--no-auto-update",
+        "--disable-builtin-mcps",
+    ]
+
+    with AgentTerminal(session, "copilot", command, "copilot-model-switch") as tui:
+        tui.boot()
+        tui.wait_for(lambda screen: CLAUDE_TEST_MODEL_LABEL in screen, "the readable model label")
+        tui.submit(claude_task.prompt)
+        tui.wait_for_task(claude_task)
+        tui.submit(f"/model {gpt_ref}")
+        tui.wait_for(lambda screen: "Model changed" in screen, "the model switch notice")
+        notice = " ".join(tui.visible.split())
+        assert copilot_ref("databricks", CLAUDE_TEST_MODEL) in notice, notice
+        assert gpt_ref in notice, notice
+        tui.submit(gpt_task.prompt_with_path)
+        tui.wait_for_task(gpt_task)
+        tui.exit_normally()
+
+    assert_completed_task_model(session, "copilot", claude_task.value, CLAUDE_TEST_MODEL)
+    assert_completed_task_model(session, "copilot", gpt_task.value, COPILOT_GPT_TEST_MODEL)
+    assert copilot_selected_models(session)[-1] == gpt_ref
+    assert_no_session_registry_left(session)
