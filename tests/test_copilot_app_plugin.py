@@ -171,6 +171,18 @@ class TestExtensionConfig:
             "headers": {"X-Team": "data"},
         }
 
+    def test_the_seat_relay_is_off_unless_it_names_a_provider_service(self):
+        assert plugin.extension_config(_config())["seatRelay"] is None
+        config = plugin.extension_config(
+            _config(headers={"X-Team": "data"}, seat_relay="main.default.copilot_seats")
+        )
+        assert config["seatRelay"] == {
+            "gatewayBase": "https://example.cloud.databricks.com",
+            "providerService": "main.default.copilot_seats",
+            "headers": {"X-Team": "data"},
+            "askGitHub": True,
+        }
+
     def test_a_pat_token_command_and_hint(self):
         config = plugin.extension_config(_config(use_pat=True))
         assert config["tokenCommand"][-1] == "--use-pat"

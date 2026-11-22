@@ -385,10 +385,11 @@ def _with_expanded_sources(state: dict) -> dict:
 
 
 def copilot_app_plugin_config(
-    state: dict, desired: copilot_app.DesiredProviders
+    state: dict, desired: copilot_app.DesiredProviders, *, seat_relay: str | None = None
 ) -> copilot_app_plugin.PluginConfig:
     """The plugin's config for ``desired``, with the headers ``ug copilot`` sends but its
-    User-Agent."""
+    User-Agent. ``seat_relay`` is the relayed Model Provider Service the app's own GitHub Copilot
+    calls go through."""
     from ucode.agents.copilot import OTEL_TRACES_PATH, proxy_headers
     from ucode.databricks import databricks_cli_path, ug_binary
     from ucode.workspace import selector_headers, workspace_headers
@@ -430,6 +431,7 @@ def copilot_app_plugin_config(
             if state.get("copilot_otel_tracing") and env_bool(COPILOT_APP_TRACING_ENV)
             else None
         ),
+        seat_relay=seat_relay,
     )
 
 
@@ -449,16 +451,18 @@ def copilot_settings_ignored_reason(path: Path | None = None) -> str | None:
     return None
 
 
-def copilot_app_seat_relay_note(provider: str) -> str:
+def _seat_relay_warning(provider: str) -> str:
     return (
-        f"{provider} uses a seat subscription, which the GitHub Copilot app doesn't support yet; "
-        "use `ug copilot` or VS Code for it."
+        f"The GitHub Copilot app isn't set up to route its GitHub Copilot models through "
+        f"{provider}. Run `ug configure --agents copilot` again."
     )
 
 
 def _uses_seat_relay(state: dict, provider: str) -> bool:
-    """Whether ``provider`` relays a GitHub Copilot seat. The relay's swap header needs a fresh
-    value per request, and the app's provider headers are fixed."""
+    """Whether ``provider`` relays a GitHub Copilot seat. The app's own GitHub Copilot models then
+    go through ug's relay in the plugin's extension, and the app gets no Databricks rows for it:
+    the relay's swap header needs a fresh value per request, and the app's provider headers are
+    fixed."""
     from ucode.agents.copilot import uses_seat_relay
 
     return uses_seat_relay(state, provider, tool="vscode")
@@ -494,16 +498,22 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
 
     try:
         state = _with_expanded_sources(copilot_app_state(state))
-        if provider and _uses_seat_relay(state, provider):
-            print_warning(copilot_app_seat_relay_note(provider))
-            return
-        catalog = copilot_models(state, provider, location, agent="the GitHub Copilot app")
+        relayed = bool(provider) and _uses_seat_relay(state, provider)
+        catalog = (
+            []
+            if relayed
+            else copilot_models(state, provider, location, agent="the GitHub Copilot app")
+        )
     except RuntimeError as exc:
         print_warning(f"Skipped the GitHub Copilot app: {exc}")
         return
-    desired = copilot_app.desired_providers(state["workspace"], catalog, provider_service=provider)
+    desired = copilot_app.desired_providers(
+        state["workspace"], catalog, provider_service=None if relayed else provider
+    )
     try:
-        copilot_app_plugin.install(copilot_app_plugin_config(state, desired))
+        copilot_app_plugin.install(
+            copilot_app_plugin_config(state, desired, seat_relay=provider if relayed else None)
+        )
     except copilot_app_plugin.SettingsError as exc:
         print_warning(
             f"Skipped the GitHub Copilot app: {exc}, and ug doesn't rewrite a settings file it "
@@ -527,6 +537,13 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
             f"The GitHub Copilot app ignores its whole settings file while {reason}, so it won't "
             "load ug's plugin. Remove those keys."
         )
+    if relayed:
+        print_success(
+            f"GitHub Copilot app: installed ug's plugin; its GitHub Copilot models go through "
+            f"{provider}."
+        )
+        print_note("Open (or restart) the GitHub Copilot app to route its chats.")
+        return
     print_success("GitHub Copilot app: installed ug's plugin with the Databricks models.")
     print_note("Open (or restart) the GitHub Copilot app to load the Databricks models.")
     if name := _managed_default_display_name(state, catalog, desired):
@@ -673,8 +690,11 @@ def copilot_app_status(
     warnings: list[str] = []
     try:
         if provider and _uses_seat_relay(state, provider):
-            registration = "skipped (seat subscription)"
-            warnings.append(copilot_app_seat_relay_note(provider))
+            if copilot_app_plugin.seat_relay_provider() == provider:
+                registration = f"through {provider}"
+            else:
+                registration = "not through the seat relay"
+                warnings.append(_seat_relay_warning(provider))
         else:
             desired = copilot_app.state_providers(
                 _with_expanded_sources(state), provider=provider, location=location

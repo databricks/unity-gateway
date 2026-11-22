@@ -217,9 +217,9 @@ class TestManagedDefaultModel:
 
 
 class TestSeatRelayProvider:
-    NOTE = (
-        "copilot-seats uses a seat subscription, which the GitHub Copilot app doesn't support "
-        "yet; use `ug copilot` or VS Code for it."
+    WARNING = (
+        "The GitHub Copilot app isn't set up to route its GitHub Copilot models through "
+        "copilot-seats. Run `ug configure --agents copilot` again."
     )
 
     @pytest.fixture(autouse=True)
@@ -232,25 +232,49 @@ class TestSeatRelayProvider:
 
         monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", uses_seat_relay)
 
-    def test_configure_skips_the_app_with_a_note(self, capsys):
+    def test_configure_routes_the_apps_own_models_through_the_relay(self, capsys):
         desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
 
-        assert not plugin.plugin_root().exists()
-        assert self.NOTE in _out(capsys)
+        assert plugin.status() == "installed"
+        config = _extension_config()
+        assert config["providers"] == []
+        assert config["models"] == []
+        assert config["app"]["providers"] == []
+        relay = config["seatRelay"]
+        assert relay["gatewayBase"] == WS
+        assert relay["providerService"] == "copilot-seats"
+        assert relay["askGitHub"] is True
+        assert relay["headers"]["x-databricks-use-coding-agent-mode"] == "true"
+        assert "User-Agent" not in relay["headers"]
+        assert plugin.seat_relay_provider() == "copilot-seats"
+        assert "GitHub Copilot models go through copilot-seats" in _out(capsys)
         assert self.checked == [("copilot-seats", "vscode")]
 
-    def test_another_provider_service_is_set_up(self, capsys):
+    def test_another_provider_service_gets_rows_and_no_relay(self, capsys):
         desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
 
         assert plugin.status() == "installed"
-        assert "seat subscription" not in _out(capsys)
+        assert _extension_config()["seatRelay"] is None
+        assert plugin.seat_relay_provider() is None
+        assert "seat" not in _out(capsys)
 
-    def test_status_notes_the_seat_subscription(self):
+    def test_status_shows_the_relay(self):
+        desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
+
         result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
 
         assert result is not None
-        assert result.row == "plugin not installed, models skipped (seat subscription)"
-        assert result.warnings == (self.NOTE,)
+        assert result.row == "plugin installed, models through copilot-seats"
+        assert result.warnings == ()
+
+    def test_status_warns_until_the_relay_is_configured(self):
+        desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
+
+        result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
+
+        assert result is not None
+        assert result.row == "plugin installed, models not through the seat relay"
+        assert result.warnings == (self.WARNING,)
 
     def test_a_failed_lookup_reads_as_unknown(self, monkeypatch):
         def lookup_fails(*args, **kwargs):

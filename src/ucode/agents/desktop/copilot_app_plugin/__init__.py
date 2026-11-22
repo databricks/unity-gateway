@@ -124,6 +124,9 @@ class PluginConfig:
     # Where the extension exports the spans it builds from the session's events; None turns
     # tracing off.
     traces_endpoint: str | None = None
+    # The relayed Model Provider Service the app's own GitHub Copilot calls go through; None
+    # leaves them direct.
+    seat_relay: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -240,6 +243,16 @@ def extension_config(config: PluginConfig) -> dict:
         "tracing": (
             {"endpoint": config.traces_endpoint, "headers": dict(config.headers)}
             if config.traces_endpoint
+            else None
+        ),
+        "seatRelay": (
+            {
+                "gatewayBase": config.workspace.rstrip("/"),
+                "providerService": config.seat_relay,
+                "headers": dict(config.headers),
+                "askGitHub": True,
+            }
+            if config.seat_relay
             else None
         ),
     }
@@ -491,6 +504,15 @@ def tracing_on(root: Path | None = None) -> bool:
     """Whether the installed extension exports spans."""
     config = _read_extension_config(root or plugin_root())
     return config is not None and isinstance(config.get("tracing"), dict)
+
+
+def seat_relay_provider(root: Path | None = None) -> str | None:
+    """The relayed Model Provider Service the installed extension routes the app's GitHub Copilot
+    calls through, or None."""
+    config = _read_extension_config(root or plugin_root())
+    relay = config.get("seatRelay") if config is not None else None
+    service = relay.get("providerService") if isinstance(relay, dict) else None
+    return service if isinstance(service, str) and service else None
 
 
 def remove_headers_provider(settings_path: Path | None = None) -> bool:
