@@ -404,7 +404,7 @@ class TestSeatRelay:
         assert settings == {vscode.RUNTIME_PATH_SETTING: str(self._wrapper())}
         script = self._wrapper().read_text()
         assert script.startswith("#!/bin/sh\nexec /bin/ug copilot-seat-runtime --provider ")
-        assert f'--profile dev --runtime {runtime} -- "$@"' in script
+        assert f'--profile dev --runtime {runtime} --code /fake/bin/code -- "$@"' in script
         assert self._wrapper().stat().st_mode & 0o777 == 0o700
         printed = _printed(capsys)
         assert f"routing Copilot through {self.SEATS}" in printed
@@ -476,7 +476,10 @@ class TestSeatRelay:
             'spawn("C:\\\\uv\\\\bin\\\\ug.exe", [...["copilot-seat-runtime", "--provider", '
             in script
         )
-        assert f'"--profile", "dev", "--runtime", {json.dumps(str(runtime))}, "--"]' in script
+        assert (
+            f'"--profile", "dev", "--runtime", {json.dumps(str(runtime))}, '
+            '"--code", "/fake/bin/code", "--"]' in script
+        )
         assert "...process.argv.slice(2)" in script
         printed = _printed(capsys)
         assert f"routing Copilot through {self.SEATS}" in printed
@@ -723,6 +726,24 @@ class TestBundledRuntime:
         monkeypatch.setattr(vscode.platform, "machine", lambda: "AMD64")
 
         assert vscode.bundled_runtime(self._code_cmd(tmp_path, "8a14f0cc1b")) is None
+
+    def test_each_start_runs_the_runtime_of_the_version_vscode_now_has(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vscode, "current_os", lambda: vscode.OS.WINDOWS)
+        monkeypatch.setattr(vscode.platform, "machine", lambda: "AMD64")
+        configured = self._windows_install(tmp_path, "0ld0ld0ld0", "win32-x64")
+        cmd = self._code_cmd(tmp_path, "0ld0ld0ld0")
+        assert vscode.resolve_runtime(str(configured), str(cmd)) == str(configured)
+
+        # A VS Code update: code.cmd names the new version folder, the old one may be gone.
+        updated = self._windows_install(tmp_path, "n3wn3wn3w0", "win32-x64")
+        self._code_cmd(tmp_path, "n3wn3wn3w0")
+        shutil.rmtree(tmp_path / "0ld0ld0ld0")
+        assert vscode.resolve_runtime(str(configured), str(cmd)) == str(updated)
+
+        # Without a runtime to find, the recorded one is still tried.
+        shutil.rmtree(tmp_path / "n3wn3wn3w0")
+        assert vscode.resolve_runtime(str(configured), str(cmd)) == str(configured)
+        assert vscode.resolve_runtime(str(configured), None) == str(configured)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs Node to run the wrapper")

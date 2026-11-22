@@ -366,11 +366,12 @@ def _runtime_wrappers(*, insiders: bool) -> list[Path]:
     )
 
 
-def wrapper_script(command: list[str], runtime: Path) -> str:
+def wrapper_script(command: list[str], runtime: Path, code: Path | None = None) -> str:
     """A script that runs ``command`` on ``runtime`` with the arguments VS Code passes: a POSIX
     shell script, or on Windows, where VS Code can only start an executable or a `.js` file, a
-    Node script."""
-    argv = [*command, "--runtime", str(runtime), "--"]
+    Node script. ``code`` lets each start look the runtime up again: a VS Code update moves it on
+    Windows, where ``runtime`` is then only the fallback."""
+    argv = [*command, "--runtime", str(runtime), *(["--code", str(code)] if code else []), "--"]
     if current_os() is OS.WINDOWS:
         return _node_wrapper_script(argv)
     parts = " ".join(shlex.quote(part) for part in argv)
@@ -426,6 +427,16 @@ def _edit_user_settings(path: Path, edit: Callable[[str], str]) -> None:
         raise
 
 
+def resolve_runtime(runtime: str, code: str | None) -> str:
+    """The Copilot runtime to run now: the one bundled with the VS Code install ``code`` belongs
+    to, which an update may have moved since configure, else the recorded ``runtime``."""
+    if code:
+        current = bundled_runtime(Path(code))
+        if current is not None:
+            return str(current)
+    return runtime
+
+
 def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | None:
     """Point the Copilot runtime of the VS Code install ``code`` belongs to at ug's wrapper, which
     runs it through ``provider``'s seat relay. Returns why it couldn't, or None."""
@@ -442,7 +453,7 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
                 "shell. Reinstall ug, then rerun `ug configure --agents copilot`."
             )
         command = [ug, *command[1:]]
-    script = wrapper_script(command, runtime)
+    script = wrapper_script(command, runtime, code)
     wrapper = runtime_wrapper_path(insiders=insiders, script=script)
     try:
         current = _read_runtime_path(settings)

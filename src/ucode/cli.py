@@ -3089,11 +3089,17 @@ def copilot_seat_runtime_cmd(
         str | None, typer.Option("--profile", help="The Databricks CLI profile configure used.")
     ] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+    code: Annotated[
+        str | None,
+        typer.Option("--code", help="VS Code's `code` command, to find its current runtime."),
+    ] = None,
 ) -> None:
     """Run VS Code's Copilot runtime with its Copilot API calls through the seat relay, only while
     ug is still configured for the workspace and profile VS Code was set up with."""
     import sys
     from contextlib import redirect_stdout
+
+    from ucode.agents import vscode as vscode_agent
 
     # The runtime talks to VS Code over this process's stdio.
     with redirect_stdout(sys.stderr):
@@ -3129,7 +3135,9 @@ def copilot_seat_runtime_cmd(
         if managed := load_managed_state(state_workspace_key(state)):
             state = resolve_state(managed, state, "copilot")
         apply_pat_environment(state)
-        returncode = copilot_agent.run_seat_runtime(state, provider, runtime, list(ctx.args))
+        returncode = copilot_agent.run_seat_runtime(
+            state, provider, vscode_agent.resolve_runtime(runtime, code), list(ctx.args)
+        )
     raise typer.Exit(returncode)
 
 

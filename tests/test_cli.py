@@ -10769,6 +10769,29 @@ class TestCopilotSeatRuntime:
         # The runtime owns stdout.
         assert "not for VS Code" not in result.stdout
 
+    def test_looks_the_runtime_up_again_from_the_code_command(self, monkeypatch):
+        from ucode.agents import vscode
+
+        monkeypatch.setattr(vscode, "resolve_runtime", lambda runtime, code: f"{runtime}@{code}")
+        _result, seen, _pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://ws.example"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://ws.example",
+                "--runtime",
+                "/old/copilot-runtime",
+                "--code",
+                "/vscode/bin/code",
+                "--",
+            ],
+        )
+
+        assert seen["runtime"] == "/old/copilot-runtime@/vscode/bin/code"
+
     def test_needs_a_configured_workspace(self, monkeypatch):
         result, seen, _pinned = self._run(
             monkeypatch,
