@@ -20,14 +20,11 @@ from ucode.constants import (
 )
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
+from ucode.smart_routing.session_env import ROUTING_DISABLED_KEY, validation_result_path
 
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
 # urllib applies the timeout per socket operation, so a result past this deadline counts as a timeout.
 VALIDATION_TIMEOUT_SECONDS = 4
-
-
-def result_path(session_controls: Path) -> Path:
-    return session_controls.with_suffix(".validation.json")
 
 
 def _text(value: object) -> str | None:
@@ -109,15 +106,15 @@ def start(
         unsupported = (
             not reason and isinstance(payload, dict) and payload.get("is_supported") is False
         )
-        result: dict[str, Any] = {"routing_disabled": False}
+        result: dict[str, Any] = {ROUTING_DISABLED_KEY: False}
         if unsupported:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-                result["routing_disabled"] = True
+                result[ROUTING_DISABLED_KEY] = True
                 result.update(_unsupported_details(payload, router_name))
                 result["validation_ms"] = round((time.monotonic() - started) * 1000)
         with suppress(OSError, RuntimeError):
-            atomic_write_json(result_path(session_controls), result)
+            atomic_write_json(validation_result_path(session_controls), result)
 
     with suppress(Exception):
         threading.Thread(target=check, daemon=True).start()

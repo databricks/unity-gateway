@@ -14,7 +14,7 @@ import pytest
 from tests.conftest import metric_observations
 from ucode import databricks, metrics
 from ucode.smart_routing import startup_validation as validation
-from ucode.smart_routing.session_env import session_routing_enabled
+from ucode.smart_routing.session_env import session_routing_enabled, validation_result_path
 from ucode.workspace import activate
 
 
@@ -55,7 +55,7 @@ def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
         router_name="stable",
         session_controls=controls,
     )
-    result = _wait_for_result(validation.result_path(controls))
+    result = _wait_for_result(validation_result_path(controls))
     post.assert_called_once()
     assert result["routing_disabled"] is disabled
     if not disabled:
@@ -93,7 +93,7 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
         session_controls=controls,
         provider="main.default.mps",
     )
-    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    assert _wait_for_result(validation_result_path(controls)) == {"routing_disabled": False}
     assert len(captured) == 1
     request = captured[0]
     assert request.full_url == "https://example.com/ai-gateway/routing/v1/routes:validate"
@@ -118,7 +118,7 @@ def test_unsupported_result_past_the_deadline_leaves_routing_on(tmp_path, monkey
         router_name="stable",
         session_controls=controls,
     )
-    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    assert _wait_for_result(validation_result_path(controls)) == {"routing_disabled": False}
     assert controls.read_text() == "{}"
 
 
@@ -132,7 +132,7 @@ def test_failed_write_is_isolated_and_keeps_the_result_honest(failing, tmp_path,
     )
     controls = tmp_path / "env.json"
     controls.write_text("{}")
-    failing_path = validation.result_path(controls) if failing == "result" else controls
+    failing_path = validation_result_path(controls) if failing == "result" else controls
     real_write = validation.atomic_write_json
 
     def write(path, value):
@@ -149,10 +149,10 @@ def test_failed_write_is_isolated_and_keeps_the_result_honest(failing, tmp_path,
         session_controls=controls,
     )
     if failing == "result":
-        assert not validation.result_path(controls).exists()
+        assert not validation_result_path(controls).exists()
         assert session_routing_enabled(controls) is False
     else:
-        assert json.loads(validation.result_path(controls).read_text()) == {
+        assert json.loads(validation_result_path(controls).read_text()) == {
             "routing_disabled": False
         }
         assert controls.read_text() == "{}"
@@ -186,7 +186,7 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
         router_name="stable",
         session_controls=controls,
     )
-    result = _wait_for_result(validation.result_path(controls))
+    result = _wait_for_result(validation_result_path(controls))
     assert isinstance(result.pop("validation_ms"), int)
     assert result == {
         "routing_disabled": True,

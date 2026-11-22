@@ -8,7 +8,12 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, session_routing_enabled
+from ucode.constants import UNSUPPORTED_MODEL_LIST_WARNING
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    read_unsupported_validation,
+    session_routing_enabled,
+)
 
 SERVER_NAME = "ug-smart-router-statusline"
 TOOL_NAME = "statusline"
@@ -59,12 +64,13 @@ def _text(value: str, color: str) -> dict:
     return {"type": "text", "props": {"color": color}, "children": [value]}
 
 
-def _router_indicator(label: str) -> dict:
+def _router_indicator(label: str, warning: str | None = None) -> dict:
     if label == "UNKNOWN":
         return _text("smart router UNKNOWN", "yellow")
+    background = "green" if label == "ON" else "yellow" if warning else "#808080"
     badge = {
         "type": "row",
-        "props": {"gap": 0, "background": "green" if label == "ON" else "#808080"},
+        "props": {"gap": 0, "background": background},
         "children": [
             {
                 "type": "text",
@@ -73,20 +79,23 @@ def _router_indicator(label: str) -> dict:
             }
         ],
     }
-    return {
-        "type": "row",
-        "props": {"gap": 1},
-        "children": [_text("smart router", "primary"), badge],
-    }
+    children = [_text("smart router", "primary"), badge]
+    if warning:
+        children.append(_text(warning, "yellow"))
+    return {"type": "row", "props": {"gap": 1}, "children": children}
 
 
 def render(state: dict[str, Any]) -> dict:
     controls = os.environ.get(SESSION_ENV_VAR)
+    warning = None
     try:
         if not controls:
             raise ValueError("No session controls")
-        enabled = session_routing_enabled(Path(controls), retry=False)
+        path = Path(controls)
+        enabled = session_routing_enabled(path, retry=False)
         label = "ON" if enabled else "OFF"
+        if not enabled and read_unsupported_validation(path) is not None:
+            warning = UNSUPPORTED_MODEL_LIST_WARNING
     except (OSError, UnicodeError, ValueError):
         label = "UNKNOWN"
 
@@ -95,7 +104,7 @@ def render(state: dict[str, Any]) -> dict:
     model_name = model.get("display_name") or model.get("id") or "Codex"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
-    children = [_router_indicator(label), _text(model_name, "status-model")]
+    children = [_router_indicator(label, warning), _text(model_name, "status-model")]
     cwd = _object(thread.get("workspace")).get("cwd")
     if cwd:
         path = PureWindowsPath(cwd) if "\\" in cwd else PurePosixPath(cwd)

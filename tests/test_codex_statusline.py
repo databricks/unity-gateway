@@ -10,9 +10,18 @@ import threading
 
 import pytest
 
-from ucode.constants import ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR
+from ucode.constants import (
+    ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    UNSUPPORTED_MODEL_LIST_WARNING,
+)
 from ucode.smart_routing import codex_statusline as statusline
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, set_session_environment, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    set_session_environment,
+    start_session,
+    validation_result_path,
+)
 
 
 def _labels(tree):
@@ -163,6 +172,63 @@ def test_unreadable_controls_show_unknown_and_recover(tmp_path, monkeypatch, con
     assert "smart router UNKNOWN" in _labels(statusline.render({}))
     controls.write_text("{}")
     assert "smart router ON" in _labels(statusline.render({}))
+
+
+@pytest.mark.parametrize(
+    ("enabled", "validation", "warned"),
+    [
+        (False, '{"routing_disabled": true}', True),
+        (True, '{"routing_disabled": true}', False),
+        (False, '{"routing_disabled": false}', False),
+        (False, "not-json", False),
+        (False, None, False),
+    ],
+    ids=[
+        "off-unsupported",
+        "on-after-turning-back-on",
+        "off-supported",
+        "off-unreadable",
+        "off-no-result",
+    ],
+)
+def test_footer_warns_only_while_unsupported_validation_leaves_routing_off(
+    tmp_path, monkeypatch, enabled, validation, warned
+):
+    controls = tmp_path / "controls.json"
+    controls.write_text(
+        json.dumps(
+            {
+                ENABLE_SMART_ROUTING_ENV_VAR: "0",
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1" if enabled else "0",
+            }
+        )
+    )
+    if validation is not None:
+        validation_result_path(controls).write_text(validation)
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    labels = _labels(statusline.render({}))
+    assert ("smart router ON" if enabled else "smart router OFF") in labels
+    assert (UNSUPPORTED_MODEL_LIST_WARNING in labels) is warned
+
+
+def test_unsupported_footer_uses_the_warning_colors(tmp_path, monkeypatch):
+    controls = tmp_path / "controls.json"
+    controls.write_text(
+        json.dumps({ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"})
+    )
+    validation_result_path(controls).write_text('{"routing_disabled": true}')
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    indicator = statusline.render({})["children"][0]
+    assert indicator["children"][1]["props"]["background"] == "yellow"
+    assert indicator["children"][2] == {
+        "type": "text",
+        "props": {"color": "yellow"},
+        "children": [UNSUPPORTED_MODEL_LIST_WARNING],
+    }
+    assert (
+        UNSUPPORTED_MODEL_LIST_WARNING
+        == "⚠ This session's model list isn't supported by smart router"
+    )
 
 
 def test_footer_does_not_retry_blocked_file_reads(tmp_path, monkeypatch):

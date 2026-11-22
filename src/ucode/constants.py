@@ -11,6 +11,8 @@ AGENT_COPILOT = "copilot"
 AGENT_VSCODE = "vscode"
 # The Gateway reports Claude route options under this harness name.
 ROUTER_HARNESS_CLAUDE_CODE = "claude_code"
+# Mirrors UNSUPPORTED_MODEL_LIST_WARNING in agents/claude_mods/constants.ts; keep both in sync.
+UNSUPPORTED_MODEL_LIST_WARNING = "⚠ This session's model list isn't supported by smart router"
 
 # `ug configure --mdm` telemetry: the exported variable and its value when the machine is not MDM.
 MDM_OS_ENV = "MDM_OS"

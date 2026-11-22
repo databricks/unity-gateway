@@ -11,6 +11,7 @@ import tempfile
 import time
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from typing import Any
 
 from ucode.config_io import atomic_write_json
 from ucode.constants import (
@@ -24,6 +25,8 @@ SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 CONTROLS_READ_ATTEMPTS = 10
 CONTROLS_READ_RETRY_SECONDS = 0.1
+VALIDATION_RESULT_SUFFIX = ".validation.json"
+ROUTING_DISABLED_KEY = "routing_disabled"
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 
@@ -79,6 +82,21 @@ def session_routing_enabled(path: Path, *, retry: bool = True) -> bool:
         overrides.get(key) == "0"
         for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
     )
+
+
+def validation_result_path(session_controls: Path) -> Path:
+    return session_controls.with_suffix(VALIDATION_RESULT_SUFFIX)
+
+
+def read_unsupported_validation(session_controls: Path) -> dict[str, Any] | None:
+    """Return the startup validation result when it turned routing off, else None."""
+    try:
+        result = json.loads(validation_result_path(session_controls).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if isinstance(result, dict) and result.get(ROUTING_DISABLED_KEY) is True:
+        return result
+    return None
 
 
 def effective_environment(

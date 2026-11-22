@@ -16,6 +16,11 @@ or bold black `OFF` on gray. Claude keeps an ON/OFF hint below the prompt after 
 temporary banner disappears; disabling routing does not hide that hint. Codex keeps
 the badge in its persistent footer, since this API only controls the footer.
 
+When the startup model-list check turns routing off, the badge is bold black `OFF` on
+yellow and the footer adds Claude's warning, `⚠ This session's model list isn't supported
+by smart router`, in yellow. The warning clears once routing is turned back on. A missing
+or unreadable check result leaves the plain footer.
+
 ## Validation
 
 Install the checkout in an isolated Python environment and use Codex
