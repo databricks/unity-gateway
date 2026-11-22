@@ -3,9 +3,9 @@ import { parseRoutingExplanation, type RoutingExplanation } from './subagent-rou
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
 export const LOGS_COMMAND_TIMEOUT_MS = 10000;
-export const ROUTE_VALIDATION_ROW = "Smart routing disabled: This session's model list isn't supported by Smart Router";
+export const ROUTE_VALIDATION_ROW = 'Failed to enable smart routing. Press enter for details.';
 const ROUTE_VALIDATION_REASONS: Record<string, string> = {
-  insufficient_eligible_options: 'At least two supported models are required',
+  insufficient_eligible_options: 'At least two supported models are required. Please reach out to your workspace admin',
   missing_required_tier_option: 'Required models are missing from this list',
   INCOMPLETE_REQUIRED_OPTIONS: 'Required models are missing from this list',
   harness_not_supported: 'Harness not supported',

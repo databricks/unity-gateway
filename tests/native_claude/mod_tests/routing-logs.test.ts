@@ -109,15 +109,14 @@ test('a route validation row opens its detail without another read', { options }
   await $.command.run(command);
   const ui = await $.ui.mount(pane);
   let tree = JSON.stringify(await ui.drawn());
-  // Like a routed row, the fixed text fills the pane width and is cut with an ellipsis.
-  expect(tree).toContain(`"key":"c1","label":"  2m ago  ${ROUTE_VALIDATION_ROW.slice(0, 80 - 10 - 1)}…"`);
+  expect(tree).toContain(`"key":"c1","label":"  2m ago  ${ROUTE_VALIDATION_ROW}"`);
   expect(tree.indexOf('"key":"d2"')).toBeLessThan(tree.indexOf('"key":"c1"'));
   expect(tree.indexOf('"key":"c1"')).toBeLessThan(tree.indexOf('"key":"d1"'));
   await ui.press({ key: 'c1' });
   expect(runs).toHaveLength(1);
   tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('"children":["Reason: "]');
-  expect(tree).toContain('At least two supported models are required');
+  expect(tree).toContain('At least two supported models are required. Please reach out to your workspace admin');
   expect(tree).toContain('"children":["Validation Time: "]');
   expect(tree).toContain('1.2s');
   expect(tree).toContain('✓ claude-sonnet');
