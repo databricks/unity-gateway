@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+Launch-cache component tests retain real-file identity, expiry, generation and lock checks,
+a cold/warm journey with stubbed boundaries, and minimal auth/workspace checks.
+Transport checks cover real TCP reuse/errors and selected auth, redirect and proxy boundaries.
+Speculative orchestration, cache metrics and detailed refresher permutations are not covered.
+
 The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
 stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
 `test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade

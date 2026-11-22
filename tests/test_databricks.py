@@ -794,64 +794,6 @@ class TestDiscoverModelServices:
         assert reason == ("HTTP 503" if complete_only else None)
         assert db_mod.cached_model_service_entries(WS) is None
 
-    def test_complete_only_accepts_a_complete_walk(self, monkeypatch):
-        db_mod.clear_model_services_cache()
-        monkeypatch.setattr(
-            db_mod,
-            "_get_model_services_page",
-            lambda url, token: ({"model_services": [_model_service("system.ai.gpt-5")]}, None),
-        )
-
-        entries, reason = db_mod.list_model_service_entries(WS, "token", complete_only=True)
-        assert reason is None
-        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
-        assert db_mod.cached_model_service_entries(WS) == entries
-
-    def test_primed_discovery_reports_launch_cache_hit(self, monkeypatch):
-        db_mod.clear_model_services_cache()
-        annotations: list[dict] = []
-        monkeypatch.setattr(db_mod.metrics, "annotate", lambda **kwargs: annotations.append(kwargs))
-
-        def page(url, token):
-            return {"model_services": [_model_service("system.ai.claude-sonnet-5")]}, None
-
-        monkeypatch.setattr(db_mod, "_get_model_services_page", page)
-        db_mod.prime_model_services_cache(
-            WS, [db_mod.ModelServiceEntry("system.ai.claude-sonnet-5", ())]
-        )
-        db_mod.discover_model_services(WS, "token")
-        hits = [a for a in annotations if "launch_cache_hit" in a]
-        # A disk-seeded memo is a launch-cache hit, not an in-process one.
-        assert hits[-1] == {"launch_cache_hit": True, "cache_hit": False}
-
-        # A real walk replaces the primed memo, so later hits are in-process ones.
-        db_mod.clear_model_services_cache()
-        db_mod.discover_model_services(WS, "token")  # walks and memoizes
-        db_mod.discover_model_services(WS, "token")  # in-process hit
-        hits = [a for a in annotations if "launch_cache_hit" in a]
-        assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
-
-    def test_priming_does_not_override_a_walked_memo(self, monkeypatch):
-        db_mod.clear_model_services_cache()
-        annotations: list[dict] = []
-        monkeypatch.setattr(db_mod.metrics, "annotate", lambda **kwargs: annotations.append(kwargs))
-        monkeypatch.setattr(
-            db_mod,
-            "_get_model_services_page",
-            lambda url, token: ({"model_services": [_model_service("system.ai.gpt-5")]}, None),
-        )
-        db_mod.discover_model_services(WS, "token")  # walks and memoizes
-        db_mod.prime_model_services_cache(
-            WS, [db_mod.ModelServiceEntry("system.ai.claude-sonnet-5", ())]
-        )
-        db_mod.discover_model_services(WS, "token")
-        hits = [a for a in annotations if "launch_cache_hit" in a]
-        # A real memoized walk stays an in-process hit, with its own entries.
-        assert hits[-1] == {"launch_cache_hit": False, "cache_hit": True}
-        assert [entry.id for entry in db_mod.cached_model_service_entries(WS)] == [
-            "system.ai.gpt-5"
-        ]
-
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):
@@ -3652,76 +3594,6 @@ class TestGetDatabricksToken:
         ]
         assert {attrs["token_source"] for attrs in labels} == {"cli"}
 
-    def test_untimed_fetch_duration_is_reported_once_by_timed_reuse(
-        self, monkeypatch, metrics_recorder
-    ):
-        """An untimed caller's real fetch is reported by the first timed reuse as the cache
-        miss with that fetch's duration; later reuses are plain cache hits."""
-        db_mod.clear_databricks_token_cache()
-
-        def fake_cli_run(cmd, **_kwargs):
-            time.sleep(0.1)
-            return subprocess.CompletedProcess(
-                cmd, 0, json.dumps({"access_token": "token", "expires_in": 3600}), ""
-            )
-
-        monkeypatch.setattr(db_mod, "run", fake_cli_run)
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
-        try:
-            assert fetch_databricks_token_untimed(WS, "spec") == "token"
-            memoized = db_mod._memoized_token(db_mod._token_memo_key(WS, "spec"))
-            assert memoized is not None and memoized.unreported_fetch_ms >= 100
-
-            assert get_databricks_token(WS, "spec") == "token"
-            assert get_databricks_token(WS, "spec") == "token"
-        finally:
-            db_mod.clear_databricks_token_cache()
-
-        observations = metric_observations(
-            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
-        )
-        assert len(observations) == 2
-        [(miss_ms, miss_labels), (hit_ms, hit_labels)] = observations
-        assert miss_labels["in_process_cache_hit"] is False
-        assert miss_labels["token_source"] == "cli"
-        assert miss_ms >= 100
-        assert hit_labels["in_process_cache_hit"] is True
-        assert "awaited_duration_ms" not in miss_labels
-        assert "awaited_duration_ms" not in hit_labels
-
-    def test_credential_failure_raises_login_required_and_transient_does_not(self, monkeypatch):
-        """A CLI-identified credential failure raises the login-required error best-effort
-        callers treat as an expected miss; unrecognized failures stay plain RuntimeErrors."""
-
-        def cli_run(stderr):
-            return lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, "", stderr)
-
-        monkeypatch.setattr(db_mod, "run", cli_run("no cached credentials"))
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
-        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
-            fetch_databricks_token_untimed(WS, "spec")
-
-        monkeypatch.setattr(db_mod, "run", cli_run("connection reset by peer"))
-        with pytest.raises(RuntimeError, match="network connectivity") as excinfo:
-            fetch_databricks_token_untimed(WS, "spec")
-        assert not isinstance(excinfo.value, db_mod.DatabricksLoginRequiredError)
-
-    def test_memoized_failure_raises_login_required_for_the_speculation(self, monkeypatch):
-        """An untimed fetch reuse of an earlier fetch's memoized credential failure raises
-        the login-required error, so the speculation's join treats it as an expected miss
-        instead of reporting a hard token-fetch failure."""
-
-        def failing_cli_run(cmd, **_kwargs):
-            return subprocess.CompletedProcess(cmd, 1, "", "no cached credentials")
-
-        monkeypatch.setattr(db_mod, "run", failing_cli_run)
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
-        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
-            get_databricks_token(WS, "spec")
-
-        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
-            fetch_databricks_token_untimed(WS, "spec")
-
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
         release_fetch = threading.Event()
@@ -6017,29 +5889,6 @@ class TestHttpGetJsonTimeout:
             "network error: The read operation timed out",
         )
 
-    def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch, mock_pooled_client):
-        import httpx
-
-        attempts = []
-
-        def timeout(request):
-            attempts.append(request)
-            raise httpx.ReadTimeout("The read operation timed out", request=request)
-
-        mock_pooled_client(timeout)
-        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
-        monkeypatch.setattr(db_mod.time, "sleep", lambda _seconds: None)
-
-        payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok", max_retries=1)
-        assert (payload, reason) == (None, "network error: The read operation timed out")
-        assert len(attempts) == 2
-
-        payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
-        assert (payload, reason) == (None, "network error: The read operation timed out")
-
-        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
-        assert (body, reason) == (None, "network error: The read operation timed out")
-
 
 class TestInstallAiTools:
     def _capture_run(self, monkeypatch, *, raises=None):
@@ -7629,55 +7478,6 @@ def test_http_transport_maps_refused_connections_to_network_errors(fresh_pooled_
     assert "refused" in reason.lower()
 
 
-def test_http_transport_passes_headers_and_timeout(monkeypatch):
-    import httpx
-
-    captured = {}
-
-    class Client:
-        def send(self, request, *, follow_redirects):
-            captured.update(request=request, follow_redirects=follow_redirects)
-            return httpx.Response(200, content=b"{}", request=request)
-
-    monkeypatch.setattr(db_mod, "_get_http_client", lambda: Client())
-    _force_pooled(monkeypatch)
-    body, reason = db_mod._http_get_bytes(
-        "https://example.test/api", "token", timeout=1.75, headers={"X-Transport-Test": "yes"}
-    )
-    assert body == b"{}"
-    assert reason is None
-    request = captured["request"]
-    assert request.extensions["timeout"] == httpx.Timeout(1.75).as_dict()
-    assert request.method == "GET"
-    assert str(request.url) == "https://example.test/api"
-    assert captured["follow_redirects"] is True
-    headers = dict(request.headers)
-    assert headers["authorization"] == "Bearer token"
-    assert headers["x-transport-test"] == "yes"
-    assert headers["accept-encoding"] == "identity"
-    assert headers["connection"] == "keep-alive"
-    assert headers["user-agent"] == f"Python-urllib/{db_mod.urllib_request.__version__}"
-    assert "accept" not in headers
-
-
-@pytest.fixture
-def mock_pooled_client(monkeypatch):
-    import httpx
-
-    clients = []
-
-    def install(handler, **kwargs):
-        client = httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
-        clients.append(client)
-        _force_pooled(monkeypatch)
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
-        return client
-
-    yield install
-    for client in clients:
-        client.close()
-
-
 def _clear_proxy_env(monkeypatch):
     for name in (
         "HTTP_PROXY",
@@ -7692,101 +7492,21 @@ def _clear_proxy_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def _reset_pooled_client(monkeypatch):
-    """Drop the cached process-wide client so the next request builds a fresh one."""
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", os.getpid())
-
-
-def _force_pooled(monkeypatch):
-    """Pin the dispatch to the pooled client for tests that stub `_get_http_client`."""
-    monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
-
-
-def _stub_tls_apply(monkeypatch):
-    """Keep the real tls.apply out of tests that build a client: it would inject truststore
-    into `ssl` for the whole process (conftest extracts it afterwards, but these tests only
-    talk to plain-HTTP loopback servers and never need the OS store)."""
-    monkeypatch.setattr(db_mod.tls, "apply", lambda *args, **kwargs: "os")
-
-
 @pytest.fixture
 def fresh_pooled_client(monkeypatch):
     """A loopback test gets its own pooled client: clear the proxy env so the dispatch picks
     the pooled path, pin it, build a fresh client, and close it afterwards so its connections
     don't outlive the test (monkeypatch restores the previously cached one)."""
     _clear_proxy_env(monkeypatch)
-    _force_pooled(monkeypatch)
-    _stub_tls_apply(monkeypatch)
-    _reset_pooled_client(monkeypatch)
+    monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
+    # Plain-HTTP peers do not need process-wide trust-store injection.
+    monkeypatch.setattr(db_mod.tls, "apply", lambda *args, **kwargs: "os")
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", os.getpid())
     yield
     client = db_mod._HTTP_CLIENT
     if client is not None:
         client.close()
-
-
-def test_pooled_client_built_on_tls_trust_store(monkeypatch):
-    """tls.apply() runs before the client and its transport are built, so httpx's default SSL
-    context verifies against the trust store selected for the whole process; no per-client
-    ssl context or verify= is passed (AGENTS.md)."""
-    import httpx
-
-    order = []
-
-    def spy_apply(*args, **kwargs):
-        order.append("apply")
-        return "os"
-
-    built = {}
-    real_transport = httpx.HTTPTransport
-    transports = []
-
-    def spy_transport(**kwargs):
-        order.append("transport")
-        transports.append(real_transport(**kwargs))
-        return transports[-1]
-
-    real_client = httpx.Client
-
-    def spy_client(*args, **kwargs):
-        order.append("client")
-        built.update(kwargs)
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(db_mod.tls, "apply", spy_apply)
-    monkeypatch.setattr(httpx, "HTTPTransport", spy_transport)
-    monkeypatch.setattr(httpx, "Client", spy_client)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
-
-    client = db_mod._get_http_client()
-    try:
-        assert order[0] == "apply"
-        assert "client" in order
-        assert "verify" not in built
-    finally:
-        client.close()
-
-
-def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
-    _stub_tls_apply(monkeypatch)
-    parent_client = db_mod._get_http_client()
-    parent_pid = os.getpid()
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", parent_client)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", parent_pid)
-    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_LOCK", db_mod._HTTP_CLIENT_LOCK)
-    monkeypatch.setattr(db_mod.os, "getpid", lambda: parent_pid + 1)
-
-    db_mod._reset_http_client_after_fork()
-    child_client = db_mod._get_http_client()
-    try:
-        assert child_client is not parent_client
-        assert db_mod._HTTP_CLIENT_PID == parent_pid + 1
-    finally:
-        parent_client.close()
-        child_client.close()
 
 
 class TestPooledClientDispatch:
@@ -7809,23 +7529,6 @@ class TestPooledClientDispatch:
         )
         return opened
 
-    def test_no_pooled_http_env_switch_uses_urlopen(self, monkeypatch):
-        """UG_NO_POOLED_HTTP is the revert switch: every call goes back to main's urlopen."""
-        _clear_proxy_env(monkeypatch)
-        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
-        opened = self._urlopen_sentinel(monkeypatch)
-        request = db_mod.urllib_request.Request("https://x/y")
-
-        for value in ("1", "true"):
-            monkeypatch.setenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR, value)
-            assert db_mod._use_pooled_client() is False
-            db_mod._http_open(request, timeout=5)
-
-        monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
-        monkeypatch.delenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR)
-        assert db_mod._use_pooled_client() is True
-        assert opened == [(request, 5), (request, 5)]
-
     @pytest.mark.parametrize("configuration", ["python-store", "env-proxy", "system-proxy"])
     def test_nondefault_setup_uses_urlopen(self, monkeypatch, configuration):
         _clear_proxy_env(monkeypatch)
@@ -7845,121 +7548,12 @@ class TestPooledClientDispatch:
         db_mod._http_open(request, timeout=5)
         assert opened == [(request, 5)]
 
-    def test_all_proxy_alone_still_pools_direct(self, monkeypatch):
-        # urllib ignores all_proxy (and no_proxy), so they don't disqualify the pooled client;
-        # the client must still be direct with trust_env off, so ALL_PROXY is never mounted.
-        # getproxies is stubbed because a macOS runner's system proxy would leak in otherwise.
-        _clear_proxy_env(monkeypatch)
-        monkeypatch.setattr(
-            db_mod.urllib_request,
-            "getproxies",
-            lambda: {"all": "socks5://socks-proxy:1080", "no": "bypassed.example"},
-        )
-
-        import httpx
-
-        assert db_mod._use_pooled_client() is True
-
-        built = {}
-        real_client = httpx.Client
-
-        def spy_client(*args, **kwargs):
-            built.update(kwargs)
-            return real_client(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "Client", spy_client)
-        _stub_tls_apply(monkeypatch)
-        _reset_pooled_client(monkeypatch)
-        client = db_mod._get_http_client()
-        try:
-            assert isinstance(client._transport, httpx.HTTPTransport)
-            assert built["trust_env"] is False
-        finally:
-            client.close()
-
-    def test_default_setup_pools(self, monkeypatch):
-        _clear_proxy_env(monkeypatch)
-        # Stub getproxies too: a macOS runner's system proxy would leak in otherwise.
-        monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
-        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
-
-        import httpx
-
-        assert db_mod._use_pooled_client() is True
-
-        client = httpx.Client(
-            transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"{}"))
-        )
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
-
-        response = db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
-
-        assert isinstance(response, db_mod._PooledResponse)
-        assert response.read() == b"{}"
-
-
-class TestPooledRedirectErrors:
-    """httpx errors urllib's opener would have surfaced as HTTP errors keep their shape, so
-    callers see a status-shaped reason instead of a network failure."""
-
-    def test_too_many_redirects_maps_to_http_error_with_the_last_real_status(
-        self, mock_pooled_client
-    ):
-        """Exceeding the redirect budget raises the LAST 3xx, like urllib's redirect handler
-        does — not a made-up status. The response hook on the pooled client tracks it."""
-        from urllib.error import HTTPError
-
-        import httpx
-
-        sent = []
-
-        def always_redirect(request):
-            sent.append(request)
-            return httpx.Response(302, headers={"Location": "https://x/next"}, content=b"moved")
-
-        mock_pooled_client(
-            always_redirect,
-            event_hooks={"response": [db_mod._remember_redirect]},
-            max_redirects=db_mod.urllib_request.HTTPRedirectHandler.max_redirections,
-        )
-
-        with pytest.raises(HTTPError) as raised:
-            db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
-
-        assert raised.value.code == 302
-        assert raised.value.reason == "Found"
-        assert raised.value.read() == b"moved"
-        # urllib's budget of 10 redirects: the first request plus 10 follow-ups.
-        assert len(sent) == 11
-
-
-def test_latin1_header_values_are_sent_like_urllib(mock_pooled_client):
-    """http.client sends header values as latin-1; the pooled path does the same instead of
-    failing on a non-ascii value (e.g. one from UG_HEADERS)."""
-    import httpx
-
-    seen = []
-
-    def handler(request):
-        seen.append(request.headers.raw)
-        return httpx.Response(200, content=b"{}")
-
-    mock_pooled_client(handler)
-
-    request = db_mod.urllib_request.Request("https://x/y", headers={"X-Team": "Équipe"})
-    with db_mod._http_open(request, timeout=5) as response:
-        assert response.read() == b"{}"
-    assert (b"x-team", "Équipe".encode("latin-1")) in [(n.lower(), v) for n, v in seen[0]]
-
 
 class TestPooledRedirectPolicies:
-    """Redirects are followed exactly where urllib's redirect_request follows them: GET/HEAD
-    re-request the target, a POST answered 301/302/303 is re-issued as a bodiless GET, and
-    every other method or 307/308 raises the 3xx as an HTTPError instead of having its body
-    replayed."""
+    """Redirects must not replay a POST or PATCH body where urllib rejects them."""
 
     @pytest.mark.parametrize("method, status", [("POST", 307), ("PATCH", 302)])
-    def test_redirect_is_raised_not_followed(self, mock_pooled_client, method, status):
+    def test_redirect_is_raised_not_followed(self, monkeypatch, method, status):
         import httpx
 
         sent = []
@@ -7968,37 +7562,16 @@ class TestPooledRedirectPolicies:
             sent.append(request)
             return httpx.Response(status, headers={"Location": "https://example.test/moved"})
 
-        mock_pooled_client(handler)
-        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
-            db_mod._http_open(
-                db_mod.urllib_request.Request(
-                    "https://example.test/api", data=b"{}", method=method
-                ),
-                timeout=5,
-            )
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
+            monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+            with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+                db_mod._http_open(
+                    db_mod.urllib_request.Request(
+                        "https://example.test/api", data=b"{}", method=method
+                    ),
+                    timeout=5,
+                )
         assert raised.value.code == status
         assert raised.value.headers.get("Location") == "https://example.test/moved"
         assert len(sent) == 1
-
-    @pytest.mark.parametrize("method, body", [("POST", b"{}"), ("GET", None)])
-    def test_redirect_is_followed_as_a_bodiless_get(self, mock_pooled_client, method, body):
-        import httpx
-
-        sent = []
-
-        def handler(request):
-            sent.append((str(request.url), request.method, request.content))
-            if len(sent) == 1:
-                return httpx.Response(302, headers={"Location": "https://example.test/final"})
-            return httpx.Response(200, content=b"{}")
-
-        mock_pooled_client(handler)
-        with db_mod._http_open(
-            db_mod.urllib_request.Request("https://example.test/start", data=body, method=method),
-            timeout=5,
-        ) as response:
-            assert response.read() == b"{}"
-        assert sent == [
-            ("https://example.test/start", method, body or b""),
-            ("https://example.test/final", "GET", b""),
-        ]

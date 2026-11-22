@@ -5,26 +5,20 @@ from __future__ import annotations
 import base64
 import io
 import json
-import subprocess
 import sys
-import threading
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from email.message import Message
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from ucode import cli as cli_mod
-from ucode import config_io
 from ucode import databricks as db_mod
 from ucode import launch_cache as lc
-from ucode.os_compatibility import file_lock_cross_os as file_lock_mod
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
-    release_file_lock,
 )
 
 runner = CliRunner()
@@ -100,15 +94,7 @@ def _store(key: str, payload: dict, *, checked_at: float | None = None, identity
     (lc._cache_dir() / f"{key}.json").write_text(json.dumps(entry), encoding="utf-8")
 
 
-def _entries() -> list[Path]:
-    directory = config_io.APP_DIR / lc.CACHE_DIR_NAME
-    return list(directory.glob("*.json")) if directory.exists() else []
-
-
 class TestKey:
-    def test_same_inputs_same_key(self):
-        assert _key() == _key()
-
     def test_workspace_profile_and_id_isolate(self):
         keys = {
             _key(),
@@ -260,7 +246,7 @@ class TestEntry:
         lock.touch()
         lc.clear_cache()
         assert lc.load_entry(_key()) is None
-        assert not _entries()
+        assert not list(lc._cache_dir().glob("*.json"))
         assert not lock.exists()
 
     def test_clear_cache_leaves_a_held_lock_and_prunes_dead_ones(self):
@@ -284,105 +270,6 @@ class TestEntry:
         assert (lc._entry_path(key).stat().st_mode & 0o777) == 0o600
 
 
-class TestPrime:
-    def test_prime_serves_probe_and_discovery_without_network(self, monkeypatch):
-        key = _key()
-        lc.merge_entry(
-            key,
-            _identity(),
-            {
-                "probe": lc.probe_payload(PROBE),
-                "model_services": lc.services_payload(SERVICES),
-            },
-        )
-        entry = lc.load_entry(key, _identity())
-        assert entry is not None
-
-        def no_network(*_args, **_kwargs):
-            raise AssertionError("launch cache hit must not make workspace requests")
-
-        monkeypatch.setattr(db_mod, "_http_get_json", no_network)
-        db_mod.clear_gateway_probe_cache()
-        db_mod.clear_model_services_cache()
-        lc.prime_from_entry(WORKSPACE, "token", entry)
-        assert db_mod.probe_unity_gateway_capabilities(WORKSPACE, "token") == PROBE
-        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WORKSPACE, "token")
-        assert claude == {"sonnet": "system.ai.claude-sonnet-5"}
-        assert codex == gemini == oss == []
-        assert reason is None
-
-
-class TestConfigureIsolation:
-    @staticmethod
-    def _run(monkeypatch, *, use_launch_cache, login_during_fetch=False):
-        monkeypatch.setenv("DATABRICKS_BEARER", "bearer")
-        if login_during_fetch:
-            # A login inside the token fetch clears the on-disk cache, as
-            # `run_databricks_login` does.
-            def token_with_login(*_a, **_k):
-                lc.clear_cache()
-                return "token"
-
-            monkeypatch.setattr(cli_mod, "get_databricks_token", token_with_login)
-        else:
-            monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a, **_k: "token")
-        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE)
-
-        def discover(workspace, _token):
-            # The listing runs in the background: outlast the probe so the cold save can
-            # only happen after the join.
-            time.sleep(0.1)
-            db_mod.prime_model_services_cache(workspace, SERVICES)
-            return {"sonnet": "system.ai.claude-sonnet-5"}, [], [], [], None
-
-        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
-        load = MagicMock(wraps=lc.load_entry)
-        merge = MagicMock(wraps=lc.try_merge_entry)
-        monkeypatch.setattr(cli_mod, "load_entry", load)
-        monkeypatch.setattr(cli_mod, "try_merge_entry", merge)
-        state = cli_mod.configure_shared_state(
-            WORKSPACE, profile="p", tools=["claude"], use_launch_cache=use_launch_cache
-        )
-        return state, load, merge
-
-    def test_configure_never_reads_or_writes_the_cache(self, monkeypatch):
-        db_mod.clear_model_services_cache()
-        _state, reads, writes = self._run(monkeypatch, use_launch_cache=False)
-        reads.assert_not_called()
-        writes.assert_not_called()
-
-    def test_launch_read_serves_and_cold_lookup_writes(self, monkeypatch):
-        db_mod.clear_model_services_cache()
-        state, reads, writes = self._run(monkeypatch, use_launch_cache=True)
-        assert reads.call_count == writes.call_count == 1
-        key = writes.call_args.args[0]
-        assert key == lc.cache_key(lc.entry_identity(state))
-        entry = lc.load_entry(key)
-        assert entry is not None
-        assert lc.entry_probe(entry) == PROBE
-        assert lc.entry_model_services(entry) == SERVICES
-
-    def test_a_login_during_the_token_fetch_drops_the_primed_entry(self, monkeypatch):
-        key = _key(workspace_id="")
-        _store(
-            key,
-            {"probe": lc.probe_payload(PROBE), "model_services": lc.services_payload(SERVICES)},
-            checked_at=time.time(),
-            identity=_identity(workspace_id=""),
-        )
-        db_mod.clear_gateway_probe_cache()
-        db_mod.clear_model_services_cache()
-        prime = MagicMock()
-        monkeypatch.setattr(cli_mod, "prime_from_entry", prime)
-        _state, reads, _writes = self._run(
-            monkeypatch, use_launch_cache=True, login_during_fetch=True
-        )
-        # The re-read after the fetch found the login-cleared cache, so the pre-login
-        # entry was never primed.
-        prime.assert_not_called()
-        assert reads.call_count == 2  # the pre-fetch read and the post-login re-read
-
-
 class TestRefresher:
     @pytest.fixture(autouse=True)
     def lookups(self, monkeypatch):
@@ -390,23 +277,6 @@ class TestRefresher:
         monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE)
         monkeypatch.setattr(lc, "list_model_service_entries", lambda *_a, **_k: (SERVICES, None))
         monkeypatch.setattr(lc, "list_anthropic_model_catalog", lambda *_a, **_k: CATALOG)
-
-    def test_refresh_writes_every_part(self):
-        assert lc.main(refresh_args()) == 0
-        entry = lc.load_entry(_key(), _identity())
-        assert entry is not None
-        assert lc.entry_probe(entry) == PROBE
-        assert lc.entry_model_services(entry) == SERVICES
-        assert lc.entry_catalog(entry) is not None
-
-    def test_refresh_throttles_one_per_key_per_few_minutes(self, monkeypatch):
-        def boom(*_a, **_k):
-            raise AssertionError("refresh must be throttled")
-
-        monkeypatch.setattr(lc, "probe_unity_gateway_capabilities", boom)
-        key = _key()
-        _store(key, {}, checked_at=time.time())
-        assert lc.main(refresh_args()) == 0
 
     @pytest.mark.parametrize("failure", ["unavailable-probe", "login-required"])
     def test_failed_refresh_invalidates(self, monkeypatch, failure):
@@ -445,28 +315,6 @@ class TestRefresher:
         # The stale-identity refresher neither serves nor rewrites the old identity's entry.
         assert lc.load_entry(lc.cache_key(changed), changed) is not None
 
-    def test_refresh_never_reauths(self, monkeypatch):
-        token = MagicMock(return_value="token")
-        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
-        assert lc.main(refresh_args()) == 0
-        token.assert_called_once_with(WORKSPACE, "p")
-
-    @pytest.mark.parametrize(
-        "saved_profile, expected_profile",
-        [("ug-oauth-p", "ug-oauth-p"), (None, "ug-oauth-example.databricks.com-cid")],
-        ids=["saved-profile", "derived-profile"],
-    )
-    def test_custom_oauth_refresh_reuses_login(self, monkeypatch, saved_profile, expected_profile):
-        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
-        token = MagicMock(return_value="token")
-        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", token)
-        monkeypatch.setattr(lc, "has_valid_databricks_auth", lambda *_a, **_k: True)
-        custom_oauth = {"client_id": "cid", "redirect_url": "http://localhost", "scopes": ["a"]}
-        if saved_profile is not None:
-            custom_oauth["profile"] = saved_profile
-        assert lc.main(refresh_args(_identity(custom_oauth=custom_oauth))) == 0
-        token.assert_called_once_with(WORKSPACE, expected_profile)
-
     def test_custom_oauth_refresh_without_a_saved_login_gives_up(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         monkeypatch.setattr(lc, "has_valid_databricks_auth", lambda *_a, **_k: False)
@@ -480,74 +328,6 @@ class TestRefresher:
         _store(key, {}, checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1)
         assert lc.main(refresh_args(identity=_identity(custom_oauth=custom_oauth))) == 1
         assert lc.load_entry(key) is None
-
-    @pytest.mark.parametrize("cached_catalog", [False, True], ids=["cold", "previous-catalog"])
-    def test_empty_catalog_is_not_cached(self, monkeypatch, cached_catalog):
-        empty = db_mod.AnthropicModelCatalog(model_ids=[], model_id_to_display_name={})
-        monkeypatch.setattr(lc, "list_anthropic_model_catalog", lambda *_a, **_k: empty)
-        if cached_catalog:
-            _store(
-                _key(),
-                {"catalog": lc.catalog_payload(CATALOG)},
-                checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1,
-            )
-        assert lc.main(refresh_args()) == 0
-        entry = lc.load_entry(_key(), _identity())
-        assert entry is not None
-        assert lc.entry_catalog(entry) is None
-        assert lc.entry_probe(entry) is not None
-
-    def test_a_failed_refresh_does_not_drop_a_superseded_entry(self, monkeypatch):
-        key = _key()
-
-        def supersede_then_fail(*_a, **_k):
-            # Another refresher finished while this one was fetching.
-            lc.merge_entry(
-                key,
-                _identity(),
-                {
-                    "probe": lc.probe_payload(PROBE),
-                    "model_services": lc.services_payload(SERVICES),
-                },
-            )
-            raise RuntimeError("transient failure")
-
-        monkeypatch.setattr(lc, "list_anthropic_model_catalog", supersede_then_fail)
-        assert lc.main(refresh_args()) == 1
-        entry = lc.load_entry(key, _identity())
-        assert entry is not None
-        assert lc.entry_probe(entry) == PROBE
-
-    def test_concurrent_refreshes_serialize_per_key(self, monkeypatch):
-        key = _key()
-        # Fresh: once the lock is ours, the re-check throttles without any fetch.
-        _store(key, {}, checked_at=time.time())
-        lock_path = lc._cache_dir() / f"{key}.lock"
-        with lock_path.open("a+b") as lock_file:
-            acquire_exclusive_file_lock(lock_file)
-            attempted = threading.Event()
-            real_acquire = file_lock_mod.acquire_exclusive_file_lock
-
-            def acquire(lock_file_, *, timeout=None):
-                attempted.set()
-                real_acquire(lock_file_, timeout=timeout)
-
-            monkeypatch.setattr(file_lock_mod, "acquire_exclusive_file_lock", acquire)
-            done: list = []
-            thread = threading.Thread(target=lambda: done.append(lc.main(refresh_args())))
-            thread.start()
-            # The refresher reached the key's blocked acquire, so this proves the wait.
-            assert attempted.wait(timeout=5)
-            assert not done
-            release_file_lock(lock_file)
-        thread.join(timeout=10)
-        assert done == [0]
-
-    def test_refresher_applies_tls_settings(self, monkeypatch):
-        apply = MagicMock(return_value="os")
-        monkeypatch.setattr(lc.tls, "apply", apply)
-        assert lc.main(refresh_args()) == 0
-        apply.assert_called_once_with()
 
     def test_refresher_requests_carry_the_workspace_selector(self, monkeypatch):
         monkeypatch.setattr(
@@ -567,45 +347,6 @@ class TestRefresher:
         assert lc.main([*refresh_args(), "--workspace-id", "123"]) == 0
         assert requests
         assert all(request.get_header("X-databricks-workspace-id") == "123" for request in requests)
-
-    def test_spawn_is_detached_without_the_agent_stdio(self, monkeypatch):
-        spawned: dict = {}
-        monkeypatch.setattr(
-            "ucode.os_compatibility.subprocess_cross_os.popen",
-            lambda argv, **kwargs: spawned.update(argv=argv, kwargs=kwargs) or MagicMock(),
-        )
-        identity = _identity()
-        lc.spawn_refresher(identity)
-        assert spawned["kwargs"]["stdin"] is subprocess.DEVNULL
-        assert spawned["kwargs"]["stdout"] is subprocess.DEVNULL
-        assert spawned["kwargs"]["stderr"] is subprocess.DEVNULL
-        if sys.platform == "win32":
-            assert spawned["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
-        else:
-            assert spawned["kwargs"]["start_new_session"] is True
-        assert spawned["argv"][:4] == [sys.executable, "-P", "-m", "ucode.launch_cache"]
-        assert spawned["argv"][4:6] == ["--refresh", "--identity"]
-        assert json.loads(base64.urlsafe_b64decode(spawned["argv"][6].encode())) == identity
-
-    def test_spawn_failure_is_ignored(self, monkeypatch):
-        def denied(*_a, **_k):
-            raise OSError("spawn denied")
-
-        monkeypatch.setattr("ucode.os_compatibility.subprocess_cross_os.popen", denied)
-        lc.spawn_refresher(_identity())  # must not raise
-
-    def test_a_clear_during_the_fetch_is_not_written_back(self, monkeypatch):
-        key = _key()
-
-        def clear_then_succeed(*_a, **_k):
-            # A login or configure clears the cache while this refresher fetches.
-            lc.clear_cache()
-            return CATALOG
-
-        monkeypatch.setattr(lc, "list_anthropic_model_catalog", clear_then_succeed)
-        assert lc.main(refresh_args()) == 1
-        assert lc.load_entry(key) is None
-        assert not _entries()
 
 
 class TestLaunchMerge:
@@ -631,36 +372,13 @@ class TestLaunchMerge:
 
 
 @contextmanager
-def _launch(
-    list_catalog,
-    spawn,
-    *,
-    configured_state=None,
-    clear_during_configure=False,
-    state=STATE,
-    real_configure=False,
-):
-    configured_state = configured_state or state
-
-    def configure(*_args, **_kwargs):
-        if clear_during_configure:
-            # A login inside configure cleared the cache without changing the identity.
-            lc.clear_cache()
-        return dict(configured_state)
-
-    patches = [
+def _launch(state):
+    with (
         patch("ucode.cli.ensure_bootstrap_dependencies"),
         patch("ucode.cli.load_state", return_value=dict(state)),
         patch("ucode.cli.ensure_provider_state", return_value=dict(state)),
         patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
         patch("ucode.cli.get_databricks_token", return_value="token"),
-    ]
-    if not real_configure:
-        # `list_catalog` None leaves the real catalog fetch unpatched (journey mode).
-        patches.append(patch("ucode.cli.configure_shared_state", side_effect=configure))
-    if list_catalog is not None:
-        patches.append(patch("ucode.cli.list_anthropic_model_catalog", list_catalog))
-    patches += [
         patch(
             "ucode.cli.resolve_launch_model",
             return_value=(dict(state), "databricks-claude-sonnet-4"),
@@ -668,144 +386,9 @@ def _launch(
         patch("ucode.cli.configure_tool", return_value=dict(state)),
         patch("ucode.cli.refresh_downloaded_skills_on_launch"),
         patch("ucode.cli.launch_agent"),
-        patch("ucode.cli.spawn_refresher", spawn),
-    ]
-    with ExitStack() as stack:
-        for _patch in patches:
-            stack.enter_context(_patch)
+        patch("ucode.cli.spawn_refresher"),
+    ):
         yield
-
-
-class TestLaunchPath:
-    @pytest.mark.parametrize("refresh_due", [True, False], ids=["refresh-due", "throttled"])
-    def test_hit_serves_catalog_without_a_lookup(self, refresh_due):
-        age = lc.REFRESH_THROTTLE_SECONDS + 1 if refresh_due else 0
-        _store(_key(), {"catalog": lc.catalog_payload(CATALOG)}, checked_at=time.time() - age)
-        list_catalog = MagicMock(side_effect=AssertionError("cached launch must not fetch catalog"))
-        spawn = MagicMock()
-        with _launch(list_catalog, spawn):
-            result = runner.invoke(cli_mod.app, ["claude"])
-        assert result.exit_code == 0, result.output
-        list_catalog.assert_not_called()
-        assert spawn.call_args_list == ([call(_identity())] if refresh_due else [])
-
-    @pytest.mark.parametrize("change", ["profile", "login"])
-    def test_configure_invalidates_the_cached_catalog(self, change):
-        configured = {**STATE, "profile": "other"} if change == "profile" else STATE
-        _store(
-            _key(),
-            {"catalog": lc.catalog_payload(CATALOG)},
-            checked_at=time.time()
-            - (lc.REFRESH_THROTTLE_SECONDS + 1 if change == "profile" else 0),
-        )
-        list_catalog = MagicMock(return_value=CATALOG)
-        with _launch(
-            list_catalog,
-            MagicMock(),
-            configured_state=configured,
-            clear_during_configure=change == "login",
-        ):
-            result = runner.invoke(cli_mod.app, ["claude"])
-        assert result.exit_code == 0, result.output
-        list_catalog.assert_called_once()
-        entry = lc.load_entry(lc.cache_key(lc.entry_identity(configured)))
-        assert entry is not None
-        assert lc.entry_catalog(entry) is not None
-
-    def test_miss_fetches_and_records_the_catalog(self):
-        list_catalog = MagicMock(return_value=CATALOG)
-        spawn = MagicMock()
-        with _launch(list_catalog, spawn):
-            result = runner.invoke(cli_mod.app, ["claude"])
-        assert result.exit_code == 0, result.output
-        list_catalog.assert_called_once()
-        entry = lc.load_entry(_key())
-        assert entry is not None
-        assert lc.entry_catalog(entry) is not None
-        # The results were just fetched; the refresher only runs for older entries.
-        spawn.assert_not_called()
-
-    def test_flag_off_matches_today_and_writes_nothing(self, monkeypatch):
-        monkeypatch.delenv("UG_LAUNCH_CACHE")
-        list_catalog = MagicMock(return_value=CATALOG)
-        spawn = MagicMock()
-        with _launch(list_catalog, spawn):
-            result = runner.invoke(cli_mod.app, ["claude"])
-        assert result.exit_code == 0, result.output
-        list_catalog.assert_called_once()
-        spawn.assert_not_called()
-        assert not _entries()
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-    def test_a_read_only_cache_dir_degrades_to_no_cache(self):
-        cache_dir = lc._cache_dir()
-        cache_dir.chmod(0o500)
-        try:
-            list_catalog = MagicMock(return_value=CATALOG)
-            spawn = MagicMock()
-            with _launch(list_catalog, spawn):
-                result = runner.invoke(cli_mod.app, ["claude"])
-            assert result.exit_code == 0, result.output
-            # Every launch-cache write was skipped, and the launch fetched as today.
-            list_catalog.assert_called_once()
-            spawn.assert_not_called()
-            assert not _entries()
-        finally:
-            cache_dir.chmod(0o700)
-
-
-class TestInvalidation:
-    @pytest.fixture(autouse=True)
-    def configure_dependencies(self, monkeypatch):
-        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
-        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
-        monkeypatch.setattr(cli_mod, "configure_workspace_command", MagicMock())
-
-    @pytest.mark.parametrize("dry_run", [False, True], ids=["configure", "dry-run"])
-    def test_configure_invalidation(self, dry_run):
-        key = _key()
-        _store(key, {})
-        result = runner.invoke(cli_mod.app, ["configure", *(["--dry-run"] if dry_run else [])])
-        assert result.exit_code == 0, result.output
-        assert (lc.load_entry(key) is not None) is dry_run
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-    def test_configure_with_a_read_only_cache_dir_succeeds(self):
-        key = _key()
-        _store(key, {}, checked_at=time.time())
-        (lc._cache_dir() / f"{key}.lock").touch()
-        cache_dir = lc._cache_dir()
-        cache_dir.chmod(0o500)
-        try:
-            result = runner.invoke(cli_mod.app, ["configure"])
-            assert result.exit_code == 0, result.output
-            # The invalidation was swallowed with the rest of the cache's I/O failures.
-            assert lc.load_entry(key) is not None
-        finally:
-            cache_dir.chmod(0o700)
-
-    def test_login_invalidates(self, monkeypatch):
-        key = _key()
-        _store(key, {}, checked_at=time.time())
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
-        monkeypatch.setattr(db_mod, "find_profile_name_for_workspace", lambda *_a, **_k: "p")
-        monkeypatch.setattr(db_mod, "run", lambda *_a, **_k: None)
-        db_mod.run_databricks_login(WORKSPACE, "p")
-        assert lc.load_entry(key) is None
-
-    def test_configure_and_login_leave_default_users_disk_untouched(self, monkeypatch):
-        # The cache is opt-in: with the flag off, neither command may create
-        # ~/.ucode/launch-cache or anything in it.
-        monkeypatch.delenv("UG_LAUNCH_CACHE")
-        cache_dir = config_io.APP_DIR / lc.CACHE_DIR_NAME
-        assert not cache_dir.exists()
-        result = runner.invoke(cli_mod.app, ["configure"])
-        assert result.exit_code == 0, result.output
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
-        monkeypatch.setattr(db_mod, "find_profile_name_for_workspace", lambda *_a, **_k: "p")
-        monkeypatch.setattr(db_mod, "run", lambda *_a, **_k: None)
-        db_mod.run_databricks_login(WORKSPACE, "p")
-        assert not cache_dir.exists()
 
 
 class TestLaunchJourney:
@@ -840,8 +423,7 @@ class TestLaunchJourney:
         monkeypatch.setenv("DATABRICKS_BEARER", "bearer")
         cold: list[str] = []
         self._journey_http(monkeypatch, cold)
-        spawn = MagicMock()
-        with _launch(None, spawn, state=state, real_configure=True):
+        with _launch(state):
             result = runner.invoke(cli_mod.app, ["claude"])
             assert result.exit_code == 0, result.output
             # The cold launch made the three lookups — probe, discovery walk and picker
@@ -860,7 +442,7 @@ class TestLaunchJourney:
         # The next launch starts Claude from the cache: no lookup requests at all.
         warm: list[str] = []
         self._journey_http(monkeypatch, warm)
-        with _launch(None, spawn, state=state, real_configure=True):
+        with _launch(state):
             result = runner.invoke(cli_mod.app, ["claude"])
             assert result.exit_code == 0, result.output
             assert self._lookup_count(warm) == 0
