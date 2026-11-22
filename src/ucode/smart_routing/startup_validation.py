@@ -24,6 +24,7 @@ from ucode.smart_routing import routing
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
 # urllib applies the timeout per socket operation, so a result past this deadline counts as a timeout.
 VALIDATION_TIMEOUT_SECONDS = 4
+IS_SUPPORTED_FIELD = "is_supported"
 
 
 def result_path(session_controls: Path) -> Path:
@@ -86,6 +87,35 @@ def _validate_route_options(
     return payload, reason
 
 
+def validate(
+    workspace: str,
+    token: str,
+    route_options: list[tuple[str, str]],
+    *,
+    router_name: str,
+    provider: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the validation result, or None when the check fails or misses its deadline."""
+    body = {
+        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
+        "route_selector": {"router_name": router_name},
+    }
+    started = time.monotonic()
+    try:
+        payload, reason = _validate_route_options(workspace, token, body, provider)
+    except Exception:
+        return None
+    if reason or not isinstance(payload, dict):
+        return None
+    if payload.get(IS_SUPPORTED_FIELD) is not False:
+        return {IS_SUPPORTED_FIELD: True}
+    return {
+        IS_SUPPORTED_FIELD: False,
+        **_unsupported_details(payload, router_name),
+        "validation_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
 def start(
     workspace: str,
     token: str,
@@ -95,27 +125,16 @@ def start(
     session_controls: Path,
     provider: str | None = None,
 ) -> None:
-    body = {
-        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
-        "route_selector": {"router_name": router_name},
-    }
-
     def check() -> None:
-        started = time.monotonic()
-        try:
-            payload, reason = _validate_route_options(workspace, token, body, provider)
-        except Exception as exc:
-            payload, reason = None, str(exc)
-        unsupported = (
-            not reason and isinstance(payload, dict) and payload.get("is_supported") is False
+        validation = validate(
+            workspace, token, route_options, router_name=router_name, provider=provider
         )
         result: dict[str, Any] = {"routing_disabled": False}
-        if unsupported:
+        if validation and validation[IS_SUPPORTED_FIELD] is False:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True
-                result.update(_unsupported_details(payload, router_name))
-                result["validation_ms"] = round((time.monotonic() - started) * 1000)
+                result.update({k: v for k, v in validation.items() if k != IS_SUPPORTED_FIELD})
         with suppress(OSError, RuntimeError):
             atomic_write_json(result_path(session_controls), result)
 

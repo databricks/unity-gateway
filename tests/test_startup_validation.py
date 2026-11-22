@@ -203,3 +203,30 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
         ],
         "available_route_options": [{"model": "claude-sonnet-5-5", "harness": "claude_code"}],
     }
+
+
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        (({"is_supported": True}, None), {"is_supported": True}),
+        (({"is_supported": False}, None), {"is_supported": False}),
+        ((None, "HTTP 503"), None),
+        (RuntimeError("network down"), None),
+    ],
+)
+def test_validate_returns_the_result_or_none_on_failure(response, expected, monkeypatch):
+    monkeypatch.setattr(
+        validation,
+        "_http_post_json",
+        Mock(side_effect=response)
+        if isinstance(response, Exception)
+        else Mock(return_value=response),
+    )
+    result = validation.validate(
+        "https://example.com", "test-token", [("m", "claude")], router_name="stable"
+    )
+    if result and result["is_supported"] is False:
+        assert isinstance(result.pop("validation_ms"), int)
+        assert result["router_name"] == "stable"
+        result = {"is_supported": False}
+    assert result == expected
