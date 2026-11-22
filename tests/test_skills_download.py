@@ -1623,3 +1623,27 @@ class TestRefreshOnLaunch:
         assert skills_state.last_update_check() is not None
         assert any("Checking Unity Catalog" in note for note in notes)
         assert any("Updated 1" in m for m in messages)
+
+
+def test_bundle_spinner_tracks_completed_fetches(monkeypatch):
+    from contextlib import contextmanager
+
+    messages = []
+    current = []
+
+    @contextmanager
+    def capture_spinner(message):
+        current.append(message)
+        messages.append(message())
+        yield
+        messages.append(message())
+
+    def fetch(*args):
+        assert current, "spinner must be active while downloading"
+        return {"SKILL.md": b"skill"}, None
+
+    monkeypatch.setattr(sd, "spinner", capture_spinner)
+    monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+    result = sd._fetch_bundles(WS, "token", [ref("triage")], label="Fetching workspace skills")
+    assert len(result) == 1
+    assert messages == ["Fetching workspace skills... (0/1)", "Fetching workspace skills... (1/1)"]
