@@ -34,6 +34,11 @@ per-model aliases, never persisted — plus managed-denial narrowing, custom-opt
 fallbacks, and the empty-catalog fallback to an unrouted launch. The static row's live
 `/model` rendering on a personal launch is not covered by an integration journey.
 
+CUJs 4 and 7 share the terminal screen's reverse-video label reader. Component coverage
+in `../test_integration_terminal_screen.py` verifies exact focused-label membership;
+`../test_agent_claude.py` checks exact-default priority over context-suffixed rows.
+These checks do not run the live workspace journeys.
+
 Comment-triggered `/integration-test` runs require authorization and a successful shared
 Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
 that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner

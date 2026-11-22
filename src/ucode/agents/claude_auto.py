@@ -46,6 +46,13 @@ def auto_variant(row: dict) -> str:
     return AUTO_PREFIX + digest + "-" + (model_behavior(row) or row["model"])
 
 
+def _preferred_picker_row(rows: list[dict], preferred: str | None) -> dict:
+    for row in rows:
+        if preferred in (row["model"], row.get("autoModel") or auto_variant(row)):
+            return row
+    return next((row for row in rows if row["model"].removesuffix("[1m]") == preferred), rows[0])
+
+
 def auto_model_target(alias: str) -> str | None:
     """Recover a launch-only alias only when its complete identity verifies.
 
@@ -240,16 +247,7 @@ def add_picker_entry(
         preferred = preferred_model or (
             env_values.get("ANTHROPIC_MODEL") if isinstance(env_values, dict) else None
         )
-        default_row = next(
-            (
-                row
-                for row in available
-                if preferred
-                and preferred
-                in (row["model"], auto_variant(row), row["model"].removesuffix("[1m]"))
-            ),
-            available[0],
-        )
+        default_row = _preferred_picker_row(available, preferred)
         # Auto leads UG's rows; Claude always renders its native Default row first.
         result["modelPicker"]["options"] = [
             {
@@ -420,15 +418,7 @@ def picker_config(
     env = (settings or {}).get("env", {})
     configured_default = env.get("ANTHROPIC_MODEL") if isinstance(env, dict) else None
     preferred = default_model or configured_default
-    default = next(
-        (
-            row
-            for row in rows
-            if preferred
-            and preferred in (row["model"], row["autoModel"], row["model"].removesuffix("[1m]"))
-        ),
-        rows[0],
-    )
+    default = _preferred_picker_row(rows, preferred)
     apply_auto_context_windows(launch_settings, managed_settings, rows, catalog)
     return {
         "model": default["autoModel"],

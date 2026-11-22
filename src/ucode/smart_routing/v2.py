@@ -211,14 +211,14 @@ def _personal_picker_options(catalog: AnthropicModelCatalog) -> list[dict]:
     Family defaults may already carry a ``[1m]`` hint while the discovered catalog
     lists the same model raw; one row per model keeps the hinted id.
     """
-    from ucode.agents.claude import _picker_option
+    from ucode.agents.claude import model_picker_option
 
     rows: dict[str, dict] = {}
     order: list[str] = []
     for model in catalog.model_ids:
         hinted = maybe_add_gpt_1m_suffix(model)
         base = hinted.removesuffix("[1m]")
-        option = _picker_option(
+        option = model_picker_option(
             hinted,
             catalog.model_id_to_display_name.get(model) or model_picker_label(model),
             catalog.model_id_to_description.get(model),
@@ -941,10 +941,8 @@ def launch_claude(
                 )
                 auto_settings = generated if picker_is_configured(generated) else None
                 if auto_settings is None:
-                    # No permitted target can carry the static row; keep the native
-                    # custom-model slot for this launch instead.
-                    settings["modelPicker"]["replaceBuiltInOptions"] = False
-                    generated = add_picker_entry({**settings, "deniedModels": denied_models})
+                    # Keep native model selection available when Auto cannot be enabled.
+                    generated["modelPicker"]["replaceBuiltInOptions"] = False
             else:
                 settings.setdefault(
                     "modelPicker",

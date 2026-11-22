@@ -428,25 +428,16 @@ class TestCujAutoModelPicker(BaseCujTest):
                 )
                 tui.submit("/model auto")
 
-                def main_model_focused(label):
-                    # Claude draws the focused Select option in reverse video.
-                    return any(
-                        "".join(
-                            cell.data for _, cell in sorted(line.items()) if cell.reverse
-                        ).strip()
-                        == label
-                        for line in tui.screen.buffer.values()
-                    )
-
                 tui.wait_for(
-                    lambda s: "Auto mode: Choose" in s and main_model_focused(label),
+                    lambda s: "Auto mode: Choose" in s and label in tui.screen.reverse_video_lines,
                     "the Auto selector focused on the current main model",
                 )
                 menu = tui.visible.split("Subagents will be smart routed.", 1)[1].splitlines()
                 assert label in menu[1] and "▴" not in menu[1], tui.visible
                 tui.send("\x1b[B", "focus " + alternate_label)
                 tui.wait_for(
-                    lambda _: main_model_focused(alternate_label), "the alternate main model"
+                    lambda _: alternate_label in tui.screen.reverse_video_lines,
+                    "the alternate main model",
                 )
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
@@ -464,11 +455,17 @@ class TestCujAutoModelPicker(BaseCujTest):
                 check_main_model_turn(tui)
                 tui.submit("/model auto")
                 tui.wait_for(
-                    lambda s: "Auto mode: Choose" in s and main_model_focused(alternate_label),
+                    lambda s: (
+                        "Auto mode: Choose" in s
+                        and alternate_label in tui.screen.reverse_video_lines
+                    ),
                     "the current Auto main model",
                 )
                 tui.send("\x1b[B", "focus another main model without selecting it")
-                tui.wait_for(lambda s: main_model_focused(neighbor_label), "another model's focus")
+                tui.wait_for(
+                    lambda s: neighbor_label in tui.screen.reverse_video_lines,
+                    "another model's focus",
+                )
                 tui.send("\x1b", "dismiss the chooser without saving")
                 tui.wait_for(
                     lambda s: (
@@ -478,7 +475,10 @@ class TestCujAutoModelPicker(BaseCujTest):
                     "the unchanged model after Escape",
                 )
                 tui.submit("/model auto")
-                tui.wait_for(lambda s: main_model_focused(alternate_label), "the unchanged model")
+                tui.wait_for(
+                    lambda s: alternate_label in tui.screen.reverse_video_lines,
+                    "the unchanged model",
+                )
                 tui.send("\r", "save the unchanged Auto main model")
                 tui.wait_for(
                     lambda s: (

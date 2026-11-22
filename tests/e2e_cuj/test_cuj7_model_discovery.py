@@ -264,7 +264,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         catalog = session.claude_gateway_models()
         model_ids = claude_system_model_ids(catalog)
         labels = {
-            model: entry["display_name"].removeprefix("Claude ")
+            model: (entry.get("display_name") or model).removeprefix("Claude ")
             for model, entry in zip(model_ids, catalog, strict=True)
         }
         session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_AUTO_V0_CLAUDE_ONLY
@@ -284,26 +284,19 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                     lambda screen: "Auto mode: Choose" in screen, "Auto main-model chooser"
                 )
 
-                def focused():
-                    return tuple(
-                        "".join(
-                            cell.data for _, cell in sorted(line.items()) if cell.reverse
-                        ).strip()
-                        for line in tui.screen.buffer.values()
-                        if any(cell.reverse for cell in line.values())
-                    )
-
                 for _ in range(len(model_ids) + 1):
-                    before = focused()
+                    before = tui.screen.reverse_video_lines
                     if label in before:
                         break
                     tui.send("\x1b[B", f"focus {label}")
                     tui.wait_for(
-                        lambda _, before=before: focused() != before,
+                        lambda _, before=before: tui.screen.reverse_video_lines != before,
                         "next Auto main-model option",
                         stable_for=0.05,
                     )
-                assert label in focused(), f"Auto chooser did not offer {model}: {tui.visible}"
+                assert label in tui.screen.reverse_video_lines, (
+                    f"Auto chooser did not offer {model}: {tui.visible}"
+                )
                 tui.send("\r", f"save {label} as the Auto main model")
                 tui.wait_for(
                     lambda screen, label=label: (

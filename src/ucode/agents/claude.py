@@ -855,7 +855,7 @@ def render_overlay(
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
             "options": [
-                _picker_option(
+                model_picker_option(
                     maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model) or model_picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
@@ -886,7 +886,7 @@ _CLAUDE_PICKER_LABEL_RE = re.compile(
 )
 
 
-def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
+def model_picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
     option = {"model": model, "label": label}
     if description:
         option["description"] = description

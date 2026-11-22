@@ -639,20 +639,22 @@ test('direct /model auto keeps the entry model without a cache warning', {option
   expect(rows).toEqual([]);
 });
 
-test('personal static Auto keeps a bare current model when the picker adds a context suffix', {
-  options: {...OPTIONS, autoPicker: JSON.stringify({...AUTO, models: [AUTO.models[0],
-    {...AUTO.models[1], model: OTHER + '[1m]', autoModel: OTHER_ALIAS + '[1m]'},
-  ]})},
-}, async ($, on) => {
-  const session = staticCatalogSession($, on, OTHER);
-  const sent = captureSteps(on);
-  await $.session.start(START);
-  await $.command.run({command:'model', args:'auto'});
-  const picker = await session.picker();
-  const select = await picker.find({type:'Select'});
-  expect(select.props.value).toBe(OTHER + '[1m]');
-  await picker.unmount();
-  await session.choose(OTHER + '[1m]');
-  await step($, DEFAULT_ALIAS);
-  expect(sent).toEqual([OTHER + '[1m]']);
-});
+for (const current of [OTHER, OTHER_ALIAS]) {
+  test(`personal static Auto keeps ${current} when native strips the context suffix`, {
+    options: {...OPTIONS, autoPicker: JSON.stringify({...AUTO, models: [AUTO.models[0],
+      {...AUTO.models[1], model: OTHER + '[1m]', autoModel: OTHER_ALIAS + '[1m]'},
+    ]})},
+  }, async ($, on) => {
+    const session = staticCatalogSession($, on, current);
+    const sent = captureSteps(on);
+    await $.session.start(START);
+    await $.command.run({command:'model', args:'auto'});
+    const picker = await session.picker();
+    const select = await picker.find({type:'Select'});
+    expect(select.props.value).toBe(OTHER + '[1m]');
+    await picker.unmount();
+    await session.choose(OTHER + '[1m]');
+    await step($, DEFAULT_ALIAS);
+    expect(sent).toEqual([OTHER + '[1m]']);
+  });
+}

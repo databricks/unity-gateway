@@ -257,7 +257,7 @@ and start model entirely in the launch-only settings; nothing is written to
 ucode settings or the OS managed file. Foreign non-replacing pickers, a picker
 already present in the launch settings, and provider launches keep the native
 custom-model option instead. When no permitted model can carry the static row,
-the launch falls back to the native custom option; an empty or unreachable model
+the launch keeps native model selection available without Auto; an empty or unreachable model
 catalog warns and fails routing setup so the launch continues without Auto or
 smart routing. Managed denials still narrow the picker rows, aliases and their
 real targets. Managed settings that define `modelOverrides` or `availableModels`

@@ -1263,6 +1263,13 @@ model catalog warns and fails routing setup so the launch continues without Auto
 smart routing while non-Auto launches keep their existing error. These are component
 checks; the live personal `/model` TUI experience is not executed here.
 
+`test_agent_claude.py` checks that both static Auto and the launch picker prefer an
+exact default over an earlier `[1m]` row, retaining suffix fallback and explicit alias
+selection. Native mod tests also cover a saved Auto alias whose context suffix was
+stripped by Claude. `test_integration_terminal_screen.py` checks that the shared
+reverse-video reader distinguishes complete labels such as `GPT 6.2` and `GPT 6.2 Sol`.
+These component checks do not establish a live CUJ pass.
+
 `test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.

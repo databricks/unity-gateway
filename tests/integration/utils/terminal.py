@@ -146,6 +146,15 @@ class TerminalScreen(pyte.Screen):
         super().__init__(columns, lines)
         self.send = send
 
+    @property
+    def reverse_video_lines(self) -> tuple[str, ...]:
+        """Claude's Select renders the focused label in reverse video."""
+        return tuple(
+            "".join(cell.data for _, cell in sorted(line.items()) if cell.reverse).strip()
+            for line in self.buffer.values()
+            if any(cell.reverse for cell in line.values())
+        )
+
     def write_process_input(self, data):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.

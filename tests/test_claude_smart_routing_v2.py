@@ -1771,8 +1771,8 @@ class TestPersonalStaticAutoLaunch:
         picker = captured["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True
         # The static Auto row leads; family rows carry [1m] hints and dedupe raw ids.
-        assert [row["model"] for row in picker["options"]] == [
-            picker["options"][0]["model"],
+        assert is_auto_model(picker["options"][0]["model"])
+        assert [row["model"] for row in picker["options"][1:]] == [
             opus_row,
             sonnet_row,
             gpt_row,
@@ -1963,7 +1963,8 @@ class TestPersonalStaticAutoLaunch:
         options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
         assert "autoPicker" not in options
         assert captured["modelPicker"] == {"replaceBuiltInOptions": False, "options": []}
-        assert "Auto is unavailable" in capsys.readouterr().out + capsys.readouterr().err
+        output = capsys.readouterr()
+        assert "Auto is unavailable" in output.out + output.err
 
 
 class TestSubagentRouting:
