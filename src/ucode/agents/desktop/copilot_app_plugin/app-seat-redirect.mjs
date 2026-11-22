@@ -15,6 +15,9 @@ import { withSessionId } from "./ug-plugin.mjs";
 // to the session only; it isn't kept across an app restart, so every start that doesn't redirect
 // clears it instead, which makes a stale port from an earlier run harmless.
 export const SESSIONS_FILE = "seat-relay-sessions.json";
+// Every request the relay served: route, method, path and status, never a header value or body.
+export const REQUESTS_FILE = "seat-relay-requests.json";
+export const REQUEST_LOG_LIMIT = 200;
 export const SANDBOX_ENV = "COPILOT_EXTENSION_SANDBOXED";
 export const APPLY_TIMEOUT_MS = 5_000;
 const PRODUCT_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[^\s(),;/]+$/;
@@ -102,6 +105,7 @@ export function createSeatRedirect(
     env = process.env,
     now = Date.now,
     record,
+    recordRequest,
     applyTimeoutMs = APPLY_TIMEOUT_MS,
   } = {},
 ) {
@@ -115,6 +119,8 @@ export function createSeatRedirect(
   let lastGatewayError = null;
   let dirty = false;
   const note = record ?? createOutcomeLog(join(stateDir, SESSIONS_FILE));
+  const noteRequest =
+    recordRequest ?? createOutcomeLog(join(stateDir, REQUESTS_FILE), { limit: REQUEST_LOG_LIMIT });
 
   const copilotHost = createCopilotHostResolver({
     askGitHub: relay.askGitHub !== false,
@@ -135,6 +141,7 @@ export function createSeatRedirect(
     hintFor: (error) => (error?.code === "ENOENT" ? config.missingUgHint : config.loginHint),
     log,
     observe: (event) => {
+      noteRequest({ time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...event });
       if (event.route !== "gateway" || !INFERENCE_CALLS.has(`${event.method} ${event.path}`)) return;
       relayedCalls++;
       lastGatewayError = event.error ?? (event.status >= 400 ? String(event.status) : null);

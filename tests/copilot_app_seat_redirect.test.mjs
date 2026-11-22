@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { after, before, test } from "node:test";
 
 import {
+  REQUESTS_FILE,
   REVERT_TIMEOUT_MS,
   SANDBOX_ENV,
   SESSIONS_FILE,
@@ -67,6 +68,7 @@ function fakeSession({ update, status = { host: "github.com", copilotPlan: "busi
 
 async function start(t, overrides = {}, options = {}) {
   const entries = [];
+  const requests = [];
   const logged = [];
   const token = async () => "dbx";
   token.invalidate = () => {};
@@ -77,12 +79,13 @@ async function start(t, overrides = {}, options = {}) {
     env: {},
     now: () => 1_700_000_000_000,
     record: (entry) => entries.push(entry),
+    recordRequest: (entry) => requests.push(entry),
     ...options,
   });
   t.after(() => redirect?.close());
   gateway.requests.length = 0;
   gateway.status = 200;
-  return { redirect, entries, logged };
+  return { redirect, entries, requests, logged };
 }
 
 const RUNTIME_UA = "copilot/1.0.106-8 term/unknown client/github-app (darwin; arm64)";
@@ -214,6 +217,20 @@ test("after a turn, the session's built-in and relayed call counts are recorded 
   ]);
 });
 
+test("every request the relay serves is recorded without values", async (t) => {
+  const { redirect, requests } = await start(t);
+  await redirect.listen();
+  await redirect.apply(fakeSession());
+  await infer(redirect.url);
+  await fetch(`${redirect.url}/meta`);
+
+  assert.deepEqual(requests, [
+    { time: "2023-11-14T22:13:20.000Z", sessionId: "session-1", route: "gateway", method: "POST", path: "/responses", status: 200 },
+    { time: "2023-11-14T22:13:20.000Z", sessionId: "session-1", route: "rejected", method: "GET", path: "/meta", status: 401 },
+  ]);
+  assert.equal(JSON.stringify(requests).includes("gho_"), false);
+});
+
 test("a session without a turn, such as a warm-up, records nothing", async (t) => {
   const { redirect, entries } = await start(t);
   await redirect.listen();
@@ -253,7 +270,7 @@ test("an app that never answers the redirect is unavailable within the bound", a
 
 test("the sessions file is written in the state dir by default", async (t) => {
   const stateDir = mkdtempSync(join(tmpdir(), "ug-seat-redirect-"));
-  const { redirect } = await start(t, {}, { record: undefined, stateDir });
+  const { redirect } = await start(t, {}, { record: undefined, recordRequest: undefined, stateDir });
   await redirect.listen();
   await redirect.apply(fakeSession());
   redirect.handle({ type: "model.call_start", data: { model: "gpt-5" } });
@@ -263,6 +280,11 @@ test("the sessions file is written in the state dir by default", async (t) => {
   const [entry] = JSON.parse(readFileSync(join(stateDir, SESSIONS_FILE), "utf8"));
   assert.equal(entry.builtInCalls, 1);
   assert.equal(entry.redirect, "applied");
+  await infer(redirect.url);
+  await delay(100);
+  const [request] = JSON.parse(readFileSync(join(stateDir, REQUESTS_FILE), "utf8"));
+  assert.equal(request.route, "gateway");
+  assert.equal(request.path, "/responses");
 });
 
 test("clearRedirect swallows a session that refuses", async () => {

@@ -270,6 +270,7 @@ _EXTENSION_STATE_FILES = (
     "app-restart.log",
     "tracing-exports.json",
     "seat-relay-sessions.json",
+    "seat-relay-requests.json",
 )
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
