@@ -37,7 +37,11 @@ fallbacks, and the empty-catalog fallback to an unrouted launch. The static row'
 CUJs 4 and 7 share the terminal screen's reverse-video label reader. Component coverage
 in `../test_integration_terminal_screen.py` verifies exact focused-label membership;
 `../test_agent_claude.py` checks exact-default priority over context-suffixed rows.
-These checks do not run the live workspace journeys.
+Native mod tests restore a bare saved main-model preference against a `[1m]` catalog
+row, prefer an exact row when both exist, and keep the default for absent or withdrawn
+preferences. These checks do not run the live workspace journeys.
+The empty-catalog caller test in `../test_claude_smart_routing_v2.py` checks ordinary
+launch fallback with routing disabled and saved settings preserved.
 
 Comment-triggered `/integration-test` runs require authorization and a successful shared
 Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies

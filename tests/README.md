@@ -1262,11 +1262,15 @@ back to a plain non-replacing picker without Auto, and that an empty or unreacha
 model catalog warns and fails routing setup so the launch continues without Auto or
 smart routing while non-Auto launches keep their existing error. These are component
 checks; the live personal `/model` TUI experience is not executed here.
+The caller-level empty-catalog test also verifies one ordinary launch with routing
+disabled in both the process environment and launch settings, without changing saved settings.
 
 `test_agent_claude.py` checks that both static Auto and the launch picker prefer an
 exact default over an earlier `[1m]` row, retaining suffix fallback and explicit alias
 selection. Native mod tests also cover a saved Auto alias whose context suffix was
-stripped by Claude. `test_integration_terminal_screen.py` checks that the shared
+stripped by Claude, and restore a bare saved main-model preference when the catalog
+adds `[1m]`. Exact saved IDs take precedence over suffix matches; missing or withdrawn
+preferences use the default. `test_integration_terminal_screen.py` checks that the shared
 reverse-video reader distinguishes complete labels such as `GPT 6.2` and `GPT 6.2 Sol`.
 These component checks do not establish a live CUJ pass.
 

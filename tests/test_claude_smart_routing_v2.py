@@ -1839,6 +1839,36 @@ class TestPersonalStaticAutoLaunch:
         assert "HTTP 503" in output.out + output.err
         assert not captured
 
+    def test_empty_catalog_launches_normally_with_routing_disabled(self, tmp_path, monkeypatch):
+        routed, _ = self._patch_launch(monkeypatch, tmp_path)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        saved = {"env": {v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}}
+        claude.CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps(saved))
+        launches = []
+
+        # Capture the process boundary; run routing setup and ordinary argv composition.
+        def capture_launch(argv):
+            settings = json.loads(argv[argv.index("--settings") + 1])
+            launches.append(settings)
+            for key in (v2.ENABLE_SMART_ROUTING_ENV_VAR, v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR):
+                assert os.environ[key] == settings["env"][key] == "0"
+            assert settings["env"][claude.FIRST_PROMPT_SOCKET_ENV] == ""
+            assert "--plugin-dir" not in argv
+            assert "pluginConfigs" not in settings
+
+        monkeypatch.setattr(claude, "exec_or_spawn", capture_launch)
+        claude.launch(
+            {"workspace": "https://example.com"},
+            [],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert len(launches) == 1
+        assert not routed
+        assert json.loads(claude.CLAUDE_SETTINGS_PATH.read_text()) == saved
+
     def test_non_auto_empty_catalog_keeps_its_error(self, tmp_path, monkeypatch, capsys):
         monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)

@@ -57,13 +57,19 @@ async function entryMainModel($: EngineInterface, auto: AutoPicker): Promise<str
   return equivalent?.model ?? await mainModel($, auto);
 }
 
+function savedMainModel(auto: AutoPicker, saved: unknown): string {
+  const row = auto.models.find(row => row.model === saved)
+    ?? (typeof saved === 'string' ? auto.models.find(row => matchesAutoModel(row.model, saved)) : undefined);
+  return row?.model ?? auto.mainModel;
+}
+
 async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
   const awaitModel = await selectedModel($, auto);
   if (isStaticAuto(auto, awaitModel) && auto.variant) return auto.variant;
   const active = auto.models.find((row) => row.autoModel === awaitModel);
   if (active) return active.model;
   const saved = await $.store.get(auto.storeKey);
-  return auto.models.find((row) => row.model === saved)?.model ?? auto.mainModel;
+  return savedMainModel(auto, saved);
 }
 
 async function autoSelected($: EngineInterface, auto: AutoPicker): Promise<boolean> {
@@ -91,7 +97,7 @@ async function initStaticVariant($: EngineInterface, auto: AutoPicker): Promise<
   }
   if (auto.variant) return;
   const saved = auto.preferSaved ? await $.store.get(auto.storeKey) : undefined;
-  auto.variant = auto.models.find(row => row.model === saved)?.model ?? auto.mainModel;
+  auto.variant = savedMainModel(auto, saved);
 }
 
 type RoutingSyncState = {model?: string; failedModel?: string};
