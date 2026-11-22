@@ -2,7 +2,10 @@
 
 Startup compatibility validation has component coverage in `../test_startup_validation.py`,
 the smart-routing launch tests, and the native Claude mod suite. They control the validation
-response or transport; no live Gateway routes:validate or classifier journey is claimed.
+response or transport. CUJ 4 adds one live supported journey: with `UG_STARTUP_ROUTE_VALIDATION=1`
+and the published model list, ug sends one recorded routes:validate request that the Gateway
+answers with HTTP 200 and `is_supported: true`, and the band and hint row show ON without the
+unsupported warning. No live unsupported or classifier journey is claimed.
 
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,

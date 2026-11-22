@@ -16,6 +16,8 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from ucode.constants import UG_STARTUP_ROUTE_VALIDATION_ENV_VAR
+from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
@@ -799,6 +801,40 @@ class TestCujSmartRouting(BaseCujTest):
                         f"smart router {state} left in the prompt hint row",
                     )
                 tui.exit_normally()
+
+    def test_supported_model_list_passes_startup_route_validation_and_routing_stays_on(self, cuj):
+        """Scenario: launch Claude with startup route validation on and the published model list.
+
+        Expected: ug sends one routes:validate request with the session's Claude route options,
+        the Gateway answers HTTP 200 with is_supported true, and the band shows ON without the
+        unsupported warning while the prompt hint row keeps smart router ON.
+        """
+        with smart_router_preset(cuj, SUBAGENT_ORCH_V0_CLAUDE_ONLY) as (session, _, recorder, _):
+            session.env[UG_STARTUP_ROUTE_VALIDATION_ENV_VAR] = "1"
+            try:
+                checkpoint = recorder.checkpoint()
+                recorder.prepare_launch()
+                with Terminal(session, "startup-route-validation-supported", [CLAUDE]) as tui:
+                    tui.boot(timeout=150)
+                    tui.wait_for(
+                        lambda _: (
+                            _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                            and _smart_router_hint_shown(tui, enabled=True)
+                        ),
+                        "the ON Smart Router band and smart router ON in the prompt hint row",
+                    )
+                    assert not any("isn't supported" in line for line in tui.screen.display)
+                    tui.exit_normally()
+            finally:
+                session.env.pop(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, None)
+            [request] = [
+                r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
+            ]
+            options = request.payload["route_options"]
+            assert options and {option["harness"] for option in options} == {CLAUDE}
+            response = recorder.response_for(request)
+            assert response.status_code == 200
+            assert response.payload["is_supported"] is True
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(
