@@ -1540,12 +1540,18 @@ def run_seat_runtime(
         # The runtime names VS Code in its own User-Agent.
         if name.casefold() != "user-agent"
     }
-    server, cache, client, api_url = start_seat_relay(
-        state,
-        provider_service,
-        headers=headers,
-        sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
-    )
+    sign_in_hint = "Run `ug configure --agents copilot`, then restart VS Code."
+    try:
+        # The relay mints its first Databricks token here; a lapsed login or a missing CLI must
+        # end in a hint in VS Code's log, not a traceback.
+        server, cache, client, api_url = start_seat_relay(
+            state, provider_service, headers=headers, sign_in_hint=sign_in_hint
+        )
+    except (RuntimeError, OSError) as exc:
+        sys.stderr.write(
+            f"[ucode] Couldn't start the seat relay for VS Code's Copilot: {exc}. {sign_in_hint}\n"
+        )
+        return 1
     try:
         env = seat_relay_env(
             api_url, mcp_host=copilot_relay.cached_copilot_api_host(), keep_inherited_otel=True

@@ -18,7 +18,11 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import copilot, model_sources
-from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
+from ucode.databricks import (
+    AnthropicModelCatalog,
+    DatabricksLoginRequiredError,
+    ModelServiceEntry,
+)
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -2396,3 +2400,33 @@ class TestSeatRelay:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "Couldn't start the Copilot runtime /missing" in captured.err
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            DatabricksLoginRequiredError("no cached credentials for https://ws.example"),
+            FileNotFoundError("databricks"),
+        ],
+        ids=["lapsed-login", "missing-cli"],
+    )
+    def test_vscode_runtime_with_no_databricks_token_prints_the_hint_instead_of_a_traceback(
+        self, tmp_path, monkeypatch, capsys, failure
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+
+        def mint(state, workspace, **_):
+            raise failure
+
+        monkeypatch.setattr(copilot, "launch_token", mint)
+        started = []
+        monkeypatch.setattr(
+            copilot.subprocess_cross_os, "popen", lambda argv, *, env: started.append(argv)
+        )
+
+        assert copilot.run_seat_runtime(dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", []) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Couldn't start the seat relay for VS Code's Copilot" in captured.err
+        assert str(failure) in captured.err
+        assert "Run `ug configure --agents copilot`, then restart VS Code." in captured.err
+        assert started == []
