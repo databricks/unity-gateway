@@ -8,6 +8,7 @@ from pathlib import Path
 
 __all__ = [
     "is_admin",
+    "process_running",
     "user_profiles_dir",
     "windows_program_data_dir",
     "windows_program_files_dir",
@@ -23,6 +24,38 @@ def is_admin() -> bool:
 
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     return os.geteuid() == 0
+
+
+def process_running(pid: int) -> bool:
+    """Whether a process with ``pid`` exists. ``os.kill(pid, 0)`` would terminate it on Windows."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
+        try:
+            code = wintypes.DWORD()
+            return (
+                bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def user_profiles_dir() -> Path | None:

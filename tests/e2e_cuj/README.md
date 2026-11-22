@@ -1,8 +1,9 @@
 # Catalog discovery CUJ
 
-The dedicated workspace must already publish a CodingAgentConfig enabling both agents
-with `ug_e2e.models` as their model source. Claude is the default agent; its default and
-Sonnet-family model are `claude_sonnet`, and Codex defaults to `gpt_luna`. Smart routing
+The dedicated workspace must already publish a CodingAgentConfig enabling Claude Code, Codex and
+Copilot CLI with `ug_e2e.models` as their model source. Claude is the default agent; its default
+and Sonnet-family model are `claude_sonnet`, Codex defaults to `gpt_luna`, and Copilot defaults to
+`claude_sonnet`. Smart routing
 and tracing are disabled. Tests neither provision nor validate fixture definitions.
 
 | Service under `ug_e2e.models` | Claude Code | Codex |
@@ -151,6 +152,15 @@ native parent turn matching that prompt, a nonempty answer, the expected provide
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
 
+CUJ2's Copilot CLI entry uses the Anthropic MPS, `ug_e2e.providers.anthropic`, with VS Code
+integration on. Its headless file task, with no `--model`, must start on `claude-haiku-5-5`,
+send the provider header on every Messages request that carries the task, and get a non-empty
+HTTP 200 for each.
+
+CUJ3's Copilot case reads Copilot's live registry: exactly the four Claude-visible scoped services,
+under their full names on the Anthropic route (Copilot picks wires by model name, and these names
+fall back to it), with no Gemini and no decoys. Its TUI task completes on `claude_sonnet`.
+
 A separate CUJ2 Claude TUI case checks default Model Provider Service support with the
 first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
 both route-selection requests, plus completed parent and child turns.
@@ -181,13 +191,14 @@ The CUJ derives routing and orchestration assertions from each agent's resolved 
 An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns
-to Auto and verifies both show ON. It observes the chosen main-model row before
-pressing Enter to save in the compact numbered chooser, with the current model first,
-and checks that the save notice names the selected model. The managed replacement
+to Auto and verifies both show ON. It selects the first available alternative with Down and Enter,
+and checks that saving updates
+the prompt hint without adding a transcript notice. The managed replacement
 picker contains one Auto row; only regular model rows supply alternate inference targets.
 The journey completes a real main-model file task with paired gateway request/response
-evidence, saves the unchanged main model without a cache warning after that task, and
-requires byte-identical managed settings across model selections. Launch may retarget only
+evidence, dismisses a pending choice with Escape, and reopens on the saved model.
+Saving that same model skips the cache warning. After restart, it serves a second file task.
+Managed settings stay byte-identical across model selections. Launch may retarget only
 the gateway URL and auth helper host to the recording proxy; all other configured settings
 must remain identical. The existing main/subagent journey also includes Auto
 and verifies its correlated routing decision, real model IDs, and completed answers.
@@ -269,3 +280,14 @@ keeps its aliases in launch settings. It saves an Auto selection on the unmanage
 workspace, completes a main-model file task, then restarts with routing disabled.
 The restart must complete another task on the same real model with paired successful
 HTTP evidence and no router request. It never seeds Auto aliases in shared settings.
+
+
+CUJ7 includes independent Claude and Codex saved-provider smart-routing journeys. Its existing
+before/after checks require no published CodingAgentConfig. Each journey configures its agent
+with the shared Anthropic or OpenAI provider, then launches the real TUI with only
+`--enable-smart-routing`. A routed native child reads a hidden local file; both child and parent
+must return its value. Recorded requests require the saved provider header on routing and
+inference, successful paired responses, and a selected offered model applied to the child.
+These fixtures have small catalogs. The allow-all Bedrock startup and oversized-catalog cases
+remain separate staging validation and are not established by these CUJs.
+CI pins Codex 0.165.0 for CUJ7, matching CUJ4's routing-capable version.

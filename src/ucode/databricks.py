@@ -4,7 +4,9 @@ discovery, Unity Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextvars
 import functools
+import io
 import json
 import logging
 import logging.handlers
@@ -27,22 +29,31 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from http.client import HTTPException
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from ucode import metrics
+if TYPE_CHECKING:
+    import httpx
+
+from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    AGENT_COPILOT,
+    AGENT_VSCODE,
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.string_utils import unqualified_model_name
@@ -297,6 +308,19 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
+def _network_error_reason(error: object) -> str:
+    """``network error: ...``, with what to do when it is a failed certificate verification."""
+    if not tls.is_certificate_failure(error):
+        return f"network error: {error}"
+    # The OS store's verifier raises with a bare message, which prints as a tuple.
+    args = getattr(error, "args", ())
+    detail = str(args[0] if len(args) == 1 else error).rstrip(".")
+    return (
+        f"network error: certificate verification failed: {detail}. "
+        f"{tls.certificate_failure_hint()}"
+    )
+
+
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -359,6 +383,198 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+class _RejectCookiesPolicy(DefaultCookiePolicy):
+    def set_ok(self, cookie, request) -> bool:
+        return False
+
+
+# The most recent 3xx response seen by this request, via a client response hook. A context
+# variable keeps concurrent callers on the shared client from seeing each other's redirects.
+_LAST_REDIRECT: contextvars.ContextVar[httpx.Response | None] = contextvars.ContextVar(
+    "pooled_last_redirect", default=None
+)
+
+
+def _remember_redirect(response: httpx.Response) -> None:
+    if 300 <= response.status_code < 400:
+        _LAST_REDIRECT.set(response)
+
+
+POOLED_HTTP_DISABLE_ENV_VAR = "UG_NO_POOLED_HTTP"
+
+
+def _use_pooled_client() -> bool:
+    """Whether `_http_open` may use the pooled client: only the default setup, the OS trust
+    store with no http/https proxy configured (env or the macOS/Windows system settings).
+    Everything else keeps urllib's own path, byte for byte with main. ``all_proxy`` doesn't
+    count — urllib ignores it. ``UG_NO_POOLED_HTTP`` falls back to urllib everywhere."""
+    if env_bool(POOLED_HTTP_DISABLE_ENV_VAR):
+        return False
+    if tls.effective_trust_store() != tls.TRUST_STORE_OS:
+        return False
+    proxies = urllib_request.getproxies()
+    return not (proxies.get("http") or proxies.get("https"))
+
+
+_HTTP_CLIENT: httpx.Client | None = None
+_HTTP_CLIENT_PID: int | None = None
+_HTTP_CLIENT_LOCK = threading.Lock()
+
+
+def _reset_http_client_after_fork() -> None:
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID, _HTTP_CLIENT_LOCK
+    _HTTP_CLIENT = None
+    _HTTP_CLIENT_PID = os.getpid()
+    _HTTP_CLIENT_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_http_client_after_fork)
+
+
+def _get_http_client() -> httpx.Client:
+    import httpx
+
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID
+    pid = os.getpid()
+    if _HTTP_CLIENT is not None and _HTTP_CLIENT_PID == pid:
+        return _HTTP_CLIENT
+    with _HTTP_CLIENT_LOCK:
+        if _HTTP_CLIENT is None or _HTTP_CLIENT_PID != pid:
+            # Before any SSL context is built — the client's and the transport's — so httpx's
+            # default context verifies against the OS trust store tls.apply() selected for the
+            # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
+            tls.apply()
+            limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+            client = httpx.Client(
+                # urllib's HTTPRedirectHandler stops after 10 redirects; httpx defaults to 20.
+                max_redirects=urllib_request.HTTPRedirectHandler.max_redirections,
+                transport=httpx.HTTPTransport(trust_env=True, limits=limits),
+                # Only reached with no http/https proxy configured; trust_env stays off so
+                # httpx never mounts ALL_PROXY (and socks proxies needing socksio) behind
+                # our back.
+                trust_env=False,
+                event_hooks={"response": [_remember_redirect]},
+                follow_redirects=True,
+                cookies=CookieJar(policy=_RejectCookiesPolicy()),
+            )
+            _HTTP_CLIENT = client
+            _HTTP_CLIENT_PID = pid
+    return _HTTP_CLIENT
+
+
+class _PooledResponse:
+    def __init__(self, response: httpx.Response):
+        self.status = response.status_code
+        self.headers = Message()
+        for name, value in response.headers.multi_items():
+            self.headers.add_header(name, value)
+        self._body = response.content
+        self._url = str(response.url)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def geturl(self) -> str:
+        return self._url
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _os_error_reason(exc: BaseException) -> BaseException:
+    """The first OSError behind an httpx error (what urllib would have put in URLError.reason),
+    following __cause__/__context__; the deepest error when there's none."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    reason = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        reason = current
+        if isinstance(current, OSError):
+            return current
+        current = current.__cause__ or current.__context__
+    return reason
+
+
+def _http_open(request: urllib_request.Request, *, timeout: float):
+    if not _use_pooled_client():
+        # Not the default setup (python trust store, or an http/https proxy configured): keep
+        # urllib's own path — its proxy handling and trust store — exactly as main ran it.
+        return urllib_request.urlopen(request, timeout=timeout)
+    import httpx
+
+    request_headers = dict(request.header_items())
+    header_names = {name.casefold() for name in request_headers}
+    if "accept-encoding" not in header_names:
+        request_headers["Accept-Encoding"] = "identity"
+    if "connection" not in header_names:
+        request_headers["Connection"] = "keep-alive"
+    if "user-agent" not in header_names:
+        # urllib's own default: '%d.%d' % sys.version_info[:2].
+        request_headers["User-Agent"] = f"Python-urllib/{sys.version_info[0]}.{sys.version_info[1]}"
+    httpx_request = httpx.Request(
+        request.get_method(),
+        request.full_url,
+        # http.client encodes header values as latin-1; httpx would reject non-ascii ones.
+        headers=[
+            (name.encode("latin-1"), value.encode("latin-1"))
+            for name, value in request_headers.items()
+        ],
+        # The only Request built with data is `_http_send_json`'s, which sends bytes or None.
+        content=cast("bytes | None", request.data),
+        extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+    )
+    try:
+        # urllib's redirect_request re-issues GET/HEAD on any redirect, re-issues a POST
+        # answered 301/302/303 as a bodiless GET, and raises HTTPError for every other
+        # method or 307/308. Mirror that instead of letting httpx replay request bodies.
+        method = httpx_request.method
+        client = _get_http_client()
+        response = client.send(httpx_request, follow_redirects=method in ("GET", "HEAD"))
+        if method == "POST" and response.status_code in (301, 302, 303) and response.next_request:
+            # httpx's next_request for a POST 301/302/303 is already that bodiless GET, with
+            # cross-origin Authorization stripped.
+            response = client.send(response.next_request, follow_redirects=True)
+    except httpx.TooManyRedirects as exc:
+        # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
+        # callers see a status-shaped failure, not a network one — carrying the LAST 3xx's
+        # real code, reason, headers, and body, not a made-up status.
+        last = _LAST_REDIRECT.get()
+        if last is not None:
+            pooled = _PooledResponse(last)
+            raise urllib_error.HTTPError(
+                request.full_url,
+                pooled.status,
+                last.reason_phrase,
+                pooled.headers,
+                io.BytesIO(pooled.read()),
+            ) from exc
+        raise urllib_error.HTTPError(
+            request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
+        ) from exc
+    except httpx.RequestError as exc:
+        raise urllib_error.URLError(_os_error_reason(exc)) from exc
+    except httpx.HTTPError as exc:
+        # Other transport-level httpx errors (the pool closed, a stream broke): urllib has no
+        # counterpart, so surface them as network errors like the RequestError mapping above.
+        raise urllib_error.URLError(exc) from exc
+
+    pooled_response = _PooledResponse(response)
+    if not 200 <= response.status_code < 300:
+        raise urllib_error.HTTPError(
+            pooled_response.geturl(),
+            response.status_code,
+            response.reason_phrase,
+            pooled_response.headers,
+            io.BytesIO(pooled_response.read()),
+        )
+    return pooled_response
+
+
 @metrics.http_result
 def _http_get_bytes(
     url: str,
@@ -389,7 +605,7 @@ def _http_get_bytes(
         if attempt:
             metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
-            with urllib_request.urlopen(request, timeout=timeout) as response:
+            with _http_open(request, timeout=timeout) as response:
                 status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
@@ -422,7 +638,7 @@ def _http_get_bytes(
             retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
         except urllib_error.URLError as exc:
             _debug(f"GET {url}", f"URLError: {exc.reason}")
-            reason = f"network error: {exc.reason}"
+            reason = _network_error_reason(exc.reason)
             if attempt == max_retries:
                 return None, reason
             retry_after = None
@@ -520,7 +736,7 @@ def _http_send_json(
     request_started = time.perf_counter()
     status = None
     try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
+        with _http_open(request, timeout=timeout) as response:
             status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
@@ -554,7 +770,7 @@ def _http_send_json(
         return None, reason
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
+        return None, _network_error_reason(exc.reason)
     except OSError as exc:
         # See `_http_get_json`: a bare socket timeout is an OSError, not a
         # URLError, and would otherwise escape the caller's error handling.
@@ -874,6 +1090,12 @@ def _iter_databricks_executables() -> list[str]:
         search_groups.append(
             ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
         )
+    from ucode.state import recorded_databricks_cli
+
+    # The GitHub Copilot app starts `ug auth-token` and `ug otel-headers` with a PATH that may
+    # lack the CLI's directory.
+    if recorded := recorded_databricks_cli():
+        search_groups.append([os.path.dirname(recorded)])
 
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
@@ -3128,6 +3350,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "openai",
         "azure_openai",
         "microsoft_foundry",
+        "github_copilot",
     ),
 }
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
@@ -3139,8 +3362,32 @@ _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
+ANTHROPIC_PROVIDER_TYPE = "anthropic"
+OPENAI_PROVIDER_TYPE = "openai"
+GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
 # Provider types the gateway serves on its Anthropic Messages route.
-ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
+ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
+
+
+def is_copilot_seat_relay(service: dict) -> bool:
+    """True for a GitHub Copilot service that relays each developer's own Copilot seat."""
+    return (
+        bool(service.get("relayed"))
+        and service.get("provider_type") == GITHUB_COPILOT_PROVIDER_TYPE
+    )
+
+
+# Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
+# agent named in the refusal. The fallback for an unknown relayed type keeps the Claude entry.
+_SUBSCRIPTION_RELAYS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    ANTHROPIC_PROVIDER_TYPE: ((AGENT_CLAUDE,), "Claude", "Claude Code"),
+    OPENAI_PROVIDER_TYPE: ((AGENT_CODEX,), "ChatGPT", "Codex"),
+    GITHUB_COPILOT_PROVIDER_TYPE: (
+        (AGENT_COPILOT, AGENT_VSCODE),
+        "GitHub Copilot",
+        "GitHub Copilot",
+    ),
+}
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -3174,8 +3421,9 @@ def list_model_provider_services(
     "allow_all_targets": bool, "relayed": bool}``.
     ``targets`` is the provider-side model ids the service exposes (used to pin
     Bedrock model names); ``target_api_types`` holds the APIs each target declares
-    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less Anthropic
-    service (Claude Max/Team/Enterprise subscription relay). A non-None
+    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less
+    Anthropic, OpenAI or GitHub Copilot service (a Claude, ChatGPT or GitHub Copilot subscription
+    relay). A non-None
     ``reason`` means the listing call itself failed.
 
     Pages through the endpoint: a metastore with more services than fit on one page used to have the
@@ -3266,12 +3514,12 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
-    # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
-    # server-side, so both launch identically.
+    # Relayed = credential-less Anthropic, OpenAI or GitHub Copilot (subscription relay). Only
+    # whether it's relayed matters here; the tier (Max vs Team/Enterprise, or the Copilot plan) is
+    # governed server-side, so they launch identically.
     relayed = any(
         isinstance(cfg, dict) and "relayed" in cfg
-        for cfg in (config.get("anthropic"), config.get("openai"))
+        for cfg in (config.get("anthropic"), config.get("openai"), config.get("github_copilot"))
     )
     raw_type = config.get("provider_type")
     return {
@@ -3316,11 +3564,10 @@ def get_model_service(
     return payload, None
 
 
-def model_service_primary_providers(service: dict) -> list[str]:
-    """The Model Provider Services behind ``service``'s live primary destinations."""
+def model_service_backing_model(service: dict) -> str | None:
+    """The foundation model behind ``service``'s first live primary destination, if it has one."""
     routing = (service.get("config") or {}).get("routing") or {}
     destinations = routing.get("destinations")
-    providers: list[str] = []
     for destination in destinations if isinstance(destinations, list) else []:
         if (
             not isinstance(destination, dict)
@@ -3328,10 +3575,91 @@ def model_service_primary_providers(service: dict) -> list[str]:
             or not (destination.get("traffic_percentage") or 0) > 0
         ):
             continue
+        model = (destination.get("pay_per_token_config") or {}).get("model")
+        if isinstance(model, str) and model:
+            return model.removeprefix("models/")
+    return None
+
+
+def model_service_primary_providers(service: dict) -> list[str]:
+    """The Model Provider Services behind ``service``'s live primary destinations."""
+    providers: list[str] = []
+    for destination in _model_service_primary_destinations(service, strict=False) or []:
         provider = (destination.get("external_model_config") or {}).get("model_provider_service")
         if isinstance(provider, str) and provider:
             providers.append(provider.removeprefix("model-provider-services/"))
     return providers
+
+
+def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
+        return None
+    primary = routing.get("destinations")
+    if not isinstance(primary, list) or not primary:
+        return None
+    destinations = []
+    for destination in primary:
+        if not isinstance(destination, dict):
+            if strict:
+                return None
+            continue
+        if destination.get("is_deleted"):
+            continue
+        traffic = destination.get("traffic_percentage")
+        if traffic is None:
+            traffic = 100 if len(primary) == 1 else 0
+        if not isinstance(traffic, (int, float)):
+            if strict:
+                return None
+            continue
+        if traffic > 0:
+            destinations.append(destination)
+    return destinations
+
+
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    destinations = _model_service_primary_destinations(service)
+    if destinations is None:
+        return None
+    routing = service["config"]["routing"]
+    fallback = routing.get("fallback") or {}
+    if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
+        return None
+    destinations.extend(fallback.get("destinations", []))
+    budget_fallbacks = routing.get("budget_fallbacks") or []
+    if not isinstance(budget_fallbacks, list):
+        return None
+    for entry in budget_fallbacks:
+        if not isinstance(entry, dict):
+            return None
+        destinations.append(entry.get("destination"))
+    models = []
+    for destination in destinations:
+        if not isinstance(destination, dict):
+            return None
+        if destination.get("is_deleted"):
+            continue
+        configs = [
+            destination[key]
+            for key in (
+                "external_model_config",
+                "pay_per_token_config",
+            )
+            if key in destination
+        ]
+        if len(configs) != 1 or not isinstance(configs[0], dict):
+            return None
+        target = configs[0]
+        if "external_model_config" in destination:
+            target = target.get("target")
+        model = target.get("model") if isinstance(target, dict) else None
+        if not isinstance(model, str) or not model:
+            return None
+        models.append(model.removeprefix("models/"))
+    return list(dict.fromkeys(models)) or None
 
 
 class RelayLookup(Enum):
@@ -3351,9 +3679,9 @@ _RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
 _RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
 
 
-def relay_candidate_model_services(models: list[str]) -> list[str]:
+def custom_model_services(models: list[str]) -> list[str]:
     """The entries of ``models`` that name a customer model service (``catalog.schema.name``,
-    not ``system.*``), the only kind that can route to a subscription relay."""
+    not ``system.*``). Preserve context suffixes used by the caller."""
     candidates: list[str] = []
     for model in models:
         if not isinstance(model, str):
@@ -3373,7 +3701,7 @@ def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayL
     credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
     lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
     """
-    if not relay_candidate_model_services([model]):
+    if not custom_model_services([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
     key = (workspace, name)
@@ -3475,34 +3803,62 @@ def list_tool_provider_services(
 
     Returns ``(names, reason)``; ``reason`` is non-None when the listing failed.
     """
+    choices, reason = tool_provider_service_choices(tool, workspace, token)
+    return [name for name, _label in choices], reason
+
+
+def tool_provider_service_choices(
+    tool: str, workspace: str, token: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Like :func:`list_tool_provider_services`, as ``(name, picker label)`` pairs."""
     services, reason = list_model_provider_services(workspace, token)
     if reason is not None:
         return [], reason
-    names = [s["name"] for s in services if service_usable_for_tool(tool, s)]
-    return names, None
+    choices = [
+        (s["name"], provider_service_label(s)) for s in services if service_usable_for_tool(tool, s)
+    ]
+    return choices, None
+
+
+def provider_service_label(service: dict) -> str:
+    """A service's name, marked when it relays a GitHub Copilot subscription: Copilot lists those
+    beside API-key services, and each developer signs in to them with their own seat."""
+    name = service.get("name", "")
+    if is_copilot_seat_relay(service):
+        return f"{name} (GitHub Copilot subscription)"
+    return name
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
     """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
-        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
+        # A GitHub Copilot service only works as a subscription relay, not as a provider to route to.
+        routable = [
+            name
+            for name in _TOOL_PROVIDER_TYPES.get(tool, ())
+            if name != GITHUB_COPILOT_PROVIDER_TYPE
+        ]
+        supported = ", ".join(routable) or "none"
         return (
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
     if service.get("relayed"):
-        relay_tool, subscription, display = (
-            ("codex", "ChatGPT", "Codex")
-            if provider_type == "openai"
-            else ("claude", "Claude", "Claude Code")
+        relay_tools, subscription, display = _SUBSCRIPTION_RELAYS.get(
+            provider_type, _SUBSCRIPTION_RELAYS[ANTHROPIC_PROVIDER_TYPE]
         )
-        if tool != relay_tool:
+        if tool not in relay_tools:
             return (
                 f"Model provider service '{service_name}' relays a {subscription} subscription, "
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
+    elif provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
+        return (
+            f"Model provider service '{service_name}' is a GitHub Copilot provider that doesn't "
+            "relay a subscription, which ug can't route to."
+        )
     if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
             f"Model provider service '{service_name}' exposes no compatible models for {tool} — "

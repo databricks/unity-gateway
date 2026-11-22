@@ -54,7 +54,7 @@ jobs:
       OMNIGENT_SKIP_WEB_UI: "true"
       # Same pins as integration.yml.
       CLAUDE_VERSION: 2.1.290
-      CODEX_VERSION: 0.165.0
+      CODEX_VERSION: 0.171.0
       PYPI_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
     steps:
       - name: Resolve the pull request
@@ -418,7 +418,9 @@ jobs:
           file listed above must appear here. Also describe missing coverage and whether
           existing tests suffice. If no tests changed, state that and assess existing
           coverage. Apply the shared UG rubric's API and telemetry evidence guidance. Report
-          unavailable evidence as unverified. Keep all "keep" verdicts and full test rationale in this table.
+          unavailable evidence as unverified. Apply its hook-wiring, wildcard-source, and Arclet
+          checks only when affected; credit existing coverage and name the concrete missing case.
+          Keep all "keep" verdicts and full test rationale in this table.
           Surface only actionable test changes (add missing coverage, consolidate,
           move layer, change, or remove) outside this subsection, as concise notes
           naming the test/case and the recommended action. Put them in Blocking
@@ -435,13 +437,9 @@ jobs:
           cosmetic issues, except the source-comment conciseness check below.
           Do not restate the diff. Focus on what matters.
 
-          **Source comments:** Check comments added or modified in the diff for
-          conciseness. Prefer one short sentence, usually one or two lines, explaining
-          a non-obvious reason or constraint. Flag lengthy narration of obvious code,
-          duplicated explanations, and change-history commentary under Non-blocking
-          notes; cite the comment and suggest a short replacement or removal. Keep
-          extra detail only when needed to explain a non-obvious invariant or tradeoff.
-          Do not flag unchanged comments or line wrapping alone.
+          **Source comments:** Apply the shared UG rubric's source-comment conciseness
+          check. Put actionable findings under Non-blocking notes with a citation and
+          a short replacement or removal suggestion.
 
           **Writing style:**
           - Keep sentences concise and to the point. Use plain words.

@@ -104,6 +104,13 @@ class TestVsCodeIntegration:
             managed = {"enabled_agents": {"copilot": entry}}
             assert "copilot_vscode_integration" not in managed_state_overrides(managed, "copilot")
 
+    def test_disabled_copilot_app_overrides_copilot_state(self):
+        managed = {"enabled_agents": {"copilot": {"app_integration_enabled": False}}}
+        assert managed_state_overrides(managed, "copilot")["copilot_app_integration"] is False
+        for entry in ({"app_integration_enabled": True}, {}):
+            managed = {"enabled_agents": {"copilot": entry}}
+            assert "copilot_app_integration" not in managed_state_overrides(managed, "copilot")
+
     def test_vscode_switch_is_copilot_only(self):
         managed = {"enabled_agents": {"claude": {"vscode_integration_enabled": False}}}
         assert "copilot_vscode_integration" not in managed_state_overrides(managed, "claude")

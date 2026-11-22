@@ -19,6 +19,13 @@ SPEC = importlib.util.spec_from_file_location("ug_review_auth", AUTH_PATH)
 assert SPEC is not None and SPEC.loader is not None
 gateway_auth = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gateway_auth)
+RECOMMENDATION_PATH = ROOT / ".github" / "scripts" / "ug-review" / "recommendation.py"
+RECOMMENDATION_SPEC = importlib.util.spec_from_file_location(
+    "ug_review_recommendation", RECOMMENDATION_PATH
+)
+assert RECOMMENDATION_SPEC is not None and RECOMMENDATION_SPEC.loader is not None
+recommendation = importlib.util.module_from_spec(RECOMMENDATION_SPEC)
+RECOMMENDATION_SPEC.loader.exec_module(recommendation)
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ug-review.yml"
 
 
@@ -228,7 +235,7 @@ def test_workflow_routes_review_through_gateway_with_service_principal_token():
     assert "llm_auth_token: ${{ steps.gateway-auth.outputs.token }}" in workflow
     assert "llm_auth_header: Authorization" in workflow
     assert 'llm_use_anthropic: "true"' in workflow
-    assert "llm_model: system.ai.claude-opus-5-5" in workflow
+    assert "llm_model: ${{ env.GATEWAY_MODEL }}" in workflow
     assert '"thinking":{"type":"adaptive"}' in workflow
     assert "llm_extra_headers: x-databricks-use-coding-agent-mode=true" in workflow
     assert "UG_CI_REVIEW_MODEL" not in workflow
@@ -268,3 +275,144 @@ def test_workflow_passes_trusted_rubric_as_background_and_checks_completeness():
     assert "OCR review is incomplete" in workflow
     assert "OCR result does not match the requested commit." in workflow
     assert not (AUTH_PATH.parent / "review.py").exists()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("RECOMMENDATION: APPROVE", "approve"),
+        ("RECOMMENDATION: REJECT", "reject"),
+        ("the verdict is RECOMMENDATION: APPROVE on this line", None),
+        ("RECOMMENDATION: MAYBE", None),
+    ],
+)
+def test_recommendation_marker_parses_only_on_its_own_line(text, expected):
+    assert recommendation.parse_recommendation(text) == expected
+
+
+def _recommendation_environment(monkeypatch, tmp_path, result, model_output):
+    result_path = tmp_path / "ocr-result.json"
+    result_path.write_text(json.dumps(result))
+    output_path = tmp_path / "github-output"
+    output_path.write_text("")
+    body_path = tmp_path / "recommendation-body.md"
+    monkeypatch.setenv("OCR_RESULT_PATH", str(result_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("BODY_PATH", str(body_path))
+    monkeypatch.setenv("RECOMMENDATION_RUN", "run-1")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("GATEWAY_TOKEN", "access-token")
+    calls = []
+
+    def request(host, token, model, briefs):
+        calls.append((host, token, briefs))
+        if isinstance(model_output, Exception):
+            raise model_output
+        return model_output
+
+    monkeypatch.setattr(recommendation, "request_recommendation", request)
+    return output_path, body_path, calls
+
+
+def test_zero_finding_complete_review_approves_without_a_model_call(monkeypatch, tmp_path):
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "summary": {"files_reviewed": 4}, "comments": []},
+        AssertionError("A clean review must not request a recommendation."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=approve\n" in output_path.read_text()
+    assert "**RECOMMENDATION: APPROVE**" in body_path.read_text()
+    assert calls == []
+
+
+def test_findings_reach_the_model_and_a_reject_marker_parses(monkeypatch, tmp_path):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 2, "severity": "high"}
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "comments": [finding]},
+        "RECOMMENDATION: REJECT\nREASONS:\n- drops user state\n",
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=reject\n" in output_path.read_text()
+    body = body_path.read_text()
+    assert "**RECOMMENDATION: REJECT**" in body
+    assert "- drops user state" in body
+    assert calls[0][2][0]["path"] == "a.py"
+
+
+@pytest.mark.parametrize(
+    "model_output",
+    ["Looks fine to me overall.", recommendation.RecommendationError("gateway down")],
+)
+def test_unparseable_or_failed_model_output_gives_no_recommendation(
+    monkeypatch, tmp_path, model_output
+):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}
+    output_path, body_path, _ = _recommendation_environment(
+        monkeypatch, tmp_path, {"status": "complete", "comments": [finding]}, model_output
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    body = body_path.read_text()
+    assert "**No recommendation**" in body
+    assert "ready-to-approve` label is removed" in body
+
+
+def test_findings_with_warnings_do_not_recommend(monkeypatch, tmp_path):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}
+    output_path, _, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "comments": [finding], "warnings": [{"Type": "review_limit"}]},
+        AssertionError("A warned review must not reach the model."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    assert calls == []
+
+
+def test_truncation_keeps_the_most_severe_findings():
+    comments = [
+        {"path": f"f{i}.py", "start_line": 1, "end_line": 1, "severity": "low"}
+        for i in range(recommendation.MAX_PROMPT_FINDINGS)
+    ]
+    comments.append({"path": "late.py", "start_line": 1, "end_line": 1, "severity": "critical"})
+
+    briefs = recommendation.finding_briefs(comments)
+
+    assert len(briefs) == recommendation.MAX_PROMPT_FINDINGS
+    assert briefs[0]["path"] == "late.py"
+
+
+def test_gateway_response_without_a_content_list_is_a_handled_failure(monkeypatch):
+    monkeypatch.setattr(
+        recommendation.urllib.request,
+        "urlopen",
+        lambda request, timeout: BytesIO(b'{"error": {"message": "denied"}}'),
+    )
+
+    with pytest.raises(recommendation.RecommendationError, match="no content list"):
+        recommendation.request_recommendation("https://example.databricks.com", "t", "m", [])
+
+
+def test_workflow_posts_recommendation_and_syncs_ready_to_approve_label():
+    workflow = WORKFLOW_PATH.read_text()
+    copy = 'cp .github/scripts/ug-review/recommendation.py "$RUNNER_TEMP/ug-recommendation.py"'
+    run = 'run: python3 "$RUNNER_TEMP/ug-recommendation.py"'
+    # The review action's checkout deletes .ug-review-trusted, so copy before it runs.
+    assert workflow.index(copy) < workflow.index("alibaba/open-code-review@") < workflow.index(run)
+    publish = workflow.split("      - name: Publish the review recommendation\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "RECOMMENDATION_LABEL: ready-to-approve" in publish
+    assert "updateComment" in publish
+    assert "createComment" in publish
+    assert "addLabels({ ...args, labels: [label] })" in publish
+    assert "removeLabel({ ...args, name: label })" in publish

@@ -370,7 +370,7 @@ class TestDatabricksTokenAuth:
             assert "webbrowser.open" in argv[3]
             return subprocess.CompletedProcess(argv, 0)
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
         monkeypatch.setattr(browser_cross_os.subprocess_cross_os, "run", launch)
         auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
         sent = []
