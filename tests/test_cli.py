@@ -915,6 +915,8 @@ class TestSubcommandRouting:
         [
             (["codex", "--", "fix the parser"], ["fix the parser"], True),
             (["codex", "--"], [], True),
+            (["codex", "--", "--help"], ["--help"], False),
+            (["codex", "--", "--model=gpt-6.2-astra"], ["--model=gpt-6.2-astra"], False),
             (["claude", "--", "doctor"], ["doctor"], True),
             (
                 ["codex", "--model", "gpt-5.6-sol", "--", "fix the parser"],
@@ -1137,7 +1139,7 @@ class TestSubcommandRouting:
         self, monkeypatch, tool, launch_args, launch_env, expected_version, routed_tools
     ):
         monkeypatch.setattr(
-            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
         )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
@@ -1201,9 +1203,24 @@ class TestSubcommandRouting:
             assert result.exit_code == 0, result.output
             assert observed == [enabled, False]
 
-    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
-    @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
-    def test_codex_routing_version_requires_upgrade_or_explicit_disable(
+    @pytest.mark.parametrize(
+        "installed_version", ["0.156.0", "0.164.0", "0.170.0", "0.171.0-alpha.12"]
+    )
+    @pytest.mark.parametrize(
+        "recovery",
+        [
+            "decline",
+            "upgrade",
+            "disable",
+            "managed-default",
+            "managed-upgrade",
+            "managed-failed",
+            "managed-still-old",
+            "managed-eof",
+            "managed-auto-failed",
+        ],
+    )
+    def test_codex_routing_upgrade_preserves_managed_fallback(
         self, tmp_path, monkeypatch, installed_version, recovery
     ):
         codex = cli_mod.codex_agent
@@ -1214,8 +1231,12 @@ class TestSubcommandRouting:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
         monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kwargs: version)
         monkeypatch.setattr(codex, "_launch_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: plain.append(argv))
-        monkeypatch.setenv(agents.AUTO_UPGRADE_AGENT_ENV, "0")
+        monkeypatch.setattr(
+            codex, "exec_or_spawn", lambda argv: plain.append((argv, _routing_env()))
+        )
+        monkeypatch.setenv(
+            agents.AUTO_UPGRADE_AGENT_ENV, "1" if recovery == "managed-auto-failed" else "0"
+        )
         monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/tools/{binary}")
 
         def update(argv, **_kwargs):
@@ -1224,7 +1245,10 @@ class TestSubcommandRouting:
                 return subprocess.CompletedProcess(argv, 0, stdout="0.265.0\n", stderr="")
             assert argv == ["codex", "update"]
             updates.append(argv)
-            version = "0.164.0"
+            if recovery in {"managed-failed", "managed-eof", "managed-auto-failed"}:
+                raise subprocess.CalledProcessError(1, argv)
+            if recovery != "managed-still-old":
+                version = "0.171.0"
             return subprocess.CompletedProcess(argv, 0)
 
         def launch_native(*_args, **_kwargs):
@@ -1238,16 +1262,24 @@ class TestSubcommandRouting:
         launch = cli_mod.launch_agent
         # An explicit version keeps Codex routed (managed config is then ignored). The
         # managed-default case leaves the selector unset: the shared preset applies.
-        if recovery == "managed-default":
+        if recovery.startswith("managed"):
             monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         env_before = _routing_env()
+        confirm_upgrade = agents.prompt_yes_no_default
+
+        def answer_upgrade(prompt, *, default):
+            if recovery == "managed-eof":
+                return confirm_upgrade(prompt, default=default)
+            return recovery not in {"decline", "managed-default"}
+
         with (
             _launch_policy_patches(managed) as calls,
             patch(
-                "ucode.agents.prompt_yes_no_default", return_value=recovery == "upgrade"
+                "ucode.agents.prompt_yes_no_default",
+                side_effect=answer_upgrade,
             ) as prompt,
         ):
             calls["launch"].side_effect = launch
@@ -1255,14 +1287,21 @@ class TestSubcommandRouting:
             result = runner.invoke(app, args)
 
         assert result.exit_code == (1 if recovery == "decline" else 0), result.output
-        assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery in {"disable", "managed-default"})
-        assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
-        if recovery in {"decline", "managed-default"}:
+        assert routed == (["0.171.0"] if recovery in {"upgrade", "managed-upgrade"} else [])
+        managed_fallback = recovery.startswith("managed") and recovery != "managed-upgrade"
+        assert bool(plain) == (managed_fallback or recovery == "disable")
+        assert updates == (
+            [] if recovery in {"decline", "disable", "managed-default"} else [["codex", "update"]]
+        )
+        assert prompt.call_count == (0 if recovery in {"disable", "managed-auto-failed"} else 1)
+        if managed_fallback or recovery == "decline":
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
             assert "--disable-smart-routing" in output
+            assert ("Running without smart routing." in output) is managed_fallback
+        if managed_fallback:
+            assert {key: plain[0][1][key] for key in ROUTING_OFF} == dict.fromkeys(ROUTING_OFF)
+            assert version == installed_version
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(
@@ -1319,7 +1358,7 @@ class TestSubcommandRouting:
         self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
     ):
         monkeypatch.setattr(
-            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
         )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
@@ -1351,35 +1390,90 @@ class TestSubcommandRouting:
         assert any("one-time hook review" in note for note in notes) is routed
 
     @pytest.mark.parametrize(
+        "tool,model",
+        [("claude", "claude-opus-5-5"), ("codex", "gpt-6.2-astra")],
+    )
+    @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),
         [
-            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0, [], True),
             (None, [], True),
-            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.SUBAGENT_ORCH_V0, ["--disable-smart-routing"], False),
+            (None, ["--enable-smart-routing"], True),
             (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
         ],
-        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
+        ids=["subagent-version", "managed", "disable-flag", "enable-flag", "first-prompt-version"],
     )
     def test_forwarded_model_keeps_subagent_routing(
-        self, monkeypatch, version, launch_args, routed
+        self, monkeypatch, tool, model, version, launch_args, routed
     ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
+        )
         managed = None
         if version is None:
-            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+            if not launch_args:
+                managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
         else:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         observed = []
-
         with _launch_policy_patches(managed) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
                 options.launch_smart_routing
             )
-            result = runner.invoke(
-                app, ["claude", *launch_args, "--", "--model", "system.ai.claude-opus-5-5"]
-            )
+            result = runner.invoke(app, [tool, *launch_args, "--", "--model", model])
 
         assert result.exit_code == 0, result.output
         assert observed == [routed]
+
+    @pytest.mark.parametrize(
+        "native_args",
+        [
+            ["--help"],
+            ["-h"],
+            ["--version"],
+            ["-V"],
+            ["--remote", "ws://127.0.0.1:1"],
+            ["--remote=ws://127.0.0.1:1"],
+            ["--model", "gpt-6.2-astra", "--help"],
+        ],
+    )
+    def test_codex_utility_options_do_not_enable_routing(self, monkeypatch, native_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", "--", *native_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+
+    @pytest.mark.parametrize("subcommand", ["exec", "review", "app"])
+    def test_codex_model_before_subcommand_does_not_enable_routing(self, monkeypatch, subcommand):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.redirect_output_to_stderr"),
+        ):
+            result = runner.invoke(app, ["codex", "--", "--model", "gpt-6.2-astra", subcommand])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+
+    @pytest.mark.parametrize(
+        "launch_args",
+        [
+            ["-c", "developer_instructions=isaac guidance"],
+            ["--", "-c", "developer_instructions=isaac guidance"],
+            ["--", "--config=developer_instructions=isaac guidance", "--search"],
+        ],
+        ids=["isaac-config", "forwarded-config", "config-and-search"],
+    )
+    def test_codex_native_options_keep_subagent_routing(self, monkeypatch, launch_args):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
 
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
@@ -3405,6 +3499,68 @@ class TestStatus:
             assert result.exit_code == 0, result.output
             assert ("VS Code: off (workspace-managed)" in output) is shown
 
+    def test_status_shows_the_copilot_app_row_and_its_warnings(self, monkeypatch):
+        from ucode.agents.desktop.setup import CopilotAppStatus
+
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        seen = []
+
+        def app_status(effective_state, *, provider, location):
+            seen.append(effective_state)
+            return CopilotAppStatus(
+                "plugin disabled, models registered", ("their turns fail without it",)
+            )
+
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.agents.desktop.setup.copilot_app_status", side_effect=app_status),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app: plugin disabled, models registered" in output
+        assert "their turns fail without it" in output
+        assert seen[0]["workspace"] == state["workspace"]
+
+    def test_status_shows_the_copilot_app_turned_off_by_managed_config(self, monkeypatch):
+        monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        managed = {"enabled_agents": {"copilot": {"app_integration_enabled": False}}}
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=managed),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app: off (workspace-managed)" in output
+
+    def test_status_shows_a_pending_copilot_app_removal_after_revert(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.agents.desktop.setup.copilot_app_unconfigured_status",
+                return_value="removal pending: soon",
+            ),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app" in output
+        assert "removal pending: soon" in output
+
     def test_status_labels_self_configured_setup(self, monkeypatch):
         with (
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
@@ -4703,6 +4859,27 @@ class TestRevert:
         assert "VS Code extension: failed" in output
         assert restore_file.called
         clear_state.assert_called_once()
+
+    @pytest.mark.parametrize("result", ["removed", "not set up", "failed: x"])
+    def test_reports_the_copilot_app(self, result):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.agents.desktop.setup.revert_copilot_app", return_value=result),
+            patch("ucode.cli.clear_state"),
+        ):
+            outcome = runner.invoke(app, ["revert"])
+
+        output = " ".join(outcome.output.split())
+        assert outcome.exit_code == 0, outcome.output
+        assert f"GitHub Copilot app: {result}" in output
+        assert "keep the Databricks models" not in output
 
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
@@ -7899,7 +8076,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
-    def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch):
+    def test_skip_model_discovery_keeps_web_search_lookup_synchronous(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
         started: list[object] = []
         listings: list[str] = []
@@ -7907,7 +8084,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
-            lambda w, t: listings.append(w) or ({}, [], [], [], None),
+            lambda w, t: listings.append(w) or ({}, ["system.ai.gpt-5"], [], [], None),
         )
         monkeypatch.setattr(
             cli_mod, "discover_codex_models", lambda w, t: (["system.ai.gpt-5"], None)
@@ -7918,7 +8095,7 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
         )
 
         assert started == []
-        assert listings == []
+        assert listings == [self.WS]
         # Provider mode keeps its separate single-call web-search lookup.
         assert state["web_search_model"] == "system.ai.gpt-5"
 
@@ -8247,9 +8424,7 @@ class TestConfigureSharedStateMcpCleanup:
 
 
 class TestConfigureSharedStateSkipDiscovery:
-    """With skip_model_discovery (provider mode), the heavy family discovery is
-    skipped; only a single web-search model is fetched, and existing model lists
-    are preserved rather than clobbered."""
+    """Provider mode discovers its search model through UC first and preserves agent models."""
 
     @staticmethod
     def _stub(monkeypatch):
@@ -8266,22 +8441,43 @@ class TestConfigureSharedStateSkipDiscovery:
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
 
-    def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("uc_models", "reason", "expected"),
+        [
+            (
+                ["system.ai.gpt-6-astra", "system.ai.gpt-5-mini", "system.ai.gpt-6-luna"],
+                None,
+                "system.ai.gpt-6-luna",
+            ),
+            (["system.ai.gpt-6-astra", "system.ai.gpt-5-mini"], None, "system.ai.gpt-5-mini"),
+            (["system.ai.gpt-5"], None, "system.ai.gpt-5"),
+            ([], None, "databricks-gpt-5"),
+            ([], "model-services unavailable", "databricks-gpt-5"),
+        ],
+    )
+    def test_fetches_web_search_model_without_replacing_agent_models(
+        self, monkeypatch, uc_models, reason, expected
+    ):
         import ucode.cli as cli_mod
 
         ws = "https://prov.databricks.com"
         self._stub(monkeypatch)
-        # Pretend a prior Databricks configure left models behind.
+        # A previous provider configure saved the legacy search model.
         monkeypatch.setattr(
             cli_mod,
             "load_state",
-            lambda: {"workspace": ws, "claude_models": {"opus": "databricks-claude-opus-4-8"}},
+            lambda: {
+                "workspace": ws,
+                "claude_models": {"opus": "databricks-claude-opus-4-8"},
+                "web_search_model": "databricks-gpt-5",
+            },
         )
-
-        def _boom(*a, **k):
-            raise AssertionError("discover_model_services must not run in provider mode")
-
-        monkeypatch.setattr(cli_mod, "discover_model_services", _boom)
+        uc_calls: list = []
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: uc_calls.append((w, t)) or ({}, uc_models, [], [], reason),
+        )
         codex_calls: list = []
         monkeypatch.setattr(
             cli_mod,
@@ -8291,10 +8487,12 @@ class TestConfigureSharedStateSkipDiscovery:
 
         state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
 
-        assert codex_calls == [(ws, "token")]
-        assert state["web_search_model"] == "databricks-gpt-5"
+        assert state["web_search_model"] == expected
+        assert uc_calls == [(ws, "token")]
+        assert codex_calls == ([] if uc_models else [(ws, "token")])
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+        assert "codex_models" not in state
 
 
 class TestConfigureSharedStateCopilotCatalog:

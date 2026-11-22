@@ -39,6 +39,7 @@ from ucode.agents import (
     configure_single_tool,
     configure_tool,
     ensure_bootstrap_dependencies,
+    ensure_minimum_version,
     ensure_provider_state,
     explicit_model_arg_value,
     install_databricks_ai_tools_for_agents,
@@ -46,6 +47,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_copilot_app_with_copilot,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -66,7 +68,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-from ucode.codex_config import is_codex_app_server_launch
+from ucode.codex_config import is_codex_app_server_launch, is_codex_interactive_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -861,15 +863,14 @@ def configure_shared_state(
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
     if skip_model_discovery:
-        # Provider mode: the agent routes through a Model Provider Service and
-        # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
+        # The agent uses its provider, but web search needs a hosted model. Prefer UC IDs
+        # so gateway-only models do not inherit legacy serving-endpoint names.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+                _, ws_models, _, _, _ = discover_model_services(workspace, token)
+                if not ws_models:
+                    ws_models, _ = discover_codex_models(workspace, token)
+            web_search_model = claude_agent.select_web_search_model(ws_models)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -2061,6 +2062,18 @@ def status() -> int:
             )
         if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
             rows.append(("VS Code", "off (workspace-managed)"))
+        if tool == AGENT_COPILOT:
+            from ucode.agents.desktop.setup import copilot_app_status
+
+            app_status = copilot_app_status(
+                effective_state,
+                provider=provider_service,
+                location=get_model_location(effective_state, tool),
+            )
+            if app_status:
+                rows.append(("GitHub Copilot app", app_status.row))
+                for warning in app_status.warnings:
+                    print_warning(warning)
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -2075,6 +2088,11 @@ def status() -> int:
         rows.append(("Endpoint", str(base_url or "not configured")))
         _print_status_panel(_agent_label(tool), rows)
 
+    if AGENT_COPILOT not in configured_tools:
+        from ucode.agents.desktop.setup import copilot_app_unconfigured_status
+
+        if pending := copilot_app_unconfigured_status():
+            _print_status_panel("GitHub Copilot app", [("Status", pending)])
     if not configured_tools:
         print_note("No coding agents are configured.")
     return 0
@@ -2170,6 +2188,13 @@ def revert() -> int:
         # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
         vscode_result = "failed"
+    from ucode.agents.desktop.setup import revert_copilot_app
+
+    try:
+        copilot_app_result = revert_copilot_app()
+    except OSError as exc:
+        print_warning(f"Could not revert the GitHub Copilot app: {exc}. Run ug revert again.")
+        copilot_app_result = "failed"
 
     results: dict[str, bool] = {
         # Antigravity's skills.json is shared with its app and IDE extensions, so revert
@@ -2204,6 +2229,7 @@ def revert() -> int:
         print_kv("Published agent configuration settings", published_agent_config_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
+    print_kv("GitHub Copilot app", copilot_app_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -3399,6 +3425,17 @@ def otel_proxy_cmd(
         raise typer.Exit(1) from None
 
 
+@app.command("copilot-app-restart", hidden=True)
+def copilot_app_restart_cmd(
+    target: Annotated[str, typer.Argument(help="The app to restart, as JSON from ug's plugin.")],
+) -> None:
+    """Restart the GitHub Copilot app once no chat in it is running a turn. ug's plugin for the
+    app starts this, detached, after it changed the app's Databricks models."""
+    from ucode.agents.desktop import copilot_app_restart
+
+    copilot_app_restart.main(target)
+
+
 @app.command("otel-headers", hidden=True)
 def otel_headers_cmd(
     host: Annotated[
@@ -4095,7 +4132,7 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     if not tool_args or explicit_prompt:
         return True
     if tool == AGENT_CODEX:
-        return is_codex_app_server_launch(tool_args)
+        return is_codex_interactive_launch(tool_args) or is_codex_app_server_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 
@@ -4682,6 +4719,12 @@ def _launch_tool(
                     routing_unavailable = codex_agent.minimum_version_error(
                         smart_routing_enabled=True
                     )
+                    if routing_unavailable:
+                        ensure_minimum_version(
+                            "codex",
+                            lambda: codex_agent.minimum_version_error(smart_routing_enabled=True),
+                        )
+                        routing_unavailable = None
                 except RuntimeError as exc:
                     routing_unavailable = str(exc)
             if routing_unavailable:
@@ -5025,7 +5068,11 @@ def _has_explicit_prompt(ctx: typer.Context) -> bool:
     if not isinstance(suffix, tuple):
         return False
     suffix_args = list(suffix)
-    return ctx.args == suffix_args and len(suffix_args) <= 1
+    return (
+        ctx.args == suffix_args
+        and len(suffix_args) <= 1
+        and (not suffix_args or not suffix_args[0].startswith("-"))
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -5725,6 +5772,15 @@ def configure(
             "Copilot Chat in VS Code.",
         ),
     ] = False,
+    no_copilot_app: Annotated[
+        bool,
+        typer.Option(
+            "--no-copilot-app",
+            hidden=True,
+            help="Don't add the Databricks models to the GitHub Copilot desktop app. By default, "
+            "configuring copilot also sets up the app when it is installed.",
+        ),
+    ] = False,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5850,6 +5906,7 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
+        request_copilot_app_with_copilot(not no_copilot_app)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

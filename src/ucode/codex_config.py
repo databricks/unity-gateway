@@ -15,6 +15,7 @@ from ucode.managed_files import OS, current_os, windows_codex_managed_settings_p
 from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
+_CONFIG_OPTIONS = {"-c", "--config"}
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
 # Codex keeps its hook-trust bookkeeping (each hook source's approved
 # ``trusted_hash``) under ``hooks.state`` in the user's ``config.toml`` and
@@ -203,11 +204,34 @@ def codex_config_args(config: dict) -> list[str]:
     return args
 
 
+def is_codex_interactive_launch(tool_args: list[str]) -> bool:
+    """Whether arguments leave no positionals after UG's model/config options."""
+    from ucode.agents.args import has_explicit_model_arg
+
+    index = 0
+    while index < len(tool_args):
+        arg = tool_args[index]
+        if arg == "--":
+            return index == len(tool_args) - 1
+        if arg.partition("=")[0] in {"-h", "--help", "-V", "--version", "--remote"}:
+            return False
+        if not arg.startswith("-") or arg == "-":
+            return False
+        takes_model_value = has_explicit_model_arg([arg]) and "=" not in arg
+        if arg in _CONFIG_OPTIONS or takes_model_value:
+            if index + 1 == len(tool_args):
+                return False
+            index += 2
+        else:
+            index += 1
+    return True
+
+
 def is_codex_app_server_launch(tool_args: list[str]) -> bool:
     """Whether the arguments run Codex's app-server, after any leading ``-c`` settings."""
     index = 0
     while index < len(tool_args):
-        if tool_args[index] in {"-c", "--config"} and index + 1 < len(tool_args):
+        if tool_args[index] in _CONFIG_OPTIONS and index + 1 < len(tool_args):
             index += 2
         elif tool_args[index].startswith("--config="):
             index += 1

@@ -1090,6 +1090,12 @@ def _iter_databricks_executables() -> list[str]:
         search_groups.append(
             ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
         )
+    from ucode.state import recorded_databricks_cli
+
+    # The GitHub Copilot app starts `ug auth-token` and `ug otel-headers` with a PATH that may
+    # lack the CLI's directory.
+    if recorded := recorded_databricks_cli():
+        search_groups.append([os.path.dirname(recorded)])
 
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
