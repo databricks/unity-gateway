@@ -740,7 +740,8 @@ for (const [routingDisabled, row] of [[true, ROUTE_VALIDATION_ROW], [false, ROUT
     on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: [], route_validations: [{ ...validation, routing_disabled: routingDisabled }] }) } }));
     await $.command.run(command);
     const ui = await $.ui.mount(pane);
-    expect(JSON.stringify(await ui.drawn())).toContain(`"label":"  2m ago  ${row.slice(0, 80 - 10 - 1)}…"`);
+    const shown = row.length > 70 ? `${row.slice(0, 69)}…` : row;
+    expect(JSON.stringify(await ui.drawn())).toContain(`"label":"  2m ago  ${shown}"`);
     await ui.unmount();
   });
 }
