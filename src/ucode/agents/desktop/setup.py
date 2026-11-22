@@ -292,6 +292,9 @@ def revert_desktop() -> str:
 
 
 COPILOT_APP_ENV = "UG_EXPERIMENTAL_COPILOT_APP"
+# The extension's own span export is off: the gateway traces every relayed call itself, with the
+# content, and these spans doubled its token counts. Set to turn the export back on for a comparison.
+COPILOT_APP_TRACING_ENV = "UG_COPILOT_APP_TRACING"
 
 _COPILOT_APP_LINUX_BINARY = Path("/usr/bin/github")
 _COPILOT_APP_WINDOWS_KEY = r"Software\GitHub Inc.\GitHub Copilot"
@@ -423,7 +426,9 @@ def copilot_app_plugin_config(
         app_providers=desired.plugin_app,
         owned_provider_ids=copilot_app.OWNED_PROVIDER_IDS,
         traces_endpoint=(
-            workspace.rstrip("/") + OTEL_TRACES_PATH if state.get("copilot_otel_tracing") else None
+            workspace.rstrip("/") + OTEL_TRACES_PATH
+            if state.get("copilot_otel_tracing") and env_bool(COPILOT_APP_TRACING_ENV)
+            else None
         ),
     )
 
@@ -700,12 +705,6 @@ def copilot_app_status(
             "`ug configure --agents copilot` again."
         )
     row = f"plugin {plugin_label}, models {_COPILOT_REGISTRATION_LABELS.get(registration, registration)}"
-    tracing = copilot_app_plugin.tracing_on()
-    if state.get("copilot_otel_tracing") or tracing:
-        row += f", tracing {'on' if tracing else 'off'}"
-    if state.get("copilot_otel_tracing") and not tracing:
-        warnings.append(
-            "This workspace traces Copilot, but ug's plugin for the GitHub Copilot app doesn't "
-            "export the app's traces yet. Run `ug configure --agents copilot` again."
-        )
+    if copilot_app_plugin.tracing_on():
+        row += ", tracing on"
     return CopilotAppStatus(row, tuple(warnings))
