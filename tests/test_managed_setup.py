@@ -83,6 +83,7 @@ def _full_manifest() -> dict:
             },
             "copilot": {
                 "vscode_integration_enabled": False,
+                "app_integration_enabled": False,
                 "model_config": {
                     "default_model": "system.ai.claude-opus-4-8",
                     "model_services": ["system.ai.claude-opus-4-8"],

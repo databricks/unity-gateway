@@ -200,10 +200,18 @@ def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
     return entry
 
 
-def _catalog(state: dict, provider: str | None, location: str | None) -> list[CopilotModel]:
-    """The models Copilot CLI would offer from the same source; raises when there are none."""
+def copilot_models(
+    state: dict,
+    provider: str | None = None,
+    location: str | None = None,
+    *,
+    agent: str = "VS Code",
+) -> list[CopilotModel]:
+    """The models of a Model Provider Service (``provider``), a ``<catalog>.<schema>``
+    (``location``) or the discovered catalog, as the Copilot CLI lists them; raises when there are
+    none. VS Code and the GitHub Copilot app both use it; ``agent`` names which in errors."""
     if provider:
-        return provider_service_catalog(state, provider, None, tool="vscode")
+        return provider_service_catalog(state, provider, None, tool="vscode", agent=agent)
     if location:
         return location_catalog(state, location)
     catalog = copilot_catalog(state)
@@ -213,7 +221,7 @@ def _catalog(state: dict, provider: str | None, location: str | None) -> list[Co
     if not catalog:
         reason = (state.get("_discovery_reasons") or {}).get("copilot")
         raise RuntimeError(
-            "No Claude, GPT, GLM, Kimi or DeepSeek models for VS Code "
+            f"No Claude, GPT, GLM, Kimi or DeepSeek models for {agent} "
             f"({reason or 'the workspace has none'})."
         )
     return catalog
@@ -223,7 +231,7 @@ def model_entries(
     state: dict, *, provider: str | None = None, location: str | None = None
 ) -> list[dict[str, object]]:
     """The models of the chosen source, each with the API the extension calls it on."""
-    return _entries(_catalog(state, provider, location), provider)
+    return _entries(copilot_models(state, provider, location), provider)
 
 
 def _entries(catalog: list[CopilotModel], provider: str | None) -> list[dict[str, object]]:
@@ -570,7 +578,7 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     try:
         seat_relay = bool(provider) and uses_seat_relay(state, cast(str, provider), tool="vscode")
         # A seat relay serves Copilot's own models, so the extension lists none of Databricks'.
-        catalog = [] if seat_relay else _catalog(state, provider, location)
+        catalog = [] if seat_relay else copilot_models(state, provider, location)
     except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(f"{exc} VS Code was left unchanged.")

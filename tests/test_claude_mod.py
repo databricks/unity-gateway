@@ -108,6 +108,26 @@ def test_native_subagent_statusline_command(tmp_path):
             "content": "Otter · Latestprogress[31m · 2,345 tokens · 0s",
         }
     ]
+    display_label = "Otter — selected-model"
+    (names / "agent-child-a.json").write_text(
+        json.dumps(
+            {"session_id": "s1", "name": display_label, "description": "Otter — prelaunch-model"}
+        )
+    )
+    for label, suffix in (
+        (display_label, ""),
+        ("Otter — prelaunch-model", ""),
+        ("Reading files", " · Reading files"),
+        (None, ""),
+    ):
+        task["description"] = "Otter — prelaunch-model"
+        payload["tasks"] = [{**task, "id": "child-a", "label": label}]
+        assert render(payload) == [
+            {
+                "id": "child-a",
+                "content": f"{display_label}{suffix} · 1,234 tokens · 0s",
+            }
+        ]
     for invalid in (None, [], {}, {"session_id": "s1", "tasks": None}):
         assert render(invalid) == []
 

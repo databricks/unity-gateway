@@ -145,7 +145,6 @@ def route_pre_tool_use(
             attribution_headers=attribution,
             **({"provider": provider} if provider else {}),
         ),
-        default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
         notice_config=replace(
             SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix, show_message=show_notice

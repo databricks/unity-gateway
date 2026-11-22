@@ -1176,13 +1176,18 @@ class TestBuildRuntimeEnv:
         assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in env
         assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
 
-    def test_without_tracing_keeps_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+    def test_without_tracing_drops_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer other")
+        monkeypatch.setenv("COPILOT_OTEL_ENABLED", "true")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ml")
 
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
 
-        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
+        assert "OTEL_EXPORTER_OTLP_HEADERS" not in env
         assert "COPILOT_OTEL_ENABLED" not in env
+        assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
 
 
 class TestSessionRegistry:
@@ -2197,7 +2202,11 @@ class TestSeatRelay:
         assert "OTEL_EXPORTER_OTLP_HEADERS" not in traced
         assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in traced
         assert "COPILOT_OTEL_ENABLED" not in untraced
-        assert untraced["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example"
+        assert not any(key.startswith(copilot._INHERITED_OTEL_PREFIXES) for key in untraced)
+
+    def test_keep_inherited_otel_is_exclusive_with_tracing(self):
+        with pytest.raises(ValueError):
+            copilot.seat_relay_env("u", mcp_host=None, tracing=True, keep_inherited_otel=True)
 
     def test_relay_serves_copilots_otel_path(self):
         from ucode import copilot_relay
@@ -2282,6 +2291,22 @@ class TestSeatRelay:
         assert seen["env"]["COPILOT_API_URL"].startswith("http://127.0.0.1:")
         assert seen["unsigned_status"] == 401
         assert capsys.readouterr().out == ""
+
+    def test_vscode_runtime_keeps_the_otel_settings_vscode_gave_it(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+        monkeypatch.setenv("COPILOT_OTEL_ENABLED", "true")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318/vscode")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:4318/t")
+        monkeypatch.setenv("COPILOT_PROVIDER_BASE_URL", "https://byok.example")
+        seen = _stub_seat_launch(monkeypatch)
+
+        copilot.run_seat_runtime(dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", [])
+
+        assert seen["env"]["COPILOT_OTEL_ENABLED"] == "true"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:4318/vscode"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://127.0.0.1:4318/t"
+        assert "COPILOT_PROVIDER_BASE_URL" not in seen["env"]
 
     def test_vscode_runtime_that_cant_start_reports_it_on_stderr(
         self, tmp_path, monkeypatch, capsys

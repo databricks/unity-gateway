@@ -40,7 +40,7 @@ on:
         required: true
       vscode_version:
         description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux and Windows lane)
-        default: 1.144.0
+        default: 1.147.0
         required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
@@ -67,7 +67,7 @@ env:
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
-  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}
+  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
   CLAUDE_DESKTOP_WINDOWS_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
   CLAUDE_DESKTOP_WINDOWS_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9

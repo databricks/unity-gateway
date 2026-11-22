@@ -96,6 +96,12 @@ def test_managed_integration_ci_is_blocking():
     assert baseline | routing == _collect_integration_cases(
         "(managed_fixture or workspace_switch) and codex and not soft_fail"
     )
+    equals_model_case = (
+        "test_ug_codex_v2_routing.py::"
+        "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+    )
+    assert equals_model_case not in baseline
+    assert equals_model_case in routing
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
     )
@@ -160,7 +166,8 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert "shasum -a 256 -c" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -178,7 +185,8 @@ def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
     assert "-ne $env:CHATGPT_APP_SHA256" in job
     assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn"
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn",
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_skill_calls_mcp",
     }
 
 
@@ -199,7 +207,8 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
     assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_skill_calls_mcp",
     }
 
 
@@ -273,8 +282,17 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         routing = _collect_integration_cases(
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
+        managed_routing = _collect_integration_cases(
+            _ci_marker_expression(jobs["managed"], agent, smart_routing=True)
+        )
         assert not (smoke | full) & routing
-        for model_option in ("saved", "split", "equals"):
+        equals_model_case = (
+            "test_ug_codex_v2_routing.py::"
+            "test_ug_codex_native_v2_plain_assignment_routing[managed-equals]"
+        )
+        assert equals_model_case not in routing
+        assert equals_model_case in managed_routing
+        for model_option in ("saved", "split"):
             assert (
                 "test_ug_codex_v2_routing.py::test_ug_codex_native_v2_plain_assignment_routing"
                 f"[{model_option}]" in routing
@@ -1628,7 +1646,7 @@ def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
     workflow = WORKFLOW.read_text()
     jobs = _integration_jobs()
     job = jobs["vscode"]
-    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}" in workflow
+    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}" in workflow
     assert (
         'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
         in workflow
@@ -1661,3 +1679,42 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
         '              --vscode-sha256 "$VSCODE_SHA256")'
     ) in harness
     assert "if: ${{ matrix.suite == 'vscode' }}" in harness
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize(
+    ("lint", "unit", "vscode", "passes"),
+    [
+        ("success", "success", "success", True),
+        ("failure", "success", "success", False),
+        ("skipped", "success", "success", False),
+        ("cancelled", "success", "success", False),
+        ("success", "failure", "success", False),
+        ("success", "success", "failure", False),
+    ],
+)
+def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    assert "    needs: [lint, test, vscode-extension]\n" in required
+    script = required.split("        run: |", 1)[1]
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env={**os.environ, "LINT_RESULT": lint, "RESULT": unit, "VSCODE_EXTENSION_RESULT": vscode},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_integration_requires_a_passing_security_gate():
+    # `!cancelled()` alone would let integration receive secrets after a failed scan.
+    integration = (
+        _workflow("ci.yml").split("\n  integration:\n", 1)[1].split("\n  required-tests:\n")[0]
+    )
+    condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
+    assert "needs.security-gate.result == 'success'" in condition
+    assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
