@@ -66,6 +66,7 @@ export const READ_TIMEOUT_MS = 600_000;
 export const KEEP_ALIVE_TIMEOUT_MS = 120_000;
 export const GITHUB_MISS_TTL_MS = 60_000;
 export const GITHUB_LOOKUP_TIMEOUT_MS = 10_000;
+export const HOST_CACHE_ENTRIES = 64;
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
 const GATEWAY_DENIAL_BODY_LIMIT = 64 * 1024;
 const GENERIC_GATEWAY_DENIAL = "Unity Gateway denied this request. Check your access to the model.";
@@ -314,15 +315,24 @@ export function createCopilotHostResolver({
   now = Date.now,
   missTtlMs = GITHUB_MISS_TTL_MS,
   timeoutMs = GITHUB_LOOKUP_TIMEOUT_MS,
+  maxEntries = HOST_CACHE_ENTRIES,
 } = {}) {
   const hosts = new Map();
   const missedAt = new Map();
+
+  // GitHub MCP is served without the secret, so any local caller can add entries.
+  function remember(map, key, value) {
+    map.delete(key);
+    map.set(key, value);
+    if (map.size > maxEntries) map.delete(map.keys().next().value);
+  }
 
   async function fromGitHub(authorization) {
     const credential = authorization.slice("Bearer ".length);
     if (!GITHUB_LOOKUP_PREFIXES.some((prefix) => credential.startsWith(prefix))) return null;
     const headers = { authorization, accept: "application/json" };
     if (userAgent) headers["user-agent"] = userAgent;
+    let reply;
     try {
       const { response } = startUpstream(new URL(userUrl), {
         method: "GET",
@@ -330,7 +340,7 @@ export function createCopilotHostResolver({
         connectTimeoutMs: timeoutMs,
         readTimeoutMs: timeoutMs,
       });
-      const reply = await response;
+      reply = await response;
       reply.on("error", () => {});
       if (reply.statusCode !== 200) {
         reply.resume();
@@ -339,6 +349,7 @@ export function createCopilotHostResolver({
       const payload = JSON.parse((await readBody(reply, GATEWAY_DENIAL_BODY_LIMIT)).toString("utf8"));
       return copilotApiHost(payload?.endpoints?.api);
     } catch {
+      reply?.destroy();
       return null;
     }
   }
@@ -351,10 +362,10 @@ export function createCopilotHostResolver({
     if (missed !== undefined && now() - missed < missTtlMs) return fallback(authorization);
     const host = askGitHub ? await fromGitHub(authorization) : null;
     if (!host) {
-      missedAt.set(key, now());
+      remember(missedAt, key, now());
       return fallback(authorization);
     }
-    hosts.set(key, host);
+    remember(hosts, key, host);
     missedAt.delete(key);
     return host;
   };

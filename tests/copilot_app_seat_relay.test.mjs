@@ -724,6 +724,47 @@ test("the host resolver treats an unreachable GitHub as a miss", async () => {
   assert.equal(await resolve("Bearer gho_a"), null);
 });
 
+test("the host resolver remembers a bounded number of credentials", async () => {
+  const github = new Upstream();
+  await github.listen();
+  github.reply = (req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ endpoints: { api: "https://api.business.githubcopilot.com" } }));
+  };
+  const resolve = createCopilotHostResolver({ userUrl: `${github.base}/user`, maxEntries: 2 });
+  try {
+    for (const credential of ["gho_a", "gho_b", "gho_c", "gho_c", "gho_b"]) {
+      assert.equal(await resolve(`Bearer ${credential}`), HOST);
+    }
+    assert.equal(github.requests.length, 3);
+    assert.equal(await resolve("Bearer gho_a"), HOST);
+    assert.equal(github.requests.length, 4);
+  } finally {
+    await github.close();
+  }
+});
+
+test("the host resolver drops an oversized GitHub answer's connection", async () => {
+  const github = new Upstream();
+  await github.listen();
+  github.reply = (req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write(Buffer.alloc(70 * 1024, 32));
+  };
+  const resolve = createCopilotHostResolver({
+    userUrl: `${github.base}/user`,
+    timeoutMs: 5000,
+    fallback: async () => null,
+  });
+  try {
+    assert.equal(await resolve("Bearer gho_a"), null);
+    for (let waited = 0; !github.last.closed && waited < 1000; waited += 10) await delay(10);
+    assert.equal(github.last.closed, true);
+  } finally {
+    await github.close();
+  }
+});
+
 test("loadSystemCertificates merges the system store once the API exists", () => {
   let set = null;
   const modern = {
