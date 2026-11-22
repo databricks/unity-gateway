@@ -587,7 +587,13 @@ class TestLaunchCodex:
             "--config",
             'tui.status_line_provider={server = "ug-smart-router-statusline", tool = "statusline"}',
         ]
-        expected_tui_args = [*statusline_args, *expected_tui_args]
+        feature_args = [
+            arg
+            for value in config_values
+            if value.startswith("features.")
+            for arg in ("--config", value)
+        ]
+        expected_tui_args = [*feature_args, *statusline_args[2:], *expected_tui_args]
         assert statusline_args[1] in config_values
         assert statusline_args[3] in config_values
         server_config = next(

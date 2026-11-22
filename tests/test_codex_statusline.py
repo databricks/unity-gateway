@@ -40,11 +40,19 @@ def test_launch_config_pins_session_without_credentials(tmp_path):
     }
 
 
-def test_terminal_config_contains_only_feature_and_selection(tmp_path):
+def test_terminal_config_preserves_launch_features_without_server_settings(tmp_path):
     config = statusline.launch_config(tmp_path / "controls.json")
+    config["features"] = {"multi_agent_v2": {"subagent_usage_hint_text": "child hint"}}
+    config["features.hooks"] = True
+    config["features.multi_agent_v2.non_code_mode_only"] = False
+    config["features.multi_agent_v2.root_agent_usage_hint_text"] = "root hint"
     config["server_only"] = "private"
     assert statusline.tui_config(config) == {
         "features.tui_extensions_statusline": True,
+        "features": {"multi_agent_v2": {"subagent_usage_hint_text": "child hint"}},
+        "features.hooks": True,
+        "features.multi_agent_v2.non_code_mode_only": False,
+        "features.multi_agent_v2.root_agent_usage_hint_text": "root hint",
         "tui.status_line_provider": {
             "server": statusline.SERVER_NAME,
             "tool": statusline.TOOL_NAME,
