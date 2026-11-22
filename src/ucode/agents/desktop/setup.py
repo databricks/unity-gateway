@@ -28,7 +28,11 @@ from ucode.agents.desktop.claude import (
 )
 from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert_code, revert_cowork
 from ucode.config_io import is_dry_run
-from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
+from ucode.constants import (
+    COPILOT_APP_ENV,
+    MODEL_PROVIDER_SERVICE_HEADER,
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+)
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
 from ucode.env import env_bool
 from ucode.managed_files import OS, ManagedFileWriteUnavailable, current_os, machine_wide_only
@@ -290,8 +294,6 @@ def revert_desktop() -> str:
         return "removed"
     return "skipped" if "skipped" in results else "unchanged"
 
-
-COPILOT_APP_ENV = "UG_EXPERIMENTAL_COPILOT_APP"
 
 _COPILOT_APP_LINUX_BINARY = Path("/usr/bin/github")
 _COPILOT_APP_WINDOWS_KEY = r"Software\GitHub Inc.\GitHub Copilot"

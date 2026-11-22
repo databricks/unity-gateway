@@ -19,7 +19,7 @@ from rich.table import Table
 
 from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import read_json_safe, read_toml_safe
-from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
+from ucode.constants import COPILOT_APP_ENV, MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     _MCP_SERVICES_WALK_DEADLINE_SECONDS,
     _MCP_SERVICES_WALK_TIMEOUT_REASON,
@@ -40,6 +40,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.env import env_bool
 from ucode.managed_config import MCP_SOURCE_NAME, MCP_SOURCE_SCHEMA, mcp_source_kind
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
@@ -137,6 +138,16 @@ MCP_CLIENTS = {
         "list_command": "agy mcp list",
     },
 }
+
+
+def client_display(client: str) -> str:
+    """An MCP client's name in messages. Configuring Copilot also sets up VS Code, and the desktop
+    app while its integration is on."""
+    if client == "copilot" and env_bool(COPILOT_APP_ENV):
+        return "GitHub Copilot (CLI, VS Code and app)"
+    return str(MCP_CLIENTS[client]["display"])
+
+
 # These clients read their user MCP files on every supported OS. UG can write those files
 # directly, including when a desktop app exists without a CLI on PATH.
 CONFIG_WRITABLE_MCP_CLIENTS: dict[str, Callable[[], Path]] = {
@@ -560,7 +571,7 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
             try:
                 removed_scopes = remove_client_mcp_server(client, name)
             except RuntimeError as exc:
-                display = MCP_CLIENTS[client]["display"]
+                display = client_display(client)
                 print_warning(f"Could not remove MCP server `{name}` from {display}: {exc}")
                 continue
             results[client] = bool(removed_scopes) or results.get(client, False)
@@ -2327,7 +2338,7 @@ def setup_mcp_clients(
 
     if not quiet:
         print_section(section)
-        client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
+        client_names = ", ".join(client_display(client) for client in clients)
         print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
@@ -2644,7 +2655,7 @@ def _mcp_change_summary(added: list[str], removed: list[str], clients: list[str]
     """Human-readable one-liner describing what the MCP add/replace flow just saved, e.g.
     `Added 2, removed 1 MCP server across Claude Code, Codex`. Falls back to a
     plain `Saved` when only client bindings changed (no add/remove)."""
-    client_names = ", ".join(str(MCP_CLIENTS[c]["display"]) for c in clients if c in MCP_CLIENTS)
+    client_names = ", ".join(client_display(c) for c in clients if c in MCP_CLIENTS)
     parts: list[str] = []
     if added:
         parts.append(f"added {len(added)}")
@@ -2667,7 +2678,7 @@ def _prompt_for_mcp_removal(servers: list[dict]) -> list[str] | None:
         name = _server_name(server)
         if not name:
             continue
-        on_clients = [str(MCP_CLIENTS[c]["display"]) for c in _mcp_server_clients(server)]
+        on_clients = [client_display(c) for c in _mcp_server_clients(server)]
         title = f"{name} ({', '.join(on_clients)})" if on_clients else name
         choices.append(questionary.Choice(title=title, value=name, checked=False))
     if not choices:
@@ -3245,7 +3256,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     )
     # Only mention the enabled/disabled caveat for the agents actually probed through their CLI.
     config_state_clients = [
-        MCP_CLIENTS[client].get("cli_display", MCP_CLIENTS[client]["display"])
+        MCP_CLIENTS[client].get("cli_display", client_display(client))
         for client in ("codex", "copilot")
         if client in probe_clients and client not in config_only
     ]

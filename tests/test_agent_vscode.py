@@ -126,7 +126,7 @@ class TestConfigure:
         assert (
             f"VS Code extension: installed {vscode.EXTENSION_ID} {VERSION} with 2 models" in printed
         )
-        assert "Next, in VS Code: 1. " in printed
+        assert "In VS Code: " in printed
 
     def test_models_with_the_same_label_show_their_ids(self, code):
         discovered = copilot.build_copilot_catalog(
@@ -405,8 +405,8 @@ class TestSeatRelay:
         assert self._wrapper().stat().st_mode & 0o777 == 0o700
         printed = _printed(capsys)
         assert f"routing Copilot through {self.SEATS}" in printed
-        assert "No restart is needed" in printed
-        assert "Quit VS Code" not in printed
+        assert "sign in to GitHub Copilot, then start a chat in a Copilot session" in printed
+        assert "quit VS Code" not in printed
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
@@ -894,18 +894,18 @@ class TestNextSteps:
     @pytest.mark.parametrize(
         ("system", "restart"),
         [
-            (OS.MACOS, "Quit VS Code with Cmd+Q, even if no window is open, and open it again."),
-            (OS.WINDOWS, "Close every VS Code window and open VS Code again."),
-            (OS.LINUX, "Close every VS Code window and open VS Code again."),
+            (OS.MACOS, "quit VS Code with Cmd+Q, even if no window is open, and open it again"),
+            (OS.WINDOWS, "close every VS Code window and open VS Code again"),
+            (OS.LINUX, "close every VS Code window and open VS Code again"),
         ],
     )
     def test_says_how_to_restart_on_the_os(self, monkeypatch, system, restart):
         monkeypatch.setattr(vscode, "current_os", lambda: system)
 
-        assert vscode.next_steps() == [
-            f"1. {restart}",
-            "2. Open Chat, click the model picker, and choose a Databricks model.",
-        ]
+        assert vscode.next_steps() == (
+            f"In VS Code: {restart}, then open Chat, click the model picker and choose a Databricks "
+            "model."
+        )
 
 
 class TestAuthCommand:

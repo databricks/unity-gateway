@@ -54,7 +54,7 @@ from ucode.databricks import build_auth_shell_command, ug_binary
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
-from ucode.ui import console, print_heading, print_kv, print_note, print_warning
+from ucode.ui import print_kv, print_note, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
@@ -544,26 +544,23 @@ def auth_command(state: dict) -> str:
     )
 
 
-def next_steps(*, seat_relay: bool = False) -> list[str]:
+def next_steps(*, seat_relay: bool = False) -> str:
     """What to do in VS Code once the extension is installed, for this OS."""
     if seat_relay:
-        # VS Code restarts its Copilot runtime when the setting changes.
-        return [
-            "1. Open Chat and sign in to GitHub Copilot. No restart is needed.",
-            "2. Start a new chat in a Copilot session (not Local), and choose a model.",
-        ]
+        # VS Code restarts its Copilot runtime itself when the setting changes.
+        return (
+            "In VS Code: open Chat, sign in to GitHub Copilot, then start a chat in a Copilot "
+            "session (not Local) and pick a model."
+        )
     restart = (
         # Closing every window leaves VS Code running on macOS.
-        "Quit VS Code with Cmd+Q, even if no window is open, and open it again."
+        "quit VS Code with Cmd+Q, even if no window is open, and open it again"
         if current_os() is OS.MACOS
-        else "Close every VS Code window and open VS Code again."
+        else "close every VS Code window and open VS Code again"
     )
-    return [
-        # A running VS Code keeps the extension build it loaded, even in a new window, and
-        # configure reinstalls every time.
-        f"1. {restart}",
-        "2. Open Chat, click the model picker, and choose a Databricks model.",
-    ]
+    # A running VS Code keeps the extension build it loaded, even in a new window, and configure
+    # reinstalls every time.
+    return f"In VS Code: {restart}, then open Chat, click the model picker and choose a Databricks model."
 
 
 def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
@@ -637,9 +634,7 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
         )
     else:
         print_kv("VS Code extension", f"{installed}, routing Copilot through {provider}")
-    print_heading("Next, in VS Code:")
-    for line in next_steps(seat_relay=seat_relay):
-        console.print(f"  {line}", highlight=False)
+    print_note(next_steps(seat_relay=seat_relay))
     return True
 
 
