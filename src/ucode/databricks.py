@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
@@ -1868,6 +1868,10 @@ class _MemoizedToken:
     error: str | None
     valid_until: float
     wall_valid_until: float
+    # Duration of the real fetch that populated this memo when no timed observation
+    # reported it (an untimed caller ran the fetch); the first timed caller that
+    # reuses the token reports it and the field is cleared.
+    unreported_fetch_ms: float | None = None
 
 
 _TOKEN_MEMO: dict[tuple[str, str | None], _MemoizedToken] = {}
@@ -1947,6 +1951,7 @@ def _remember_token(
     lifetime_s: float | None,
     *,
     _token_epoch: int | None = None,
+    unreported_fetch_ms: float | None = None,
 ) -> None:
     ttl = (
         lifetime_s - _TOKEN_MEMO_EXPIRY_MARGIN_S
@@ -1962,7 +1967,22 @@ def _remember_token(
             # token behind for subsequent non-forced callers.
             _TOKEN_MEMO.pop(key, None)
             return
-        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl, time.time() + ttl)
+        _TOKEN_MEMO[key] = _MemoizedToken(
+            token, None, time.monotonic() + ttl, time.time() + ttl, unreported_fetch_ms
+        )
+
+
+def _take_unreported_fetch_duration(
+    key: tuple[str, str | None], entry: _MemoizedToken
+) -> float | None:
+    """Return the memo entry's unreported fetch duration once, clearing it so the
+    first timed caller that reuses an untimed fetch's token reports that fetch's
+    duration as the launch's cache miss and later callers report plain hits."""
+    with _TOKEN_MEMO_LOCK:
+        if _TOKEN_MEMO.get(key) is not entry or entry.unreported_fetch_ms is None:
+            return None
+        _TOKEN_MEMO[key] = replace(entry, unreported_fetch_ms=None)
+        return entry.unreported_fetch_ms
 
 
 def _remember_token_failure(
@@ -2067,6 +2087,8 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool = True,
+    untimed: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -2078,10 +2100,11 @@ def _get_databricks_token_for_profile(
                 f"profile={profile or '<none>'}",
             )
             if memoized.token:
-                metrics.annotate(in_process_cache_hit=True)
+                if not untimed:
+                    _annotate_fetched_token(memo_key, memoized)
                 return memoized.token
             if not browser_login:
-                raise RuntimeError(memoized.error)
+                raise DatabricksLoginRequiredError(memoized.error)
 
     # The second memo check is required after waiting for another caller's
     # fetch. The lock is per workspace/profile, so unrelated profiles proceed.
@@ -2095,17 +2118,33 @@ def _get_databricks_token_for_profile(
                     f"profile={profile or '<none>'}",
                 )
                 if memoized.token:
-                    metrics.annotate(in_process_cache_hit=True)
+                    if not untimed:
+                        _annotate_fetched_token(memo_key, memoized)
                     return memoized.token
                 if not browser_login:
-                    raise RuntimeError(memoized.error)
+                    raise DatabricksLoginRequiredError(memoized.error)
         token_epoch = _token_cache_epoch()
         return _fetch_databricks_token_for_profile(
             workspace,
             profile,
             force_refresh=force_refresh,
             browser_login=browser_login,
+            allow_reauth=allow_reauth,
             token_epoch=token_epoch,
+            record_unreported_duration=untimed,
+        )
+
+
+def _annotate_fetched_token(memo_key: tuple[str, str | None], memoized: _MemoizedToken) -> None:
+    """Label the caller's timed observation for a token reused from the memo. A token
+    minted by an untimed caller (the launch's speculation) reports that fetch's real
+    duration as the cache miss instead of this call's near-instant cache hit."""
+    duration_ms = _take_unreported_fetch_duration(memo_key, memoized)
+    if duration_ms is None:
+        metrics.annotate(in_process_cache_hit=True)
+    else:
+        metrics.record_awaited_duration(
+            metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, round(duration_ms)
         )
 
 
@@ -2115,7 +2154,9 @@ def _fetch_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool = True,
     token_epoch: int,
+    record_unreported_duration: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -2143,6 +2184,7 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
+    fetch_started = time.perf_counter() if record_unreported_duration else None
 
     def _fetch() -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
@@ -2197,7 +2239,7 @@ def _fetch_databricks_token_for_profile(
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
         token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
-    elif not token and _auth_login_supports_no_browser(cli):
+    elif not token and allow_reauth and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -2247,22 +2289,55 @@ def _fetch_databricks_token_for_profile(
                 )
         # A forced refresh is a retry after a rejected token; its failure must not
         # shadow an earlier token that non-forced callers may still be using.
-        if not force_refresh and not transient_failure:
+        if not force_refresh and not transient_failure and allow_reauth:
+            # A skipped re-auth (the speculative non-interactive fetch) must not memoize the
+            # failure: configure's own fetch then never attempts `auth login --no-browser`.
             _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
-        raise RuntimeError(error)
-    _remember_token(memo_key, token, lifetime_s, _token_epoch=token_epoch)
+        if transient_failure:
+            raise RuntimeError(error)
+        # The CLI identified a credential failure (`invalid_grant`, no cached credentials,
+        # ...): `databricks auth login` fixes it, so best-effort callers treat it as an
+        # expected miss instead of a hard failure.
+        raise DatabricksLoginRequiredError(error)
+    _remember_token(
+        memo_key,
+        token,
+        lifetime_s,
+        _token_epoch=token_epoch,
+        unreported_fetch_ms=(
+            (time.perf_counter() - fetch_started) * 1000 if fetch_started is not None else None
+        ),
+    )
     return token
 
 
-@metrics.timed(
-    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
-)
-def get_databricks_token(
+def fetch_databricks_token_untimed(
     workspace: str,
     profile: str | None = None,
+) -> str:
+    """The undecorated token fetch: the same implementation
+    :func:`get_databricks_token` times and reports, for callers that must stay out of the
+    token-fetch metrics (a failed best-effort fetch is reported by its own handler, not as
+    a hard failure here). It never re-auths or opens a browser, and a credential failure
+    raises :class:`DatabricksLoginRequiredError`."""
+    return _fetch_databricks_token(
+        workspace,
+        profile,
+        force_refresh=False,
+        browser_login=False,
+        allow_reauth=False,
+        untimed=True,
+    )
+
+
+def _fetch_databricks_token(
+    workspace: str,
+    profile: str | None,
     *,
-    force_refresh: bool = False,
-    browser_login: bool = False,
+    force_refresh: bool,
+    browser_login: bool,
+    allow_reauth: bool,
+    untimed: bool,
 ) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -2297,10 +2372,39 @@ def get_databricks_token(
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
+        allow_reauth=allow_reauth,
+        untimed=untimed,
     )
 
     metrics.bind(workspace, token)
     return token
+
+
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
+def get_databricks_token(
+    workspace: str,
+    profile: str | None = None,
+    *,
+    force_refresh: bool = False,
+    browser_login: bool = False,
+) -> str:
+    """Fetch the workspace's Databricks token, timing and reporting the fetch.
+
+    Best-effort callers that handle their own failures call
+    :func:`fetch_databricks_token_untimed` instead, so a recovered speculation is not
+    counted as a hard token-fetch failure and reports no duration observation of its
+    own; the timed caller that reuses its token reports the fetch's duration as the
+    launch's cache miss. Only the untimed path skips the non-interactive re-auth."""
+    return _fetch_databricks_token(
+        workspace,
+        profile,
+        force_refresh=force_refresh,
+        browser_login=browser_login,
+        allow_reauth=True,
+        untimed=False,
+    )
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
@@ -2329,6 +2433,13 @@ class PermissionDeniedError(RuntimeError):
     denial for a consumer."""
 
 
+class DatabricksLoginRequiredError(RuntimeError):
+    """The Databricks CLI has no usable cached credentials for the workspace, so
+    `databricks auth login` fixes it. The token fetch raises this instead of a plain
+    RuntimeError when the CLI itself identified the credential failure, so best-effort
+    callers can treat it as an expected miss rather than a hard failure."""
+
+
 class AuthTokenError(RuntimeError):
     """The workspace rejected the access token *itself* — expired or invalid — as
     opposed to a valid identity missing a grant (:class:`PermissionDeniedError`).
@@ -2342,7 +2453,7 @@ class AuthTokenError(RuntimeError):
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
     """Raise a concise auth error for a rejected token; ignore other failures."""
-    if reason and _looks_like_definitive_auth_failure(reason):
+    if reason and looks_like_definitive_auth_failure(reason):
         raise AuthTokenError("Your access token is expired or invalid.")
 
 
@@ -4259,7 +4370,7 @@ def list_all_mcp_services(
             or (cancel_event is not None and cancel_event.is_set())
         ):
             return fast_names, fast_reason
-        if _looks_like_definitive_auth_failure(fast_reason):
+        if looks_like_definitive_auth_failure(fast_reason):
             return [], fast_reason
 
     def probe(catalog, schema):
@@ -4655,7 +4766,7 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     reason = model_service_probe.detail
     if isinstance(reason, WorkspaceSelectionReason):
         raise RuntimeError(reason)
-    if _looks_like_definitive_auth_failure(reason):
+    if looks_like_definitive_auth_failure(reason):
         _raise_unity_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):
         _raise_unity_gateway_scope_failure(workspace, reason)
@@ -4693,7 +4804,7 @@ def _looks_like_transient_failure(reason: str) -> bool:
     return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
 
 
-def _looks_like_definitive_auth_failure(reason: str) -> bool:
+def looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
     Matches a 401, an invalid-token 400 (the Unity Gateway's `Invalid Token`), or a
