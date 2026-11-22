@@ -679,8 +679,6 @@ def copilot_app_status(
     when ug doesn't set the app up."""
     if not copilot_app_enabled():
         return None
-    if state.get("copilot_app_integration") is False:
-        return CopilotAppStatus("off (workspace-managed)")
     _cleanup_copilot_app_leftover()
     plugin_status = copilot_app_plugin.status()
     if plugin_status == "not_installed" and not copilot_app_installed():

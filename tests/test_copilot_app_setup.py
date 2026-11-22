@@ -294,12 +294,7 @@ class TestConfigureCopilotApp:
 
         assert plugin.status() == "installed"
 
-    def test_opt_out_and_a_missing_app_skip_it(self, monkeypatch):
-        agents_mod.request_copilot_app_with_copilot(False)
-        try:
-            agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-        finally:
-            agents_mod.request_copilot_app_with_copilot(True)
+    def test_a_missing_app_skips_it(self, monkeypatch):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
         agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
 
@@ -310,47 +305,10 @@ class TestConfigureCopilotApp:
         monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP")
 
         agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-        agents_mod.configure_copilot_app(
-            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
-        )
 
         assert not plugin.plugin_root().exists()
         assert app.received == []
         assert desktop_setup.copilot_app_status(STATE, provider=None, location=None) is None
-
-    def test_managed_off_switch_removes_the_plugin_and_providers(self, app, capsys):
-        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
-        _register(app)
-
-        agents_mod.configure_copilot_app(
-            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
-        )
-
-        assert plugin.status() == "not_installed"
-        assert app.providers == {}
-        assert "turns off the GitHub Copilot app" in _out(capsys)
-
-    def test_managed_off_switch_warns_when_the_removal_fails(self, monkeypatch, capsys):
-        monkeypatch.setattr(desktop_setup, "revert_copilot_app", lambda: "failed: refused")
-
-        agents_mod.configure_copilot_app(
-            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
-        )
-
-        out = _out(capsys)
-        assert "Could not remove ug's plugin from the GitHub Copilot app: refused" in out
-        assert "was removed" not in out
-
-    def test_managed_off_switch_reads_the_managed_config(self, monkeypatch):
-        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
-        monkeypatch.setattr(
-            "ucode.managed_config.load_managed_state",
-            lambda workspace: {"enabled_agents": {"copilot": {"app_integration_enabled": False}}},
-        )
-
-        agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-
-        assert plugin.status() == "removal_pending"
 
 
 class TestRemove:
@@ -528,12 +486,6 @@ class TestStatus:
 
         assert "hasn't been verified" not in capsys.readouterr().out
 
-    def test_managed_off(self):
-        result = self._status({**STATE, "copilot_app_integration": False})
-
-        assert result is not None
-        assert result.row == "off (workspace-managed)"
-
     def test_not_installed_and_never_set_up(self, monkeypatch):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
 
@@ -568,22 +520,6 @@ def test_a_recorded_databricks_cli_is_found_off_path(tmp_path, monkeypatch):
         databricks.clear_databricks_cli_cache()
 
 
-def test_configure_no_copilot_app_opts_out_for_the_run(monkeypatch):
-    from typer.testing import CliRunner
-
-    from ucode.cli import app
-
-    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
-    monkeypatch.setattr("ucode.cli.configure_workspace_command", lambda **kwargs: 0)
-
-    result = CliRunner().invoke(
-        app, ["configure", "--agents", "copilot", "--workspace", WS, "--no-copilot-app"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert agents_mod._copilot_app_with_copilot is False
-
-
 def test_a_missing_catalog_names_the_app():
     with pytest.raises(RuntimeError, match="models for the GitHub Copilot app"):
         real_copilot_models({"workspace": WS}, agent="the GitHub Copilot app")
@@ -601,9 +537,6 @@ def test_a_dry_run_changes_nothing(monkeypatch, app, capsys):
         {**STATE, "workspace": "https://other.cloud.databricks.com"},
         provider=None,
         parent_schema=None,
-    )
-    agents_mod.configure_copilot_app(
-        {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
     )
     assert desktop_setup.revert_copilot_app() == "unchanged (dry run)"
 
