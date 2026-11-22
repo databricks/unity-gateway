@@ -782,6 +782,23 @@ bypass `spawn_agent` have no guaranteed marker. Reserve `smart_router_state` for
 per-turn metadata; a static Codex `responses_api_metadata` entry with that name
 would override dynamic values.
 
+Routed Codex terminal sessions show `smart router` with a green `ON` or gray `OFF`
+badge beside the current model, directory, and remaining context. The indicator
+stays visible when routing is off, as Claude's prompt hint does. The MCP status-line
+provider API ships in stable Codex 0.171.0 and still requires its experimental
+feature flag, which UG supplies for that launch.
+
+The indicator reads the same session controls as routing on each refresh, including
+after `$smart-router off` and `$smart-router on`. Unreadable controls show
+`smart router UNKNOWN` until a later refresh succeeds. Each launch has its own
+local provider and controls file. UG enables and selects its footer for that launch
+only; saved status-line settings and other MCP servers are preserved. The selected
+footer replaces the normal footer's item layout for that session. This does not add
+an indicator to the Codex desktop app or other app-server clients.
+
+For validation and upgrade behavior, see
+[Codex Smart Router footer](docs/codex-smart-router-statusline.md).
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
