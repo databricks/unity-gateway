@@ -246,9 +246,6 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     vscode_enabled = agent_config.get("vscode_integration_enabled")
     if isinstance(vscode_enabled, bool):
         config["vscode_integration"] = {"enabled": vscode_enabled}
-    app_enabled = agent_config.get("app_integration_enabled")
-    if isinstance(app_enabled, bool):
-        config["app_integration"] = {"enabled": app_enabled}
     settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
         config["agent_native_settings"] = settings

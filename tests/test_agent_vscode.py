@@ -381,7 +381,7 @@ class TestSeatRelay:
 
     @staticmethod
     def _wrappers() -> list[Path]:
-        return list(vscode._wrapper_dir(insiders=False).glob("ug-copilot-runtime-*"))
+        return list(vscode._wrapper_dir(insiders=False).glob("ug-copilot-runtime*"))
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
@@ -500,6 +500,29 @@ class TestSeatRelay:
             vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"
         }
         assert not self._wrappers()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_an_earlier_builds_unhashed_wrapper_is_replaced_and_removed(self, code, seats, capsys):
+        old = vscode._wrapper_dir(insiders=False) / vscode.RUNTIME_WRAPPER_NAME
+        old.parent.mkdir(parents=True)
+        old.write_text("#!/bin/sh\n")
+        self._settings().parent.mkdir(parents=True)
+        self._settings().write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: str(old)}))
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert "doesn't replace" not in _printed(capsys)
+        assert not old.exists()
+        assert self._wrapper().name.startswith(f"{vscode.RUNTIME_WRAPPER_NAME}-")
+        assert self._wrappers() == [self._wrapper()]
+
+        self._settings().write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: str(old)}))
+        old.write_text("#!/bin/sh\n")
+        assert vscode.revert() == "removed"
+        assert json.loads(self._settings().read_text()) == {}
+        assert not old.exists()
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"

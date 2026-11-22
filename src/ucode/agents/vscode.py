@@ -328,13 +328,18 @@ def _is_runtime_wrapper(value: object, *, insiders: bool) -> bool:
     if not isinstance(value, str):
         return False
     path = Path(value)
-    return path.parent == _wrapper_dir(insiders=insiders) and path.name.startswith(
-        f"{RUNTIME_WRAPPER_NAME}-"
-    )
+    if path.parent != _wrapper_dir(insiders=insiders):
+        return False
+    # Earlier builds named the wrapper without the script's hash.
+    return path.name == RUNTIME_WRAPPER_NAME or path.name.startswith(f"{RUNTIME_WRAPPER_NAME}-")
 
 
 def _runtime_wrappers(*, insiders: bool) -> list[Path]:
-    return sorted(_wrapper_dir(insiders=insiders).glob(f"{RUNTIME_WRAPPER_NAME}-*"))
+    return sorted(
+        path
+        for path in _wrapper_dir(insiders=insiders).glob(f"{RUNTIME_WRAPPER_NAME}*")
+        if _is_runtime_wrapper(str(path), insiders=insiders)
+    )
 
 
 def wrapper_script(command: list[str], runtime: Path) -> str:

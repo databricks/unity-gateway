@@ -90,7 +90,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
-    monkeypatch.setattr(agents_mod, "_copilot_app_with_copilot", True)
     # Nor may any test touch the developer's shell profiles.
     monkeypatch.setattr(copilot_app_tracing_mod, "_home", lambda: tmp_path / "home")
     monkeypatch.setattr(

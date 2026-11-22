@@ -7,6 +7,14 @@ import { removeInBackground } from "./app-remove.mjs";
 import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
 import {
+  clearRedirect,
+  createSeatRedirect,
+  keepAliveOnErrors,
+  noteRedirect,
+  redirectSkipReason,
+} from "./app-seat-redirect.mjs";
+import { shutdownBeforeTerminating } from "./app-state.mjs";
+import {
   buildProviders,
   createTokenSource,
   hintFor,
@@ -34,7 +42,8 @@ async function withRetries(attempt) {
 if (config.remove) {
   const removal = withRetries(() => removeInBackground(config, syncOptions, logSyncFailure));
   try {
-    await joinSession();
+    const session = await joinSession();
+    await clearRedirect(session);
   } catch (error) {
     logSyncFailure(`Databricks models: couldn't join the session: ${error?.message ?? error}`);
   }
@@ -56,11 +65,31 @@ if (config.remove) {
     say(hint);
     return true;
   });
+  let redirect = null;
+  if (redirectSkipReason(config) === "sandboxed") {
+    noteRedirect(syncOptions.stateDir, { redirect: "sandboxed" });
+  }
+  try {
+    redirect = createSeatRedirect(config, { tokenSource, log: logSyncFailure, stateDir: syncOptions.stateDir });
+    await redirect?.listen();
+  } catch (error) {
+    logSyncFailure(`Databricks seat relay: not started: ${error?.message ?? error}`);
+    noteRedirect(syncOptions.stateDir, { redirect: "not started", error: String(error?.code ?? error?.message ?? error) });
+    redirect = null;
+  }
+  if (redirect) shutdownBeforeTerminating([(ms) => redirect.shutdown(ms)]);
   session = await joinSession({
     providers: buildProviders(config, bearerTokenProvider),
     models: config.models,
   });
+  // Before anything else: the first turn's calls must already go through.
+  if (redirect) {
+    if (await redirect.apply(session)) keepAliveOnErrors(logSyncFailure);
+  } else {
+    await clearRedirect(session);
+  }
   session.on((event) => {
+    redirect?.handle(event);
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();
     // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.

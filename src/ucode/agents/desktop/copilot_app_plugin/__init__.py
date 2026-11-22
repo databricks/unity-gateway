@@ -53,6 +53,8 @@ _SOURCE_FILES = (
     "app-remove.mjs",
     "app-restart.mjs",
     "app-state.mjs",
+    "app-seat-relay.mjs",
+    "app-seat-redirect.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -119,6 +121,12 @@ class PluginConfig:
     # Every provider id ug may have written to the app; the extension deletes those not in
     # ``app_providers``.
     owned_provider_ids: tuple[str, ...] = ()
+    # The relayed Model Provider Service the app's own GitHub Copilot calls go through; None
+    # leaves them direct.
+    seat_relay: str | None = None
+    # ug's own User-Agent (`ucode/<v> (<platform>)`); the relay puts the runtime's product tokens
+    # between the two, so the gateway attributes the call to Copilot at the runtime's version.
+    user_agent: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -232,12 +240,29 @@ def extension_config(config: PluginConfig) -> dict:
             "providers": [_app_entry(rows) for rows in config.app_providers],
             "ownedProviderIds": list(config.owned_provider_ids),
         },
+        "seatRelay": (
+            {
+                "gatewayBase": config.workspace.rstrip("/"),
+                "providerService": config.seat_relay,
+                "headers": dict(config.headers),
+                "userAgent": config.user_agent,
+                "askGitHub": True,
+            }
+            if config.seat_relay
+            else None
+        ),
     }
 
 
 # What the extension keeps between runs, in its own directory; a reinstall carries them over, so
 # an unchanged configure neither resyncs nor restarts the app.
-_EXTENSION_STATE_FILES = ("app-sync.json", "app-restart.json", "app-restart.log")
+_EXTENSION_STATE_FILES = (
+    "app-sync.json",
+    "app-restart.json",
+    "app-restart.log",
+    "seat-relay-sessions.json",
+    "seat-relay-requests.json",
+)
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
 # Older leftovers are from a run that crashed, never from one still writing.
@@ -469,6 +494,15 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     }
     _object(settings, _ENABLED_KEY, path)[PLUGIN_KEY] = True
     _write_settings(path, settings)
+
+
+def seat_relay_provider(root: Path | None = None) -> str | None:
+    """The relayed Model Provider Service the installed extension routes the app's GitHub Copilot
+    calls through, or None."""
+    config = _read_extension_config(root or plugin_root())
+    relay = config.get("seatRelay") if config is not None else None
+    service = relay.get("providerService") if isinstance(relay, dict) else None
+    return service if isinstance(service, str) and service else None
 
 
 def remove_headers_provider(settings_path: Path | None = None) -> bool:

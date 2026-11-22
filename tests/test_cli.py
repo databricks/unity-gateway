@@ -3599,24 +3599,6 @@ class TestStatus:
         assert "their turns fail without it" in output
         assert seen[0]["workspace"] == state["workspace"]
 
-    def test_status_shows_the_copilot_app_turned_off_by_managed_config(self, monkeypatch):
-        monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
-        state = {
-            **MINIMAL_STATE,
-            "available_tools": ["copilot"],
-            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
-        }
-        managed = {"enabled_agents": {"copilot": {"app_integration_enabled": False}}}
-        with (
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.load_managed_state", return_value=managed),
-        ):
-            result = runner.invoke(app, ["status"])
-
-        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert result.exit_code == 0, result.output
-        assert "GitHub Copilot app: off (workspace-managed)" in output
-
     def test_status_shows_a_pending_copilot_app_removal_after_revert(self):
         with (
             patch("ucode.cli.load_state", return_value={}),

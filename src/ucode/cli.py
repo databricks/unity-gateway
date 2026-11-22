@@ -47,7 +47,6 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
-    request_copilot_app_with_copilot,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -5677,15 +5676,6 @@ def configure(
             "Copilot Chat in VS Code.",
         ),
     ] = False,
-    no_copilot_app: Annotated[
-        bool,
-        typer.Option(
-            "--no-copilot-app",
-            hidden=True,
-            help="Don't add the Databricks models to the GitHub Copilot desktop app. By default, "
-            "configuring copilot also sets up the app when it is installed.",
-        ),
-    ] = False,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5807,7 +5797,6 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
-        request_copilot_app_with_copilot(not no_copilot_app)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
