@@ -2536,8 +2536,19 @@ def ug_binary() -> str:
     Agents persist the auth command into config files and re-run it on every
     token refresh, possibly from launchers without a full PATH (desktop GUIs).
     An absolute path keeps the helper working regardless of PATH. Falls back to
-    the bare name when resolution fails."""
-    return shutil.which("ug") or "ug"
+    the running launcher, then the bare name, when `ug` isn't on PATH."""
+    return shutil.which("ug") or running_launcher() or "ug"
+
+
+def running_launcher() -> str | None:
+    """The absolute path of the `ug` (or `ucode`) launcher this process was started from."""
+    launcher = Path(sys.argv[0]) if sys.argv and sys.argv[0] else None
+    if launcher is None or launcher.stem.lower() not in ("ug", "ucode"):
+        return None
+    for candidate in (launcher, launcher.with_name(f"{launcher.name}.exe")):
+        if candidate.is_file():
+            return str(candidate.absolute())
+    return None
 
 
 def build_auth_token_argv(

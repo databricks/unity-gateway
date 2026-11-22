@@ -6,6 +6,10 @@ import contextlib
 import json
 import os
 import signal
+import subprocess
+import sys
+import textwrap
+import time
 import uuid
 from pathlib import Path
 
@@ -2307,6 +2311,60 @@ class TestSeatRelay:
         assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:4318/vscode"
         assert seen["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://127.0.0.1:4318/t"
         assert "COPILOT_PROVIDER_BASE_URL" not in seen["env"]
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="only Windows leaves a terminated process's children up"
+    )
+    def test_windows_runtime_stops_when_the_wrapper_is_terminated(self, tmp_path):
+        watching, stopped = tmp_path / "watching", tmp_path / "stopped"
+        ug = textwrap.dedent(
+            f"""
+            import subprocess, sys
+            from ucode.agents import copilot
+            runtime = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            copilot._stop_with_wrapper(runtime)
+            open({str(watching)!r}, "w").close()
+            runtime.wait()
+            open({str(stopped)!r}, "w").close()
+            """
+        )
+        # The `ug.exe` launcher between the wrapper and ug's Python, which outlives the wrapper.
+        launcher = (
+            f"import subprocess, sys; sys.exit(subprocess.call([sys.executable, '-c', {ug!r}]))"
+        )
+        wrapper = textwrap.dedent(
+            f"""
+            import os, subprocess, sys, time
+            env = {{**os.environ, {copilot.RUNTIME_WRAPPER_PID_ENV!r}: str(os.getpid())}}
+            subprocess.Popen([sys.executable, "-c", {launcher!r}], env=env)
+            time.sleep(120)
+            """
+        )
+        process = subprocess.Popen([sys.executable, "-c", wrapper])
+        deadline = time.monotonic() + 60
+        while not watching.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert watching.exists()
+
+        # How VS Code stops the runtime: it terminates the process it started.
+        process.kill()
+        process.wait()
+
+        deadline = time.monotonic() + 30
+        while not stopped.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert stopped.exists()
+
+    def test_a_wrapper_pid_that_isnt_a_number_starts_no_watch(self, monkeypatch):
+        monkeypatch.setattr(copilot.sys, "platform", "win32")
+        monkeypatch.setenv(copilot.RUNTIME_WRAPPER_PID_ENV, "not-a-pid")
+
+        def no_thread(*args, **kwargs):
+            raise AssertionError("started a watch")
+
+        monkeypatch.setattr(copilot.threading, "Thread", no_thread)
+
+        copilot._stop_with_wrapper(object())
 
     def test_vscode_runtime_that_cant_start_reports_it_on_stderr(
         self, tmp_path, monkeypatch, capsys

@@ -16,7 +16,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .harness import process_group_options, stop_process
+from .harness import WindowsJob, process_group_options, stop_process
 
 FIRST_LAUNCH_TIMEOUT_S = 90
 STEP_TIMEOUT_S = 60
@@ -119,6 +119,7 @@ class VSCode:
         self.states: list[str] = []
         self.started = time.monotonic()
         self.copilot_session_ready = False
+        self.job: WindowsJob | None = None
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
@@ -135,7 +136,10 @@ class VSCode:
             app = session.which("code").resolve().parent.parent / (
                 "Code.exe" if os.name == "nt" else "code"
             )
-            self.code = subprocess.Popen(
+            if os.name == "nt":
+                self.job = WindowsJob()
+            start = self.job.popen if self.job else subprocess.Popen
+            self.code = start(
                 [
                     str(app),
                     "--no-sandbox",
@@ -204,6 +208,8 @@ class VSCode:
         for name in ("code", "display"):
             if proc := getattr(self, name, None):
                 stop_process(proc)
+        if job := getattr(self, "job", None):
+            job.close()
         if log := getattr(self, "log", None):
             log.close()
 
@@ -600,6 +606,13 @@ class VSCode:
             self.code.wait(timeout=STEP_TIMEOUT_S)
         except subprocess.TimeoutExpired as error:
             raise AssertionError(f"VS Code did not exit after {key}") from error
+        # Its other processes can outlive the main one for a moment, still holding the user
+        # data folder; the window opened next shares that folder.
+        if self.job and not self.job.wait_until_empty(STEP_TIMEOUT_S):
+            self.actions.append(
+                f"  ({self.job.active_processes()} VS Code processes still ran"
+                f" {STEP_TIMEOUT_S}s later)"
+            )
 
     def _picker_state(self, screen: dict, label: str) -> str:
         if screen["onboarding"] is not None:
