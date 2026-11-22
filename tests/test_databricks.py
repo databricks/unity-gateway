@@ -198,6 +198,138 @@ class TestFetchCodexParentModelCatalog:
         assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
 
 
+class TestFetchModelServiceRates:
+    def test_parses_dbu_and_usd_rates_by_token_kind(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token)
+            return (
+                {
+                    "model_service_rates": [
+                        {
+                            "model_service": "system.ai.glm-5-3",
+                            "costs": [
+                                {
+                                    "unit": "DBU",
+                                    "token_costs": [
+                                        {"token_type": "TOKEN_TYPE_INPUT", "cost": 20.0},
+                                        {"token_type": "TOKEN_TYPE_OUTPUT", "cost": 62.85714},
+                                        {"token_type": "TOKEN_TYPE_CACHE_READ", "cost": 3.71428},
+                                    ],
+                                },
+                                {
+                                    "unit": "USD",
+                                    "token_costs": [
+                                        {"token_type": "TOKEN_TYPE_INPUT", "cost": 1.4},
+                                        {"token_type": "TOKEN_TYPE_OUTPUT", "cost": 4.3999998},
+                                    ],
+                                },
+                            ],
+                        }
+                    ]
+                },
+                None,
+            )
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        rates, reason = db_mod.fetch_model_service_rates(
+            WS, "workspace-token", ["system.ai.glm-5-3"]
+        )
+
+        assert reason is None
+        assert rates == {
+            "system.ai.glm-5-3": {
+                "DBU": {"input": 20.0, "output": 62.85714, "cache_read": 3.71428},
+                "USD": {"input": 1.4, "output": 4.3999998},
+            }
+        }
+        assert seen["token"] == "workspace-token"
+        assert seen["url"].startswith(f"{WS}/api/ai-gateway/v2/endpoint-rates:batchGet?")
+        assert parse_qs(seen["url"].split("?", 1)[1])["databricks_hosted_model_services"] == [
+            "system.ai.glm-5-3"
+        ]
+
+    def test_repeats_the_query_param_and_skips_malformed_entries(self, monkeypatch):
+        urls = []
+
+        def fake_get(url, token, **kwargs):
+            urls.append(url)
+            return (
+                {
+                    "model_service_rates": [
+                        {"model_service": "system.ai.claude-opus-4-8", "costs": "not-a-list"},
+                        {"costs": []},
+                        {"model_service": "", "costs": []},
+                        {
+                            "model_service": "system.ai.glm-5-3",
+                            "costs": [
+                                {
+                                    "unit": "DBU",
+                                    "token_costs": [
+                                        {
+                                            "token_type": "TOKEN_TYPE_CACHE_CREATION_1H",
+                                            "cost": True,
+                                        },
+                                        {"token_type": "TOKEN_TYPE_OUTPUT", "cost": 1},
+                                        {"token_type": "TOKEN_TYPE_UNKNOWN", "cost": 5},
+                                    ],
+                                }
+                            ],
+                        },
+                    ]
+                },
+                None,
+            )
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        rates, reason = db_mod.fetch_model_service_rates(
+            WS, "workspace-token", ["system.ai.claude-opus-4-8", "system.ai.glm-5-3"]
+        )
+
+        assert reason is None
+        assert rates == {
+            "system.ai.glm-5-3": {"DBU": {"output": 1.0}},
+        }
+        assert parse_qs(urls[0].split("?", 1)[1])["databricks_hosted_model_services"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.glm-5-3",
+        ]
+
+    def test_empty_request_short_circuits_without_a_call(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: pytest.fail("must not call")
+        )
+
+        rates, reason = db_mod.fetch_model_service_rates(WS, "workspace-token", [])
+
+        assert (rates, reason) == ({}, None)
+
+    def test_failure_reason_passes_through(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: (None, "HTTP 404 Not Found")
+        )
+
+        rates, reason = db_mod.fetch_model_service_rates(
+            WS, "workspace-token", ["system.ai.glm-5-3"]
+        )
+
+        assert rates == {}
+        assert reason == "HTTP 404 Not Found"
+
+    def test_rejects_non_dict_payload(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: ([], None))
+
+        rates, reason = db_mod.fetch_model_service_rates(
+            WS, "workspace-token", ["system.ai.glm-5-3"]
+        )
+
+        assert rates == {}
+        assert reason == "endpoint-rates returned an unexpected response shape"
+
+
 class TestWorkspaceHostname:
     def test_extracts_hostname(self):
         assert workspace_hostname(WS) == "example.databricks.com"

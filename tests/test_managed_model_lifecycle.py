@@ -165,6 +165,9 @@ def harness(tmp_path, monkeypatch):
     h = _Harness(tmp_path)
     # No live managed config: fail the token fetch like an unauthenticated Databricks CLI.
     monkeypatch.setattr(managed_config, "get_databricks_token", _unauthenticated)
+    # The model-pricing refresh fetches with claude's own binding; keep it offline too. The failed
+    # fetch leaves the picker unpriced, which these lifecycle assertions are indifferent to.
+    monkeypatch.setattr(claude, "get_databricks_token", _unauthenticated)
 
     # --- Claude: real tmp private file; simulate the sudo-backed OS-managed write on tmp. ---
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", h.claude_settings)
