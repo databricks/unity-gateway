@@ -46,6 +46,8 @@ export function parseScutil(output) {
   return { settings, exceptions };
 }
 
+// System proxies stay a skip reason even with a loopback exception: whether the runtime bypasses
+// loopback for them is unverified, unlike the env variables.
 function scutilCapture(output) {
   const { settings, exceptions } = parseScutil(output);
   if (settings.ProxyAutoConfigEnable === "1") return "a macOS PAC proxy";

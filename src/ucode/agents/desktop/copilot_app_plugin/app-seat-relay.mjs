@@ -76,6 +76,19 @@ const RELAY = "the Unity Gateway Copilot relay";
 
 // The extension's Node trusts only its bundled CAs; a workstation behind TLS inspection needs the
 // system store too. Older Nodes lack the API, and then nothing changes.
+const PROXY_ENV_NAMES = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
+
+// The proxy variables, in either case, that the upstream agents follow.
+export function proxyEnvironment(env = process.env) {
+  const picked = {};
+  for (const name of PROXY_ENV_NAMES) {
+    for (const key of [name, name.toLowerCase()]) {
+      if (env[key]) picked[key] = env[key];
+    }
+  }
+  return picked;
+}
+
 export function loadSystemCertificates(tlsModule = tls) {
   if (
     typeof tlsModule.getCACertificates !== "function" ||
@@ -412,14 +425,18 @@ export function createSeatRelay({
   connectTimeoutMs = CONNECT_TIMEOUT_MS,
   readTimeoutMs = READ_TIMEOUT_MS,
   keepAliveTimeoutMs = KEEP_ALIVE_TIMEOUT_MS,
+  env = process.env,
 }) {
   const gateway = new URL(gatewayBase);
   const secret = randomBytes(32).toString("base64url");
   const secretBytes = Buffer.from(secret);
   const added = withoutReserved(addedHeaders);
+  // Custom agents don't read the proxy variables on their own; `proxyEnv` (Node 24.5+) makes
+  // them, and an older Node ignores it and connects directly as before.
+  const proxyEnv = proxyEnvironment(env);
   const agents = {
-    "http:": new http.Agent({ keepAlive: true }),
-    "https:": new https.Agent({ keepAlive: true }),
+    "http:": new http.Agent({ keepAlive: true, proxyEnv }),
+    "https:": new https.Agent({ keepAlive: true, proxyEnv }),
   };
   const upstreamOptions = (url) => ({ agent: agents[url.protocol], connectTimeoutMs, readTimeoutMs });
   const server = http.createServer({

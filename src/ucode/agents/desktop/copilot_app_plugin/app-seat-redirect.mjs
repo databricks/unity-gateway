@@ -150,6 +150,7 @@ export function createSeatRedirect(
     }),
     hintFor: (error) => (error?.code === "ENOENT" ? config.missingUgHint : config.loginHint),
     log,
+    env,
     observe: (event) => {
       noteRequest({ time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...event });
       if (event.route !== "gateway" || !INFERENCE_CALLS.has(`${event.method} ${event.path}`)) return;

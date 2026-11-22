@@ -115,10 +115,44 @@ async function start(options = {}) {
     hintFor: (error) => (error?.code === "ENOENT" ? "ug is missing." : "Run databricks auth login."),
     log: (line) => logged.push(line),
     observe: (event) => observed.push(event),
+    env: {},
     ...options,
   });
   await relay.listen();
   return relay;
+}
+
+// A forward proxy that records absolute-form requests and relays them to their host.
+class FakeProxy {
+  constructor() {
+    this.requests = [];
+    this.server = http.createServer((req, res) => {
+      this.requests.push(req.url);
+      const target = new URL(req.url);
+      const upstream = http.request(
+        target,
+        { method: req.method, headers: { ...req.headers, host: target.host }, agent: false },
+        (response) => {
+          res.writeHead(response.statusCode, response.headers);
+          response.pipe(res);
+        },
+      );
+      req.pipe(upstream);
+    });
+  }
+
+  listen() {
+    return new Promise((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+  }
+
+  get url() {
+    return `http://127.0.0.1:${this.server.address().port}`;
+  }
+
+  close() {
+    this.server.closeAllConnections();
+    return new Promise((resolve) => this.server.close(resolve));
+  }
 }
 
 beforeEach(async () => {
@@ -171,6 +205,30 @@ function raw({ method = "GET", path, headers = {}, body }) {
     request.end(body);
   });
 }
+
+test("the relay's own calls follow the proxy variables, in either case, and NO_PROXY", async (t) => {
+  const proxy = new FakeProxy();
+  await proxy.listen();
+  t.after(() => proxy.close());
+
+  await start({ env: { HTTP_PROXY: proxy.url, HTTPS_PROXY: proxy.url, NO_PROXY: "localhost" } });
+  assert.equal((await call("/chat/completions", { method: "POST", body: "{}" })).status, 200);
+  assert.equal((await call("/agents/swe/internal/memory/v0/enabled")).status, 200);
+  assert.deepEqual(proxy.requests, [`${gateway.base}/ai-gateway/openai/v1/chat/completions`, `${copilot.base}/agents/swe/internal/memory/v0/enabled`]);
+  assert.equal(gateway.last.headers.authorization, GITHUB_AUTH);
+  assert.equal(gateway.last.headers[AI_GATEWAY_TOKEN_HEADER], "Bearer dbx-1");
+
+  await start({ env: { http_proxy: proxy.url } });
+  assert.equal((await call("/meta")).status, 200);
+  assert.equal(proxy.requests.length, 3);
+
+  await start({ env: { HTTP_PROXY: proxy.url, no_proxy: ".example,127.0.0.1" } });
+  assert.equal((await call("/meta")).status, 200);
+  await start({ env: {} });
+  assert.equal((await call("/meta")).status, 200);
+  assert.equal(proxy.requests.length, 3);
+  assert.equal(gateway.requests.length, 4);
+});
 
 test("inference goes to the gateway with the GitHub token, the swap header and the relay headers", async () => {
   const body = JSON.stringify({ model: "gpt-5", input: "hi" });
