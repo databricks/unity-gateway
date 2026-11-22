@@ -2160,6 +2160,21 @@ class TestSeatRelay:
         assert "COPILOT_PROVIDER_API_KEY" not in env
         assert "GITHUB_MCP_URL_OVERRIDE" not in copilot.seat_relay_env("u", mcp_host=None)
 
+    def test_env_keeps_a_proxy_away_from_the_loopback_relay(self, monkeypatch):
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
+        assert env["NO_PROXY"] == env["no_proxy"] == "127.0.0.1,localhost"
+
+        monkeypatch.setenv("NO_PROXY", "internal.example, .corp.example")
+        monkeypatch.setenv("no_proxy", "localhost")
+        env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
+        assert (
+            env["NO_PROXY"]
+            == env["no_proxy"]
+            == "internal.example,.corp.example,localhost,127.0.0.1"
+        )
+
     def test_a_service_lookup_error_is_raised_not_read_as_no_seat_relay(self, monkeypatch):
         _stub_provider_service(monkeypatch, None)
 

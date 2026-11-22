@@ -53,6 +53,8 @@ _SOURCE_FILES = (
     "app-remove.mjs",
     "app-restart.mjs",
     "app-state.mjs",
+    "app-host.mjs",
+    "app-proxy.mjs",
     "app-seat-relay.mjs",
     "app-seat-redirect.mjs",
 )

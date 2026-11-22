@@ -1328,6 +1328,21 @@ _SEAT_RELAY_DROPPED_ENV = frozenset(
 )
 
 
+_LOOPBACK_PROXY_EXCEPTIONS = ("127.0.0.1", "localhost")
+
+
+def _with_loopback_exceptions(*values: str | None) -> str:
+    """``NO_PROXY`` with the loopback hosts added to whatever the user already lists."""
+    entries: list[str] = []
+    for value in values:
+        for entry in (value or "").split(","):
+            if entry.strip() and entry.strip() not in entries:
+                entries.append(entry.strip())
+    return ",".join(
+        [*entries, *(host for host in _LOOPBACK_PROXY_EXCEPTIONS if host not in entries)]
+    )
+
+
 def seat_relay_env(
     api_url: str,
     *,
@@ -1352,6 +1367,10 @@ def seat_relay_env(
         and (keep_inherited_otel or not key.startswith(_INHERITED_OTEL_PREFIXES))
     }
     env["COPILOT_API_URL"] = api_url
+    # A proxy the runtime routes loopback through would receive the relay's requests, GitHub
+    # token included.
+    exceptions = _with_loopback_exceptions(env.get("NO_PROXY"), env.get("no_proxy"))
+    env["NO_PROXY"] = env["no_proxy"] = exceptions
     # Copilot opens /responses as a WebSocket first, which the relay refuses; only `true` (not
     # `1`) turns that off.
     env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] = "true"

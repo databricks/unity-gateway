@@ -79,6 +79,7 @@ async function start(t, overrides = {}, options = {}) {
     now: () => 1_700_000_000_000,
     record: (entry) => entries.push(entry),
     recordRequest: (entry) => requests.push(entry),
+    proxyCheck: async () => ({ captured: false, reason: null }),
     ...options,
   });
   t.after(() => redirect?.close());
@@ -334,6 +335,55 @@ test("the sessions file is written in the state dir by default", async (t) => {
   const [request] = JSON.parse(readFileSync(join(stateDir, REQUESTS_FILE), "utf8"));
   assert.equal(request.route, "gateway");
   assert.equal(request.path, "/responses");
+});
+
+test("a proxy that could capture loopback skips the redirect, clears it, and is recorded as proxied", async (t) => {
+  const { redirect, entries, logged } = await start(t, {}, {
+    proxyCheck: async () => ({ captured: true, reason: "HTTP_PROXY without a loopback exception in NO_PROXY" }),
+  });
+  await redirect.listen();
+  const session = fakeSession();
+
+  assert.equal(await redirect.apply(session), false);
+  assert.equal(redirect.state, "proxied");
+  assert.deepEqual(session.updates, [{ copilotUrl: null }]);
+  assert.deepEqual(entries, [
+    {
+      time: "2023-11-14T22:13:20.000Z",
+      sessionId: "session-1",
+      redirect: "proxied",
+      reason: "HTTP_PROXY without a loopback exception in NO_PROXY",
+      builtInCalls: 0,
+      relayedCalls: 0,
+    },
+  ]);
+  assert.match(logged[0], /not redirecting, HTTP_PROXY without a loopback exception/);
+});
+
+test("a proxy check that fails or throws still redirects, and says so", async (t) => {
+  const failed = await start(t, {}, { proxyCheck: async () => ({ captured: false, reason: null, error: "ETIMEDOUT" }) });
+  await failed.redirect.listen();
+  assert.equal(await failed.redirect.apply(fakeSession()), true);
+  assert.match(failed.logged[0], /proxy check failed: ETIMEDOUT/);
+
+  const thrown = await start(t, {}, {
+    proxyCheck: async () => {
+      throw new Error("boom");
+    },
+  });
+  await thrown.redirect.listen();
+  assert.equal(await thrown.redirect.apply(fakeSession()), true);
+  thrown.redirect.handle({ type: "model.call_start", data: { model: "gpt-5" } });
+  thrown.redirect.handle({ type: "session.idle", data: {} });
+  assert.equal(thrown.entries[0].proxyCheck, "boom");
+  assert.equal(thrown.entries[0].redirect, "applied");
+});
+
+test("by default the proxy check reads the extension's environment", async (t) => {
+  const { redirect, entries } = await start(t, {}, { proxyCheck: undefined, env: { HTTPS_PROXY: "http://proxy.example:3128" } });
+  await redirect.listen();
+  assert.equal(await redirect.apply(fakeSession()), false);
+  assert.equal(entries[0].redirect, "proxied");
 });
 
 test("clearRedirect swallows a session that refuses", async () => {

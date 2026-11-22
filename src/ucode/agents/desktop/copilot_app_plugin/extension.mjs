@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 
+import { runningUnderApp } from "./app-host.mjs";
 import { removeInBackground } from "./app-remove.mjs";
 import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
@@ -28,6 +29,9 @@ const syncOptions = { stateDir: fileURLToPath(new URL(".", import.meta.url)) };
 const logSyncFailure = (message) => console.error(message);
 // The extension can start before the app publishes its WebSocket endpoint.
 const RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
+const PROXIED_MESSAGE =
+  "Databricks: this session's GitHub Copilot models aren't going through Unity Gateway, because a proxy " +
+  "setting could route the relay's loopback requests through the proxy.";
 
 async function withRetries(attempt) {
   let result = await attempt();
@@ -39,24 +43,30 @@ async function withRetries(attempt) {
   return result;
 }
 
+const host = await runningUnderApp();
 if (config.remove) {
   const removal = withRetries(() => removeInBackground(config, syncOptions, logSyncFailure));
-  try {
-    const session = await joinSession();
-    await clearRedirect(session);
-  } catch (error) {
-    logSyncFailure(`Databricks models: couldn't join the session: ${error?.message ?? error}`);
+  if (host.app) {
+    try {
+      const session = await joinSession();
+      await clearRedirect(session);
+    } catch (error) {
+      logSyncFailure(`Databricks models: couldn't join the session: ${error?.message ?? error}`);
+    }
   }
   await removal;
+} else if (!host.app) {
+  // A Copilot CLI or VS Code session that loaded the app's plugin keeps its own models.
+  await noteRedirect(syncOptions.stateDir, { redirect: "not the app", host: host.via });
 } else {
   const restart = withRetries(() => syncInBackground(config, syncOptions, logSyncFailure)).then((synced) =>
     synced === "changed" ? launchRestart({ ...syncOptions, ugPath: config.ugPath }) : null,
   );
   let session;
   // session.log is async, and a rejected one must not end the extension.
-  const say = (message) =>
+  const say = (message, level = "error") =>
     Promise.resolve()
-      .then(() => session.log(message, { level: "error" }))
+      .then(() => session.log(message, { level }))
       .catch(() => {});
   const tokenSource = createTokenSource(config);
   const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
@@ -85,6 +95,7 @@ if (config.remove) {
   // Before anything else: the first turn's calls must already go through.
   if (redirect) {
     if (await redirect.apply(session)) keepAliveOnErrors(logSyncFailure);
+    else if (redirect.state === "proxied") say(PROXIED_MESSAGE, "warning");
   } else {
     await clearRedirect(session);
   }
