@@ -469,15 +469,6 @@ class TestStatus:
         assert result.row == "plugin installed, models out of date"
         assert "don't match" in result.warnings[0]
 
-    def test_status_prints_no_version_warning(self, app, capsys):
-        app.version = "9.9.9"
-        _register(app)
-        capsys.readouterr()
-
-        self._status()
-
-        assert "hasn't been verified" not in capsys.readouterr().out
-
     def test_not_installed_and_never_set_up(self, monkeypatch):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
 

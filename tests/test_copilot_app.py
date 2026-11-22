@@ -495,8 +495,8 @@ def test_a_refusal_stops_the_unregister(app):
         copilot_app.unregister()
 
 
-def _healthcheck(version, **fields):
-    return {"type": "command_result", "data": {"app": {"version": version}}, **fields}
+def _stray_result(**fields):
+    return {"type": "command_result", "data": {}, **fields}
 
 
 def test_every_request_carries_a_request_id(app):
@@ -510,19 +510,18 @@ def test_every_request_carries_a_request_id(app):
 
 @pytest.mark.parametrize(
     "stray",
-    [_healthcheck("0.0.1", request_id="ug-someone-else"), _healthcheck("0.0.1")],
+    [_stray_result(request_id="ug-someone-else"), _stray_result()],
     ids=["another-request-id", "no-request-id"],
 )
-def test_a_reply_not_for_this_request_is_skipped(app, capsys, stray):
-    app.before_reply["get_healthcheck"] = [stray]
+def test_a_reply_not_for_this_request_is_skipped(app, stray):
+    app.before_reply["list_model_providers"] = [stray]
     seed(app, _app_providers())
 
     assert copilot_app.unregister() is True
-    assert "hasn't been verified" not in capsys.readouterr().out
 
 
 def test_an_error_for_another_request_is_skipped(app):
-    app.before_reply["get_healthcheck"] = [
+    app.before_reply["list_model_providers"] = [
         {"type": "error", "message": "boom", "request_id": "ug-someone-else"}
     ]
     seed(app, _app_providers())
@@ -539,22 +538,11 @@ def test_an_error_without_a_request_id_answers_the_pending_request(app):
         copilot_app.unregister()
 
 
-def test_an_error_from_before_a_request_does_not_answer_it(app, capsys):
+def test_an_error_from_before_a_request_does_not_answer_it(app):
     app.before_hello = [{"type": "error", "message": "Invalid message format"}]
     seed(app, _app_providers())
 
     assert copilot_app.unregister() is True
-    assert "hasn't been verified" not in capsys.readouterr().out
-
-
-def test_an_app_without_the_healthcheck_is_an_unknown_version(app, capsys):
-    app.fail = "get_healthcheck"
-    seed(app, _app_providers())
-
-    assert copilot_app.unregister() is True
-    assert "GitHub Copilot app (unknown version) hasn't been verified" in " ".join(
-        capsys.readouterr().out.split()
-    )
 
 
 def test_an_app_that_quits_mid_unregister_is_not_running(app):
@@ -563,22 +551,6 @@ def test_an_app_that_quits_mid_unregister_is_not_running(app):
 
     with pytest.raises(copilot_app.CopilotAppNotRunning):
         copilot_app.unregister()
-
-
-def test_an_unknown_app_version_warns_and_continues(app, capsys):
-    app.version = "9.0.0"
-    seed(app, _app_providers())
-
-    assert copilot_app.unregister() is True
-    assert "GitHub Copilot app 9.0.0 hasn't been verified with ug" in " ".join(
-        capsys.readouterr().out.split()
-    )
-
-
-def test_a_verified_app_version_is_quiet(app, capsys):
-    copilot_app.unregister()
-
-    assert "hasn't been verified" not in capsys.readouterr().out
 
 
 def test_a_closed_app_is_not_running(tmp_path, monkeypatch):
@@ -641,12 +613,6 @@ def test_a_rejected_token_is_an_app_error(app):
 
     with pytest.raises(copilot_app.CopilotAppError, match="refused ug"):
         copilot_app.unregister()
-
-
-def test_status_skips_the_healthcheck(app):
-    copilot_app.status(_app_providers())
-
-    assert app.sent("get_healthcheck") == []
 
 
 def test_status_waits_only_briefly_for_a_hung_app(app, monkeypatch):
