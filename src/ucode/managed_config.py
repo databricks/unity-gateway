@@ -199,6 +199,7 @@ class AgentConfig:
     smart_routing_enabled: bool = False
     otel_tracing_enabled: bool | None = None
     vscode_integration_enabled: bool | None = None
+    app_integration_enabled: bool | None = None
     # Harness-native settings delivered verbatim into the agent's managed settings file.
     settings: dict | None = None
     # `agent_native_config`'s variant, keyed by its proto field name (`claude_code`, `codex`, ...)
@@ -226,6 +227,7 @@ class AgentConfig:
             smart_routing_enabled=smart_routing.get("enabled") is True,
             otel_tracing_enabled=_enabled_flag(config_dict.get("tracing")),
             vscode_integration_enabled=_enabled_flag(config_dict.get("vscode_integration")),
+            app_integration_enabled=_enabled_flag(config_dict.get("app_integration")),
             settings=_as_dict(config_dict.get("agent_native_settings")) or None,
             native_config=native_config or None,
         )
@@ -244,6 +246,8 @@ class AgentConfig:
             result["otel_tracing_enabled"] = self.otel_tracing_enabled
         if self.vscode_integration_enabled is not None:
             result["vscode_integration_enabled"] = self.vscode_integration_enabled
+        if self.app_integration_enabled is not None:
+            result["app_integration_enabled"] = self.app_integration_enabled
         if self.settings:
             result["agent_native_settings"] = self.settings
         if self.native_config:

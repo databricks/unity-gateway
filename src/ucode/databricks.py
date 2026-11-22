@@ -4,7 +4,9 @@ discovery, Unity Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextvars
 import functools
+import io
 import json
 import logging
 import logging.handlers
@@ -21,17 +23,21 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from http.client import HTTPException
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
+
+if TYPE_CHECKING:
+    import httpx
 
 from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
@@ -47,6 +53,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.string_utils import unqualified_model_name
@@ -376,6 +383,198 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+class _RejectCookiesPolicy(DefaultCookiePolicy):
+    def set_ok(self, cookie, request) -> bool:
+        return False
+
+
+# The most recent 3xx response seen by this request, via a client response hook. A context
+# variable keeps concurrent callers on the shared client from seeing each other's redirects.
+_LAST_REDIRECT: contextvars.ContextVar[httpx.Response | None] = contextvars.ContextVar(
+    "pooled_last_redirect", default=None
+)
+
+
+def _remember_redirect(response: httpx.Response) -> None:
+    if 300 <= response.status_code < 400:
+        _LAST_REDIRECT.set(response)
+
+
+POOLED_HTTP_DISABLE_ENV_VAR = "UG_NO_POOLED_HTTP"
+
+
+def _use_pooled_client() -> bool:
+    """Whether `_http_open` may use the pooled client: only the default setup, the OS trust
+    store with no http/https proxy configured (env or the macOS/Windows system settings).
+    Everything else keeps urllib's own path, byte for byte with main. ``all_proxy`` doesn't
+    count — urllib ignores it. ``UG_NO_POOLED_HTTP`` falls back to urllib everywhere."""
+    if env_bool(POOLED_HTTP_DISABLE_ENV_VAR):
+        return False
+    if tls.effective_trust_store() != tls.TRUST_STORE_OS:
+        return False
+    proxies = urllib_request.getproxies()
+    return not (proxies.get("http") or proxies.get("https"))
+
+
+_HTTP_CLIENT: httpx.Client | None = None
+_HTTP_CLIENT_PID: int | None = None
+_HTTP_CLIENT_LOCK = threading.Lock()
+
+
+def _reset_http_client_after_fork() -> None:
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID, _HTTP_CLIENT_LOCK
+    _HTTP_CLIENT = None
+    _HTTP_CLIENT_PID = os.getpid()
+    _HTTP_CLIENT_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_http_client_after_fork)
+
+
+def _get_http_client() -> httpx.Client:
+    import httpx
+
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID
+    pid = os.getpid()
+    if _HTTP_CLIENT is not None and _HTTP_CLIENT_PID == pid:
+        return _HTTP_CLIENT
+    with _HTTP_CLIENT_LOCK:
+        if _HTTP_CLIENT is None or _HTTP_CLIENT_PID != pid:
+            # Before any SSL context is built — the client's and the transport's — so httpx's
+            # default context verifies against the OS trust store tls.apply() selected for the
+            # whole process. AGENTS.md: never pass an ssl context or verify= to a client.
+            tls.apply()
+            limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+            client = httpx.Client(
+                # urllib's HTTPRedirectHandler stops after 10 redirects; httpx defaults to 20.
+                max_redirects=urllib_request.HTTPRedirectHandler.max_redirections,
+                transport=httpx.HTTPTransport(trust_env=True, limits=limits),
+                # Only reached with no http/https proxy configured; trust_env stays off so
+                # httpx never mounts ALL_PROXY (and socks proxies needing socksio) behind
+                # our back.
+                trust_env=False,
+                event_hooks={"response": [_remember_redirect]},
+                follow_redirects=True,
+                cookies=CookieJar(policy=_RejectCookiesPolicy()),
+            )
+            _HTTP_CLIENT = client
+            _HTTP_CLIENT_PID = pid
+    return _HTTP_CLIENT
+
+
+class _PooledResponse:
+    def __init__(self, response: httpx.Response):
+        self.status = response.status_code
+        self.headers = Message()
+        for name, value in response.headers.multi_items():
+            self.headers.add_header(name, value)
+        self._body = response.content
+        self._url = str(response.url)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def geturl(self) -> str:
+        return self._url
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _os_error_reason(exc: BaseException) -> BaseException:
+    """The first OSError behind an httpx error (what urllib would have put in URLError.reason),
+    following __cause__/__context__; the deepest error when there's none."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    reason = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        reason = current
+        if isinstance(current, OSError):
+            return current
+        current = current.__cause__ or current.__context__
+    return reason
+
+
+def _http_open(request: urllib_request.Request, *, timeout: float):
+    if not _use_pooled_client():
+        # Not the default setup (python trust store, or an http/https proxy configured): keep
+        # urllib's own path — its proxy handling and trust store — exactly as main ran it.
+        return urllib_request.urlopen(request, timeout=timeout)
+    import httpx
+
+    request_headers = dict(request.header_items())
+    header_names = {name.casefold() for name in request_headers}
+    if "accept-encoding" not in header_names:
+        request_headers["Accept-Encoding"] = "identity"
+    if "connection" not in header_names:
+        request_headers["Connection"] = "keep-alive"
+    if "user-agent" not in header_names:
+        # urllib's own default: '%d.%d' % sys.version_info[:2].
+        request_headers["User-Agent"] = f"Python-urllib/{sys.version_info[0]}.{sys.version_info[1]}"
+    httpx_request = httpx.Request(
+        request.get_method(),
+        request.full_url,
+        # http.client encodes header values as latin-1; httpx would reject non-ascii ones.
+        headers=[
+            (name.encode("latin-1"), value.encode("latin-1"))
+            for name, value in request_headers.items()
+        ],
+        # The only Request built with data is `_http_send_json`'s, which sends bytes or None.
+        content=cast("bytes | None", request.data),
+        extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+    )
+    try:
+        # urllib's redirect_request re-issues GET/HEAD on any redirect, re-issues a POST
+        # answered 301/302/303 as a bodiless GET, and raises HTTPError for every other
+        # method or 307/308. Mirror that instead of letting httpx replay request bodies.
+        method = httpx_request.method
+        client = _get_http_client()
+        response = client.send(httpx_request, follow_redirects=method in ("GET", "HEAD"))
+        if method == "POST" and response.status_code in (301, 302, 303) and response.next_request:
+            # httpx's next_request for a POST 301/302/303 is already that bodiless GET, with
+            # cross-origin Authorization stripped.
+            response = client.send(response.next_request, follow_redirects=True)
+    except httpx.TooManyRedirects as exc:
+        # urllib's redirect handler raises HTTPError when it exceeds its redirect budget, so
+        # callers see a status-shaped failure, not a network one — carrying the LAST 3xx's
+        # real code, reason, headers, and body, not a made-up status.
+        last = _LAST_REDIRECT.get()
+        if last is not None:
+            pooled = _PooledResponse(last)
+            raise urllib_error.HTTPError(
+                request.full_url,
+                pooled.status,
+                last.reason_phrase,
+                pooled.headers,
+                io.BytesIO(pooled.read()),
+            ) from exc
+        raise urllib_error.HTTPError(
+            request.full_url, 310, "Too Many Redirects", Message(), io.BytesIO(b"")
+        ) from exc
+    except httpx.RequestError as exc:
+        raise urllib_error.URLError(_os_error_reason(exc)) from exc
+    except httpx.HTTPError as exc:
+        # Other transport-level httpx errors (the pool closed, a stream broke): urllib has no
+        # counterpart, so surface them as network errors like the RequestError mapping above.
+        raise urllib_error.URLError(exc) from exc
+
+    pooled_response = _PooledResponse(response)
+    if not 200 <= response.status_code < 300:
+        raise urllib_error.HTTPError(
+            pooled_response.geturl(),
+            response.status_code,
+            response.reason_phrase,
+            pooled_response.headers,
+            io.BytesIO(pooled_response.read()),
+        )
+    return pooled_response
+
+
 @metrics.http_result
 def _http_get_bytes(
     url: str,
@@ -406,7 +605,7 @@ def _http_get_bytes(
         if attempt:
             metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
-            with urllib_request.urlopen(request, timeout=timeout) as response:
+            with _http_open(request, timeout=timeout) as response:
                 status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
@@ -537,7 +736,7 @@ def _http_send_json(
     request_started = time.perf_counter()
     status = None
     try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
+        with _http_open(request, timeout=timeout) as response:
             status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
@@ -891,6 +1090,12 @@ def _iter_databricks_executables() -> list[str]:
         search_groups.append(
             ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
         )
+    from ucode.state import recorded_databricks_cli
+
+    # The GitHub Copilot app starts `ug auth-token` and `ug otel-headers` with a PATH that may
+    # lack the CLI's directory.
+    if recorded := recorded_databricks_cli():
+        search_groups.append([os.path.dirname(recorded)])
 
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
@@ -1663,6 +1868,10 @@ class _MemoizedToken:
     error: str | None
     valid_until: float
     wall_valid_until: float
+    # Duration of the real fetch that populated this memo when no timed observation
+    # reported it (an untimed caller ran the fetch); the first timed caller that
+    # reuses the token reports it and the field is cleared.
+    unreported_fetch_ms: float | None = None
 
 
 _TOKEN_MEMO: dict[tuple[str, str | None], _MemoizedToken] = {}
@@ -1742,6 +1951,7 @@ def _remember_token(
     lifetime_s: float | None,
     *,
     _token_epoch: int | None = None,
+    unreported_fetch_ms: float | None = None,
 ) -> None:
     ttl = (
         lifetime_s - _TOKEN_MEMO_EXPIRY_MARGIN_S
@@ -1757,7 +1967,22 @@ def _remember_token(
             # token behind for subsequent non-forced callers.
             _TOKEN_MEMO.pop(key, None)
             return
-        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl, time.time() + ttl)
+        _TOKEN_MEMO[key] = _MemoizedToken(
+            token, None, time.monotonic() + ttl, time.time() + ttl, unreported_fetch_ms
+        )
+
+
+def _take_unreported_fetch_duration(
+    key: tuple[str, str | None], entry: _MemoizedToken
+) -> float | None:
+    """Return the memo entry's unreported fetch duration once, clearing it so the
+    first timed caller that reuses an untimed fetch's token reports that fetch's
+    duration as the launch's cache miss and later callers report plain hits."""
+    with _TOKEN_MEMO_LOCK:
+        if _TOKEN_MEMO.get(key) is not entry or entry.unreported_fetch_ms is None:
+            return None
+        _TOKEN_MEMO[key] = replace(entry, unreported_fetch_ms=None)
+        return entry.unreported_fetch_ms
 
 
 def _remember_token_failure(
@@ -1862,6 +2087,8 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool = True,
+    untimed: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -1873,10 +2100,11 @@ def _get_databricks_token_for_profile(
                 f"profile={profile or '<none>'}",
             )
             if memoized.token:
-                metrics.annotate(in_process_cache_hit=True)
+                if not untimed:
+                    _annotate_fetched_token(memo_key, memoized)
                 return memoized.token
             if not browser_login:
-                raise RuntimeError(memoized.error)
+                raise DatabricksLoginRequiredError(memoized.error)
 
     # The second memo check is required after waiting for another caller's
     # fetch. The lock is per workspace/profile, so unrelated profiles proceed.
@@ -1890,17 +2118,33 @@ def _get_databricks_token_for_profile(
                     f"profile={profile or '<none>'}",
                 )
                 if memoized.token:
-                    metrics.annotate(in_process_cache_hit=True)
+                    if not untimed:
+                        _annotate_fetched_token(memo_key, memoized)
                     return memoized.token
                 if not browser_login:
-                    raise RuntimeError(memoized.error)
+                    raise DatabricksLoginRequiredError(memoized.error)
         token_epoch = _token_cache_epoch()
         return _fetch_databricks_token_for_profile(
             workspace,
             profile,
             force_refresh=force_refresh,
             browser_login=browser_login,
+            allow_reauth=allow_reauth,
             token_epoch=token_epoch,
+            record_unreported_duration=untimed,
+        )
+
+
+def _annotate_fetched_token(memo_key: tuple[str, str | None], memoized: _MemoizedToken) -> None:
+    """Label the caller's timed observation for a token reused from the memo. A token
+    minted by an untimed caller (the launch's speculation) reports that fetch's real
+    duration as the cache miss instead of this call's near-instant cache hit."""
+    duration_ms = _take_unreported_fetch_duration(memo_key, memoized)
+    if duration_ms is None:
+        metrics.annotate(in_process_cache_hit=True)
+    else:
+        metrics.record_awaited_duration(
+            metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, round(duration_ms)
         )
 
 
@@ -1910,7 +2154,9 @@ def _fetch_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool = True,
     token_epoch: int,
+    record_unreported_duration: bool = False,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -1938,6 +2184,7 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
+    fetch_started = time.perf_counter() if record_unreported_duration else None
 
     def _fetch() -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
@@ -1992,7 +2239,7 @@ def _fetch_databricks_token_for_profile(
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
         token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
-    elif not token and _auth_login_supports_no_browser(cli):
+    elif not token and allow_reauth and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -2042,22 +2289,55 @@ def _fetch_databricks_token_for_profile(
                 )
         # A forced refresh is a retry after a rejected token; its failure must not
         # shadow an earlier token that non-forced callers may still be using.
-        if not force_refresh and not transient_failure:
+        if not force_refresh and not transient_failure and allow_reauth:
+            # A skipped re-auth (the speculative non-interactive fetch) must not memoize the
+            # failure: configure's own fetch then never attempts `auth login --no-browser`.
             _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
-        raise RuntimeError(error)
-    _remember_token(memo_key, token, lifetime_s, _token_epoch=token_epoch)
+        if transient_failure:
+            raise RuntimeError(error)
+        # The CLI identified a credential failure (`invalid_grant`, no cached credentials,
+        # ...): `databricks auth login` fixes it, so best-effort callers treat it as an
+        # expected miss instead of a hard failure.
+        raise DatabricksLoginRequiredError(error)
+    _remember_token(
+        memo_key,
+        token,
+        lifetime_s,
+        _token_epoch=token_epoch,
+        unreported_fetch_ms=(
+            (time.perf_counter() - fetch_started) * 1000 if fetch_started is not None else None
+        ),
+    )
     return token
 
 
-@metrics.timed(
-    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
-)
-def get_databricks_token(
+def fetch_databricks_token_untimed(
     workspace: str,
     profile: str | None = None,
+) -> str:
+    """The undecorated token fetch: the same implementation
+    :func:`get_databricks_token` times and reports, for callers that must stay out of the
+    token-fetch metrics (a failed best-effort fetch is reported by its own handler, not as
+    a hard failure here). It never re-auths or opens a browser, and a credential failure
+    raises :class:`DatabricksLoginRequiredError`."""
+    return _fetch_databricks_token(
+        workspace,
+        profile,
+        force_refresh=False,
+        browser_login=False,
+        allow_reauth=False,
+        untimed=True,
+    )
+
+
+def _fetch_databricks_token(
+    workspace: str,
+    profile: str | None,
     *,
-    force_refresh: bool = False,
-    browser_login: bool = False,
+    force_refresh: bool,
+    browser_login: bool,
+    allow_reauth: bool,
+    untimed: bool,
 ) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -2092,10 +2372,39 @@ def get_databricks_token(
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
+        allow_reauth=allow_reauth,
+        untimed=untimed,
     )
 
     metrics.bind(workspace, token)
     return token
+
+
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
+def get_databricks_token(
+    workspace: str,
+    profile: str | None = None,
+    *,
+    force_refresh: bool = False,
+    browser_login: bool = False,
+) -> str:
+    """Fetch the workspace's Databricks token, timing and reporting the fetch.
+
+    Best-effort callers that handle their own failures call
+    :func:`fetch_databricks_token_untimed` instead, so a recovered speculation is not
+    counted as a hard token-fetch failure and reports no duration observation of its
+    own; the timed caller that reuses its token reports the fetch's duration as the
+    launch's cache miss. Only the untimed path skips the non-interactive re-auth."""
+    return _fetch_databricks_token(
+        workspace,
+        profile,
+        force_refresh=force_refresh,
+        browser_login=browser_login,
+        allow_reauth=True,
+        untimed=False,
+    )
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
@@ -2124,6 +2433,13 @@ class PermissionDeniedError(RuntimeError):
     denial for a consumer."""
 
 
+class DatabricksLoginRequiredError(RuntimeError):
+    """The Databricks CLI has no usable cached credentials for the workspace, so
+    `databricks auth login` fixes it. The token fetch raises this instead of a plain
+    RuntimeError when the CLI itself identified the credential failure, so best-effort
+    callers can treat it as an expected miss rather than a hard failure."""
+
+
 class AuthTokenError(RuntimeError):
     """The workspace rejected the access token *itself* — expired or invalid — as
     opposed to a valid identity missing a grant (:class:`PermissionDeniedError`).
@@ -2137,7 +2453,7 @@ class AuthTokenError(RuntimeError):
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
     """Raise a concise auth error for a rejected token; ignore other failures."""
-    if reason and _looks_like_definitive_auth_failure(reason):
+    if reason and looks_like_definitive_auth_failure(reason):
         raise AuthTokenError("Your access token is expired or invalid.")
 
 
@@ -4054,7 +4370,7 @@ def list_all_mcp_services(
             or (cancel_event is not None and cancel_event.is_set())
         ):
             return fast_names, fast_reason
-        if _looks_like_definitive_auth_failure(fast_reason):
+        if looks_like_definitive_auth_failure(fast_reason):
             return [], fast_reason
 
     def probe(catalog, schema):
@@ -4450,7 +4766,7 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     reason = model_service_probe.detail
     if isinstance(reason, WorkspaceSelectionReason):
         raise RuntimeError(reason)
-    if _looks_like_definitive_auth_failure(reason):
+    if looks_like_definitive_auth_failure(reason):
         _raise_unity_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):
         _raise_unity_gateway_scope_failure(workspace, reason)
@@ -4488,7 +4804,7 @@ def _looks_like_transient_failure(reason: str) -> bool:
     return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
 
 
-def _looks_like_definitive_auth_failure(reason: str) -> bool:
+def looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
     Matches a 401, an invalid-token 400 (the Unity Gateway's `Invalid Token`), or a

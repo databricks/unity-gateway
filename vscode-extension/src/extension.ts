@@ -294,12 +294,70 @@ export async function switchToDefaultModel(
   }
   await context.globalState.update(SWITCHED_KEY, configKey);
   try {
-    // VS Code's own command, not API. Its model selector also finds the model in a Copilot session, where a model
-    // from an extension is wrapped under the agent host's vendor and the change-model command can't name it.
+    // VS Code's own command, not API: its model selector also reaches models outside the extension API.
     await vscode.commands.executeCommand(OPEN_CHAT_COMMAND, { modelSelector: { vendor: chat.vendor, id: chat.id } });
   } catch (error) {
     log(`Couldn't switch the chat to ${model.id}: ${String(error)}`);
+    return;
   }
+  if (vscode.workspace.getConfiguration("chat").get("defaultToCopilotHarness") === true) {
+    switchToAgentHostCopy(context, model.id, log);
+  }
+}
+
+export const AGENT_HOST_WAIT_MS = 60_000;
+
+/** A Copilot session (VS Code's agent host) drops our own model id when a prompt is sent and asks for a GitHub
+ * sign-in instead; it runs only its copy of the model, which it lists some seconds after ours and which the
+ * extension API doesn't show. */
+export function switchToAgentHostCopy(
+  context: vscode.ExtensionContext,
+  id: string,
+  log: (line: string) => void,
+  waitMs = AGENT_HOST_WAIT_MS,
+): void {
+  const selector = { modelSelector: { id: `${VENDOR}/${id}` } };
+  let done = false;
+  let trying = false;
+  let again = false;
+  const finish = () => {
+    done = true;
+    listener.dispose();
+    clearTimeout(timer);
+  };
+  // One attempt at a time; a change during one gets one more try if it fails.
+  const attempt = async (): Promise<void> => {
+    if (done) {
+      return;
+    }
+    if (trying) {
+      again = true;
+      return;
+    }
+    trying = true;
+    try {
+      await vscode.commands.executeCommand(OPEN_CHAT_COMMAND, selector);
+      finish();
+    } catch {
+      // Not listed yet; the next model change tries again.
+    } finally {
+      trying = false;
+    }
+    if (again && !done) {
+      again = false;
+      await attempt();
+    }
+  };
+  // Tries only when the models change: each attempt also reveals the chat view.
+  const listener = vscode.lm.onDidChangeChatModels(() => void attempt());
+  const timer = setTimeout(() => {
+    if (!done) {
+      log(`The Copilot session never listed ${id}; pick it in the chat's model picker.`);
+    }
+    finish();
+  }, waitMs);
+  context.subscriptions.push({ dispose: finish });
+  void attempt();
 }
 
 const offerToTurnOn = async (context: vscode.ExtensionContext): Promise<void> => {

@@ -4,9 +4,10 @@
 certificate store on Windows, the system CA bundle on Linux), which is where an enterprise
 TLS-inspection proxy's root certificate is installed and what curl, browsers, and ``ug mcp-proxy``
 (through httpx2) already read. ``python`` keeps Python's own certificate chain instead: the CA
-bundle the interpreter's OpenSSL reads plus ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` for urllib and
-httpx, and certifi or ``REQUESTS_CA_BUNDLE`` for ``requests`` (the Databricks SDK, the metrics
-exporter). Behind an inspection proxy that chain lacks the proxy's root, so requests fail with
+bundle the interpreter's OpenSSL reads plus ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` for urllib,
+certifi or ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` for httpx, and certifi or ``REQUESTS_CA_BUNDLE``
+for ``requests`` (the Databricks SDK, the metrics exporter). Behind an inspection proxy that chain
+lacks the proxy's root, so requests fail with
 ``CERTIFICATE_VERIFY_FAILED`` while curl succeeds.
 
 The choice comes from ``UG_TLS_TRUST_STORE``, then ``tls_trust_store`` in ``~/.ucode/state.json``

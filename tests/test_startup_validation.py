@@ -82,7 +82,7 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
         return Response(b'{"is_supported":true}')
 
     monkeypatch.setattr(validation, "_http_post_json", databricks._http_post_json)
-    monkeypatch.setattr(databricks.urllib_request, "urlopen", urlopen)
+    monkeypatch.setattr(databricks, "_http_open", urlopen)
     controls = tmp_path / "env.json"
     validation.start(
         "https://example.com?w=111",

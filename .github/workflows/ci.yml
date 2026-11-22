@@ -29,7 +29,7 @@ jobs:
 
   lint:
     name: Lint
-    # Every other job waits on lint, so a scan finding skips them all.
+    # Every job that runs PR code waits on the gate, so a scan finding skips them all.
     needs: security-gate
     runs-on: ubuntu-latest
     env:
@@ -51,7 +51,7 @@ jobs:
   test:
     name: Unit tests · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
-    needs: lint
+    needs: security-gate
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +97,7 @@ jobs:
   claude-mod:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
-    needs: lint
+    needs: security-gate
     timeout-minutes: 10
     env:
       UV_INDEX_URL: https://pypi.org/simple
@@ -120,7 +120,7 @@ jobs:
   vscode-extension:
     name: VS Code extension
     runs-on: ubuntu-latest
-    needs: lint
+    needs: security-gate
     timeout-minutes: 10
     defaults:
       run:
@@ -137,6 +137,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm test
+      - name: GitHub Copilot app plugin tests
+        run: node --test ../tests/*.test.mjs
       # ug packs the extension from these committed files, so they must match the sources.
       - name: Check the committed bundle is up to date
         run: |
@@ -149,7 +151,7 @@ jobs:
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
-    needs: lint
+    needs: security-gate
     # The merge queue runs only lint and unit tests; e2e already ran on the PR.
     if: ${{ github.event_name != 'merge_group' }}
     defaults:
@@ -256,9 +258,9 @@ jobs:
 
   integration:
     name: Integration
-    needs: lint
-    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
-    if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
+    needs: security-gate
+    # Integration needs CI secrets, so it runs only after the security gate passes.
+    if: ${{ github.event_name != 'merge_group' && needs.security-gate.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
@@ -267,15 +269,18 @@ jobs:
   required-tests:
     name: test
     if: ${{ !cancelled() }}
-    needs: [test, vscode-extension]
+    needs: [lint, test, vscode-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require unit and VS Code extension tests to pass
+      - name: Require lint, unit and VS Code extension tests to pass
         env:
+          LINT_RESULT: ${{ needs.lint.result }}
           RESULT: ${{ needs.test.result }}
           VSCODE_EXTENSION_RESULT: ${{ needs.vscode-extension.result }}
-        run: test "$RESULT" = success && test "$VSCODE_EXTENSION_RESULT" = success
+        run: |
+          test "$LINT_RESULT" = success && test "$RESULT" = success &&
+            test "$VSCODE_EXTENSION_RESULT" = success
 
   required-e2e:
     name: e2e

@@ -41,6 +41,7 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
   const store: Record<string, unknown> = saved ? { [AUTO.storeKey]: saved } : {};
   const commands: { command: string; args: string }[] = [];
   const env: Record<string, string | undefined> = {
+    UCODE_AGENT_LABELS_DIR: '/plugin-data',
     ENABLE_SMART_ROUTING_V2: '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0',
@@ -71,6 +72,8 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     value: { modelOverrides: { [DEFAULT_ALIAS]: MAIN, [OTHER_ALIAS]: OTHER } },
   }));
   on('store.get', ($, e) => ({ value: store[e.key] }));
+  on('session.id', () => ({ value: 'auto-static-session' }));
+  on('fs.exists', () => ({ value: false }));
   on('store.set', ($, e) => {
     chooser.beforeStore?.();
     store[e.key] = e.value;

@@ -487,6 +487,57 @@ def _claude_peer_delivery(child_id, value):
     }
 
 
+@pytest.mark.parametrize("assignment_model", ["routed-model", "wrong-model"])
+def test_codex_routing_requires_the_assignment_child_model(tmp_path, assignment_model):
+    task = SubagentCalculation("1+1", "2")
+    parent = [
+        {"type": "session_meta", "payload": {"id": "parent", "source": "cli"}},
+        {"type": "turn_context", "payload": {"turn_id": "parent-turn", "model": "routed-model"}},
+    ]
+    transcripts = {"parent.jsonl": parent}
+    for child_id, model in [("assignment-child", assignment_model), ("retry", "routed-model")]:
+        transcripts[f"{child_id}.jsonl"] = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": child_id,
+                    "source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}},
+                },
+            },
+            parent[1],
+            {"type": "turn_context", "payload": {"turn_id": child_id, "model": model}},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": child_id,
+                    "last_agent_message": task.value,
+                },
+            },
+        ]
+    session = _transcript_session(tmp_path, "codex", transcripts)
+    directory = tmp_path / ".ucode"
+    directory.mkdir(exist_ok=True)
+    (directory / "codex-smart-routing-decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "decision_id": "decision",
+                "session_id": "parent",
+                "requested_model": "routed-model",
+                "router_model": "routed-model",
+            }
+        )
+        + "\n"
+    )
+    # A successful retry with the right model cannot stand in for the assigned child.
+    evidence.assert_subagent_routed(session, "codex", task)
+    if assignment_model == "wrong-model":
+        with pytest.raises(AssertionError, match="No routed native child"):
+            evidence.assert_subagent_routed(session, "codex", task, child_ids={"assignment-child"})
+    else:
+        evidence.assert_subagent_routed(session, "codex", task, child_ids={"assignment-child"})
+
+
 def _claude_child_handback(value):
     return {
         "type": "assistant",

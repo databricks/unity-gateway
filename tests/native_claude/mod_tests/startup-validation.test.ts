@@ -36,6 +36,7 @@ function engine(on: On) {
     return { value: undefined };
   });
   on('session.start', () => ({ cwd: '/resolved-work' }));
+  on('session.id', () => ({ value: 'session-one' }));
   on('fs.read', ($, e) => {
     if (e.path === '/session/env.validation.json') state.reads += 1;
     const value = files[e.path];
@@ -215,7 +216,6 @@ for (const disabled of [true, false]) {
   }, async ($, on) => {
     const { clock, files } = engine(on);
     const runs: string[][] = [];
-    on('session.id', () => ({ value: 'session-one' }));
     on('process.run', ($, e) => { runs.push(e.argv); return { value: { exitCode: 0, stderr: '', stdout: '{"v":1}' } }; });
     const ui = await $.ui.mount(abovePrompt);
     await $.session.start(start);

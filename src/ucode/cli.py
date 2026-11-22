@@ -14,7 +14,7 @@ import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from importlib import metadata
 from pathlib import Path
@@ -47,6 +47,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_copilot_app_with_copilot,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -85,6 +86,8 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    AnthropicModelCatalog,
+    DatabricksLoginRequiredError,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -96,6 +99,7 @@ from ucode.databricks import (
     ensure_databricks_auth,
     ensure_pat_bearer,
     external_bearer_configured,
+    fetch_databricks_token_untimed,
     find_profile_name_for_host,
     find_profile_name_for_workspace,
     get_databricks_token,
@@ -103,6 +107,7 @@ from ucode.databricks import (
     is_model_provider_feature_unavailable,
     list_anthropic_model_catalog,
     list_profile_entries,
+    looks_like_definitive_auth_failure,
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
@@ -825,15 +830,14 @@ def configure_shared_state(
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
     if skip_model_discovery:
-        # Provider mode: the agent routes through a Model Provider Service and
-        # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
+        # The agent uses its provider, but web search needs a hosted model. Prefer UC IDs
+        # so gateway-only models do not inherit legacy serving-endpoint names.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+                _, ws_models, _, _, _ = discover_model_services(workspace, token)
+                if not ws_models:
+                    ws_models, _ = discover_codex_models(workspace, token)
+            web_search_model = claude_agent.select_web_search_model(ws_models)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -2007,6 +2011,18 @@ def status() -> int:
             )
         if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
             rows.append(("VS Code", "off (workspace-managed)"))
+        if tool == AGENT_COPILOT:
+            from ucode.agents.desktop.setup import copilot_app_status
+
+            app_status = copilot_app_status(
+                effective_state,
+                provider=provider_service,
+                location=get_model_location(effective_state, tool),
+            )
+            if app_status:
+                rows.append(("GitHub Copilot app", app_status.row))
+                for warning in app_status.warnings:
+                    print_warning(warning)
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -2021,6 +2037,11 @@ def status() -> int:
         rows.append(("Endpoint", str(base_url or "not configured")))
         _print_status_panel(_agent_label(tool), rows)
 
+    if AGENT_COPILOT not in configured_tools:
+        from ucode.agents.desktop.setup import copilot_app_unconfigured_status
+
+        if pending := copilot_app_unconfigured_status():
+            _print_status_panel("GitHub Copilot app", [("Status", pending)])
     if not configured_tools:
         print_note("No coding agents are configured.")
     return 0
@@ -2116,6 +2137,13 @@ def revert() -> int:
         # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
         vscode_result = "failed"
+    from ucode.agents.desktop.setup import revert_copilot_app
+
+    try:
+        copilot_app_result = revert_copilot_app()
+    except OSError as exc:
+        print_warning(f"Could not revert the GitHub Copilot app: {exc}. Run ug revert again.")
+        copilot_app_result = "failed"
 
     results: dict[str, bool] = {
         # Antigravity's skills.json is shared with its app and IDE extensions, so revert
@@ -2150,6 +2178,7 @@ def revert() -> int:
         print_kv("Published agent configuration settings", published_agent_config_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
+    print_kv("GitHub Copilot app", copilot_app_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -3345,6 +3374,17 @@ def otel_proxy_cmd(
         raise typer.Exit(1) from None
 
 
+@app.command("copilot-app-restart", hidden=True)
+def copilot_app_restart_cmd(
+    target: Annotated[str, typer.Argument(help="The app to restart, as JSON from ug's plugin.")],
+) -> None:
+    """Restart the GitHub Copilot app once no chat in it is running a turn. ug's plugin for the
+    app starts this, detached, after it changed the app's Databricks models."""
+    from ucode.agents.desktop import copilot_app_restart
+
+    copilot_app_restart.main(target)
+
+
 @app.command("otel-headers", hidden=True)
 def otel_headers_cmd(
     host: Annotated[
@@ -4167,6 +4207,102 @@ def _get_catalog_profile(state: dict) -> str | None:
     return state.get("profile")
 
 
+@dataclass
+class _SpeculativePickerCatalog:
+    """The picker catalog fetch started before `configure_shared_state`, with the launch
+    identity it was fetched for: `result` drops it when configure resolved a different
+    workspace, workspace id, or catalog profile."""
+
+    future: Future[AnthropicModelCatalog]
+    workspace: str
+    workspace_id: str | None
+    profile: str | None
+    catalog_kwargs: dict[str, str | None]
+
+    @classmethod
+    def start(
+        cls, state: dict, profile: str | None, **catalog_kwargs: str | None
+    ) -> _SpeculativePickerCatalog:
+        workspace = state["workspace"]
+
+        def fetch() -> AnthropicModelCatalog:
+            # The undecorated fetch: a failure here is reported by the join's fallback
+            # handler, not double-counted as a hard token-fetch failure, and a success adds
+            # no second databricks_token_fetch duration observation. Only the plain
+            # ``databricks auth token`` call runs — no ``auth login``, no browser, nothing
+            # that can prompt — so the main thread never waits on it and a failure never
+            # doubles configure's own fetch. Its exception rides the future; the join site
+            # falls back to the serial fetch on the live token.
+            token = fetch_databricks_token_untimed(workspace, profile)
+            return list_anthropic_model_catalog(workspace, token, **catalog_kwargs)
+
+        return cls(
+            _start_in_background(fetch),
+            workspace,
+            state.get("workspace_id"),
+            profile,
+            catalog_kwargs,
+        )
+
+    def result(
+        self, state: dict, catalog_profile: str | None, **catalog_kwargs: str | None
+    ) -> AnthropicModelCatalog | None:
+        """The speculative catalog result when its identity and catalog scope still match
+        and it succeeded; None sends the caller to the serial fetch with the live token."""
+        if (self.workspace, self.workspace_id, self.profile, self.catalog_kwargs) != (
+            state["workspace"],
+            state.get("workspace_id"),
+            catalog_profile,
+            catalog_kwargs,
+        ):
+            return None
+        try:
+            speculative = self.future.result()
+        except DatabricksLoginRequiredError:
+            # An expected no-reauth miss: the CLI has no usable cached credentials, and
+            # configure's auth step performs the login, so the serial fetch rides the
+            # repaired token without reporting this as a launch failure.
+            return None
+        except Exception as exc:
+            # The speculation is best effort: a failed background token or catalog fetch
+            # falls back to the serial fetch on the live token, never fails the launch.
+            # The raised exception can only come from the non-interactive token fetch (the
+            # catalog call reports failures via error_msg instead).
+            metrics.failure(
+                metrics.DATABRICKS_TOKEN_FETCH_OPERATION, exc, continued_with_fallback=True
+            )
+            return None
+        error = speculative.error_msg
+        if error and looks_like_definitive_auth_failure(error):
+            # The token the speculation rode is definitively rejected (a 401, an
+            # invalid-token 400, an invalid-access-token 403) and configure's auth step may
+            # have repaired it; refetch with the live token.
+            metrics.failure(metrics.MODELS_LIST_OPERATION, error, continued_with_fallback=True)
+            return None
+        # Any other error (a plain 403, a transient error) would fail a live-token fetch the
+        # same way, so use the speculative result instead of doubling the request.
+        return speculative
+
+
+def _picker_catalog(
+    speculation: _SpeculativePickerCatalog | None,
+    state: dict,
+    profile: str | None,
+    scope: dict[str, str | None],
+) -> AnthropicModelCatalog:
+    """The speculative picker catalog when its identity and scope still match, else the
+    serial fetch on the live token — one join-then-fallback for every reader."""
+    picker_catalog = speculation.result(state, profile, **scope) if speculation else None
+    if picker_catalog is None:
+        token = get_databricks_token(state["workspace"], profile)
+        picker_catalog = list_anthropic_model_catalog(
+            state["workspace"],
+            token,
+            **scope,
+        )
+    return picker_catalog
+
+
 @smart_routing_config.version_scope()
 def _launch_tool(
     tool_name: str,
@@ -4369,6 +4505,57 @@ def _launch_tool(
             and (managed is None or managed_provider or managed_parent_schema)
         ):
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+        # The Anthropic picker catalog depends only on inputs settled above, so start it
+        # speculatively here and overlap it with the probe and discovery that
+        # `configure_shared_state` runs. A launch shape whose routing wouldn't read the catalog
+        # abandons the request on its daemon thread.
+        picker_catalog_speculation: _SpeculativePickerCatalog | None = None
+        launch_only_auto_picker = (
+            tool == AGENT_CLAUDE
+            and smart_routing_config.auto_mode_enabled()
+            and not smart_routing_v2.claude_print_mode(ctx.args)
+            and _routes_launch(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=provider,
+            )
+        )
+        unmanaged_picker_catalog = (
+            tool == "claude"
+            and managed is None
+            and not provider
+            and not parent_schema
+            and family_defaults is None
+            and not launch_only_auto_picker
+        )
+        # A claude launch whose source is a Unity Catalog location — managed or
+        # developer-selected — always reads the picker catalog: this gate speculates it and
+        # `should_fetch_claude_picker_catalog` below joins it, so derive both from this one
+        # rule. Provider launches resolve their service first: a relayed one skips this
+        # catalog (`relayed` below), and that's only known after a lookup, so only a source
+        # that never relays — a Unity Catalog location — starts the catalog here.
+        claude_uc_picker_catalog = tool == "claude" and bool(
+            managed_parent_schema or (managed is None and bool(parent_schema))
+        )
+        scoped_picker_catalog = claude_uc_picker_catalog and not provider
+        # The catalog scope of the launch's source — empty for an unmanaged launch — is one
+        # dict for the speculation's start and join checks and the serial fallbacks, so the
+        # check is meaningful and the fetches cannot drift.
+        picker_catalog_scope: dict[str, str | None]
+        if provider:
+            picker_catalog_scope = {"provider": provider}
+        elif parent_schema:
+            picker_catalog_scope = {"parent_schema": parent_schema}
+        else:
+            picker_catalog_scope = {}
+        if unmanaged_picker_catalog or scoped_picker_catalog:
+            picker_catalog_speculation = _SpeculativePickerCatalog.start(
+                state, _get_catalog_profile(state), **picker_catalog_scope
+            )
+
         state = configure_shared_state(
             state["workspace"],
             profile=state.get("profile"),
@@ -4497,8 +4684,9 @@ def _launch_tool(
             tool == "claude"
             and not relayed
             and (
-                bool(managed_parent_schema or managed_provider)
-                or (managed is None and bool(explicit_provider or parent_schema))
+                claude_uc_picker_catalog
+                or bool(managed_provider)
+                or (managed is None and bool(explicit_provider))
                 or (
                     bool(provider)
                     and _routes_launch(
@@ -4513,11 +4701,8 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], catalog_profile)
-            picker_catalog = list_anthropic_model_catalog(
-                state["workspace"],
-                token,
-                **({"provider": provider} if provider else {"parent_schema": parent_schema}),
+            picker_catalog = _picker_catalog(
+                picker_catalog_speculation, state, catalog_profile, picker_catalog_scope
             )
             error = picker_catalog.error_msg
             if error:
@@ -4621,32 +4806,12 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
-        launch_only_auto_picker = (
-            tool == AGENT_CLAUDE
-            and smart_routing_config.auto_mode_enabled()
-            and not smart_routing_v2.claude_print_mode(ctx.args)
-            and _routes_launch(
-                tool,
-                ctx.args,
-                smart_routing_enabled=smart_routing_enabled,
-                explicit_prompt=explicit_prompt,
-                model=model or forwarded_model,
-                provider=provider,
-            )
-        )
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
-        if (
-            tool == "claude"
-            and managed is None
-            and not provider
-            and not parent_schema
-            and family_defaults is None
-            and not launch_only_auto_picker
-        ):
-            discovered = list_anthropic_model_catalog(
-                state["workspace"],
-                get_databricks_token(state["workspace"], catalog_profile),
+        # launch_only_auto_picker was settled above, where the speculative catalog started.
+        if unmanaged_picker_catalog:
+            discovered = _picker_catalog(
+                picker_catalog_speculation, state, catalog_profile, picker_catalog_scope
             )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
@@ -5530,6 +5695,15 @@ def configure(
             "Copilot Chat in VS Code.",
         ),
     ] = False,
+    no_copilot_app: Annotated[
+        bool,
+        typer.Option(
+            "--no-copilot-app",
+            hidden=True,
+            help="Don't add the Databricks models to the GitHub Copilot desktop app. By default, "
+            "configuring copilot also sets up the app when it is installed.",
+        ),
+    ] = False,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5651,6 +5825,7 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
+        request_copilot_app_with_copilot(not no_copilot_app)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

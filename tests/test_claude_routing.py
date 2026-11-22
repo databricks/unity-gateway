@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -84,18 +85,39 @@ def test_canary_and_audit_are_written(tmp_path, monkeypatch):
     assert json.loads(audit.read_text().strip())["agent_id"] == "a1"
 
 
-def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("include_task_text", [True, False])
+def test_decision_is_reconciled_with_actual_subagent_model(
+    tmp_path, monkeypatch, include_task_text
+):
     decisions = tmp_path / "decisions.jsonl"
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(claude_routing, "DECISIONS_PATH", decisions)
     monkeypatch.setattr(claude_routing, "AUDIT_PATH", audit)
     task = "Review this code: " + "x" * 10000
     decision = routing.RoutingDecision(
-        model="system.ai.claude-opus-4-8", rationale="why " * 1000, raw_rationale="raw " * 1000
+        model="system.ai.claude-opus-4-8",
+        rationale="why " * 1000,
+        raw_rationale="raw " * 1000,
+        explanation={"task_understanding": task},
     )
-    routing.write_decision_record(decisions, {"session_id": "s1"}, task, decision, decision.model)
+    routing.write_decision_record(
+        decisions,
+        {"session_id": "s1"},
+        task,
+        decision,
+        decision.model,
+        include_task_text=include_task_text,
+    )
     saved = json.loads(decisions.read_text())
-    assert saved["task_name"] == task
+    if include_task_text:
+        assert saved["task_name"] == task
+        assert saved["explanation"] == decision.explanation
+    else:
+        assert "task_name" not in saved
+        assert "explanation" not in saved
+        assert saved["task_sha256"] == hashlib.sha256(task.encode()).hexdigest()
+        assert saved["task_length"] == len(task)
+        assert task not in decisions.read_text()
     assert saved["rationale"] == decision.rationale
     assert saved["raw_rationale"] == decision.raw_rationale
 

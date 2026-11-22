@@ -163,6 +163,10 @@ CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
+WEB_SEARCH_MODEL_PREFERENCES = (
+    "system.ai.gpt-6-luna",
+    "system.ai.gpt-5-mini",
+)
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
@@ -198,19 +202,23 @@ def minimum_version_error() -> str | None:
     )
 
 
+def select_web_search_model(models: list[str]) -> str | None:
+    """Keep web search on its preferred models as new coding models become available."""
+    models = [model.strip() for model in models if isinstance(model, str) and model.strip()]
+    return next(
+        (model for model in WEB_SEARCH_MODEL_PREFERENCES if model in models),
+        next(iter(models), None),
+    )
+
+
 def _resolve_web_search_model(state: dict) -> str | None:
-    """Pick the model the web_search MCP server should call. Prefers an
-    explicit override in state, otherwise the first endpoint discovered as
-    Responses-API-capable. Returns None if no GPT endpoint is available —
-    callers should skip the MCP wiring in that case."""
+    """Use an explicit search override before selecting from discovered models."""
     override = state.get("web_search_model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     codex_models = state.get("codex_models") or []
-    if isinstance(codex_models, list) and codex_models:
-        first = codex_models[0]
-        if isinstance(first, str) and first.strip():
-            return first.strip()
+    if isinstance(codex_models, list):
+        return select_web_search_model(codex_models)
     return None
 
 
