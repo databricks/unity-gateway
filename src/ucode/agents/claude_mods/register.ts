@@ -194,7 +194,7 @@ async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions
   try {
     const command = logsReaderCommand(options);
     const session = await $.session.id();
-    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: LOGS_COMMAND_TIMEOUT_MS });
     note = applyRoutingLogsRead(result.stdout,
       result.exitCode !== 0 || result.isStdoutTruncated
         ? `logs command exited ${result.exitCode} or truncated output`

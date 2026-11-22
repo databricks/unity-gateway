@@ -58,6 +58,8 @@ def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
     result = _wait_for_result(validation.result_path(controls))
     post.assert_called_once()
     assert result["routing_disabled"] is disabled
+    if not disabled:
+        assert result == {"routing_disabled": False}
     assert session_routing_enabled(controls) is not disabled
     if not disabled:
         assert controls.read_text() == "{}"

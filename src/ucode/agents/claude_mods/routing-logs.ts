@@ -126,7 +126,7 @@ async function openDecision($: EngineInterface, options: PluginOptions, id: stri
   try {
     result = await $.process.run(
       [...logsReaderCommand(options), '--session', await $.session.id(), '--decision', id],
-      { timeoutMs: 10000 },
+      { timeoutMs: LOGS_COMMAND_TIMEOUT_MS },
     );
   } catch (error) {
     $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
@@ -187,7 +187,7 @@ async function runRoutingLogsReader($: any, options: PluginOptions): Promise<str
   try {
     const command = logsReaderCommand(options);
     const session = await $.session.id();
-    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: LOGS_COMMAND_TIMEOUT_MS });
     return applyRoutingLogsRead(result.stdout,
       result.exitCode !== 0 || result.isStdoutTruncated
         ? `logs command exited ${result.exitCode} or truncated output`
@@ -375,6 +375,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     const entries: (Decision | StartupCheck)[] = [...rows, ...checks].sort((a, b) => b.at - a.at);
     for (const row of entries) {
       if ('check_id' in row) {
+        // Age (8) + "  " + the fixed text fills the row.
         const room = Math.max(1, columns - 10);
         const text = STARTUP_CHECK_ROW.length > room ? STARTUP_CHECK_ROW.slice(0, Math.max(0, room - 1)) + '…' : STARTUP_CHECK_ROW;
         children.push(Button({
