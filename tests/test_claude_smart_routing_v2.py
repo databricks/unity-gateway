@@ -1682,6 +1682,321 @@ class TestV2ModelPickerDiscovery:
         assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == "1"
 
 
+class TestPersonalStaticAutoLaunch:
+    """Personal Auto launches rebuild the managed static-row experience at launch only."""
+
+    @staticmethod
+    def _patch_launch(monkeypatch, tmp_path, *, managed=None, catalog=None):
+        from ucode.agents.claude_auto import auto_variant
+
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        if managed is None:
+            monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        else:
+            managed_path = tmp_path / "managed-settings.json"
+            managed_path.write_text(json.dumps(managed))
+            monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_a: catalog or AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}),
+        )
+        captured: dict = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured["argv"] = argv
+            settings_path = Path(argv[argv.index("--settings") + 1])
+            captured["settings_path"] = settings_path
+            captured.update(json.loads(settings_path.read_text()))
+            captured["custom_option"] = os.environ.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        return captured, auto_variant
+
+    @staticmethod
+    def _run(tmp_path, captured, *, state=None, launch_model=None):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "opus", "theme": "dark"}))
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                state or {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=user_settings,
+                launch_model=launch_model,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert exc.value.code == 0
+        return user_settings
+
+    def test_personal_launch_builds_static_auto_catalog(self, tmp_path, monkeypatch):
+        from ucode.agents.claude_auto import is_auto_model
+
+        models = [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-5",
+            "system.ai.gpt-5-6-sol",
+        ]
+        captured, auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            catalog=AnthropicModelCatalog(
+                model_ids=models,
+                model_id_to_display_name={"system.ai.claude-sonnet-5": "Claude Sonnet 5"},
+            ),
+        )
+        state = {
+            "workspace": "https://example.com",
+            "claude_models": {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": "system.ai.claude-sonnet-5",
+            },
+        }
+        user_settings = self._run(tmp_path, captured, state=state)
+
+        opus_row = "system.ai.claude-opus-4-8[1m]"
+        sonnet_row = "system.ai.claude-sonnet-5[1m]"
+        gpt_row = "system.ai.gpt-5-6-sol[1m]"
+        picker = captured["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is True
+        # The static Auto row leads; family rows carry [1m] hints and dedupe raw ids.
+        assert is_auto_model(picker["options"][0]["model"])
+        assert [row["model"] for row in picker["options"][1:]] == [
+            opus_row,
+            sonnet_row,
+            gpt_row,
+        ]
+        static_alias = picker["options"][0]["model"]
+        aliases = {auto_variant(row): row["model"] for row in picker["options"][1:]}
+        assert picker["options"][0]["label"] == "Auto"
+        assert picker["options"][1]["label"] == "Claude Opus 4.8"
+        assert picker["options"][1]["behavesAs"] == "claude-opus-4-8"
+        assert picker["options"][2]["label"] == "Claude Sonnet 5"
+
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        auto = json.loads(options["autoPicker"])
+        # Native stays on the immutable static row and the session starts on it.
+        assert auto["staticModel"] == static_alias
+        assert auto["model"] == static_alias
+        assert auto["preferSaved"] is True
+        assert auto["mainModel"] == opus_row
+        assert [row["model"] for row in auto["models"]] == [opus_row, sonnet_row, gpt_row]
+        assert {row["autoModel"] for row in auto["models"]} == set(aliases)
+        # Launch-only aliases without an allowlist; family mappings stay per-model.
+        assert {k: v for k, v in captured["modelOverrides"].items() if is_auto_model(k)} == aliases
+        assert "availableModels" not in captured
+        assert "deniedModels" not in captured
+        assert captured["argv"][captured["argv"].index("--model") + 1] == static_alias
+        # Nothing persisted: temporary settings are removed and user settings untouched.
+        assert not captured["settings_path"].exists()
+        assert json.loads(user_settings.read_text()) == {"model": "opus", "theme": "dark"}
+
+    def test_personal_static_auto_preserves_catalog_context_limits(self, tmp_path, monkeypatch):
+        model = "custom-model"
+        monkeypatch.setattr(claude, "native_settings_paths", lambda: [])
+        captured, auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            catalog=AnthropicModelCatalog(
+                model_ids=[model],
+                model_id_to_display_name={},
+                model_id_to_limits={model: (300_000, 32_000)},
+            ),
+        )
+        self._run(tmp_path, captured)
+
+        assert captured["modelSettings"][auto_variant({"model": model})] == {
+            "autoCompactWindow": 300_000
+        }
+
+    def test_personal_auto_without_models_warns_and_skips_the_launch(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        captured, _auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            catalog=AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+            ),
+        )
+
+        with pytest.raises(v2.ClaudeRoutingSetupError, match="no Claude models are reachable"):
+            self._run(tmp_path, captured)
+
+        output = capsys.readouterr()
+        assert "Claude Auto is unavailable" in output.out + output.err
+        assert "HTTP 503" in output.out + output.err
+        assert not captured
+
+    def test_empty_catalog_launches_normally_with_routing_disabled(self, tmp_path, monkeypatch):
+        routed, _ = self._patch_launch(monkeypatch, tmp_path)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        saved = {"env": {v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}}
+        claude.CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps(saved))
+        launches = []
+
+        # Capture the process boundary; run routing setup and ordinary argv composition.
+        def capture_launch(argv):
+            settings = json.loads(argv[argv.index("--settings") + 1])
+            launches.append(settings)
+            for key in (v2.ENABLE_SMART_ROUTING_ENV_VAR, v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR):
+                assert os.environ[key] == settings["env"][key] == "0"
+            assert settings["env"][claude.FIRST_PROMPT_SOCKET_ENV] == ""
+            assert "--plugin-dir" not in argv
+            assert "pluginConfigs" not in settings
+
+        monkeypatch.setattr(claude, "exec_or_spawn", capture_launch)
+        claude.launch(
+            {"workspace": "https://example.com"},
+            [],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert len(launches) == 1
+        assert not routed
+        assert json.loads(claude.CLAUDE_SETTINGS_PATH.read_text()) == saved
+
+    def test_non_auto_empty_catalog_keeps_its_error(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_a: AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+            ),
+        )
+
+        def fail_popen(*_args, **_kwargs):
+            raise AssertionError("Claude must not launch when discovery failed")
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fail_popen)
+        with pytest.raises(RuntimeError, match="HTTP 503") as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert type(exc.value) is RuntimeError
+        output = capsys.readouterr()
+        assert "Auto is unavailable" not in output.out + output.err
+
+    def test_personal_static_auto_applies_managed_denials(self, tmp_path, monkeypatch):
+        managed = {"deniedModels": ["claude-haiku-4-5"]}
+        models = ["system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        captured, auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            managed=managed,
+            catalog=AnthropicModelCatalog(model_ids=models, model_id_to_display_name={}),
+        )
+        self._run(tmp_path, captured)
+
+        assert [row["model"] for row in captured["modelPicker"]["options"]][1:] == [models[0]]
+        auto = json.loads(
+            captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]["autoPicker"]
+        )
+        assert [row["model"] for row in auto["models"]] == [models[0]]
+        assert captured["modelOverrides"] == {
+            auto_variant({"model": models[0]}): models[0],
+            "claude-sonnet-5": models[0],
+        }
+        assert "availableModels" not in captured
+
+    def test_provider_launch_keeps_the_native_custom_option(self, tmp_path, monkeypatch):
+        sonnet = "system.ai.claude-sonnet-5"
+        captured, auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            catalog=AnthropicModelCatalog(model_ids=[sonnet], model_id_to_display_name={}),
+        )
+        user_settings = self._run(
+            tmp_path,
+            captured,
+            state={
+                "workspace": "https://example.com",
+                "_claude_launch_provider": "amazon-bedrock",
+            },
+        )
+
+        auto = json.loads(
+            captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]["autoPicker"]
+        )
+        assert "staticModel" not in auto
+        assert captured["modelPicker"]["replaceBuiltInOptions"] is False
+        assert captured["custom_option"] == auto["model"]
+        assert auto["model"] == auto_variant({"model": sonnet})
+        assert not captured["settings_path"].exists()
+        assert json.loads(user_settings.read_text()) == {"model": "opus", "theme": "dark"}
+
+    def test_foreign_non_replacing_picker_keeps_the_custom_option(self, tmp_path, monkeypatch):
+        managed = {
+            "modelPicker": {
+                "replaceBuiltInOptions": False,
+                "options": [{"model": "team.model.x", "label": "Team model"}],
+            }
+        }
+        captured, auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            managed=managed,
+            catalog=AnthropicModelCatalog(model_ids=["team.model.x"], model_id_to_display_name={}),
+        )
+        user_settings = self._run(tmp_path, captured)
+
+        auto = json.loads(
+            captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]["autoPicker"]
+        )
+        assert "staticModel" not in auto
+        picker = captured["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is False
+        assert [row["model"] for row in picker["options"]] == ["team.model.x"]
+        assert captured["custom_option"] == auto["model"]
+        assert auto["model"] == auto_variant({"model": "team.model.x"})
+        assert json.loads(user_settings.read_text()) == {"model": "opus", "theme": "dark"}
+
+    def test_all_denied_models_fall_back_to_a_plain_launch(self, tmp_path, monkeypatch, capsys):
+        models = ["system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        captured, _auto_variant = self._patch_launch(
+            monkeypatch,
+            tmp_path,
+            managed={"deniedModels": models},
+            catalog=AnthropicModelCatalog(model_ids=models, model_id_to_display_name={}),
+        )
+        self._run(tmp_path, captured)
+
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        assert "autoPicker" not in options
+        assert captured["modelPicker"] == {"replaceBuiltInOptions": False, "options": []}
+        output = capsys.readouterr()
+        assert "Auto is unavailable" in output.out + output.err
+
+
 class TestSubagentRouting:
     def test_offers_gateway_alias_ids_unchanged(self, monkeypatch):
         gateway_alias = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"

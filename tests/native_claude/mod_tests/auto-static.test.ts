@@ -203,6 +203,28 @@ test('a fresh static Auto session starts on the saved main model', { options: OP
   expect((await (await session.picker()).find({type:'Select'})).props.options[0].label).toBe('Haiku 4.5');
 });
 
+for (const [name, models, saved, expected] of [
+  ['bare preference with hinted catalog', [MAIN + '[1m]'], MAIN, MAIN + '[1m]'],
+  ['exact preference after hinted row', [MAIN + '[1m]', MAIN], MAIN, MAIN],
+  ['unknown preference', [MAIN + '[1m]'], 'withdrawn-model', OTHER],
+  ['no preference', [MAIN + '[1m]'], undefined, OTHER],
+] as const) {
+  test(`a fresh static Auto session restores ${name}`, {
+    options: {...OPTIONS, autoPicker: JSON.stringify({...AUTO,
+      model: OTHER_ALIAS, staticModel: OTHER_ALIAS, mainModel: OTHER,
+      models: [AUTO.models[1], ...models.map(model => ({
+        model, label: 'Sonnet 5', autoModel: DEFAULT_ALIAS + (model.endsWith('[1m]') ? '[1m]' : ''),
+      }))],
+    })},
+  }, async ($, on) => {
+    staticCatalogSession($, on, OTHER_ALIAS, saved);
+    const sent = captureSteps(on);
+    await $.session.start(START);
+    await step($, OTHER_ALIAS);
+    expect(sent).toEqual([expected]);
+  });
+}
+
 test('a launch-only main model outranks the saved one', { options: { ...OPTIONS, autoPicker: JSON.stringify({ ...AUTO, preferSaved: false }) } }, async ($, on) => {
   staticCatalogSession($, on, DEFAULT_ALIAS, OTHER);
   const sent = captureSteps(on);
@@ -638,3 +660,23 @@ test('direct /model auto keeps the entry model without a cache warning', {option
   expect(session.opened).toContain('auto-models');
   expect(rows).toEqual([]);
 });
+
+for (const current of [OTHER, OTHER_ALIAS]) {
+  test(`personal static Auto keeps ${current} when native strips the context suffix`, {
+    options: {...OPTIONS, autoPicker: JSON.stringify({...AUTO, models: [AUTO.models[0],
+      {...AUTO.models[1], model: OTHER + '[1m]', autoModel: OTHER_ALIAS + '[1m]'},
+    ]})},
+  }, async ($, on) => {
+    const session = staticCatalogSession($, on, current);
+    const sent = captureSteps(on);
+    await $.session.start(START);
+    await $.command.run({command:'model', args:'auto'});
+    const picker = await session.picker();
+    const select = await picker.find({type:'Select'});
+    expect(select.props.value).toBe(OTHER + '[1m]');
+    await picker.unmount();
+    await session.choose(OTHER + '[1m]');
+    await step($, DEFAULT_ALIAS);
+    expect(sent).toEqual([OTHER + '[1m]']);
+  });
+}

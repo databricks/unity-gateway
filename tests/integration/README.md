@@ -25,7 +25,23 @@ CUJ7 reconfigures with the Auto version before its personal Auto launch. Compone
 in `../test_cli.py` verify that this launch does not reinstall a shared replacement picker
 after reconfigure removes UG's ordinary discovery picker. Ordinary launches, other versions,
 an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
-The live journey retains saved-model restart, successful inference, and no-router assertions.
+The live journey requires a fresh Auto restart to retain the selected main model with
+successful inference. With Auto disabled, it instead requires inference on the static
+alias's default target and no router requests.
+`../test_claude_smart_routing_v2.py` covers the launch-only static picker for personal
+Auto launches — built each launch in temporary settings with one static Auto row and
+per-model aliases, never persisted — plus managed-denial narrowing, custom-option
+fallbacks, and the empty-catalog fallback to an unrouted launch. The static row's live
+`/model` rendering on a personal launch is not covered by an integration journey.
+
+CUJs 4 and 7 share the terminal screen's reverse-video label reader. Component coverage
+in `../test_integration_terminal_screen.py` verifies exact focused-label membership;
+`../test_agent_claude.py` checks exact-default priority over context-suffixed rows.
+Native mod tests restore a bare saved main-model preference against a `[1m]` catalog
+row, prefer an exact row when both exist, and keep the default for absent or withdrawn
+preferences. These checks do not run the live workspace journeys.
+The empty-catalog caller test in `../test_claude_smart_routing_v2.py` checks ordinary
+launch fallback with routing disabled and saved settings preserved.
 
 Comment-triggered `/integration-test` runs require authorization and a successful shared
 Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
@@ -2514,3 +2530,15 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 Configure loading indicators: skill download component coverage verifies the shared spinner
 starts before bundle requests and reports completed/total downloads. MCP and skill
 reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
+
+Personal static Auto merge regressions cover discovery context limits in temporary alias
+settings and entering Auto from a bare native model ID when the picker adds `[1m]`.
+The native plugin component test checks that the chooser keeps that model and the next
+turn uses its target; it does not establish live gateway inference coverage.
+
+CUJ7's personal Auto journey also selects a discovered GLM model and a discovered GPT
+model through the native main-model chooser, preferring GLM 5.3 Flash and GPT 6.2 Sol.
+Each selection must complete a real file task, and every correlated task request must
+use the chosen gateway target with a successful response. Missing either model family
+fails the journey; it is not skipped. Each model uses a fresh session without prior
+conversation context, so this addition does not cover cache-warning confirmation.

@@ -64,6 +64,14 @@ def test_display_renders_text_like_pyte():
     assert screen.display == pyte.Screen.display.fget(screen)
 
 
+def test_reverse_video_lines_match_complete_labels():
+    screen = TerminalScreen(80, 3, lambda data: None)
+    pyte.Stream(screen).feed("GPT 6.2\r\n\x1b[7m GPT 6.2 Sol \x1b[0m (current)\r\n")
+
+    assert screen.reverse_video_lines == ("GPT 6.2 Sol",)
+    assert "GPT 6.2" not in screen.reverse_video_lines
+
+
 def test_display_treats_an_empty_cell_as_a_space():
     screen = _screen()
     pyte.Stream(screen).feed("ab")

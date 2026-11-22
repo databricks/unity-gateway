@@ -25,7 +25,7 @@ import {
   routingLogsPaneClosed,
   routingLogsPaneOpen,
 } from './routing-logs.ts';
-import { AUTO_CONFIRMATION, AUTO_MAIN_TITLE, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_CONFIRMATION, AUTO_MAIN_TITLE, autoTarget, formatAutoConfirmation, isStaticAuto, matchesAutoModel, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
@@ -48,12 +48,19 @@ async function selectedModel($: EngineInterface, auto: AutoPicker): Promise<stri
 async function entryMainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
   const current = await selectedModel($, auto);
   if (isStaticAuto(auto, current) && auto.variant) return auto.variant;
-  const row = auto.models.find(row => row.model === current || row.autoModel === current);
+  const row = auto.models.find(row => row.model === current || row.autoModel === current)
+    ?? auto.models.find(row => matchesAutoModel(row.model, current));
   if (row) return row.model;
   const settings = await $.settings.read();
   const usage = await $.session.usage();
   const equivalent = auto.models.find(row => sameAutoTarget(auto, current, row.autoModel, settings.modelOverrides, usage.context?.window));
   return equivalent?.model ?? await mainModel($, auto);
+}
+
+function savedMainModel(auto: AutoPicker, saved: unknown): string {
+  const row = auto.models.find(row => row.model === saved)
+    ?? (typeof saved === 'string' ? auto.models.find(row => matchesAutoModel(row.model, saved)) : undefined);
+  return row?.model ?? auto.mainModel;
 }
 
 async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
@@ -62,7 +69,7 @@ async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> 
   const active = auto.models.find((row) => row.autoModel === awaitModel);
   if (active) return active.model;
   const saved = await $.store.get(auto.storeKey);
-  return auto.models.find((row) => row.model === saved)?.model ?? auto.mainModel;
+  return savedMainModel(auto, saved);
 }
 
 async function autoSelected($: EngineInterface, auto: AutoPicker): Promise<boolean> {
@@ -90,7 +97,7 @@ async function initStaticVariant($: EngineInterface, auto: AutoPicker): Promise<
   }
   if (auto.variant) return;
   const saved = auto.preferSaved ? await $.store.get(auto.storeKey) : undefined;
-  auto.variant = auto.models.find(row => row.model === saved)?.model ?? auto.mainModel;
+  auto.variant = savedMainModel(auto, saved);
 }
 
 type RoutingSyncState = {model?: string; failedModel?: string};

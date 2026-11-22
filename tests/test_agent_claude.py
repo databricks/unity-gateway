@@ -1952,6 +1952,36 @@ class TestWriteToolConfigManagedSettings:
         # The input settings are not mutated.
         assert "modelOverrides" not in settings
 
+    @pytest.mark.parametrize("use_alias", [False, True])
+    @pytest.mark.parametrize("include_exact", [False, True])
+    def test_auto_default_prefers_exact_model_before_context_suffix(self, use_alias, include_exact):
+        from ucode.agents.claude_auto import add_picker_entry, auto_variant, picker_config
+        from ucode.databricks import AnthropicModelCatalog
+
+        model = "system.ai.claude-sonnet-5"
+        models = [model + "[1m]"] + ([model] if include_exact else [])
+        expected = model if include_exact else models[0]
+        preferred = auto_variant({"model": expected}) if use_alias else model
+        settings = {
+            "env": {"ANTHROPIC_MODEL": preferred},
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": item, "label": item} for item in models],
+            },
+        }
+        generated = add_picker_entry(settings, static_auto_row=True)
+        expected_alias = auto_variant({"model": expected})
+        assert generated["modelPicker"]["options"][0]["model"] == expected_alias
+        config = picker_config(
+            AnthropicModelCatalog(model_ids=models, model_id_to_display_name={}),
+            "https://example.com",
+            generated,
+            launch_settings={},
+            managed_settings={},
+        )
+        assert config["mainModel"] == expected
+        assert config["model"] == expected_alias
+
     def test_static_auto_row_reconfigure_moves_trailing_auto_first(self):
         from ucode.agents.claude_auto import (
             AUTO_DESCRIPTION,

@@ -83,6 +83,7 @@ from ucode.smart_routing.config import (
     selected_version,
 )
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.string_utils import model_picker_label
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -202,6 +203,34 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
             else "No permitted models remain in Claude's configured picker",
         )
     return None
+
+
+def _personal_picker_options(catalog: AnthropicModelCatalog) -> list[dict]:
+    """Picker rows for a personal launch, formatted like an ordinary launch's overlay.
+
+    Family defaults may already carry a ``[1m]`` hint while the discovered catalog
+    lists the same model raw; one row per model keeps the hinted id.
+    """
+    from ucode.agents.claude import model_picker_option
+
+    rows: dict[str, dict] = {}
+    order: list[str] = []
+    for model in catalog.model_ids:
+        hinted = maybe_add_gpt_1m_suffix(model)
+        base = hinted.removesuffix("[1m]")
+        option = model_picker_option(
+            hinted,
+            catalog.model_id_to_display_name.get(model) or model_picker_label(model),
+            catalog.model_id_to_description.get(model),
+        )
+        existing = rows.get(base)
+        if existing is not None:
+            if hinted.endswith("[1m]") and not existing["model"].endswith("[1m]"):
+                rows[base] = option
+            continue
+        rows[base] = option
+        order.append(base)
+    return [rows[base] for base in order]
 
 
 def smart_routing_enabled(
@@ -789,6 +818,22 @@ def launch_claude(
         )
     token = launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
+    route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
+    settings, remaining = compose_settings(tool_args)
+    # Auto's native model selection collects Isaac feedback before disabling routing.
+    # Explicit first-prompt presets retain their own launch behavior.
+    auto_picker = (
+        auto_mode_enabled() and not route_first_prompt and not claude_print_mode(remaining)
+    )
+    from ucode.agents.claude import _managed_settings_path, default_model_picker_catalog
+    from ucode.agents.claude_auto import (
+        add_picker_entry,
+        is_auto_model,
+        model_available,
+        picker_is_configured,
+        static_auto_model,
+    )
+
     # if modelPicker is defined, then skip model discovery.
     picker_catalog = _model_picker_catalog()
     if picker_catalog is None:
@@ -798,25 +843,20 @@ def launch_claude(
     else:
         catalog = picker_catalog
     if not catalog.model_ids:
+        if auto_picker:
+            print_warning(
+                "Claude Auto is unavailable: no Claude models are reachable "
+                f"({catalog.error_msg or 'the gateway model catalog is empty'}). Launching "
+                "without Auto or smart routing; check the workspace's model serving endpoints "
+                "and retry."
+            )
+            raise ClaudeRoutingSetupError(
+                "Claude Auto is unavailable: no Claude models are reachable"
+            )
         raise RuntimeError(
             catalog.error_msg or "Anthropic models endpoint returned no Claude models"
         )
     model_ids = catalog.model_ids
-
-    route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
-    settings, remaining = compose_settings(tool_args)
-    # Auto's native model selection collects Isaac feedback before disabling routing.
-    # Explicit first-prompt presets retain their own launch behavior.
-    auto_picker = (
-        auto_mode_enabled() and not route_first_prompt and not claude_print_mode(remaining)
-    )
-    from ucode.agents.claude import _managed_settings_path
-    from ucode.agents.claude_auto import (
-        add_picker_entry,
-        is_auto_model,
-        picker_is_configured,
-        static_auto_model,
-    )
 
     if auto_picker:
         managed_path = _managed_settings_path()
@@ -835,6 +875,15 @@ def launch_claude(
             else None
         )
         auto_settings = None
+        config_catalog = catalog
+        preferred = (
+            launch_model
+            or default_model
+            or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
+            or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
+            or os.environ.get("ANTHROPIC_MODEL")
+            or state.get("claude_models", {}).get("opus")
+        )
         if picker_is_configured(managed_auto):
             auto_settings = {**managed_auto, "deniedModels": denied_models}
         elif (
@@ -851,21 +900,65 @@ def launch_claude(
         ):
             if isinstance(managed_picker, dict):
                 settings = {**settings, "modelPicker": managed_picker}
-            settings.setdefault(
-                "modelPicker",
-                {
+            if (
+                picker_catalog is None
+                and "modelPicker" not in settings
+                and not state.get("_claude_launch_provider")
+            ):
+                # Personal launch-only static Auto: rebuild the replacement picker an
+                # ordinary launch would, add one static Auto row, and keep everything in
+                # the temporary settings. Managed denials still narrow the rows.
+                picker_rows = [
+                    row
+                    for row in _personal_picker_options(
+                        default_model_picker_catalog(
+                            state.get("claude_models") or {},
+                            launch_model=launch_model,
+                            discovered_catalog=catalog,
+                        )
+                    )
+                    if model_available(row["model"], {**settings, "deniedModels": denied_models})
+                ]
+                settings["modelPicker"] = {
                     "replaceBuiltInOptions": True,
-                    "options": [
-                        {
-                            "model": model,
-                            "label": catalog.model_id_to_display_name.get(model, model),
-                        }
-                        for model in model_ids
-                    ],
-                },
-            )
-            generated = add_picker_entry({**settings, "deniedModels": denied_models})
-            auto_settings = generated if picker_is_configured(generated) else None
+                    "options": picker_rows,
+                }
+                # The mod's main-model menu serves exactly the picker's rows.
+                config_catalog = AnthropicModelCatalog(
+                    model_ids=[row["model"] for row in picker_rows],
+                    model_id_to_display_name={row["model"]: row["label"] for row in picker_rows},
+                    model_id_to_description={
+                        row["model"]: row["description"]
+                        for row in picker_rows
+                        if row.get("description")
+                    },
+                    model_id_to_limits=catalog.model_id_to_limits,
+                )
+                generated = add_picker_entry(
+                    {**settings, "deniedModels": denied_models},
+                    static_auto_row=True,
+                    preferred_model=preferred,
+                )
+                auto_settings = generated if picker_is_configured(generated) else None
+                if auto_settings is None:
+                    # Keep native model selection available when Auto cannot be enabled.
+                    generated["modelPicker"]["replaceBuiltInOptions"] = False
+            else:
+                settings.setdefault(
+                    "modelPicker",
+                    {
+                        "replaceBuiltInOptions": True,
+                        "options": [
+                            {
+                                "model": model,
+                                "label": catalog.model_id_to_display_name.get(model, model),
+                            }
+                            for model in model_ids
+                        ],
+                    },
+                )
+                generated = add_picker_entry({**settings, "deniedModels": denied_models})
+                auto_settings = generated if picker_is_configured(generated) else None
             if "deniedModels" in settings:
                 generated["deniedModels"] = settings["deniedModels"]
             else:
@@ -881,17 +974,12 @@ def launch_claude(
     if auto_picker:
         try:
             auto_config = picker_config(
-                catalog,
+                config_catalog,
                 workspace,
                 auto_settings,
                 launch_settings=settings,
                 managed_settings=managed_auto,
-                default_model=launch_model
-                or default_model
-                or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
-                or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
-                or os.environ.get("ANTHROPIC_MODEL")
-                or state.get("claude_models", {}).get("opus"),
+                default_model=preferred,
             )
         except ValueError as exc:
             print_warning(f"Skipped Claude Auto: {exc}")

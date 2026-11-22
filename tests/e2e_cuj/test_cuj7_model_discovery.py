@@ -13,6 +13,7 @@ from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_mana
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
     assert_codex_default_models,
+    claude_system_model_ids,
 )
 from tests.integration.utils.terminal import TerminalProcess
 from ucode.smart_routing.config import SUBAGENT_AUTO_V0_CLAUDE_ONLY
@@ -153,8 +154,10 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
 
         Expected: native discovery caches system.ai models as raw IDs or recognized Claude
         gateway aliases and shows a discovered picker entry. Reconfigure with the Auto version,
-        save a personal Auto selection, then restart without Auto and complete inference on the
-        same real main model.
+        save a personal Auto selection, then restart Auto and complete inference on the same
+        main model. With Auto disabled, restart on the static alias's default target without
+        routing. Independently select discovered GLM and GPT models as Auto main models and
+        complete file tasks with successful correlated inference on each selected target.
         """
         session = live_session
         request_recorder.configure_session(
@@ -224,6 +227,21 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         for path in (session.home / ".claude/ucode-settings.json", *MANAGED_PATHS):
             if path.is_file():
                 assert saved not in json.loads(path.read_text()).get("modelOverrides", {})
+        request_recorder.prepare_launch()
+        checkpoint = request_recorder.checkpoint()
+        evidence = SessionEvidence(session.home, CLAUDE)
+        with Terminal(session, "case-07-restart-with-auto", [CLAUDE]) as tui:
+            tui.boot()
+            task = claude_file_task(session)
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            evidence.assert_applied(task, supported, expected=main_model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, main_model)
+            tui.exit_normally()
+        assert json.loads((session.home / ".claude/settings.json").read_text())["model"] == saved
+
+        # Static Auto keeps the default alias in native settings; only Auto reads its saved main.
+        restart_model = session.workspace_state()["claude_models"]["opus"]
         session.env.pop("SMART_ROUTER_CONFIG_VERSION")
         request_recorder.prepare_launch()
         checkpoint = request_recorder.checkpoint()
@@ -235,13 +253,64 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             task = claude_file_task(session)
             tui.submit(task.prompt)
             tui.task(evidence, task)
-            evidence.assert_applied(task, supported, expected=main_model)
-            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, main_model)
+            evidence.assert_applied(task, supported, expected=restart_model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, restart_model)
             assert not any(
                 request.path.endswith("/routes:select")
                 for request in request_recorder.requests_after(checkpoint)
             )
             tui.exit_normally()
+
+        catalog = session.claude_gateway_models()
+        model_ids = claude_system_model_ids(catalog)
+        labels = {
+            model: (entry.get("display_name") or model).removeprefix("Claude ")
+            for model, entry in zip(model_ids, catalog, strict=True)
+        }
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_AUTO_V0_CLAUDE_ONLY
+        for family, preferred in (("glm", "glm-5-3-flash"), ("gpt", "gpt-6-2-sol")):
+            candidates = [model for model in model_ids if model.startswith(f"system.ai.{family}-")]
+            assert candidates, f"CUJ7 requires a discoverable {family.upper()} model: {model_ids}"
+            model = f"system.ai.{preferred}"
+            if model not in candidates:
+                model = candidates[0]
+            label = labels[model]
+            request_recorder.prepare_launch()
+            evidence = SessionEvidence(session.home, CLAUDE)
+            with Terminal(session, f"case-07-auto-{family}", [CLAUDE]) as tui:
+                tui.boot()
+                tui.submit("/model auto")
+                tui.wait_for(
+                    lambda screen: "Auto mode: Choose" in screen, "Auto main-model chooser"
+                )
+
+                for _ in range(len(model_ids) + 1):
+                    before = tui.screen.reverse_video_lines
+                    if label in before:
+                        break
+                    tui.send("\x1b[B", f"focus {label}")
+                    tui.wait_for(
+                        lambda _, before=before: tui.screen.reverse_video_lines != before,
+                        "next Auto main-model option",
+                        stable_for=0.05,
+                    )
+                assert label in tui.screen.reverse_video_lines, (
+                    f"Auto chooser did not offer {model}: {tui.visible}"
+                )
+                tui.send("\r", f"save {label} as the Auto main model")
+                tui.wait_for(
+                    lambda screen, label=label: (
+                        "Auto mode: Choose" not in screen and f"Auto ({label})" in screen
+                    ),
+                    f"saved {label} Auto main model",
+                )
+                task = claude_file_task(session)
+                checkpoint = request_recorder.checkpoint()
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                task.assert_completed(session, CLAUDE)
+                assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, model)
+                tui.exit_normally()
 
     @pytest.mark.codex
     def test_case_08_configured_codex_uses_default_models(self, live_session):

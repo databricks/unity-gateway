@@ -1246,6 +1246,34 @@ orchestration on and off. It mocks the router response, not native Claude render
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
+CUJ7 also checks both personal static Auto restart paths with completed tasks and paired
+successful inference: Auto enabled uses its saved main model; Auto disabled resolves the
+immutable native alias to its default target and sends no router requests.
+
+Personal launch-only static Auto coverage in the same file checks that a personal
+Auto launch with no published picker builds the ordinary replacement picker with one
+static Auto row first (`[1m]`-hinted family rows deduped against raw discovered ids),
+per-model aliases without an allowlist, `staticModel`/`preferSaved` plumbing, and a
+start on the static alias — all in the temporary settings only, with user settings
+untouched and the temp settings removed after exit. It also checks that managed
+`deniedModels` narrow the picker rows and aliases, that provider launches and foreign
+non-replacing pickers keep the native custom-model option, that all-denied rows fall
+back to a plain non-replacing picker without Auto, and that an empty or unreachable
+model catalog warns and fails routing setup so the launch continues without Auto or
+smart routing while non-Auto launches keep their existing error. These are component
+checks; the live personal `/model` TUI experience is not executed here.
+The caller-level empty-catalog test also verifies one ordinary launch with routing
+disabled in both the process environment and launch settings, without changing saved settings.
+
+`test_agent_claude.py` checks that both static Auto and the launch picker prefer an
+exact default over an earlier `[1m]` row, retaining suffix fallback and explicit alias
+selection. Native mod tests also cover a saved Auto alias whose context suffix was
+stripped by Claude, and restore a bare saved main-model preference when the catalog
+adds `[1m]`. Exact saved IDs take precedence over suffix matches; missing or withdrawn
+preferences use the default. `test_integration_terminal_screen.py` checks that the shared
+reverse-video reader distinguishes complete labels such as `GPT 6.2` and `GPT 6.2 Sol`.
+These component checks do not establish a live CUJ pass.
+
 `test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
@@ -2054,3 +2082,15 @@ That last case runs on Linux (the store is a CA bundle file) and on the Windows 
 adds the CA to the certificate store and sets `UG_TEST_OS_TRUSTED_CA_DIR`; it is skipped on macOS
 and on a Windows machine without that variable. No test goes through a real TLS-inspection proxy,
 and `ug upgrade` is not run against one.
+
+Personal static Auto merge regressions cover discovery context limits in temporary alias
+settings and entering Auto from a bare native model ID when the picker adds `[1m]`.
+The native plugin component test checks that the chooser keeps that model and the next
+turn uses its target; it does not establish live gateway inference coverage.
+
+CUJ7's personal Auto journey also selects a discovered GLM model and a discovered GPT
+model through the native main-model chooser, preferring GLM 5.3 Flash and GPT 6.2 Sol.
+Each selection must complete a real file task, and every correlated task request must
+use the chosen gateway target with a successful response. Missing either model family
+fails the journey; it is not skipped. Each model uses a fresh session without prior
+conversation context, so this addition does not cover cache-warning confirmation.
