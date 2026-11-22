@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { tryLock } from "./app-rows.mjs";
 import { withSessionId } from "./ug-plugin.mjs";
 
 // The runtime's own exporter reports this service name, so both kinds of spans land together.
@@ -15,6 +16,8 @@ export const EXPORT_TIMEOUT_MS = 15_000;
 export const TERMINATE_WAIT_MS = 3_500;
 export const OUTCOME_LOG_FILE = "tracing-exports.json";
 export const OUTCOME_LOG_LIMIT = 50;
+export const OUTCOME_LOCK_WAIT_MS = 50;
+export const OUTCOME_LOCK_ATTEMPTS = 20;
 
 const SPAN_KIND_INTERNAL = 1;
 const SPAN_KIND_CLIENT = 3;
@@ -56,6 +59,7 @@ const text = (value) => (typeof value === "string" && value ? value : undefined)
 // Live events that show the replayed interaction is the one still running. An idle or a new user
 // message instead means it ended before this process joined, and another process may have sent it.
 const CONTINUES_INTERACTION = new Set([
+  "session.error",
   "assistant.turn_start",
   "assistant.turn_end",
   "model.call_start",
@@ -318,6 +322,8 @@ export function createSpanBuilder({ sessionId, serverAddress, emit: send, ids = 
       reset();
       held = [];
       for (const event of events) handlers[event?.type]?.(event);
+      // A history that already ended its last interaction has nothing a live event could continue.
+      if (!interaction) reset();
     },
     end(timestamp = new Date(now()).toISOString()) {
       if (held) reset();
@@ -341,22 +347,39 @@ export function exportBody(spans) {
 const RETRYABLE_STATUSES = new Set([429, 503]);
 
 // The extension's stderr reaches no log the user can find, so each export's outcome also goes to a
-// small file in the extension's directory.
-export function createOutcomeLog(path, { limit = OUTCOME_LOG_LIMIT } = {}) {
+// small file in the extension's directory. Every session's extension writes the same file, so a
+// write holds a lock; an entry that can't get it in time is dropped rather than overwriting another's.
+export function createOutcomeLog(
+  path,
+  { limit = OUTCOME_LOG_LIMIT, lock = tryLock, wait = delay, now = Date.now, attempts = OUTCOME_LOCK_ATTEMPTS } = {},
+) {
   let writing = Promise.resolve();
+  async function acquire() {
+    for (let attempt = 0; ; attempt++) {
+      const release = lock(`${path}.lock`, now);
+      if (release || attempt + 1 >= attempts) return release;
+      await wait(OUTCOME_LOCK_WAIT_MS);
+    }
+  }
   const record = (outcome) => {
     writing = writing
       .then(async () => {
-        let entries = [];
+        const release = await acquire();
+        if (!release) return;
         try {
-          const parsed = JSON.parse(await readFile(path, "utf8"));
-          if (Array.isArray(parsed)) entries = parsed;
-        } catch {
-          // A missing or unreadable log starts over.
+          let entries = [];
+          try {
+            const parsed = JSON.parse(await readFile(path, "utf8"));
+            if (Array.isArray(parsed)) entries = parsed;
+          } catch {
+            // A missing or unreadable log starts over.
+          }
+          const next = `${path}.${process.pid}.tmp`;
+          await writeFile(next, `${JSON.stringify([...entries, outcome].slice(-limit), null, 1)}\n`);
+          await rename(next, path);
+        } finally {
+          release();
         }
-        const next = `${path}.${process.pid}.tmp`;
-        await writeFile(next, `${JSON.stringify([...entries, outcome].slice(-limit), null, 1)}\n`);
-        await rename(next, path);
       })
       .catch(() => {});
     return writing;
