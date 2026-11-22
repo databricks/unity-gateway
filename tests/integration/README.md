@@ -1810,6 +1810,9 @@ Accessibility to the runner's shell, so no permission prompt is needed. It uploa
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journeys against the newest appcast build, so it shows
 when a bump is due.
+The macOS driver uses checked Accessibility presses for visible buttons and radio buttons,
+avoiding coordinate-based button clicks. Composer focus uses the mouse and prompt
+entry uses real keystrokes; the journeys still require submitted prompts and completed turns.
 The required **Codex desktop inference · Windows** job installs the ChatGPT MSIX that OpenAI keeps
 at `codex-app-prod/releases/<version>/ChatGPT-x64.msix`, pinned by version and SHA256 in
 `integration.yml`, and runs the `windows_desktop` marker against the managed e2e workspace. It

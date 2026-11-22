@@ -36,7 +36,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
 
     Expected: the app shows the answer, and its own Codex Desktop rollout, using ug's Databricks
     provider, records exactly that answer in a completed turn whose model is the managed system.ai
-    GPT default. Onboarding is skipped through its visible buttons with mouse clicks and the prompt
+    GPT default. Onboarding is skipped through its visible controls with Accessibility presses and the prompt
     is typed with real keystrokes, then submitted with Send; nothing is seeded. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered. A subsequent click on an absent label fails
     with the native accessibility tree before the fatal error, captured in command evidence.
