@@ -2259,13 +2259,13 @@ class TestSeatRelay:
         assert env["NO_PROXY"] == env["no_proxy"] == "127.0.0.1,localhost"
 
         monkeypatch.setenv("NO_PROXY", "internal.example, .corp.example")
-        monkeypatch.setenv("no_proxy", "localhost")
+        expected = "internal.example,.corp.example,127.0.0.1,localhost"
+        if os.name != "nt":
+            # Windows has one case-insensitive variable, so this would replace NO_PROXY.
+            monkeypatch.setenv("no_proxy", "localhost")
+            expected = "internal.example,.corp.example,localhost,127.0.0.1"
         env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
-        assert (
-            env["NO_PROXY"]
-            == env["no_proxy"]
-            == "internal.example,.corp.example,localhost,127.0.0.1"
-        )
+        assert env["NO_PROXY"] == env["no_proxy"] == expected
 
     def test_a_service_lookup_error_is_raised_not_read_as_no_seat_relay(self, monkeypatch):
         _stub_provider_service(monkeypatch, None)

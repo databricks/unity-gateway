@@ -478,7 +478,7 @@ class TestSeatRelay:
         )
         assert (
             f'"--profile", "dev", "--runtime", {json.dumps(str(runtime))}, '
-            '"--code", "/fake/bin/code", "--"]' in script
+            f'"--code", {json.dumps(str(Path("/fake/bin/code")))}, "--"]' in script
         )
         assert "...process.argv.slice(2)" in script
         printed = _printed(capsys)
