@@ -17,11 +17,11 @@ import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ucode import managed_resolve, metrics
+from ucode import managed_resolve, metrics, pricing
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -61,7 +61,6 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     custom_model_services,
-    fetch_model_service_rates,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
     model_service_relay_lookup,
@@ -848,8 +847,8 @@ def render_overlay(
         options = []
         for m in static_models:
             option = {"model": maybe_add_gpt_1m_suffix(m), "label": model_picker_label(m)}
-            if pricing := (model_pricing or {}).get(_pricing_fqn(m)):
-                option["description"] = pricing
+            if line := pricing.pricing_for(model_pricing, m):
+                option["description"] = line
             options.append(option)
         overlay["modelPicker"] = {"replaceBuiltInOptions": True, "options": options}
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
@@ -860,7 +859,10 @@ def render_overlay(
                 _picker_option(
                     maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model) or model_picker_label(model),
-                    _picker_description(picker_catalog, model),
+                    _picker_description(
+                        picker_catalog.model_id_to_description.get(model),
+                        pricing.pricing_for(model_pricing, model),
+                    ),
                 )
                 for model in picker_catalog.model_ids
             ],
@@ -899,87 +901,10 @@ def _picker_option(model: str, label: str, description: str | None = None) -> di
     return option
 
 
-# `ug configure` caches the workspace's system.ai model prices here, keyed by model service FQN,
-# so a plain launch writes the same picker descriptions without another rates round trip.
-_MODEL_PRICING_STATE_KEY = "claude_model_pricing"
-
-
-def _picker_description(catalog: AnthropicModelCatalog, model: str) -> str | None:
+def _picker_description(description: str | None, pricing_line: str | None) -> str | None:
     """A picker row's description: the catalog's own text, then the pricing line when known."""
-    parts = [
-        part
-        for part in (
-            catalog.model_id_to_description.get(model),
-            catalog.model_id_to_pricing.get(model),
-        )
-        if part
-    ]
+    parts = [part for part in (description, pricing_line) if part]
     return "; ".join(parts) if parts else None
-
-
-def _pricing_fqn(model: str) -> str:
-    """The rates API's model service FQN for a picker id: drop ug's own `[1m]` hint."""
-    return model.removesuffix("[1m]")
-
-
-def _model_pricing_text(unit_rates: dict[str, dict[str, float]]) -> str | None:
-    """One picker line of per-million-token prices from a model's rates grouped by unit.
-
-    USD is the reader-facing unit, but it is a workspace-wide list-price estimate of the DBU
-    rate; the DBU rate is the authoritative fallback when no USD estimate is served.
-    """
-    for unit, price_fmt in (("USD", "${:.2f}"), ("DBU", "{:.2f} DBU")):
-        rates = unit_rates.get(unit) or {}
-        parts = [
-            f"{price_fmt.format(rates[kind])} {kind.replace('_', ' ')}"
-            for kind in ("input", "output", "cache_read")
-            if rates.get(kind) is not None
-        ]
-        if parts:
-            suffix = " (est.)" if unit == "USD" else ""
-            return f"{' / '.join(parts)} per 1M tokens{suffix}"
-    return None
-
-
-def catalog_with_pricing(
-    catalog: AnthropicModelCatalog, pricing: dict[str, str]
-) -> AnthropicModelCatalog:
-    """Return ``catalog`` with pricing lines attached, matching picker ids by their FQN."""
-    if not pricing:
-        return catalog
-    model_pricing = {
-        model: text for model in catalog.model_ids if (text := pricing.get(_pricing_fqn(model)))
-    }
-    return replace(catalog, model_id_to_pricing=model_pricing) if model_pricing else catalog
-
-
-def refresh_model_pricing(state: dict, models: list[str]) -> dict[str, str]:
-    """Fetch system.ai rates for ``models``, cache their pricing lines, and return them.
-
-    ``ug configure`` calls this so the managed picker carries prices; a plain launch reuses the
-    cache through ``catalog_with_pricing`` and writes identical descriptions. A failed fetch
-    leaves the picker unpriced rather than failing configuration.
-    """
-    fqns = sorted({_pricing_fqn(model) for model in models if model.startswith("system.ai.")})
-    if not fqns:
-        return {}
-    workspace = state["workspace"]
-    try:
-        token = get_databricks_token(workspace, state.get("profile"))
-        rates, reason = fetch_model_service_rates(workspace, token, fqns)
-    except (OSError, RuntimeError) as exc:
-        rates, reason = {}, str(exc)
-    if reason is not None:
-        # Clear the cache too: a plain launch merges whatever is cached, so keeping stale prices
-        # here would make its file differ from this unpriced write.
-        state[_MODEL_PRICING_STATE_KEY] = {}
-        print_warning(f"Model prices are unavailable for the model picker: {reason}")
-        return {}
-    pricing = {
-        fqn: text for fqn, unit_rates in rates.items() if (text := _model_pricing_text(unit_rates))
-    }
-    state[_MODEL_PRICING_STATE_KEY] = pricing
-    return pricing
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -1921,20 +1846,12 @@ def write_tool_config(
         route_root_model = derived.route_root_model
         picker_catalog = derived.picker_catalog
         # Refresh the workspace's model prices here (the static managed list or the family
-        # catalog), so the picker a plain launch rewrites from the cache matches this one.
-        catalog_models = (
+        # catalog), so the picker a plain launch renders from the cache matches this one.
+        pricing.refresh_model_pricing(
+            state,
             derived.picker_catalog.model_ids
             if derived.picker_catalog is not None
-            else list(state.get("claude_static_models") or [])
-        )
-        pricing = refresh_model_pricing(state, catalog_models)
-        if derived.picker_catalog is not None:
-            picker_catalog = catalog_with_pricing(derived.picker_catalog, pricing)
-    elif managed_config_present and picker_catalog is not None and not (provider or parent_schema):
-        # A plain launch under a managed config: reuse the prices `ug configure` cached, keeping
-        # its file identical without another rates round trip.
-        picker_catalog = catalog_with_pricing(
-            picker_catalog, state.get(_MODEL_PRICING_STATE_KEY) or {}
+            else list(state.get("claude_static_models") or []),
         )
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
@@ -1970,7 +1887,7 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         otel_tracing=should_write_tracing_settings,
         picker_catalog=picker_catalog,
-        model_pricing=state.get(_MODEL_PRICING_STATE_KEY),
+        model_pricing=pricing.cached_model_pricing(state),
         managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)

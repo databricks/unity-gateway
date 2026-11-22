@@ -142,9 +142,6 @@ class AnthropicModelCatalog:
     # (max_input_tokens, max_tokens) for the models the gateway reports limits for; it reports 0
     # for unknown ones.
     model_id_to_limits: dict[str, tuple[int, int]] = field(default_factory=dict)
-    # Ready-to-show pricing line per model id (see `fetch_model_service_rates`); empty when the
-    # workspace's rates API is unavailable, so the picker renders without prices.
-    model_id_to_pricing: dict[str, str] = field(default_factory=dict)
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
@@ -3024,68 +3021,6 @@ def fetch_external_model_prices(workspace: str, token: str) -> tuple[list[dict],
     if not models:
         return [], "external-provider-models listing returned no models"
     return models, None
-
-
-# Pay-per-token rates for Databricks-hosted (system.ai) model services: DBU per million tokens
-# plus the workspace's estimated USD conversion. Served by the v2 endpoint-rates API, which lists
-# only services visible to the caller and silently omits unknown names.
-_ENDPOINT_RATES_API_PATH = "/api/ai-gateway/v2/endpoint-rates:batchGet"
-
-# Wire `token_type` enum names to the short kinds the picker renders.
-_ENDPOINT_RATE_TOKEN_TYPES = {
-    "TOKEN_TYPE_INPUT": "input",
-    "TOKEN_TYPE_OUTPUT": "output",
-    "TOKEN_TYPE_CACHE_READ": "cache_read",
-    "TOKEN_TYPE_CACHE_CREATION": "cache_creation",
-    "TOKEN_TYPE_CACHE_CREATION_1H": "cache_creation_1h",
-}
-
-
-def fetch_model_service_rates(
-    workspace: str, token: str, model_services: list[str]
-) -> tuple[dict[str, dict[str, dict[str, float]]], str | None]:
-    """Batch-fetch per-million-token rates for system.ai model services.
-
-    Returns ``(rates, reason)`` where ``rates`` maps each model service FQN to
-    ``{unit: {token kind: cost per million tokens}}`` (unit is ``"DBU"`` or ``"USD"``).
-    ``reason`` is non-None on failure; callers drop pricing rather than fail.
-    """
-    if not model_services:
-        return {}, None
-    query = urlencode({"databricks_hosted_model_services": model_services}, doseq=True)
-    url = f"{workspace_origin(workspace)}{_ENDPOINT_RATES_API_PATH}?{query}"
-    payload, reason = _http_get_json(url, token, timeout=30)
-    if payload is None:
-        return {}, reason
-    if not isinstance(payload, dict):
-        return {}, "endpoint-rates returned an unexpected response shape"
-    rates: dict[str, dict[str, dict[str, float]]] = {}
-    for entry in payload.get("model_service_rates") or []:
-        if not isinstance(entry, dict):
-            continue
-        model_service = entry.get("model_service")
-        if not isinstance(model_service, str) or not model_service:
-            continue
-        per_unit: dict[str, dict[str, float]] = {}
-        for costs in entry.get("costs") or []:
-            if not isinstance(costs, dict):
-                continue
-            unit = costs.get("unit")
-            if not isinstance(unit, str) or not unit:
-                continue
-            token_costs: dict[str, float] = {}
-            for token_cost in costs.get("token_costs") or []:
-                if not isinstance(token_cost, dict):
-                    continue
-                kind = _ENDPOINT_RATE_TOKEN_TYPES.get(token_cost.get("token_type"))
-                cost = token_cost.get("cost")
-                if kind and isinstance(cost, int | float) and not isinstance(cost, bool):
-                    token_costs[kind] = float(cost)
-            if token_costs:
-                per_unit[unit] = token_costs
-        if per_unit:
-            rates[model_service] = per_unit
-    return rates, None
 
 
 # The `update_mask` paths a config PATCH sends. The server rejects paths outside its mutable set,

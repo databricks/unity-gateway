@@ -16,7 +16,7 @@ from unittest.mock import ANY, MagicMock, Mock
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import gateway_proxy, managed_files
+from ucode import gateway_proxy, managed_files, pricing
 from ucode.agents import LaunchOptions, claude
 from ucode.databricks import RelayLookup
 from ucode.smart_routing import claude_routing, v2
@@ -3464,12 +3464,23 @@ class TestWriteToolConfigManagedSettings:
 
 
 class TestManagedModelPricing:
-    """`ug configure` fetches system.ai rates so managed picker rows carry prices."""
+    """`ug configure` fetches system.ai rates so managed picker rows carry prices.
+
+    The fetch-and-write tests opt in via ``UG_MODEL_PRICING``; the flag-off contract (no rates
+    call, no cache write, no pricing text) has its own tests at the bottom of the class. The
+    pricing helpers themselves are covered in ``tests/test_pricing.py``.
+    """
 
     @pytest.fixture(autouse=True)
     def _os_settings_writes_enabled(self, monkeypatch):
         # The agent host opts out of OS-managed settings; these tests need the writes.
         monkeypatch.delenv("UG_SKIP_OS_SETTINGS", raising=False)
+
+    @pytest.fixture(autouse=True)
+    def _pricing_opted_in(self, monkeypatch):
+        # Pricing ships off by default; every behavior test opts in. The flag-off tests below
+        # delenv it again to exercise the default.
+        monkeypatch.setenv(pricing.MODEL_PRICING_ENV, "1")
 
     GLM_RATES = {
         "system.ai.glm-5-3": {
@@ -3478,45 +3489,21 @@ class TestManagedModelPricing:
         }
     }
 
-    def test_pricing_text_prefers_usd_and_marks_it_estimated(self):
-        assert (
-            claude._model_pricing_text(self.GLM_RATES["system.ai.glm-5-3"])
-            == "$1.40 input / $4.40 output / $0.26 cache read per 1M tokens (est.)"
-        )
-
-    def test_pricing_text_falls_back_to_dbu_without_usd(self):
-        assert (
-            claude._model_pricing_text({"DBU": {"input": 20.0, "output": 62.85714}})
-            == "20.00 DBU input / 62.86 DBU output per 1M tokens"
-        )
-
-    def test_pricing_text_is_none_without_rates(self):
-        assert claude._model_pricing_text({}) is None
-        assert claude._model_pricing_text({"USD": {}}) is None
-
-    def test_catalog_with_pricing_matches_ids_without_the_1m_hint(self):
-        catalog = claude.default_model_picker_catalog(
-            {"opus": "system.ai.claude-opus-4-8", "haiku": "system.ai.claude-haiku-4-5"}
-        )
-        priced = claude.catalog_with_pricing(catalog, {"system.ai.claude-opus-4-8": "$5.00 input"})
-
-        assert priced.model_id_to_pricing == {"system.ai.claude-opus-4-8[1m]": "$5.00 input"}
-        assert claude.catalog_with_pricing(catalog, {}) is catalog
-
     def test_render_overlay_appends_pricing_to_catalog_descriptions(self):
         catalog = db_mod.AnthropicModelCatalog(
             model_ids=["system.ai.glm-5-3"],
             model_id_to_display_name={"system.ai.glm-5-3": "GLM 5.3"},
             model_id_to_description={"system.ai.glm-5-3": "Fast general model"},
-            model_id_to_pricing={"system.ai.glm-5-3": "$1.40 input / $4.40 output"},
         )
-        overlay, _ = claude.render_overlay(WS, None, picker_catalog=catalog)
+        overlay, _ = claude.render_overlay(
+            WS, None, picker_catalog=catalog, model_pricing={"system.ai.glm-5-3": "$1.40 / $4.40"}
+        )
 
         assert overlay["modelPicker"]["options"] == [
             {
                 "model": "system.ai.glm-5-3",
                 "label": "GLM 5.3",
-                "description": "Fast general model; $1.40 input / $4.40 output",
+                "description": "Fast general model; $1.40 / $4.40",
             }
         ]
 
@@ -3591,7 +3578,7 @@ class TestManagedModelPricing:
             claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
         )
         requested: list = []
-        monkeypatch.setattr(claude, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
 
         def fake_rates(workspace, token, fqns):
             requested.append((workspace, token, fqns))
@@ -3602,7 +3589,7 @@ class TestManagedModelPricing:
                 None,
             )
 
-        monkeypatch.setattr(claude, "fetch_model_service_rates", fake_rates)
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", fake_rates)
         state = {"workspace": WS, "codex_models": []}
 
         claude.write_tool_config(state, None, derive_managed_model_inputs=True)
@@ -3615,7 +3602,7 @@ class TestManagedModelPricing:
                 ["system.ai.claude-haiku-4-5", "system.ai.claude-opus-4-8"],
             )
         ]
-        assert state["claude_model_pricing"] == {
+        assert state[pricing.MODEL_PRICING_STATE_KEY] == {
             "system.ai.claude-opus-4-8": "71.43 DBU input / 357.14 DBU output per 1M tokens"
         }
         assert managed_writes[0]["modelPicker"]["options"] == [
@@ -3635,8 +3622,8 @@ class TestManagedModelPricing:
     def test_configure_prices_static_managed_models(self, monkeypatch):
         managed_writes = []
         self._patch_writes(monkeypatch, managed_writes)
-        monkeypatch.setattr(claude, "get_databricks_token", lambda *a, **kw: "workspace-token")
-        monkeypatch.setattr(claude, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
         state = {
             "workspace": WS,
             "codex_models": [],
@@ -3660,8 +3647,8 @@ class TestManagedModelPricing:
         monkeypatch.setattr(
             claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
         )
-        monkeypatch.setattr(claude, "get_databricks_token", lambda *a, **kw: "workspace-token")
-        monkeypatch.setattr(claude, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
         state = {"workspace": WS, "codex_models": []}
 
         claude.write_tool_config(state, None, derive_managed_model_inputs=True)
@@ -3670,7 +3657,7 @@ class TestManagedModelPricing:
         # A plain launch passes the managed inputs explicitly; it must not fetch again, and its
         # file must match the one configure wrote.
         monkeypatch.setattr(
-            claude,
+            pricing,
             "fetch_model_service_rates",
             lambda *a: pytest.fail("launch must reuse the cached prices"),
         )
@@ -3692,26 +3679,81 @@ class TestManagedModelPricing:
         monkeypatch.setattr(
             claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
         )
-        monkeypatch.setattr(claude, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
         monkeypatch.setattr(
-            claude, "fetch_model_service_rates", lambda *a: ({}, "HTTP 404 Not Found")
+            pricing, "fetch_model_service_rates", lambda *a: ({}, "HTTP 404 Not Found")
         )
         warnings = []
-        monkeypatch.setattr(claude, "print_warning", lambda message: warnings.append(message))
+        monkeypatch.setattr(pricing, "print_warning", lambda message: warnings.append(message))
         # A stale cache from an earlier configure must not outlive the failed refresh: a plain
         # launch merges the cache, so its file would otherwise differ from this unpriced write.
         state = {
             "workspace": WS,
             "codex_models": [],
-            "claude_model_pricing": {"system.ai.claude-opus-4-8": "$5.00 input"},
+            pricing.MODEL_PRICING_STATE_KEY: {"system.ai.claude-opus-4-8": "$5.00 input"},
         }
 
         claude.write_tool_config(state, None, derive_managed_model_inputs=True)
 
         assert warnings == ["Model prices are unavailable for the model picker: HTTP 404 Not Found"]
-        assert state["claude_model_pricing"] == {}
+        assert state[pricing.MODEL_PRICING_STATE_KEY] == {}
         options = managed_writes[0]["modelPicker"]["options"]
         assert all("description" not in option for option in options)
+
+    def test_flag_off_by_default_skips_the_fetch_and_every_cache_write(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        manifest = self._pricing_manifest()
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
+        )
+        monkeypatch.setattr(
+            pricing, "get_databricks_token", lambda *a, **kw: pytest.fail("must not authenticate")
+        )
+        monkeypatch.setattr(
+            pricing,
+            "fetch_model_service_rates",
+            lambda *a, **kw: pytest.fail("must not call the rates API"),
+        )
+        monkeypatch.delenv(pricing.MODEL_PRICING_ENV, raising=False)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert pricing.MODEL_PRICING_STATE_KEY not in state
+        options = managed_writes[0]["modelPicker"]["options"]
+        assert all("description" not in option for option in options)
+
+    def test_flag_off_ignores_a_cached_price_on_launch_and_configure(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(
+            pricing,
+            "fetch_model_service_rates",
+            lambda *a, **kw: pytest.fail("must not call the rates API"),
+        )
+        monkeypatch.delenv(pricing.MODEL_PRICING_ENV, raising=False)
+        # Prices cached by an earlier flag-on run must not reach either write path while off.
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": ["system.ai.glm-5-3"],
+            pricing.MODEL_PRICING_STATE_KEY: {"system.ai.glm-5-3": "$1.40 input / $4.40 output"},
+        }
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+        claude.write_tool_config(
+            state,
+            None,
+            picker_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=["system.ai.glm-5-3"], model_id_to_display_name={}
+            ),
+        )
+
+        for written in managed_writes:
+            options = written["modelPicker"]["options"]
+            assert all("description" not in option for option in options)
 
 
 class TestAddClaudeMcpServer:
