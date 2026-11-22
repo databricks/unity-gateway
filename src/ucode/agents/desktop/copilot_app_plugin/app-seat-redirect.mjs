@@ -109,6 +109,7 @@ export function createSeatRedirect(
     record,
     recordRequest,
     applyTimeoutMs = APPLY_TIMEOUT_MS,
+    githubUserUrl,
   } = {},
 ) {
   if (!redirectEnabled(config, env)) return null;
@@ -124,9 +125,11 @@ export function createSeatRedirect(
   const noteRequest =
     recordRequest ?? createOutcomeLog(join(stateDir, REQUESTS_FILE), { limit: REQUEST_LOG_LIMIT });
 
+  // GitHub refuses a request without a User-Agent before it reads the credential.
   const copilotHost = createCopilotHostResolver({
     askGitHub: relay.askGitHub !== false,
-    userAgent: relay.headers?.["User-Agent"] ?? relay.headers?.["user-agent"],
+    userAgent: seatUserAgent(relay.userAgent, "copilot/app"),
+    ...(githubUserUrl ? { userUrl: githubUserUrl } : {}),
     fallback: async () => (session ? copilotHostForStatus(await session.rpc.gitHubAuth.getStatus()) : null),
   });
   const subagents = subagentHeaders(sessionId ?? "");

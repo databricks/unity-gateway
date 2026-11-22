@@ -57,7 +57,9 @@ const GITHUB_LOOKUP_PREFIXES = ["gho_", "ghu_", "github_pat_"];
 const COPILOT_API_HOST =
   /^(?:api(?:\.(?:individual|business|enterprise))?\.githubcopilot\.com|copilot-api\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ghe\.com)$/;
 const GHE_ACCOUNT_HOST = /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.ghe\.com$/;
-const INDIVIDUAL_PLANS = new Set(["individual", "free", "pro", "pro_plus", "pro+", "student"]);
+// `copilotPlan` values seen or documented: individual, individual_pro, individual_pro_plus,
+// individual_max, free, business, enterprise; students and educators get an individual seat.
+const INDIVIDUAL_PLAN_PREFIXES = ["individual", "free", "pro", "student", "edu"];
 
 export const MAX_BODY_BYTES = 64 * 1024 * 1024;
 export const CONNECT_TIMEOUT_MS = 10_000;
@@ -133,8 +135,12 @@ export function copilotHostForStatus(status) {
     return tenant ? `copilot-api.${tenant[1]}.ghe.com` : null;
   }
   const plan = typeof status.copilotPlan === "string" ? status.copilotPlan.toLowerCase() : "";
-  if (INDIVIDUAL_PLANS.has(plan)) return "api.individual.githubcopilot.com";
-  if (plan === "business" || plan === "enterprise") return `api.${plan}.githubcopilot.com`;
+  if (INDIVIDUAL_PLAN_PREFIXES.some((prefix) => plan.startsWith(prefix))) {
+    return "api.individual.githubcopilot.com";
+  }
+  for (const tier of ["business", "enterprise"]) {
+    if (plan.startsWith(tier)) return `api.${tier}.githubcopilot.com`;
+  }
   return null;
 }
 

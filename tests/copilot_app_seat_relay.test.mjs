@@ -713,6 +713,10 @@ test("copilotHostForStatus maps the signed-in account and plan to a Copilot API 
   assert.equal(copilotHostForStatus({ copilotPlan: "enterprise" }), "api.enterprise.githubcopilot.com");
   assert.equal(copilotHostForStatus({ host: "https://acme.ghe.com", copilotPlan: "enterprise" }), "copilot-api.acme.ghe.com");
   assert.equal(copilotHostForStatus({ host: "github.example.com", copilotPlan: "enterprise" }), null);
+  for (const plan of ["individual_pro", "individual_pro_plus", "individual_max", "free_trial", "student", "edu"]) {
+    assert.equal(copilotHostForStatus({ host: "github.com", copilotPlan: plan }), "api.individual.githubcopilot.com", plan);
+  }
+  assert.equal(copilotHostForStatus({ host: "github.com", copilotPlan: "business_plus" }), "api.business.githubcopilot.com");
   assert.equal(copilotHostForStatus({ host: "github.com", copilotPlan: "unknown" }), null);
   assert.equal(copilotHostForStatus({ host: "github.com" }), null);
   assert.equal(copilotHostForStatus(null), null);

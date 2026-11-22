@@ -165,6 +165,44 @@ test("apply points the session at the relay, and its calls reach the gateway wit
   assert.deepEqual(entries, []);
 });
 
+test("the GitHub host lookup carries ug's User-Agent, with configure's header shape", async (t) => {
+  const github = { requests: [] };
+  const server = http.createServer((req, res) => {
+    github.requests.push(req.headers);
+    if (!req.headers["user-agent"]) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ message: "Request forbidden by administrative rules." }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const { redirect } = await start(
+    t,
+    { seatRelay: { ...config().seatRelay, askGitHub: true, headers: { "x-databricks-use-coding-agent-mode": "true" } } },
+    { githubUserUrl: `http://127.0.0.1:${server.address().port}/copilot_internal/user` },
+  );
+  await redirect.listen();
+  await redirect.apply(fakeSession({ status: { host: "github.com", copilotPlan: "unknown" } }));
+
+  const response = await infer(redirect.url);
+  assert.equal(response.status, 200);
+  assert.equal(github.requests.length, 1);
+  assert.match(github.requests[0]["user-agent"], /^ucode\/1\.0 copilot\/app \(macos 15; arm64\)$/);
+  assert.equal(github.requests[0].authorization, GITHUB_AUTH);
+  assert.equal(gateway.requests[0].headers["x-databricks-github-copilot-api-host"], "api.enterprise.githubcopilot.com");
+});
+
+test("a paid individual seat resolves to the individual host from the sign-in status", async (t) => {
+  const { redirect } = await start(t);
+  await redirect.listen();
+  await redirect.apply(fakeSession({ status: { host: "github.com", copilotPlan: "individual_pro" } }));
+  assert.equal((await infer(redirect.url)).status, 200);
+  assert.equal(gateway.requests[0].headers["x-databricks-github-copilot-api-host"], "api.individual.githubcopilot.com");
+});
+
 test("a session whose GitHub status gives no Copilot host gets the 400 hint", async (t) => {
   const { redirect } = await start(t);
   await redirect.listen();
