@@ -2377,7 +2377,10 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+CUJ 4's delegation journeys open `/smart-router logs` for every Claude preset, require a
+nonzero session routing count, and close the pane before exit. This includes presets that
+hide inline model details; these live log-pane checks have not been run locally.
+Its status-band journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 Its Auto selector journey also covers a non-replacing managed picker without managed

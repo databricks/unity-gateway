@@ -590,7 +590,10 @@ They cover Claude/Codex helper dispatch and rejection of routing decisions witho
 the agent-specific prompt-submission evidence.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
-child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
+child task. Every Claude preset also opens `/smart-router logs`, requires a nonzero session
+routing count, and closes the pane before exit. This includes presets that hide inline model
+details; these live log-pane checks have not been run locally.
+`subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
 Enabled Codex presets check `x-codex-turn-metadata` on successful parent and child
 inference: the recipe matches the router selector, `/root` has state `on`, and the

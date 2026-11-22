@@ -529,9 +529,9 @@ class TestCujSmartRouting(BaseCujTest):
         the child's inference uses the selected model, and the recipe correlates with the
         launch turn; when off, no decision, recipe, or orchestrator context appears. Claude
         then reports no running background tasks. Blind presets show no routed-model
-        notices or cards while the child runs or after it completes. In Auto,
-        /smart-router logs shows a
-        nonempty session decision list even though inline model details are hidden.
+        notices or cards while the child runs or after it completes. For every Claude preset,
+        /smart-router logs shows a nonempty session decision list, including when inline
+        model details are hidden.
         The agent exits cleanly after closing the logs pane.
         """
         with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (
@@ -752,20 +752,19 @@ class TestCujSmartRouting(BaseCujTest):
                             assert "smart_router_state" not in metadata
                 if agent == CLAUDE:
                     tui.wait_for_background_tasks()
-                    if SMART_ROUTER_CONFIG_VERSION == SUBAGENT_AUTO_V0_CLAUDE_ONLY:
-                        tui.submit("/smart-router logs")
-                        routed_count = r"\b[1-9]\d* routed prompts? this session\b"
-                        tui.wait_for(
-                            lambda screen: (
-                                "Smart Router logs" in screen and re.search(routed_count, screen)
-                            ),
-                            "Auto routing logs with at least one recorded decision",
-                        )
-                        tui.send("\x1b", "close Smart Router logs")
-                        tui.wait_for(
-                            lambda screen: not re.search(routed_count, screen),
-                            "the prompt after closing Smart Router logs",
-                        )
+                    tui.submit("/smart-router logs")
+                    routed_count = r"\b[1-9]\d* routed prompts? this session\b"
+                    tui.wait_for(
+                        lambda screen: (
+                            "Smart Router logs" in screen and re.search(routed_count, screen)
+                        ),
+                        "Smart Router logs with at least one recorded decision",
+                    )
+                    tui.send("\x1b", "close Smart Router logs")
+                    tui.wait_for(
+                        lambda screen: not re.search(routed_count, screen),
+                        "the prompt after closing Smart Router logs",
+                    )
                 tui.exit_normally()
 
     @pytest.mark.parametrize(
