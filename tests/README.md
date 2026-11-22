@@ -24,6 +24,11 @@ starts with code-mode tools disabled in the user's catalog, then verifies the ex
 assignment reaches the router and child, and that same child completes on the routed model.
 Encrypted or missing assignments must never
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
+The remote TUI receives the launch's feature overrides together with the footer selection:
+its thread-start features table must preserve plaintext child tools and routing hooks.
+Native Codex 0.171.0 request capture covers a catalog without a code-mode override:
+the footer-only table exposes encrypted child messages, while the complete feature table
+preserves plaintext assignments. This offline protocol check does not prove live routing.
 Component checks also cover catalog precedence, authenticated model-service metadata,
 and a warning with continued launch if the optional session catalog cannot be built or written.
 Catalog construction preserves native collaboration settings for ordinary launches. Without
