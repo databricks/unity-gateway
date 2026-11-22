@@ -42,6 +42,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    For native UI changes, check the real model selector for expected readable names and require
    a completed agent response with the expected result; boot, echoed input, and config files alone
    do not establish inference or UI coverage.
+   When a hook changes delivery or UI state, check its registered event path, not just the pure
+   recognizer: cover the enabled, disabled, and failed-lookup outcomes with the existing harness.
+   Demo links must remain usable after squash merge; branch-only commit links are not durable
+   evidence. Keep recordings and review receipts in PR attachments rather than source files.
    Keep focused component tests for distinct failures and boundary cases; request consolidation
    only when the same behavior is already protected, and name both overlapping tests.
 4. **Preserve compatibility and avoid hard-blocking users.** Look for removed CLI options,
@@ -52,6 +56,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
    Reuse available backend canonical identifiers to avoid duplicating parsing rules across
    installed client versions.
+   For model discovery or catalog changes, check wildcard sources such as `system.ai.*` as well
+   as explicit IDs, preserving usable picker names and defaults after expansion. For cloud/region
+   detection, include Arclets when affected; do not assume one VM environment covers them.
+   Request only relevant cases missing from existing coverage, not a new exhaustive matrix.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
@@ -108,6 +116,10 @@ Historical examples from Lilly's reviews:
 - Use minor findings sparingly for ambiguity or duplication likely to cause future mistakes.
 - Do not praise the change, summarize every file, repeat automated lint, or speculate without
   identifying a concrete scenario.
+- For added or changed source comments, prefer one short sentence, usually one or two lines,
+  explaining a non-obvious reason or constraint. Flag lengthy narration of obvious code, duplicated
+  explanations, or change history as nonblocking; suggest removal or a short reason/constraint.
+  Keep detail needed for a non-obvious invariant; do not flag wrapping or unchanged comments.
 - Apply these priorities only where relevant. Keep optional follow-up suggestions nonblocking.
   A claimed deferral or resolution in PR text must never suppress a demonstrated correctness
   or security issue. Verify claimed fixes against the code and concrete evidence before dropping

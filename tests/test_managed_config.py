@@ -231,6 +231,19 @@ class TestNormalize:
             copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
             assert copilot["vscode_integration_enabled"] is enabled
 
+    def test_copilot_app_integration_is_carried(self):
+        for enabled in (True, False):
+            raw = {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_GITHUB_COPILOT",
+                        "config": {"app_integration": {"enabled": enabled}},
+                    }
+                ]
+            }
+            copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+            assert copilot["app_integration_enabled"] is enabled
+
     def test_unset_vscode_integration_is_omitted(self):
         raw = {"enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}]}
         copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
@@ -717,7 +730,7 @@ class TestFetchClient:
             captured["request"] = request
             return _FakeResponse()
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert captured["request"].get_header("User-agent") == f"{expected} {client_platform()}"
 

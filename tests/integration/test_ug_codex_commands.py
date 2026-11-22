@@ -30,7 +30,11 @@ def test_ug_codex_app_help(live_session, workspace, routing):
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+@pytest.mark.parametrize(
+    "routing",
+    ["0", pytest.param("1", marks=pytest.mark.codex_smart_routing)],
+    ids=["routing-off", "routing-on"],
+)
 def test_ug_codex_app_server_help(live_session, workspace, routing):
     """Scenario: configure codex, then ask ug for app-server subcommand help.
 

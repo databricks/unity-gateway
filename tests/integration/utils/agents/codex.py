@@ -1,5 +1,8 @@
 """Codex-specific integration evidence and model discovery helpers."""
 
+import hashlib
+import json
+
 from ..model_discovery import codex_model_in_picker as model_in_picker
 from . import _evidence_id
 
@@ -9,11 +12,59 @@ __all__ = [
     "assistant_answers",
     "completed_task_models",
     "completed_command_outputs",
+    "completed_smart_router_results",
+    "routed_assignment_digests",
     "model_in_picker",
 ]
 
 SESSION_DIRECTORY = ".codex/sessions"
 EVIDENCE_KIND = "client-selected model"
+
+
+def routed_assignment_digests(sessions: dict[str, list[dict]], marker: str) -> set[str]:
+    """Match plaintext assignments or encrypted delivery with its original task-name fallback."""
+    records = [row for rows in sessions.values() for row in rows]
+    digests = set()
+    encrypted_deliveries = set()
+    for row in records:
+        item = row.get("payload", {})
+        if row.get("type") != "response_item" or item.get("type") != "agent_message":
+            continue
+        for part in item.get("content", []):
+            text = part.get("text", "")
+            if part.get("type") != "input_text" or not text.startswith("Message Type: NEW_TASK\n"):
+                continue
+            header, separator, assignment = text.partition("\nPayload:\n")
+            if not separator:
+                continue
+            if marker in assignment:
+                digests.add(hashlib.sha256(assignment.strip().encode("utf-8")).hexdigest())
+            elif not assignment.strip() and marker in header:
+                encrypted_deliveries.update(
+                    content["encrypted_content"]
+                    for content in item.get("content", [])
+                    if content.get("type") == "encrypted_content"
+                    and isinstance(content.get("encrypted_content"), str)
+                    and content["encrypted_content"]
+                )
+    for row in records:
+        item = row.get("payload", {})
+        if (
+            row.get("type") != "response_item"
+            or item.get("type") != "function_call"
+            or not item.get("name", "").endswith("spawn_agent")
+        ):
+            continue
+        arguments = json.loads(item["arguments"])
+        message, name = arguments.get("message"), arguments.get("task_name")
+        if (
+            isinstance(message, str)
+            and message in encrypted_deliveries
+            and isinstance(name, str)
+            and marker in name
+        ):
+            digests.add(hashlib.sha256(name.strip().encode("utf-8")).hexdigest())
+    return digests
 
 
 def assert_agent_interaction_completed(records: list[dict], target: str, thread_id: str) -> None:
@@ -51,6 +102,40 @@ def completed_command_outputs(
         and isinstance(item.get("aggregated_output"), str)
         and (command_contains is None or command_contains in _command_text(item.get("command")))
     ]
+
+
+def completed_smart_router_results(records: list[dict], action: str) -> list[dict]:
+    results = []
+    for row in records:
+        if row.get("type") != "event_msg" or row.get("payload", {}).get("type") != "item_completed":
+            continue
+        item = row["payload"].get("item", {})
+        if item.get("type") != "DynamicToolCall" or item.get("tool") != "ug_smart_router":
+            continue
+        if item.get("arguments", {}).get("action") != action:
+            continue
+        if (
+            action == "off"
+            and results
+            and item.get("status") == "failed"
+            and item.get("success") is False
+            and item.get("content_items")
+            == [
+                {
+                    "type": "inputText",
+                    "text": "Use $smart-router off to turn Smart Router off. Routing is unchanged.",
+                }
+            ]
+        ):
+            continue
+        assert item.get("status") == "completed" and item.get("success") is True, item
+        contents = item.get("content_items")
+        assert isinstance(contents, list) and len(contents) == 1, item
+        assert contents[0].get("type") == "inputText", item
+        result = json.loads(contents[0]["text"])
+        assert isinstance(result, dict), item
+        results.append(result)
+    return results
 
 
 def is_child_session(path: str, records: list[dict]) -> bool:

@@ -20,6 +20,7 @@ import copy
 import json
 import subprocess
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -197,9 +198,6 @@ def claude_ug_values(
             env.pop(entry.path[1], None)
     # Set per launch (smart routing), never in the managed file.
     env.pop("ANTHROPIC_MODEL", None)
-    # Blank provider switches keep developers from routing around the gateway.
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["CLAUDE_CODE_USE_VERTEX"] = ""
     if mcp_entries:
         overlay[claude_agent.MANAGED_MCP_SETTINGS_KEY] = dict(mcp_entries)
     return overlay
@@ -345,7 +343,11 @@ def _codex_static_models(manifest: dict) -> list[str] | None:
 
 
 def _codex_catalog_files(
-    manifest: dict, previous_paths: set[str], warnings: list[str]
+    manifest: dict,
+    previous_paths: set[str],
+    warnings: list[str],
+    workspace: str,
+    get_token: Callable[[], str] | None,
 ) -> dict[Path, str | None]:
     """The model catalog and the ``managed_config.toml`` that names it, or their removal.
 
@@ -364,7 +366,9 @@ def _codex_catalog_files(
             )
             return {}
         try:
-            catalog = prepare_codex_catalog(codex_agent.SPEC["binary"], static)
+            catalog = prepare_codex_catalog(
+                codex_agent.SPEC["binary"], static, workspace=workspace, get_token=get_token
+            )
         except RuntimeError as exc:
             raise ManagedRunError(EXIT_USAGE, f"Codex: {exc}") from exc
         if legacy is not None:
@@ -441,6 +445,7 @@ def plan_agents(
     previous_state: dict | None,
     *,
     claude_mcp_names: set[str] | None = None,
+    get_token: Callable[[], str] | None = None,
 ) -> list[AgentPlan]:
     previously_written = set(((previous_state or {}).get("agents") or {}).keys())
     enabled = manifest.get("enabled_agents") or {}
@@ -495,7 +500,9 @@ def plan_agents(
             previous_paths = set(
                 (((previous_state or {}).get("agents") or {}).get("codex") or {}).get("paths") or []
             )
-            plan.files.update(_codex_catalog_files(manifest, previous_paths, plan.warnings))
+            plan.files.update(
+                _codex_catalog_files(manifest, previous_paths, plan.warnings, workspace, get_token)
+            )
             version_warning = _codex_version_warning()
             if version_warning:
                 plan.warnings.append(version_warning)
@@ -796,7 +803,13 @@ def run(
 
     try:
         plans = plan_agents(
-            manifest, host, agents, mcp_entries, previous, claude_mcp_names=claude_mcp_names
+            manifest,
+            host,
+            agents,
+            mcp_entries,
+            previous,
+            claude_mcp_names=claude_mcp_names,
+            get_token=(lambda: token) if token is not None else None,
         )
     except ValueError as exc:
         raise ManagedRunError(EXIT_USAGE, str(exc)) from exc

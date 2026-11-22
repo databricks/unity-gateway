@@ -34,6 +34,7 @@ from ucode.state_file import (
     current_workspace_state,
     read_state_file,
 )
+from ucode.tls import TRUST_STORE_STATE_KEY
 from ucode.workspace import (
     activate_state,
     selector_headers,
@@ -47,6 +48,7 @@ CONFIG_SCOPE_KEY = "config_scope"
 # next configure without --global runs that workspace-switch reconcile even though it sees no switch.
 PENDING_USER_MCP_RECONCILE_KEY = "pending_user_mcp_reconcile"
 CLAUDE_AUTO_REVERT_TARGETS_KEY = "claude_auto_revert_targets"
+DATABRICKS_CLI_KEY = "databricks_cli_path"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
@@ -88,6 +90,23 @@ def set_claude_auto_revert_targets(targets: dict[str, str]) -> None:
         atomic_write_json(STATE_PATH, full)
     except OSError as exc:
         raise RuntimeError(f"Failed to retain Claude Auto model targets at {STATE_PATH}") from exc
+
+
+def recorded_databricks_cli() -> str | None:
+    """The ``databricks`` CLI configure found, for helpers an app starts without it on PATH."""
+    path = load_full_state().get(DATABRICKS_CLI_KEY)
+    return path if isinstance(path, str) and path else None
+
+
+def record_databricks_cli(path: str) -> None:
+    if is_dry_run() or recorded_databricks_cli() == path:
+        return
+    full = load_full_state()
+    full[DATABRICKS_CLI_KEY] = path
+    try:
+        atomic_write_json(STATE_PATH, full)
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
 def save_config_scope(scope: str) -> None:
@@ -382,9 +401,10 @@ def build_agent_state(state: dict) -> dict[str, dict]:
 
 
 def clear_state() -> None:
-    """Remove the current workspace entry and the config scope from state."""
+    """Remove the current workspace entry, the config scope, and the TLS trust store from state."""
     full = load_full_state()
     full.pop(CONFIG_SCOPE_KEY, None)
+    full.pop(TRUST_STORE_STATE_KEY, None)
     full.pop(CLAUDE_AUTO_REVERT_TARGETS_KEY, None)
     key = current_workspace_key(full)
     if key:

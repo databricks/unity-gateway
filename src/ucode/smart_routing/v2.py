@@ -20,12 +20,15 @@ from typing import NoReturn, TextIO
 from ucode import claude_answer_delivery, config_io, metrics
 from ucode.codex_config import (
     codex_config_args,
+    codex_managed_config_path,
     custom_catalog_models,
     custom_catalog_path,
+    is_codex_app_server_launch,
 )
 from ucode.config_io import (
     APP_DIR,
     read_json_safe,
+    read_toml_safe,
     write_json_file,
     write_text_file,
 )
@@ -46,8 +49,11 @@ from ucode.databricks import (
     build_auth_token_argv,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.launcher import exec_or_spawn
+from ucode.managed_files import published_agent_config_used
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -557,6 +563,14 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     )
 
 
+def _claude_route_options(model_ids: list[str]) -> list[tuple[str, str]]:
+    models = _canonical_claude_models(model_ids)
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        preferred = map_claude_family_models(models).values()
+        models = list(dict.fromkeys([*preferred, *models]))[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "claude")
+
+
 def _request_claude_routing_decision(
     workspace: str,
     token: str,
@@ -565,7 +579,7 @@ def _request_claude_routing_decision(
     provider: str | None = None,
     attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    route_options = _claude_route_options(model_ids)
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     if attribution_headers is None:
@@ -659,7 +673,6 @@ def route_claude_subagent(
             provider,
             attribution_headers=attribution,
         ),
-        default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
     )
     routing_ms = round((time.monotonic() - started) * 1000)
@@ -919,6 +932,7 @@ def launch_claude(
                         for row in picker_rows
                         if row.get("description")
                     },
+                    model_id_to_limits=catalog.model_id_to_limits,
                 )
                 generated = add_picker_entry(
                     {**settings, "deniedModels": denied_models},
@@ -961,13 +975,13 @@ def launch_claude(
             auto_picker = False
     if auto_picker:
         try:
-            auto_config = json.loads(
-                picker_config(
-                    config_catalog,
-                    workspace,
-                    auto_settings,
-                    default_model=preferred,
-                )
+            auto_config = picker_config(
+                config_catalog,
+                workspace,
+                auto_settings,
+                launch_settings=settings,
+                managed_settings=managed_auto,
+                default_model=preferred,
             )
         except ValueError as exc:
             print_warning(f"Skipped Claude Auto: {exc}")
@@ -1057,6 +1071,7 @@ def launch_claude(
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
             env[SESSION_ENV_VAR] = str(session_path)
+            env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
             mod_options = {
@@ -1162,6 +1177,63 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
+def _codex_routing_catalog(
+    binary: str,
+    catalog_path: str | Path | None,
+    models: list[str],
+    output: Path,
+    *,
+    workspace: str,
+    get_token: Callable[[], str],
+) -> str:
+    from ucode.agents.codex_catalog import prepare_codex_catalog
+
+    managed_path = codex_managed_config_path()
+    managed_catalog = None
+    if managed_path is not None:
+        reference = read_toml_safe(managed_path).get("model_catalog_json")
+        if isinstance(reference, str) and reference.strip():
+            managed_catalog = Path(reference).expanduser()
+            if not managed_catalog.is_absolute():
+                managed_catalog = managed_path.parent / managed_catalog
+            catalog_path = managed_catalog
+    catalog = (
+        read_json_safe(Path(catalog_path))
+        if catalog_path
+        else prepare_codex_catalog(
+            binary, models, workspace=workspace, get_token=get_token, include_bundled=True
+        )
+    )
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or not all(isinstance(m, dict) for m in entries)
+    ):
+        raise RuntimeError("Cannot load the Codex model catalog for plaintext task routing.")
+    if managed_catalog:
+        if any(model.get("multi_agent_tools_in_code_mode") is False for model in entries):
+            refresh = (
+                "Ask your administrator to run `sudo ug configure --global` "
+                "to refresh the published agent configuration."
+                if published_agent_config_used()
+                else "Run `ug configure --agents codex` to refresh a UG-managed catalog; "
+                "an administrator must update a separately managed catalog."
+            )
+            raise RuntimeError(
+                f"The managed catalog at {catalog_path} disables code-mode collaboration. {refresh} "
+                "If the bundled metadata still disables code mode, use a Codex version with "
+                "code-mode support and refresh again; configure preserves native capabilities. "
+                "Launch will preserve the managed catalog and skip routing encrypted assignments."
+            )
+        return str(catalog_path)
+    # Native model metadata otherwise overrides the launch's code-mode setting.
+    for model in entries:
+        model["multi_agent_tools_in_code_mode"] = True
+    write_json_file(output, catalog)
+    return str(output)
+
+
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -1169,7 +1241,11 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    launch_config: dict | None = None,
+    available_models: list[str] | None = None,
 ) -> NoReturn:
+    from ucode.agents.args import has_explicit_model_arg
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -1180,26 +1256,30 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    token = launch_token(state, workspace)
+    os.environ[OAUTH_TOKEN_ENV_VAR] = token
+    if available_models is None:
+        available_models = custom_catalog_models() or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
             "Run `ucode configure codex` to enable routing."
         )
-    custom_oauth = state.get("custom_oauth")
-    overlay = render_overlay(
-        workspace,
-        start_model,
-        state.get("profile"),
-        use_pat=bool(state.get("use_pat")),
-        custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
-        managed_http_headers=state.get("codex_http_headers"),
-    )
-    catalog_path = custom_catalog_path()
-    if catalog_path is not None:
-        overlay["model_catalog_json"] = str(catalog_path)
+    app_server_launch = is_codex_app_server_launch(tool_args)
+    if launch_config is None:
+        custom_oauth = state.get("custom_oauth")
+        overlay = render_overlay(
+            workspace,
+            state.get("codex_default_model") if app_server_launch else start_model,
+            state.get("profile"),
+            use_pat=bool(state.get("use_pat")),
+            custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
+            managed_http_headers=state.get("codex_http_headers"),
+        )
+    else:
+        overlay = dict(launch_config)
+        if not app_server_launch:
+            overlay["model"] = start_model
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["responses_api_metadata.smart_router_recipe_name"] = routing.configured_router_name()
     overlay["features.hooks"] = True
@@ -1213,6 +1293,23 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    try:
+        catalog_path = overlay.get("model_catalog_json") or custom_catalog_path()
+        if catalog_path is not None:
+            overlay["model_catalog_json"] = str(catalog_path)
+        overlay["model_catalog_json"] = _codex_routing_catalog(
+            binary,
+            catalog_path,
+            list(dict.fromkeys([*available_models, start_model])),
+            session_env_path.with_suffix(".models.json"),
+            workspace=workspace,
+            get_token=lambda: token,
+        )
+    except (OSError, RuntimeError) as exc:
+        print_warning(
+            f"Could not enable plaintext Codex task routing: {exc} "
+            "Encrypted subagent assignments will keep their requested model."
+        )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
@@ -1220,6 +1317,9 @@ def launch_codex(
         SESSION_PYTHON_ENV_VAR
     ]
     config_args = codex_config_args(overlay)
+    if app_server_launch:
+        # The caller owns this app-server's address, model and clients, so run its command as is.
+        exec_or_spawn([binary, *config_args, *tool_args])
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
@@ -1252,6 +1352,11 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            **(
+                {"provider": state["_codex_launch_provider"]}
+                if state.get("_codex_launch_provider")
+                else {}
+            ),
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []
@@ -1264,8 +1369,9 @@ def launch_codex(
                     if key in overlay
                 }
             )
+        model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, *model_args, *tool_args]
         )
         try:
             returncode = tui.wait()

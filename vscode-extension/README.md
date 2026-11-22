@@ -22,7 +22,10 @@ soon as Copilot Chat starts, with no restart.
 
 Once per configure, once its models are listed, the extension also opens the chat on the workspace's default model
 (else the first model), in Local and Copilot sessions alike. Without that, VS Code applies the default model only to
-an empty chat whose model you didn't pick and Copilot didn't set. Your own `chat.defaultModel` wins.
+an empty chat whose model you didn't pick and Copilot didn't set. Your own `chat.defaultModel` wins. When new chats
+open in Copilot Chat's Copilot session (`chat.defaultToCopilotHarness`, on by default in VS Code 1.147), the extension
+then also picks that session's own copy of the model, which it lists a few seconds later: the Copilot session drops
+the extension's model id when a prompt is sent and asks for a GitHub sign-in instead.
 
 The models are the ones the Copilot CLI gets: the workspace's managed model list when its managed
 config has one, else the models `ug configure` discovered. With `--provider <catalog.schema.name>`

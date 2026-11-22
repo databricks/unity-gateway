@@ -16,11 +16,11 @@ input with the permission mode) carries `smart router ON` or `smart router OFF`,
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
-prompt hint for the main model. Native's initial `/model` confirmation reads
-`Auto on: subagents smart-routed`; saving a main model prints a notice naming the saved model.
+prompt hint for the main model. Native displays `Auto mode: Subagents smart routed.`
+when the user selects Auto. Saving a main model updates the prompt hint silently.
 The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
-picker closes, or on `/model auto`. It uses the compact native question modal, with no
-effort controls. Native `/effort` remains unchanged.
+picker closes, or on `/model auto`. Use the arrow keys to scroll through the available main models.
+Use native `/effort` to change effort.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
@@ -29,11 +29,30 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
-`agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
+`agent.spawn` hook applies the selected model, preserving the agent's type, prompt,
 name and permissions. The routing response contains only `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
+
+Claude draws the collapsed parallel-agent header and the task list from the Agent call's
+`description`, which it records when the parent's reply ends. A native `turn.step` hook holds
+a reply that contains Agent calls until the router has answered for each one, then replaces
+only that `description` with `<animal> · <model> · <task>` before the call is recorded, so
+auto-mode review and execution see the same text. The task title comes from the first
+sentence of the call's prompt. The router still receives the parent's original call, and
+`tool.call` routes only a call that did not arrive through a streamed reply.
+The model in that heading is the router's selection, a prediction until the child starts.
+At spawn the host's receipt is compared with it. Routing cards, the agent list and
+completed-task notices read the receipt: they show the launched model and, when it differs
+from the heading, a `⚠ heading said <model>` flag. A host that reports no launch model is
+logged and its labels are not saved. Session-scoped display files keep the receipts across
+resume; the resumed transcript already carries the rewritten description.
+Rewriting a reply voids a server-side auto-mode verdict for it, so Claude's own fallback reviewer
+classifies the rewritten call instead; `CLAUDE_CODE_AUTO_MODE_SERVER=1` keeps the original reply and its
+verdict. An Auto-picker launch keeps the model's own headings: its session model is a picker alias that cannot act as
+the fallback reviewer once the server-side auto-mode verdict is void.
+Native task descriptions, full prompts, agent addresses and permissions are unchanged.
 In subagent-only mode, the native tool description explains that a requested model
 outside the built-in choices does not prevent a general-purpose launch; the router
 selects an available execution model.
@@ -78,10 +97,42 @@ routing; the message that issued the calls is drawn before routing finishes and 
 a call still routing waits for a later reply, and a call whose routing failed draws no card.
 Cards survive a turn that ends while the reply waits on a background agent and are dropped
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
-Decisions are kept for the session; a plugin reload clears them from the screen, and the
-routing decision audit log is unchanged.
+Decisions are kept for the session; a plugin reload clears them from the screen. The
+`/smart-router logs` pane opens a recorded decision and shows its validated explanation
+and offered-model comparisons when task-text logging permits those details to be saved.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
+
+### Routing explanations
+
+`/smart-router logs` uses the existing logs pane. Select a recorded decision to see its
+validated explanation and compare the models the router was offered. **Show numbers**
+reveals optional quality, cost, and scoring estimates; these are not measured outcomes
+or billed costs. Missing or invalid explanation data leaves the selected route and its
+original rationale visible.
+
+Detailed comparisons require the routing service to include optional explanation data
+as `route_selection[0].params.routing_explanation`, either a JSON-encoded string or
+an object. The decoded object is limited to 64 KiB and must contain finite JSON values.
+Older services remain compatible: the log detail shows the original rationale and notes
+that no detailed explanation was recorded, while routing continues normally. Malformed,
+oversized, or mismatched explanation data is discarded independently of the model
+selection. Opening a detail uses the saved decision and never reruns the router.
+
+The explanation object contains `selected_model`, `summary`, `task_understanding`
+(a list of short strings), and `models`. Each model entry contains `id`, `name`,
+`selected`, `considered`, and `reason`; exactly one selected entry must match the routed
+model. Model IDs remove any synthetic Anthropic gateway wrapper. For `system.ai.` IDs,
+the client also removes that prefix and a trailing `[1m]` context hint. Other IDs with
+at least three dot-separated parts retain their full offered name, including `[1m]` when
+present; shorter IDs drop that suffix. The client requires one explanation row per distinct
+offered model and rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
+and `difference_from_winner` supply the numeric view. An optional `formula`
+explains the scoring policy. Any supplied `session_id` or `tool_use_id`, including
+inside `evidence`, must match the recorded call. Claude's session log retains its
+existing bounded prompt preview, task digest and length. The service must describe the same
+decision and offered alternatives, including reasons for excluded models, without
+running another classifier or changing its selection policy.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
