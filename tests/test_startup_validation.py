@@ -57,7 +57,7 @@ def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
     )
     result = _wait_for_result(validation.result_path(controls))
     post.assert_called_once()
-    assert result == {"routing_disabled": disabled}
+    assert result["routing_disabled"] is disabled
     assert session_routing_enabled(controls) is not disabled
     if not disabled:
         assert controls.read_text() == "{}"
@@ -153,3 +153,45 @@ def test_failed_write_is_isolated_and_keeps_the_result_honest(failing, tmp_path,
             "routing_disabled": False
         }
         assert controls.read_text() == "{}"
+
+
+def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monkeypatch):
+    payload = {
+        "is_supported": False,
+        "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
+        "eligible_route_options": [{"model": "system.ai.claude-sonnet", "harness": "claude"}],
+        "ineligible_route_options": [
+            {
+                "model": "system.ai.claude-haiku-4-5",
+                "harness": "claude",
+                "reason": "model_not_in_recipe",
+            },
+            {"model": "custom", "harness": "claude"},
+            "malformed",
+        ],
+        "available_route_options": [
+            {"model": "system.ai.claude-sonnet", "harness": "claude"},
+            {"model": "gpt-5", "harness": "codex"},
+        ],
+    }
+    monkeypatch.setattr(validation, "_http_post_json", lambda *a, **k: (payload, None))
+    controls = tmp_path / "env.json"
+    validation.start(
+        "https://example.com",
+        "test-token",
+        [("m", "claude")],
+        router_name="stable",
+        session_controls=controls,
+    )
+    result = _wait_for_result(validation.result_path(controls))
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == {
+        "routing_disabled": True,
+        "reason": "insufficient_eligible_options",
+        "eligible": ["system.ai.claude-sonnet"],
+        "ineligible": [
+            {"model": "system.ai.claude-haiku-4-5", "reason": "model_not_in_recipe"},
+            {"model": "custom", "reason": None},
+        ],
+        "available": ["system.ai.claude-sonnet"],
+    }

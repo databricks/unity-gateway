@@ -208,3 +208,24 @@ test('without the startup check the band shows from the first paint', { options:
   expect(state.reads).toBe(0);
   await ui.unmount();
 });
+
+for (const disabled of [true, false]) {
+  test(`${disabled ? 'an unsupported' : 'a supported'} result ${disabled ? 'records' : 'records no'} Smart Router logs row`, {
+    options: { ...VALIDATED, logsCommand: ['/bin/ug', 'smart-router-logs'] },
+  }, async ($, on) => {
+    const { clock, files } = engine(on);
+    const runs: string[][] = [];
+    on('session.id', () => ({ value: 'session-one' }));
+    on('process.run', ($, e) => { runs.push(e.argv); return { value: { exitCode: 0, stderr: '', stdout: '{"v":1}' } }; });
+    const ui = await $.ui.mount(abovePrompt);
+    await $.session.start(start);
+    if (disabled) files['/session/env.json'] = OFF;
+    files['/session/env.validation.json'] = JSON.stringify({ routing_disabled: disabled });
+    await clock.advance(100);
+    expect(runs).toEqual(disabled ? [[
+      '/bin/ug', 'smart-router-logs', '--session', 'session-one',
+      '--record-startup-check', '/session/env.validation.json',
+    ]] : []);
+    await ui.unmount();
+  });
+}

@@ -1,6 +1,36 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
+export const LOGS_COMMAND_TIMEOUT_MS = 10000;
+export const STARTUP_CHECK_ROW = "Smart routing disabled: This session's model list isn't supported by Smart Router";
+const STARTUP_CHECK_REASONS: Record<string, string> = {
+  insufficient_eligible_options: 'At least two supported models are required',
+  missing_required_tier_option: 'Required models are missing from this list',
+  INCOMPLETE_REQUIRED_OPTIONS: 'Required models are missing from this list',
+  harness_not_supported: 'Harness not supported',
+  mixed_harnesses_not_supported: 'Mixed harnesses not supported',
+};
+const STARTUP_CHECK_GENERIC_REASON = "Smart Routing does not support this agent's model list.";
+const MODEL_REASONS: Record<string, string> = {
+  model_not_supported: 'Model source not supported',
+  model_not_in_recipe: 'Not available in Smart Router',
+  excluded_by_policy: 'Excluded by routing policy',
+  model_service_unresolved: 'Model service unresolved',
+  model_provider_service_unresolved: 'Model provider service unresolved',
+  harness_not_supported: '',
+};
+const MODEL_GENERIC_REASON = 'Not eligible for routing';
+// Reason codes are identifiers; anything else is a server-written sentence shown as sent.
+const REASON_CODE = /^[A-Za-z0-9_]+$/;
+type StartupCheck = {
+  check_id: string;
+  at: number;
+  reason: string | null;
+  eligible: string[];
+  ineligible: { model: string; reason: string | null }[];
+  available: string[];
+  validation_ms: number;
+};
 type Decision = {
   decision_id: string;
   at: number;
@@ -28,6 +58,26 @@ const isDecision = (d: Decision): boolean =>
   Number.isFinite(d.at) && Number.isFinite(new Date(d.at * 1000).getTime()) &&
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
+
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(item => typeof item === 'string');
+
+const isStartupCheck = (c: StartupCheck): boolean =>
+  Boolean(c) && typeof c.check_id === 'string' && Boolean(c.check_id) &&
+  Number.isFinite(c.at) && Number.isFinite(new Date(c.at * 1000).getTime()) &&
+  (c.reason === null || typeof c.reason === 'string') && isStringList(c.eligible) &&
+  isStringList(c.available) && Number.isFinite(c.validation_ms) && Array.isArray(c.ineligible) &&
+  c.ineligible.every(option => option !== null && typeof option === 'object' &&
+    typeof option.model === 'string' && (option.reason === null || typeof option.reason === 'string'));
+
+export function startupCheckReason(reason: string | null): string {
+  if (reason !== null && Object.hasOwn(STARTUP_CHECK_REASONS, reason)) return STARTUP_CHECK_REASONS[reason];
+  return reason?.trim() && !REASON_CODE.test(reason.trim()) ? reason.trim() : STARTUP_CHECK_GENERIC_REASON;
+}
+
+export function modelReason(reason: string | null): string {
+  return reason !== null && Object.hasOwn(MODEL_REASONS, reason) ? MODEL_REASONS[reason] : MODEL_GENERIC_REASON;
+}
 
 // A v1 decision record: ignores unknown keys (a later `explanation`, for one).
 function parseDecision(raw: string, id: string): Detail {
@@ -111,6 +161,7 @@ function age(at: number): string {
 }
 
 let rows: Decision[] = [];
+let checks: StartupCheck[] = [];
 let failed = false;
 // The reader CLI's own error hint, when its failure carries one.
 let cliError: string | undefined;
@@ -159,6 +210,7 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
       }
     } catch {}
     rows = [];
+    checks = [];
     failed = true;
     return `Smart Router logs: ${readError}`;
   }
@@ -167,10 +219,12 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
     try { data = JSON.parse(stdout); } catch { throw new Error('invalid logs JSON'); }
     if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
     rows = data.decisions.filter(isDecision).reverse();
+    checks = Array.isArray(data.startup_checks) ? data.startup_checks.filter(isStartupCheck).reverse() : [];
     failed = false;
     return '';
   } catch (error) {
     rows = [];
+    checks = [];
     failed = true;
     return `Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`;
   }
@@ -217,6 +271,7 @@ async function refreshOpenPane($: any, options: PluginOptions): Promise<void> {
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
+  let checkDetail: StartupCheck | null = null;
   let detailRequest = 0;
 
   // Match both launch modes to coexist with the routing module's unmatched spawn hook.
@@ -234,6 +289,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };
     detailRequest++;
     detail = null;
+    checkDetail = null;
     await load($, options);
     try {
       const pane = await $.ui.open({ id: ROUTING_LOGS_PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
@@ -253,35 +309,55 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
   on('ui.render', { component: 'Pane', requestId: ROUTING_LOGS_PANE }, ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
     const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
-    if (detail) {
+    // Each value wraps in its own column after a fixed, dim label column.
+    const labeledRow = (labelWidth: number, label: string, value: ReturnType<typeof Text>) =>
+      Box({
+        flexDirection: 'row',
+        children: [
+          Box({ width: labelWidth, flexShrink: 0, children: [Text({ dimColor: true, children: [label] })] }),
+          Box({ flexGrow: 1, children: [value] }),
+        ],
+      });
+    const back = () => Button({
+      key: 'back', plain: true, autoFocus: true, children: ['← Back'],
+      onPress: () => { detailRequest++; detail = null; checkDetail = null; $.ui.invalidate('ui.render'); },
+    });
+    if (checkDetail) {
+      const labelWidth = 'Validation Time: '.length + 1;
       const children = [
-        Button({
-          key: 'back', plain: true, autoFocus: true, children: ['← Back'],
-          onPress: () => { detailRequest++; detail = null; $.ui.invalidate('ui.render'); },
-        }),
+        back(),
+        labeledRow(labelWidth, 'Reason: ', Text({ children: [startupCheckReason(checkDetail.reason)] })),
+        labeledRow(labelWidth, 'Validation Time: ', Text({ children: [`${(checkDetail.validation_ms / 1000).toFixed(1)}s`] })),
       ];
+      if (checkDetail.eligible.length || checkDetail.ineligible.length) {
+        children.push(Text({ dimColor: true, children: ['Models'] }));
+        for (const model of checkDetail.eligible) {
+          children.push(Text({ children: [`✓ ${shortModel(model)}`] }));
+        }
+        for (const option of checkDetail.ineligible) {
+          const reason = modelReason(option.reason);
+          children.push(Text({ children: [`✗ ${shortModel(option.model)}${reason ? `  ${reason}` : ''}`] }));
+        }
+      }
+      if (checkDetail.available.length) {
+        children.push(Text({ dimColor: true, children: ['Supported models'] }));
+        for (const model of checkDetail.available) children.push(Text({ children: [`  ${shortModel(model)}`] }));
+      }
+      return Box({ flexDirection: 'column', children });
+    }
+    if (detail) {
+      const children = [back()];
       if (detail.failed) {
         children.push(Text({ children: ['Could not load this routing decision.'] }));
         if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
       } else {
-        // One labeled line per routing outcome; every label is dim so the block
-        // reads consistently, and each value wraps in its own column. The label
-        // column is fixed at the longest label plus a one-space gutter, so no
-        // label ever wraps or shrinks and every value starts at the same column.
+        // The label column is the longest label plus a one-space gutter, so no label wraps.
         const labelWidth = 'Prompt preview: '.length + 1;
-        const labeledRow = (label: string, value: ReturnType<typeof Text>) =>
-          Box({
-            flexDirection: 'row',
-            children: [
-              Box({ width: labelWidth, flexShrink: 0, children: [Text({ dimColor: true, children: [label] })] }),
-              Box({ flexGrow: 1, children: [value] }),
-            ],
-          });
-        children.push(labeledRow('Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
-        if (detail.subagent) children.push(labeledRow('Agent type: ', Text({ children: [detail.subagent] })));
-        children.push(labeledRow('Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
-        children.push(labeledRow('Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
-        children.push(labeledRow('Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
+        children.push(labeledRow(labelWidth, 'Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
+        if (detail.subagent) children.push(labeledRow(labelWidth, 'Agent type: ', Text({ children: [detail.subagent] })));
+        children.push(labeledRow(labelWidth, 'Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
+        children.push(labeledRow(labelWidth, 'Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
+        children.push(labeledRow(labelWidth, 'Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
         children.push(Text({ dimColor: true, children: ['Candidates'] }));
         for (const candidate of detail.candidates) {
           children.push(Text({ children: [`${candidate === detail.selected ? '● ' : '○ '}${shortModel(candidate)}`] }));
@@ -296,7 +372,17 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     }
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
-    for (const row of rows) {
+    const entries: (Decision | StartupCheck)[] = [...rows, ...checks].sort((a, b) => b.at - a.at);
+    for (const row of entries) {
+      if ('check_id' in row) {
+        const room = Math.max(1, columns - 10);
+        const text = STARTUP_CHECK_ROW.length > room ? STARTUP_CHECK_ROW.slice(0, Math.max(0, room - 1)) + '…' : STARTUP_CHECK_ROW;
+        children.push(Button({
+          key: row.check_id, plain: true, label: `${age(row.at).padStart(8)}  ${text}`,
+          onPress: () => { detailRequest++; checkDetail = row; $.ui.invalidate('ui.render'); },
+        }));
+        continue;
+      }
       const model = shortModel(row.selected_model);
       // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
       const room = Math.max(1, columns - model.length - 12);

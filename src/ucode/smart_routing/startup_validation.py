@@ -9,10 +9,11 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from ucode import metrics
 from ucode.config_io import atomic_write_json
-from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, SMART_ROUTING_ENV_KEYS
+from ucode.constants import AGENT_CLAUDE, MODEL_PROVIDER_SERVICE_HEADER, SMART_ROUTING_ENV_KEYS
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
 
@@ -23,6 +24,36 @@ VALIDATION_TIMEOUT_SECONDS = 4
 
 def result_path(session_controls: Path) -> Path:
     return session_controls.with_suffix(".validation.json")
+
+
+def _models(options: object, *, harness: str | None = None) -> list[str]:
+    return [
+        option["model"]
+        for option in (options if isinstance(options, list) else [])
+        if isinstance(option, dict)
+        and isinstance(option.get("model"), str)
+        and (harness is None or option.get("harness") == harness)
+    ]
+
+
+def _unsupported_details(payload: dict[str, Any], validation_ms: int) -> dict[str, Any]:
+    metadata = payload.get("metadata")
+    reason = metadata.get("routing_unsupported_reason") if isinstance(metadata, dict) else None
+    ineligible = payload.get("ineligible_route_options")
+    return {
+        "reason": reason if isinstance(reason, str) else None,
+        "eligible": _models(payload.get("eligible_route_options")),
+        "ineligible": [
+            {
+                "model": option["model"],
+                "reason": option.get("reason") if isinstance(option.get("reason"), str) else None,
+            }
+            for option in (ineligible if isinstance(ineligible, list) else [])
+            if isinstance(option, dict) and isinstance(option.get("model"), str)
+        ],
+        "available": _models(payload.get("available_route_options"), harness=AGENT_CLAUDE),
+        "validation_ms": validation_ms,
+    }
 
 
 def start(
@@ -63,11 +94,14 @@ def start(
         unsupported = (
             not reason and isinstance(payload, dict) and payload.get("is_supported") is False
         )
-        result = {"routing_disabled": False}
+        result: dict[str, Any] = {"routing_disabled": False}
         if unsupported:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True
+                result.update(
+                    _unsupported_details(payload, round((time.monotonic() - started) * 1000))
+                )
         with suppress(OSError, RuntimeError):
             atomic_write_json(result_path(session_controls), result)
 
