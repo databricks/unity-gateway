@@ -1140,10 +1140,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
+    @pytest.mark.parametrize("validation", [False, True])
     @pytest.mark.parametrize("auto_picker", [False, True])
     def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, auto_picker
+        self, tmp_path, monkeypatch, auto_picker, validation
     ):
+        if validation:
+            monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1229,19 +1232,31 @@ class TestV2Launch:
         assert captured["controls"] == (
             dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if auto_picker else {}
         )
+        route_argv = [
+            "/bin/ug",
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            "https://example.com",
+            "--model",
+            "system.ai.claude-opus-4-8",
+        ]
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
-                "routeCommand": [
-                    "/bin/ug",
-                    "claude-router-hook",
-                    "route-subagent-mod",
-                    "--host",
-                    "https://example.com",
-                    "--model",
-                    "system.ai.claude-opus-4-8",
-                ],
+                "routeCommand": route_argv,
+                **(
+                    {
+                        "validateCommand": [
+                            *route_argv[:2],
+                            claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                            *route_argv[3:],
+                        ]
+                    }
+                    if validation
+                    else {}
+                ),
             }
         }
         env = settings["env"]

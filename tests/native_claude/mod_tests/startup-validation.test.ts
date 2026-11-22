@@ -230,3 +230,43 @@ for (const disabled of [true, false]) {
     await ui.unmount();
   });
 }
+
+const VALIDATE_COMMAND = ['/bin/ug', 'validate'];
+const UNSUPPORTED_RESULT = JSON.stringify({ is_supported: false });
+const toggleCases = [
+  { name: 'an unsupported result on toggle on warns with routing on', options: { ...ROUTED, validateCommand: VALIDATE_COMMAND }, stdout: UNSUPPORTED_RESULT, off: false, warned: true, validates: true },
+  { name: 'a supported result on toggle on shows no warning', options: { ...ROUTED, validateCommand: VALIDATE_COMMAND }, stdout: '', off: false, warned: false, validates: true },
+  { name: 'toggling off before the result arrives shows no warning', options: { ...ROUTED, validateCommand: VALIDATE_COMMAND }, stdout: UNSUPPORTED_RESULT, off: true, warned: false, validates: true },
+  { name: 'without the validate option toggle on runs no validation', options: ROUTED, stdout: UNSUPPORTED_RESULT, off: false, warned: false, validates: false },
+];
+
+for (const { name, options, stdout, off, warned, validates } of toggleCases) {
+  test(name, { options }, async ($, on) => {
+    const { env } = engine(on);
+    env.UCODE_SMART_ROUTER_PYTHON = '/bin/python';
+    env.ISAAC_LAUNCH_MODE = 'omni';
+    const logs: string[] = [];
+    const validations: string[][] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    on('process.run', async ($, e) => {
+      if (e.argv[0] !== VALIDATE_COMMAND[0]) return { value: { exitCode: 0, stderr: '', stdout: '' } };
+      validations.push(e.argv);
+      await gate;
+      return { value: { exitCode: 0, stderr: '', stdout } };
+    });
+    const ui = await $.ui.mount(abovePrompt);
+    await $.session.start(start);
+    expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBeTruthy();
+    if (off) await $.command.run({ command: 'smart-router', args: 'off' });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const shown = JSON.stringify(await ui.drawn());
+    expect(validations.length).toBe(validates ? 1 : 0);
+    expect(shown.includes(WARNING)).toBe(warned);
+    expect(shown.includes(' ON ')).toBe(!off);
+    expect(logs.includes(UNSUPPORTED_MODEL_LIST_WARNING)).toBe(warned);
+    await ui.unmount();
+  });
+}

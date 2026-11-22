@@ -33,6 +33,8 @@ from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
+from ucode.smart_routing import session_log
+from ucode.smart_routing.claude_hooks import ROUTE_VALIDATION_MOD_EVENT
 from ucode.state import save_state as real_save_state
 
 # Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
@@ -2227,6 +2229,43 @@ class TestSubcommandRouting:
         else:
             assert result.output == ""
             route.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("validation", "recorded"),
+        [
+            ({"is_supported": False, "router_name": "stable"}, True),
+            ({"is_supported": True}, False),
+            (None, False),
+        ],
+    )
+    def test_claude_mod_validation_records_unsupported_without_disabling_routing(
+        self, tmp_path, monkeypatch, validation, recorded
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+        with patch(
+            "ucode.smart_routing.startup_validation.validate", return_value=validation
+        ) as validate:
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    ROUTE_VALIDATION_MOD_EVENT,
+                    "--host",
+                    "https://example.com",
+                    "--model",
+                    "system.ai.claude-opus-4-8",
+                ],
+                input='{"session_id":"s1"}',
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
+            )
+        assert result.exit_code == 0, result.output
+        assert validate.call_args.args[2] == [("system.ai.claude-opus-4-8", "claude")]
+        records = session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE)
+        assert result.output == (json.dumps(validation) if recorded else "")
+        assert [r[session_log.ROUTING_DISABLED_FIELD] for r in records] == (
+            [False] if recorded else []
+        )
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")

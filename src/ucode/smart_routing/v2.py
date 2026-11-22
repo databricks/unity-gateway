@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -79,6 +80,7 @@ from ucode.smart_routing import (
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
+    ROUTE_VALIDATION_MOD_EVENT,
     routing_hook_argv,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
@@ -475,6 +477,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "title": "Startup route validation",
                     "description": "1 when ug runs the startup routes:validate check",
                 },
+                "validateCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Route validator",
+                    "description": "CLI argument list for the routes:validate check on toggle",
+                },
                 "routeCommand": {
                     "type": "string",
                     "multiple": True,
@@ -631,6 +640,33 @@ def _route_print_mode_prompt(
     display = catalog.model_id_to_display_name.get(decision.model, decision.model)
     print_note(format_routing_notice(display, decision.rationale))
     return model_name(_unwrapped_claude_model_id(decision.model))
+
+
+def validate_claude_model_list(
+    payload: dict,
+    *,
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    provider: str | None = None,
+) -> dict | None:
+    """Validate the session's model list and record an unsupported result without disabling routing."""
+    result = startup_validation.validate(
+        workspace,
+        token,
+        _claude_route_options(available_models),
+        router_name=routing.configured_router_name(),
+        provider=provider,
+    )
+    if not result or result[startup_validation.IS_SUPPORTED_FIELD] is not False:
+        return None
+    session_id = payload.get("session_id")
+    if isinstance(session_id, str):
+        with suppress(OSError, ValueError):
+            session_log.append_route_validation(
+                AGENT_CLAUDE, session_id, {**result, session_log.ROUTING_DISABLED_FIELD: False}
+            )
+    return result
 
 
 def route_claude_subagent(
@@ -1023,6 +1059,10 @@ def launch_claude(
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
+            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+                mod_options["validateCommand"] = routing_hook_argv(
+                    routing_state, ROUTE_VALIDATION_MOD_EVENT
+                )
             if auto_picker:
                 mod_options["autoPicker"] = json.dumps(auto_config)
                 # Settings env is reapplied when /model saves a native selection.
