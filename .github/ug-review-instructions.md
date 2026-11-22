@@ -68,8 +68,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    modify only fields it owns, preserve caller/admin state, remove stale state it owns, and
    show errors that tell the user what they can do.
    When routing moves to startup or its UI is hidden, preserve a session record in the existing
-   smart-router log so `/smart-router logs` can explain the decision later. Check persisted
-   history through the existing journey and request recorder, not only a transient notice.
+   smart-router log so `/smart-router logs` (Claude) or `$smart-router logs` (Codex) can explain
+   the decision later. Check persisted history through the existing journey and request recorder,
+   not only a transient notice.
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
