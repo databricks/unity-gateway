@@ -1756,9 +1756,8 @@ def _fail_machine_wide_run(failed_tools: list[str]) -> None:
 def _agent_label(tool: str) -> str:
     """An agent's name where developers choose and review agents: the picker, status, list."""
     if tool == AGENT_COPILOT:
-        from ucode.mcp import client_display
-
-        return client_display("copilot")
+        # Configuring copilot also sets up Copilot Chat in VS Code and the desktop app.
+        return "GitHub Copilot (CLI, VS Code and app)"
     return str(TOOL_SPECS[tool]["display"])
 
 
@@ -5666,7 +5665,7 @@ def configure(
             "--model-location",
             help="Discover models from a Unity Catalog schema (`<catalog>.<schema>`, e.g. "
             "main.default) instead of system.ai. Applies with --agent or --agents for claude, "
-            "codex, or copilot (Copilot CLI and VS Code). Cannot be combined with --provider.",
+            "codex, or copilot (Copilot CLI, VS Code and app). Cannot be combined with --provider.",
         ),
     ] = None,
     no_vscode: Annotated[

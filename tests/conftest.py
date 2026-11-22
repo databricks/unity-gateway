@@ -97,7 +97,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     )
     # No test may find the developer's GitHub Copilot app, change its settings or providers, or
     # write ug's plugin for it.
-    monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP", raising=False)
     monkeypatch.setattr(desktop_setup_mod, "copilot_app_installed", lambda: False)
     copilot_home = tmp_path / ".copilot"
     monkeypatch.setattr(

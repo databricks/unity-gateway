@@ -207,7 +207,7 @@ ug configure --agents claude,codex --provider main.default.anthropic
 
 `--model-location <catalog>.<schema>` and `--provider <catalog>.<schema>.<name>` pick the model
 source without the interactive picker, so a script can configure it. `--model-location` applies to
-Claude Code, Codex, and Copilot (CLI and VS Code); `--provider` also applies to Gemini CLI. Either
+Claude Code, Codex, and Copilot (CLI, VS Code and app); `--provider` also applies to Gemini CLI. Either
 needs `--agent`/`--agents`, and they cannot be combined. Cursor may share the run but takes no
 source. The choice is saved for later launches, and each one replaces the other. A bad Copilot
 source fails before anything is saved. A managed config that enables agents names the source itself

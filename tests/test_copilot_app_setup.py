@@ -32,7 +32,6 @@ STATE = {"workspace": WS, "profile": "dev"}
 def _app_home(tmp_path, monkeypatch):
     """The app's settings and ug's plugin live under ``tmp_path``; the conftest already keeps
     every test away from a real app, and nothing here can start one."""
-    monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
     monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: True)
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
     monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lambda *args, **kwargs: False)
@@ -302,15 +301,6 @@ class TestConfigureCopilotApp:
 
         assert not plugin.plugin_root().exists()
         assert not _settings_path().exists()
-
-    def test_without_the_experiment_flag_nothing_changes(self, monkeypatch, app):
-        monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP")
-
-        agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-
-        assert not plugin.plugin_root().exists()
-        assert app.received == []
-        assert desktop_setup.copilot_app_status(STATE, provider=None, location=None) is None
 
 
 class TestRemove:

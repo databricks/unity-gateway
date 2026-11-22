@@ -29,12 +29,10 @@ from ucode.agents.desktop.claude import (
 from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert_code, revert_cowork
 from ucode.config_io import is_dry_run
 from ucode.constants import (
-    COPILOT_APP_ENV,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
-from ucode.env import env_bool
 from ucode.managed_files import OS, ManagedFileWriteUnavailable, current_os, machine_wide_only
 from ucode.state import desktop_uses_claude_subscription_relay, get_provider_service
 from ucode.string_utils import model_picker_label
@@ -308,10 +306,6 @@ _COPILOT_REJECTED_TELEMETRY_KEYS = (
 )
 _COPILOT_APP_DRY_RUN_NOTE = "Dry run: the GitHub Copilot app isn't changed."
 COPILOT_APP_DRY_RUN = "unchanged (dry run)"
-
-
-def copilot_app_enabled() -> bool:
-    return env_bool(COPILOT_APP_ENV)
 
 
 def _copilot_app_windows_registered() -> bool:
@@ -660,8 +654,6 @@ _COPILOT_REGISTRATION_LABELS = {
 def copilot_app_unconfigured_status() -> str | None:
     """The app's row in ``ug status`` once Copilot is no longer configured: a revert with the app
     closed is still pending until the plugin's next start."""
-    if not copilot_app_enabled():
-        return None
     _cleanup_copilot_app_leftover()
     if copilot_app_plugin.status() == "removal_pending":
         return COPILOT_APP_REMOVAL_PENDING
@@ -673,8 +665,6 @@ def copilot_app_status(
 ) -> CopilotAppStatus | None:
     """The app's row in ``ug status`` for ``state`` (managed settings already layered on), or None
     when ug doesn't set the app up."""
-    if not copilot_app_enabled():
-        return None
     _cleanup_copilot_app_leftover()
     plugin_status = copilot_app_plugin.status()
     if plugin_status == "not_installed" and not copilot_app_installed():

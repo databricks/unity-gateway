@@ -3514,7 +3514,7 @@ class TestStatus:
         output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
         assert "MCP servers: 1" in output
-        assert "GitHub Copilot (CLI and VS Code)" in output
+        assert "GitHub Copilot (CLI, VS Code and app)" in output
         assert "Claude Code" not in output
         assert "Gemini CLI" not in output
         assert "databricks-sql" not in result.output

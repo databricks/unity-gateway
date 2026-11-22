@@ -3368,8 +3368,9 @@ class TestRevertMcpConfigs:
 
         assert removed == [("claude", "svc"), ("codex", "svc")]
         assert result == {"claude": True, "codex": True}
-        assert "Could not remove MCP server `svc` from GitHub Copilot (CLI and VS Code)" in _unwrap(
-            capsys.readouterr().out
+        assert (
+            "Could not remove MCP server `svc` from GitHub Copilot (CLI, VS Code and app)"
+            in _unwrap(capsys.readouterr().out)
         )
 
     def test_removes_copilot_servers_from_its_user_config_and_the_legacy_side_file(self):
@@ -5204,7 +5205,7 @@ def test_setup_mcp_clients_names_vs_code_for_copilot(monkeypatch, capsys):
         {"workspace": WS}, "Managed MCP Servers", require_auth=False, action_note="Registering for"
     )
 
-    assert "Registering for: Claude Code, GitHub Copilot (CLI and VS Code)" in _unwrap(
+    assert "Registering for: Claude Code, GitHub Copilot (CLI, VS Code and app)" in _unwrap(
         capsys.readouterr().out
     )
 
@@ -5223,13 +5224,3 @@ class TestSameHostWorkspaceSwitch:
         assert _partition_mcp_entries_by_workspace(
             entries, "https://acme.cloud.databricks.com", same_host_switch=True
         ) == ([], entries)
-
-
-def test_copilots_display_covers_the_app_while_its_integration_is_on(monkeypatch):
-    from ucode.mcp import client_display
-
-    monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP", raising=False)
-    assert client_display("copilot") == "GitHub Copilot (CLI and VS Code)"
-    monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
-    assert client_display("copilot") == "GitHub Copilot (CLI, VS Code and app)"
-    assert client_display("claude") == "Claude Code"

@@ -784,7 +784,7 @@ def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: s
     """Install ug's plugin in the GitHub Copilot desktop app when it is installed."""
     from ucode.agents.desktop import setup as desktop_setup
 
-    if not desktop_setup.copilot_app_enabled() or not desktop_setup.copilot_app_installed():
+    if not desktop_setup.copilot_app_installed():
         return
     desktop_setup.configure_copilot_app(state, provider=provider, location=parent_schema)
 
