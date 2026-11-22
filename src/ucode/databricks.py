@@ -1797,6 +1797,9 @@ def run_databricks_login(
     finally:
         # Even a failed login may have replaced the profile's tokens.
         clear_databricks_token_cache()
+        from ucode.launch_cache import clear_cache
+
+        clear_cache()
     print_success("Databricks authentication complete")
 
 
@@ -2768,6 +2771,9 @@ def _get_model_services_page(
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
 _MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+# Workspaces whose memo came from the persisted launch cache, so discovery's hit label
+# says where the hit came from: `cache_hit` stays a real in-process walk's hit.
+_PRIMED_MODEL_SERVICES: set[str] = set()
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
@@ -2782,9 +2788,17 @@ def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | No
     return list(cached) if cached is not None else None
 
 
+def prime_model_services_cache(workspace: str, entries: list[ModelServiceEntry]) -> None:
+    """Seed the listing cache from persisted launch-cache state, so discovery needs no network."""
+    if workspace not in _MODEL_SERVICES_CACHE:
+        _MODEL_SERVICES_CACHE[workspace] = list(entries)
+        _PRIMED_MODEL_SERVICES.add(workspace)
+
+
 def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
+    _PRIMED_MODEL_SERVICES.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
     _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
     _RELAY_LOOKUP_FAILED_AT.clear()
@@ -2824,6 +2838,7 @@ def list_model_service_entries(
     page_size: int = _MODEL_SERVICES_PAGE_SIZE,
     max_pages: int = 100,
     use_cache: bool = True,
+    complete_only: bool = False,
 ) -> tuple[list[ModelServiceEntry], str | None]:
     """List model services in ``parent_schema`` (``system.ai`` by default) via the UC API.
 
@@ -2836,14 +2851,23 @@ def list_model_service_entries(
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     requested schema's subset.
 
-    Successful default-schema results are memoized per workspace for the life of the process;
-    pass ``use_cache=False`` to force a fresh walk. Other schemas bypass that cache.
+    A walk stopped early by an HTTP or network blip still returns what it collected
+    with reason None, so callers keep today's best-effort behavior; only the memo and
+    ``complete_only`` callers tell it apart. ``complete_only`` reports such a walk as
+    a failure (the partial entries come back with a reason), so callers that would
+    persist the listing never cache a truncated one.
+
+    Successful default-schema results are memoized per workspace for the life of the process,
+    but only complete walks; pass ``use_cache=False`` to force a fresh walk. Other schemas
+    bypass that cache.
     """
     parent = (
         f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
     )
     use_cache = use_cache and parent == _MODEL_SERVICE_PARENT_SCHEMA
-    if use_cache:
+    # A primed memo is disk-seeded, not walked: a complete_only caller re-walks it
+    # instead of trusting it, without depending on the caller clearing first.
+    if use_cache and not (complete_only and workspace in _PRIMED_MODEL_SERVICES):
         cached = _MODEL_SERVICES_CACHE.get(workspace)
         if cached is not None:
             return list(cached), None
@@ -2853,6 +2877,7 @@ def list_model_service_entries(
     page_token: str | None = None
     seen_tokens: set[str] = set()
     last_reason: str | None = None
+    complete = False
     for _ in range(max_pages):
         params: dict[str, str] = {
             "parent": parent,
@@ -2878,14 +2903,20 @@ def list_model_service_entries(
         page_token = data.get("next_page_token") or None
         if not page_token:
             last_reason = None
+            complete = True
             break
         if page_token in seen_tokens:
             break
         seen_tokens.add(page_token)
 
     listed = [entries[model_id] for model_id in sorted(entries)]
+    if complete_only and not complete:
+        # A caller that would persist the listing must not take a truncated walk.
+        return listed, last_reason or "model-services listing stopped early"
     if listed:
-        if use_cache:
+        if complete and use_cache:
+            # A real walk replaces the primed entry, so later hits report `cache_hit`.
+            _PRIMED_MODEL_SERVICES.discard(workspace)
             _MODEL_SERVICES_CACHE[workspace] = list(listed)
         return listed, None
     return [], last_reason or "model-services listing returned no models"
@@ -2994,7 +3025,10 @@ def discover_model_services(
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
     """
-    metrics.annotate(cache_hit=workspace in _MODEL_SERVICES_CACHE)
+    metrics.annotate(
+        launch_cache_hit=workspace in _PRIMED_MODEL_SERVICES,
+        cache_hit=workspace in _MODEL_SERVICES_CACHE and workspace not in _PRIMED_MODEL_SERVICES,
+    )
     ids, reason = list_model_services(workspace, token)
     if not ids:
         return {}, [], [], [], reason
@@ -4747,6 +4781,11 @@ _GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
 def clear_gateway_probe_cache() -> None:
     """Forget successful gateway probes (used by tests)."""
     _GATEWAY_PROBE_CACHE.clear()
+
+
+def prime_gateway_probe_cache(workspace: str, token: str, probe: GatewayProbe) -> None:
+    """Seed the probe cache from persisted launch-cache state, so the probe needs no network."""
+    _GATEWAY_PROBE_CACHE.setdefault((workspace, token), probe)
 
 
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:

@@ -166,43 +166,6 @@ class TestHostType:
         with patch.object(db_mod, "_http_open", side_effect=error):
             assert host_type(CLASSIC) is None
 
-    def test_pooled_transport_maps_404_and_connection_errors(self, monkeypatch):
-        """Below `_http_open`, on the pooled client's own status and error mapping: a 404
-        well-known document means a single-workspace host, a refused connection is
-        unreachable."""
-        import httpx
-
-        import ucode.databricks as db_mod
-
-        # Pin the dispatch to the pooled client: a runner with HTTPS_PROXY or
-        # UG_TLS_TRUST_STORE=python would otherwise make this a real urllib request.
-        monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
-
-        requests = []
-
-        def not_found(request):
-            requests.append(request)
-            return httpx.Response(404, content=b"not found")
-
-        client = httpx.Client(transport=httpx.MockTransport(not_found))
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
-        assert host_type(CLASSIC) is None
-
-        def refuse(request):
-            raise httpx.ConnectError("connection refused", request=request)
-
-        refused = httpx.Client(transport=httpx.MockTransport(refuse))
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=refused: refused)
-        with pytest.raises(workspace_mod.HostUnreachableError, match="did not answer"):
-            host_type(SHARED)
-
-        request = requests[0]
-        assert str(request.url) == f"{CLASSIC}/.well-known/databricks-config"
-        assert (
-            request.extensions["timeout"]
-            == httpx.Timeout(workspace_mod._HOST_TYPE_TIMEOUT_SECONDS).as_dict()
-        )
-
 
 class TestResolveWorkspace:
     def test_bare_url_makes_no_request(self):

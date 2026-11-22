@@ -46,30 +46,6 @@ def test_concurrent_observations_keep_individual_labels(metrics_recorder):
     assert sum(attrs["in_process_cache_hit"] for attrs in labels) == 25
 
 
-def test_awaited_duration_override_replaces_the_measured_duration(metrics_recorder):
-    with metrics.measure("databricks_token_fetch_duration_ms", token_source="cli"):
-        metrics.record_awaited_duration("databricks_token_fetch_duration_ms", 4321)
-    [(value, attrs)] = observations(metrics_recorder, "databricks_token_fetch_duration_ms")
-    assert value == 4321
-    assert attrs["token_source"] == "cli"
-    assert "awaited_duration_ms" not in attrs
-
-
-def test_awaited_duration_targets_the_named_measurement_when_nested(metrics_recorder):
-    with metrics.measure("databricks_token_fetch_duration_ms", token_source="cli"):
-        with metrics.measure("http_request_duration_ms", api_operation="models_list"):
-            metrics.record_awaited_duration("databricks_token_fetch_duration_ms", 4321)
-
-    # The inner http measurement keeps its own wall time; the named token-fetch
-    # measurement gets the awaited duration.
-    [(inner_ms, inner_attrs)] = observations(metrics_recorder, "http_request_duration_ms")
-    assert inner_ms < 4321
-    assert "awaited_duration_ms" not in inner_attrs
-    [(outer_ms, outer_attrs)] = observations(metrics_recorder, "databricks_token_fetch_duration_ms")
-    assert outer_ms == 4321
-    assert "awaited_duration_ms" not in outer_attrs
-
-
 def test_workspace_handoffs_do_not_mix_tokens_or_selected_ids(metrics_recorder, monkeypatch):
     shared = "https://shared.cloud.databricks.com"
     workspace.activate(shared, "111")

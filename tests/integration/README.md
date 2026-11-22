@@ -1,5 +1,8 @@
 # Integration tests
 
+The launch-cache checks described in the [component coverage guide](../README.md) use local
+files and controlled boundaries; they add no live gateway or native-agent coverage.
+
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
