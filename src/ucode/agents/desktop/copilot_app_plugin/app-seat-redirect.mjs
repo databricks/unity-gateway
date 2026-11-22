@@ -50,10 +50,12 @@ function relayConfigured(config) {
 }
 
 // Why this start doesn't redirect: "off" (nothing to route, or remove mode), "sandboxed" (the
-// runtime's extension sandbox blocks loopback), or null when it does.
+// runtime's extension sandbox blocks loopback), or null when it does. The runtime sets the
+// variable on every extension, "0" outside the sandbox and "1" inside, and its own bootstrap
+// reads only "1" as sandboxed.
 export function redirectSkipReason(config, env = process.env) {
   if (!relayConfigured(config) || config.remove) return "off";
-  if (env[SANDBOX_ENV]) return "sandboxed";
+  if (env[SANDBOX_ENV] === "1") return "sandboxed";
   return null;
 }
 
@@ -182,6 +184,8 @@ export function createSeatRedirect(
       } catch (error) {
         redirect = "unavailable";
         log(`Databricks seat relay: the app didn't take the redirect: ${error?.message ?? error}`);
+        // An update that answers after the bound may still have applied.
+        clearRedirect(session);
       }
       if (redirect !== "applied") {
         dirty = true;

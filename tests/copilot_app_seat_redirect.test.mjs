@@ -103,6 +103,7 @@ test("redirectEnabled needs the seatRelay config, no remove mode and no sandbox"
   assert.equal(redirectEnabled({ ...on, seatRelay: { gatewayBase: "https://ws" } }, {}), false);
   assert.equal(redirectEnabled({ ...on, remove: true }, {}), false);
   assert.equal(redirectEnabled(on, { [SANDBOX_ENV]: "1" }), false);
+  assert.equal(redirectEnabled(on, { [SANDBOX_ENV]: "0" }), true);
   assert.equal(redirectEnabled({}, {}), false);
 });
 
@@ -120,6 +121,8 @@ test("redirectSkipReason tells the sandbox apart from nothing to route", () => {
   const on = config();
   assert.equal(redirectSkipReason(on, {}), null);
   assert.equal(redirectSkipReason(on, { [SANDBOX_ENV]: "1" }), "sandboxed");
+  assert.equal(redirectSkipReason(on, { [SANDBOX_ENV]: "0" }), null);
+  assert.equal(redirectSkipReason(on, { [SANDBOX_ENV]: "" }), null);
   assert.equal(redirectSkipReason({ ...on, remove: true }, { [SANDBOX_ENV]: "1" }), "off");
   assert.equal(redirectSkipReason({}, { [SANDBOX_ENV]: "1" }), "off");
 });
@@ -260,12 +263,21 @@ test("shutdown points the session back at the default URL within its bound", asy
   await fresh.redirect.shutdown();
 });
 
-test("an app that never answers the redirect is unavailable within the bound", async (t) => {
+test("an app that never answers the redirect is unavailable within the bound, and told to clear it", async (t) => {
   const { redirect, entries, logged } = await start(t, {}, { applyTimeoutMs: 50 });
   await redirect.listen();
-  assert.equal(await redirect.apply(fakeSession({ update: () => new Promise(() => {}) })), false);
+  const updates = [];
+  const session = fakeSession({
+    update: (options) => {
+      updates.push(options);
+      return options.copilotUrl === null ? Promise.resolve({ success: true }) : new Promise(() => {});
+    },
+  });
+  assert.equal(await redirect.apply(session), false);
   assert.equal(entries[0].redirect, "unavailable");
   assert.match(logged[0], /no answer within 50 ms/);
+  await delay(10);
+  assert.deepEqual(updates, [{ copilotUrl: redirect.url }, { copilotUrl: null }]);
 });
 
 test("the sessions file is written in the state dir by default", async (t) => {
