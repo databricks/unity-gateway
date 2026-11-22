@@ -401,8 +401,6 @@ Accessibility clicks and real keystrokes, and requires the exact answer on scree
 app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. It then clicks an
 absent label in the same app and requires a nonzero helper exit with the native four-column
 accessibility tree captured before the fatal error in command evidence.
-If the skip confirmation remains visible after the first click, the macOS journey clicks
-its Go to ChatGPT button once more before requiring the composer. It never resubmits a task.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
