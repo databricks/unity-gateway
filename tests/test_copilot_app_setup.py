@@ -92,7 +92,9 @@ class TestConfigure:
         assert config["tokenCommand"][:2] == ["/opt/ug/bin/ug", "auth-token"]
         assert "/opt/databricks/bin" in config["pathDirs"]
         out = _out(capsys)
-        assert "Open (or restart) the GitHub Copilot app to load the Databricks models." in out
+        assert (
+            "In the GitHub Copilot app: open it (or restart it), then open the model picker" in out
+        )
         assert "Settings -> Model providers" not in out
 
     def test_never_talks_to_the_running_app(self, app):
@@ -248,7 +250,12 @@ class TestSeatRelayProvider:
         assert "User-Agent" not in relay["headers"]
         assert re.fullmatch(r"ucode/\S+ \(.*\)", relay["userAgent"])
         assert plugin.seat_relay_provider() == "copilot-seats"
-        assert "GitHub Copilot models go through copilot-seats" in _out(capsys)
+        out = _out(capsys)
+        assert (
+            "GitHub Copilot app: installed ug's plugin, routing Copilot through copilot-seats"
+            in out
+        )
+        assert "In the GitHub Copilot app: open it (or restart it), then start a chat" in out
         assert self.checked == [("copilot-seats", "vscode")]
 
     def test_another_provider_service_gets_rows_and_no_relay(self, capsys):

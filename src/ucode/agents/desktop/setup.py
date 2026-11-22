@@ -36,7 +36,7 @@ from ucode.databricks import build_tool_base_url, get_databricks_token, list_ant
 from ucode.managed_files import OS, ManagedFileWriteUnavailable, current_os, machine_wide_only
 from ucode.state import desktop_uses_claude_subscription_relay, get_provider_service
 from ucode.string_utils import model_picker_label
-from ucode.ui import print_note, print_success, print_warning
+from ucode.ui import print_kv, print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
 
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
@@ -528,14 +528,17 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
             "load ug's plugin. Remove those keys."
         )
     if relayed:
-        print_success(
-            f"GitHub Copilot app: installed ug's plugin; its GitHub Copilot models go through "
-            f"{provider}."
+        print_kv("GitHub Copilot app", f"installed ug's plugin, routing Copilot through {provider}")
+        print_note(
+            "In the GitHub Copilot app: open it (or restart it), then start a chat and pick a "
+            "GitHub Copilot model."
         )
-        print_note("Open (or restart) the GitHub Copilot app to route its chats.")
         return
-    print_success("GitHub Copilot app: installed ug's plugin with the Databricks models.")
-    print_note("Open (or restart) the GitHub Copilot app to load the Databricks models.")
+    print_kv("GitHub Copilot app", f"installed ug's plugin with {len(catalog)} Databricks models")
+    print_note(
+        "In the GitHub Copilot app: open it (or restart it), then open the model picker and choose "
+        "a Databricks model."
+    )
     if name := _managed_default_display_name(state, catalog, desired):
         print_note(
             f"To start new chats on {name}, pick it in the GitHub Copilot app; Settings -> "
