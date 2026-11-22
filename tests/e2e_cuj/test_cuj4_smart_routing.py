@@ -643,7 +643,7 @@ class TestCujSmartRouting(BaseCujTest):
                     if not show_subagent_model:
                         assert not re.search(
                             r"Selected Model\s*:|Launched Model\s*:|"
-                            r"Using Unity Gateway Smart Router - Subagent",
+                            r"Using Unity Gateway Smart Router - Subagent|Smart Routing verified",
                             screen,
                         ), screen
                     return False
@@ -768,7 +768,17 @@ class TestCujSmartRouting(BaseCujTest):
                         )
                 tui.exit_normally()
 
-    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION",
+        (
+            FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+            SUBAGENT_ONLY_V0,
+            SUBAGENT_ONLY_V1,
+            SUBAGENT_ORCH_V0,
+            SUBAGENT_ORCH_V1,
+            SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        ),
+    )
     def test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles(
         self, cuj, SMART_ROUTER_CONFIG_VERSION
     ):

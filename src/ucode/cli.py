@@ -3632,9 +3632,8 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CLAUDE), default=False, agent=AGENT_CLAUDE
-    ):
+    environment = effective_environment(agent=AGENT_CLAUDE)
+    if not smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CLAUDE):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -3675,7 +3674,7 @@ def claude_router_hook_cmd(
     if event == "record-subagent":
         record = record_subagent_start(payload)
         matched = record.get("matches_router_decision")
-        if matched is True:
+        if matched is True and smart_routing_config.subagent_model_visible(environment):
             sys.stdout.write(
                 json.dumps(
                     {

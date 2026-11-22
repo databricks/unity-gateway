@@ -111,6 +111,9 @@ for (const [show, auto] of [['0', false], ['1', true], ['1', false]] as const) {
     });
     on('tool.call', () => ({ result: 'ok' }));
     on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.component === 'Spinner' ? e.props.message ?? e.props.word : 'Native content'] }));
+    const logs: string[] = [];
+    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    on('agent.spawn', () => ({ agentId: 'child-without-model', model: '' }));
     const call = $.tool.call({ tool: 'Agent', tool_use_id: 'display-call', ...originalInput });
     // While routing is under way the spinner says so, whatever the display flag says;
     // only the decided model details follow the flag.
@@ -126,6 +129,13 @@ for (const [show, auto] of [['0', false], ['1', true], ['1', false]] as const) {
       expect(Boolean(await ui.find({ type: 'Text', text }))).toBe(show === '1');
     }
     await ui.unmount();
+    await $.agent.spawn({
+      tool_use_id: 'display-call', prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: 'Explore', parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' },
+      background: false, fork: false, permissionMode: 'default', cwd: '/workspace',
+    });
+    expect(logs).toEqual(show === '1'
+      ? ['Claude did not report the launched model; routed labels cannot be verified for this subagent.'] : []);
   });
 }
 
@@ -920,6 +930,25 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   await cards.unmount();
 });
 
+test('hidden model display does not restore saved native labels', {
+  options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: '0' },
+}, async ($, on) => {
+  const writes: string[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
+  on('env.set', () => ({ value: undefined }));
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  on('fs.exists', () => ({ value: true }));
+  on('fs.list', () => ({ value: [{ name: 'agent-child.json', kind: 'file', size: 100, mtimeMs: 0, isLink: false }] }));
+  on('fs.read', () => ({ value: JSON.stringify({
+    session_id: 'session-1', agent_id: 'child', name: 'Fox · model-b', description: 'Inspect parser',
+    animal: 'Fox', title: 'Inspect parser', selected: 'system.ai.model-b', launched: 'system.ai.model-b',
+  }) }));
+  on('fs.write', ($, e) => { writes.push(e.path); return { value: undefined }; });
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
+  expect(writes).toEqual([]);
+});
+
 test('completed notification labels restore per child and render without storage reads', async ($, on) => {
   const files = new Map<string, string>();
   const writes: any[] = [];
@@ -1062,99 +1091,111 @@ test('completed notification labels restore per child and render without storage
   await retained.unmount();
 });
 
-test('parallel calls are headed with the routed model before they are recorded, then verified against the launch', async ($, on) => {
-  const routerCalls: any[] = [];
-  const spawned: any[] = [];
-  const rows = new Map<string, any>();
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
-  on('fs.write', () => ({ value: undefined }));
-  on('process.run', ($, event) => {
-    const request = JSON.parse(event.init.stdin);
-    routerCalls.push(request);
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: request.tool_use_id === 'head-1' ? 'system.ai.model-b' : 'system.ai.glm-5-3-flash', rationale: 'Selected.',
-    }) } };
-  });
-  on('tool.call', () => ({ result: 'launched' }));
-  on('agent.spawn', ($, e) => {
-    spawned.push(e);
-    // The second child launches elsewhere than its heading says.
-    return { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'head-1' ? 'system.ai.model-c' : e.model };
-  });
-  on('ui.render', ($, e) => {
-    rows.set(e.requestId, e.props);
-    return { type: 'Text', props: {}, children: [e.props.label ?? 'native row'] };
-  });
-  const calls = ['Sonnet', 'Haiku'].map((model, index) => ({
-    prompt: 'Tell me a short joke. Make it dry.', description: `Joke from ${model}`,
-    subagent_type: 'general-purpose', run_in_background: true, tag: index,
-  }));
-  const read = { file_path: 'README.md' };
-  on('turn.step', async function* ($, e) {
-    yield { kind: 'text', index: 0, text: 'Starting.' };
-    yield { kind: 'tool', index: 1, id: 'head-0', name: 'Agent' };
-    yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(0, 20) };
-    yield { kind: 'tool', index: 2, id: 'read-0', name: 'Read' };
-    yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(20) };
-    yield { kind: 'input', index: 2, json: JSON.stringify(read) };
-    yield { kind: 'tool', index: 3, id: 'head-1', name: 'Agent' };
-    yield { kind: 'input', index: 3, json: JSON.stringify(calls[1]) };
-    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-    return { turnId: e.turnId, index: e.index, answer: 'Starting.', toolUses: [], stopReason: 'tool_use', usage: null };
-  });
-  const turn = await collectParentTurn($, 'headed', 0);
-  expect(turn.chunks.map(chunk => chunk.kind)).toEqual(['text', 'tool', 'input', 'tool', 'input', 'tool', 'input', 'stop']);
-  const agentInputs = turn.chunks.filter(chunk => chunk.kind === 'input' && chunk.index !== 2);
-  expect(agentInputs).toHaveLength(2);
-  const headings = agentInputs.map(chunk => JSON.parse(chunk.json));
-  expect(headings[0].description).toMatch(/^[A-Z][a-z]+ · glm-5-3-flash · Tell me a short joke$/);
-  expect(headings[1].description).toMatch(/^[A-Z][a-z]+ · model-b · Tell me a short joke$/);
-  for (const [index, heading] of headings.entries()) expect(heading).toEqual({ ...calls[index], description: heading.description });
-  expect(JSON.parse(turn.chunks.find(chunk => chunk.index === 2 && chunk.kind === 'input').json)).toEqual(read);
-  // The router heard the parent's own description and prompt, and is not asked again at tool.call.
-  expect(routerCalls.map(call => call.tool_input.description)).toEqual(['Joke from Sonnet', 'Joke from Haiku']);
-  for (const [index, heading] of headings.entries()) {
-    await $.tool.call({ tool: 'Agent', tool_use_id: `head-${index}`, ...heading });
-  }
-  expect(routerCalls).toHaveLength(2);
-  for (const [index, heading] of headings.entries()) {
-    await $.agent.spawn({
-      tool_use_id: `head-${index}`, prompt: calls[index].prompt, description: heading.description,
-      subagentType: 'general-purpose', parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' as const },
-      background: true, fork: false, permissionMode: 'default', cwd: '/workspace',
+for (const show of ['0', '1']) {
+  test(`parallel streamed calls preserve routing with model display ${show}`, {
+    options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: show },
+  }, async ($, on) => {
+    const routerCalls: any[] = [];
+    const spawned: any[] = [];
+    const rows = new Map<string, any>();
+    on('session.id', () => ({ value: 'session-1' }));
+    on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
+    on('fs.write', () => ({ value: undefined }));
+    on('process.run', ($, event) => {
+      const request = JSON.parse(event.init.stdin);
+      routerCalls.push(request);
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: request.tool_use_id === 'head-1' ? 'system.ai.model-b' : 'system.ai.glm-5-3-flash', rationale: 'Selected.',
+      }) } };
     });
-  }
-  // Claude before 2.1.328 has no agent-list row to render.
-  const agentRow = async (id: string) => {
-    try {
-      return await $.ui.mount({ ...panel, component: 'AgentRow' as const, requestId: id, props: { id } });
-    } catch (error) {
-      if (String(error).includes('is not a component')) return undefined;
-      throw error;
+    on('tool.call', () => ({ result: 'launched' }));
+    on('agent.spawn', ($, e) => {
+      spawned.push(e);
+      // The second child launches elsewhere than its heading says.
+      return { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'head-1' ? 'system.ai.model-c' : e.model };
+    });
+    on('ui.render', ($, e) => {
+      rows.set(e.requestId, e.props);
+      return { type: 'Text', props: {}, children: [e.props.label ?? 'native row'] };
+    });
+    const calls = ['Sonnet', 'Haiku'].map((model, index) => ({
+      prompt: 'Tell me a short joke. Make it dry.', description: `Joke from ${model}`,
+      subagent_type: 'general-purpose', run_in_background: true, tag: index,
+    }));
+    const read = { file_path: 'README.md' };
+    on('turn.step', async function* ($, e) {
+      yield { kind: 'text', index: 0, text: 'Starting.' };
+      yield { kind: 'tool', index: 1, id: 'head-0', name: 'Agent' };
+      yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(0, 20) };
+      yield { kind: 'tool', index: 2, id: 'read-0', name: 'Read' };
+      yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(20) };
+      yield { kind: 'input', index: 2, json: JSON.stringify(read) };
+      yield { kind: 'tool', index: 3, id: 'head-1', name: 'Agent' };
+      yield { kind: 'input', index: 3, json: JSON.stringify(calls[1]) };
+      yield { kind: 'stop', stopReason: 'tool_use', usage: null };
+      return { turnId: e.turnId, index: e.index, answer: 'Starting.', toolUses: [], stopReason: 'tool_use', usage: null };
+    });
+    const turn = await collectParentTurn($, 'headed', 0);
+    expect(turn.chunks.map(chunk => chunk.kind)).toEqual(show === '1'
+      ? ['text', 'tool', 'input', 'tool', 'input', 'tool', 'input', 'stop']
+      : ['text', 'tool', 'input', 'tool', 'input', 'input', 'tool', 'input', 'stop']);
+    const headings = [1, 3].map(index => JSON.parse(turn.chunks
+      .filter(chunk => chunk.kind === 'input' && chunk.index === index).map(chunk => chunk.json).join('')));
+    if (show === '1') {
+      expect(headings[0].description).toMatch(/^[A-Z][a-z]+ · glm-5-3-flash · Tell me a short joke$/);
+      expect(headings[1].description).toMatch(/^[A-Z][a-z]+ · model-b · Tell me a short joke$/);
+    } else {
+      expect(headings).toEqual(calls);
     }
-  };
-  const match = await agentRow('child-head-0');
-  if (match) {
-    expect(rows.get('child-head-0').label).toBe(headings[0].description);
-    await match.unmount();
-    const mismatch = await agentRow('child-head-1');
-    expect(rows.get('child-head-1').label).toMatch(/ · model-c · Tell me a short joke ⚠ heading said model-b$/);
-    await mismatch!.unmount();
-  }
-  // The notice for the child that launched elsewhere says so; the matching one is left alone.
-  const notice = (id: string) => ({
-    ...panel, component: 'UserMessage' as const, requestId: `notice-${id}`,
-    props: { text: 'Agent finished', origin: { kind: 'task-notification' as const },
-      task: { id, status: 'completed', toolUseId: id, durationMs: 1 }, isExpanded: false },
+    for (const [index, heading] of headings.entries()) expect(heading).toEqual({ ...calls[index], description: heading.description });
+    expect(JSON.parse(turn.chunks.find(chunk => chunk.index === 2 && chunk.kind === 'input').json)).toEqual(read);
+    expect(routerCalls).toHaveLength(show === '1' ? 2 : 0);
+    for (const [index, heading] of headings.entries()) {
+      await $.tool.call({ tool: 'Agent', tool_use_id: `head-${index}`, ...heading });
+    }
+    expect(routerCalls.map(call => call.tool_input.description)).toEqual(['Joke from Sonnet', 'Joke from Haiku']);
+    for (const [index, heading] of headings.entries()) {
+      await $.agent.spawn({
+        tool_use_id: `head-${index}`, prompt: calls[index].prompt, description: heading.description,
+        subagentType: 'general-purpose', parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' as const },
+        background: true, fork: false, permissionMode: 'default', cwd: '/workspace',
+      });
+    }
+    expect(spawned.map(event => event.model)).toEqual(['system.ai.glm-5-3-flash', 'system.ai.model-b']);
+    // Claude before 2.1.328 has no agent-list row to render.
+    const agentRow = async (id: string) => {
+      try {
+        return await $.ui.mount({ ...panel, component: 'AgentRow' as const, requestId: id, props: { id } });
+      } catch (error) {
+        if (String(error).includes('is not a component')) return undefined;
+        throw error;
+      }
+    };
+    const match = await agentRow('child-head-0');
+    if (match) {
+      expect(rows.get('child-head-0').label).toBe(show === '1' ? headings[0].description : undefined);
+      await match.unmount();
+      const mismatch = await agentRow('child-head-1');
+      if (show === '1') expect(rows.get('child-head-1').label).toMatch(/ · model-c · Tell me a short joke ⚠ heading said model-b$/);
+      else expect(rows.get('child-head-1').label).toBeUndefined();
+      await mismatch!.unmount();
+    }
+    // The notice for the child that launched elsewhere says so; the matching one is left alone.
+    const notice = (id: string) => ({
+      ...panel, component: 'UserMessage' as const, requestId: `notice-${id}`,
+      props: { text: 'Agent finished', origin: { kind: 'task-notification' as const },
+        task: { id, status: 'completed', toolUseId: id, durationMs: 1 }, isExpanded: false },
+    });
+    const flagged = await $.ui.mount(notice('child-head-1'));
+    expect(rows.get('notice-child-head-1').text).toBe(show === '1'
+      ? 'Agent finished\n⚠ Launched on model-c, not the model-b in the heading' : 'Agent finished');
+    await flagged.unmount();
+    const clean = await $.ui.mount(notice('child-head-0'));
+    expect(rows.get('notice-child-head-0').text).toBe('Agent finished');
+    await clean.unmount();
   });
-  const flagged = await $.ui.mount(notice('child-head-1'));
-  expect(rows.get('notice-child-head-1').text).toBe('Agent finished\n⚠ Launched on model-c, not the model-b in the heading');
-  await flagged.unmount();
-  const clean = await $.ui.mount(notice('child-head-0'));
-  expect(rows.get('notice-child-head-0').text).toBe('Agent finished');
-  await clean.unmount();
-});
+
+}
 
 test('a server-side auto-mode review keeps the reply as the model wrote it', async ($, on) => {
   const routerCalls: any[] = [];

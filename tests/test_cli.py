@@ -699,7 +699,7 @@ def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
     launch.assert_called_once()
 
 
-_CODEX_NOTICE_VISIBILITY_CASES = [
+_NOTICE_VISIBILITY_CASES = [
     (smart_routing_config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, False),
     (smart_routing_config.SUBAGENT_ORCH_V0, True),
 ]
@@ -2040,7 +2040,7 @@ class TestSubcommandRouting:
         assert json.loads(result.output) == routed
         return mock_token, mock_route
 
-    @pytest.mark.parametrize(("version", "show_notice"), _CODEX_NOTICE_VISIBILITY_CASES)
+    @pytest.mark.parametrize(("version", "show_notice"), _NOTICE_VISIBILITY_CASES)
     def test_codex_subagent_hook_resolves_notice_visibility(self, version, show_notice):
         from ucode.smart_routing import codex_routing
 
@@ -2082,20 +2082,22 @@ class TestSubcommandRouting:
         assert ("systemMessage" in output) is show_notice
         assert ("permissionDecisionReason" in hook) is show_notice
 
-    @pytest.mark.parametrize(("version", "show_notice"), _CODEX_NOTICE_VISIBILITY_CASES)
-    def test_codex_record_subagent_hook_respects_notice_visibility(self, version, show_notice):
+    @pytest.mark.parametrize(("version", "show_notice"), _NOTICE_VISIBILITY_CASES)
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_record_subagent_hook_respects_notice_visibility(self, version, show_notice, agent):
         with patch(
-            "ucode.smart_routing.codex_routing.record_subagent_start",
+            f"ucode.smart_routing.{agent}_routing.record_subagent_start",
             return_value={"matches_router_decision": True, "model": "gpt-5.6-luna"},
-        ):
+        ) as record:
             result = runner.invoke(
                 app,
-                ["codex-router-hook", "record-subagent"],
+                [f"{agent}-router-hook", "record-subagent"],
                 input='{"session_id":"session"}',
                 env={"SMART_ROUTER_CONFIG_VERSION": version},
             )
 
         assert result.exit_code == 0, result.output
+        record.assert_called_once_with({"session_id": "session"})
         if show_notice:
             assert json.loads(result.output) == {
                 "systemMessage": "Smart Routing verified. Subagent is using gpt-5.6-luna."

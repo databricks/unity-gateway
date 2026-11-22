@@ -484,7 +484,7 @@ export const registerSubagentRouting = (
       routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
-    if (route && result.agentId && !result.deny && !result.model) {
+    if (showModel && route && result.agentId && !result.deny && !result.model) {
       $.ui.log('Claude did not report the launched model; routed labels cannot be verified for this subagent.')
     } else if (showModel && route && result.agentId && !result.deny) {
       try {
