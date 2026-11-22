@@ -1260,6 +1260,7 @@ def launch_codex(
             router_name=routing.configured_router_name(),
             session_controls=session_env_path,
             provider=state.get("_codex_launch_provider"),
+            available_harness=AGENT_CODEX,
         )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.

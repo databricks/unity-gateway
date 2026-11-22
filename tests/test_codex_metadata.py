@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import codex_interposer, session_env
+from ucode.smart_routing import codex_interposer, session_env, session_log
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
     RoutingMetadata,
@@ -154,6 +154,38 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
         assert tui.messages == []
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("validation", "logged"),
+    [
+        (
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+            },
+            1,
+        ),
+        ({"routing_disabled": False}, 0),
+    ],
+    ids=["unsupported", "supported"],
+)
+def test_route_validation_is_logged_once_for_the_root_thread(tmp_path, validation, logged):
+    async def run():
+        metadata, _, _ = controller(tmp_path)
+        turn = {"id": "input", "method": "turn/start", "params": {"threadId": "root"}}
+        # The first prompt can precede the startup check's result file.
+        await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+        session_env.validation_result_path(metadata.controls).write_text(json.dumps(validation))
+        for _ in range(2):
+            await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+
+    asyncio.run(run())
+    records = session_log.read_records("codex", "root", session_log.ROUTE_VALIDATION_TYPE)
+    assert [(r["harness"], r["session_id"], r["router_name"]) for r in records] == (
+        [("codex", "root", "stable")] if logged else []
+    )
 
 
 class StreamingWire(Wire):

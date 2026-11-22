@@ -8,7 +8,9 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode.smart_routing.session_env import session_routing_enabled
+from ucode.constants import AGENT_CODEX
+from ucode.smart_routing import session_log
+from ucode.smart_routing.session_env import read_unsupported_validation, session_routing_enabled
 
 ROUTING_STATE_KEY = "smart_router_state"
 TASK_STATE_SUFFIX = re.compile(r"(?:__sr_(?:on|off))+$")
@@ -37,6 +39,20 @@ class RoutingMetadata:
         self.controls = controls
         self.log = log
         self.children: set[str] = set()
+        self.recorded_validations: set[str] = set()
+
+    # The root thread id first appears on a prompt; startup validation may still be running then.
+    def record_route_validation(self, thread_id: str) -> None:
+        if thread_id in self.recorded_validations:
+            return
+        result = read_unsupported_validation(self.controls)
+        if result is None:
+            return
+        self.recorded_validations.add(thread_id)
+        try:
+            session_log.append_route_validation(AGENT_CODEX, thread_id, result)
+        except (OSError, ValueError) as exc:
+            self.log(f"[METADATA] Cannot record route validation for thread={thread_id}: {exc}")
 
     async def enabled(self) -> bool | None:
         try:
@@ -59,6 +75,7 @@ class RoutingMetadata:
             params.setdefault("capabilities", {})["experimentalApi"] = True
         tid = params.get("threadId")
         if method == "turn/start" and isinstance(tid, str) and tid not in self.children:
+            await asyncio.to_thread(self.record_route_validation, tid)
             patch = params.get("responsesapiClientMetadataPatch")
             if patch is None or isinstance(patch, dict):
                 enabled = await self.enabled()

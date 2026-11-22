@@ -158,7 +158,12 @@ def test_failed_write_is_isolated_and_keeps_the_result_honest(failing, tmp_path,
         assert controls.read_text() == "{}"
 
 
-def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("harness", "route_harness"), [("claude_code", "claude"), ("codex", "codex")]
+)
+def test_unsupported_result_carries_the_details_for_the_logs_row(
+    harness, route_harness, tmp_path, monkeypatch
+):
     payload = {
         "is_supported": False,
         "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
@@ -182,9 +187,10 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
     validation.start(
         "https://example.com",
         "test-token",
-        [("m", "claude")],
+        [("m", route_harness)],
         router_name="stable",
         session_controls=controls,
+        available_harness=harness,
     )
     result = _wait_for_result(validation_result_path(controls))
     assert isinstance(result.pop("validation_ms"), int)
@@ -201,5 +207,5 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
             },
             {"model": "custom", "harness": "claude", "reason": None},
         ],
-        "available_route_options": [{"model": "claude-sonnet-5-5", "harness": "claude_code"}],
+        "available_route_options": [{"model": "claude-sonnet-5-5", "harness": harness}],
     }

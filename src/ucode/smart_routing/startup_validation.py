@@ -47,7 +47,9 @@ def _route_options(
     ]
 
 
-def _unsupported_details(payload: dict[str, Any], router_name: str) -> dict[str, Any]:
+def _unsupported_details(
+    payload: dict[str, Any], router_name: str, available_harness: str
+) -> dict[str, Any]:
     metadata = payload.get("metadata")
     return {
         "router_name": router_name,
@@ -59,7 +61,7 @@ def _unsupported_details(payload: dict[str, Any], router_name: str) -> dict[str,
             payload.get("ineligible_route_options"), with_reason=True
         ),
         "available_route_options": _route_options(
-            payload.get("available_route_options"), harness=ROUTER_HARNESS_CLAUDE_CODE
+            payload.get("available_route_options"), harness=available_harness
         ),
     }
 
@@ -91,6 +93,7 @@ def start(
     router_name: str,
     session_controls: Path,
     provider: str | None = None,
+    available_harness: str = ROUTER_HARNESS_CLAUDE_CODE,
 ) -> None:
     body = {
         "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
@@ -111,7 +114,7 @@ def start(
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result[ROUTING_DISABLED_KEY] = True
-                result.update(_unsupported_details(payload, router_name))
+                result.update(_unsupported_details(payload, router_name, available_harness))
                 result["validation_ms"] = round((time.monotonic() - started) * 1000)
         with suppress(OSError, RuntimeError):
             atomic_write_json(validation_result_path(session_controls), result)

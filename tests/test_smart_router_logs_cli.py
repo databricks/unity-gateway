@@ -466,6 +466,23 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
     }
 
 
+def test_codex_route_validation_is_listed_under_the_codex_harness_only(log_dir):
+    session_log.append_route_validation(
+        "codex",
+        "s1",
+        {
+            "routing_disabled": True,
+            "router_name": "stable",
+            "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+        },
+    )
+    listed = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--harness", "codex"])
+    [row] = json.loads(listed.output)["route_validations"]
+    assert (row["harness"], row["session_id"], row["router_name"]) == ("codex", "s1", "stable")
+    claude = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
+    assert json.loads(claude.output)["route_validations"] == []
+
+
 @pytest.mark.parametrize("content", [None, "not json", "[]"])
 def test_record_route_validation_reports_an_unreadable_result(log_dir, tmp_path, content):
     result_file = tmp_path / "env.validation.json"
