@@ -53,6 +53,7 @@ _SOURCE_FILES = (
     "app-remove.mjs",
     "app-restart.mjs",
     "app-tracing.mjs",
+    "app-seat-relay.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
