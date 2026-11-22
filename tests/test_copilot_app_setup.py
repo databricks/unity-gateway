@@ -721,6 +721,10 @@ def test_a_failed_plugin_write_only_warns(monkeypatch, capsys):
 class TestTracing:
     TRACED = {**STATE, "copilot_otel_tracing": True}
 
+    @pytest.fixture(autouse=True)
+    def _export_on(self, monkeypatch):
+        monkeypatch.setenv(desktop_setup.COPILOT_APP_TRACING_ENV, "1")
+
     def test_workspace_tracing_turns_on_the_extensions_spans(self, monkeypatch):
         monkeypatch.setattr(
             desktop_setup,
@@ -746,6 +750,18 @@ class TestTracing:
         assert _extension_config()["tracing"] is None
         assert not plugin.tracing_on()
 
+    def test_the_export_is_off_unless_asked_for(self, monkeypatch, app):
+        monkeypatch.delenv(desktop_setup.COPILOT_APP_TRACING_ENV)
+        desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
+        _register(app, self.TRACED)
+
+        assert _extension_config()["tracing"] is None
+        assert not plugin.tracing_on()
+        status = desktop_setup.copilot_app_status(self.TRACED, provider=None, location=None)
+        assert status is not None
+        assert "tracing" not in status.row
+        assert status.warnings == ()
+
     def test_configure_writes_nothing_outside_ugs_plugin_for_tracing(self, tmp_path, capsys):
         desktop_setup.configure_copilot_app(self.TRACED, provider=None, location=None)
 
@@ -761,16 +777,6 @@ class TestTracing:
         assert status is not None
         assert status.row == "plugin installed, models registered, tracing on"
         assert status.warnings == ()
-
-    def test_status_flags_tracing_that_isnt_set_up(self, app):
-        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
-        _register(app, self.TRACED)
-
-        status = desktop_setup.copilot_app_status(self.TRACED, provider=None, location=None)
-
-        assert status is not None
-        assert status.row.endswith("tracing off")
-        assert any("doesn't export the app's traces" in warning for warning in status.warnings)
 
     def test_status_without_workspace_tracing_says_nothing_about_it(self, app):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
