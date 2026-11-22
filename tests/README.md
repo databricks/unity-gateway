@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+`test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
+OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
+protocol errors, and two real stdio providers using Python's `-P` flag.
+`test_codex_smart_routing_v2.py` also checks the footer's POSIX/Windows app-server
+registration, terminal selection, and preservation of unrelated MCP entries.
+Native UI and credentialed gateway validation are separate, as described in the
+[validation guide](../docs/codex-smart-router-statusline.md).
+
 The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
 stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
 `test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade
@@ -420,7 +428,8 @@ from the file. They also check malformed config errors and stale client choices.
 They use temporary files; real desktop apps remain untested.
 
 `test_integration_contract.py` checks that isolated test sessions set Antigravity's
-`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
+`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true` and the desktop app's
+`CODEX_SPARKLE_ENABLED` to `false`, overriding inherited values.
 This component check does not run the native updater; the integration runner retains its
 before/after agent-version check.
 

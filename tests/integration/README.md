@@ -1,5 +1,14 @@
 # Integration tests
 
+The Codex footer has offline protocol, process-isolation, and launcher coverage in
+`../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
+checks cover green ON/gray OFF badges, nullable snapshots, Python's `-P` provider
+launch flag, and terminal config isolation. Native checks must verify badge colors
+and ON/OFF text; OFF stays visible, matching Claude's persistent hint. See the
+[footer validation steps](../../docs/codex-smart-router-statusline.md). A native
+footer or resource read alone does not establish gateway inference or routed-child
+coverage. Windows native footer rendering remains untested.
+
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
@@ -1809,7 +1818,9 @@ still supports explicitly selecting it once the requested package is available.
 The required **Codex desktop inference · macOS** job installs the ChatGPT desktop app from
 OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml`, and runs the
 `macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
-Accessibility to the runner's shell, so no permission prompt is needed. It uploads
+Accessibility to the runner's shell, so no permission prompt is needed. Isolated sessions set
+`CODEX_SPARKLE_ENABLED=false` so the app's native updater cannot replace the pinned build
+between cases. This does not seed onboarding or change the UI interactions. The job uploads
 `integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journeys against the newest appcast build, so it shows

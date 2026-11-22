@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -495,6 +496,11 @@ class TestLaunchCodex:
 
         monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
 
+        def render_overlay(*args, **kwargs):
+            overlay = codex.render_overlay(*args, **kwargs)
+            overlay["mcp_servers"] = {"other-server": {"command": "other-helper"}}
+            return overlay
+
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
                 {
@@ -506,7 +512,7 @@ class TestLaunchCodex:
                 ["--search", *model_args],
                 binary="codex",
                 start_model="gpt-start",
-                render_overlay=codex.render_overlay,
+                render_overlay=render_overlay,
             )
 
         assert exc.value.code == 7
@@ -520,9 +526,9 @@ class TestLaunchCodex:
             "--config",
         ]
         assert processes[0].argv[7].startswith("model_providers.Databricks={")
-        assert processes[0].argv[8] == "--config"
-        hook_override = processes[0].argv[9]
-        assert hook_override.startswith("hooks.PreToolUse=[{")
+        hook_override = next(
+            arg for arg in processes[0].argv if arg.startswith("hooks.PreToolUse=[{")
+        )
         assert 'matcher = "Agent|.*spawn_agent$"' in hook_override
         assert "codex-router-hook route-subagent" in hook_override
         assert f"--host {WS}" in hook_override
@@ -531,6 +537,7 @@ class TestLaunchCodex:
         assert "--model system.ai.glm-5-2" in hook_override
         config_values = processes[0].argv[3:-2:2]
         config = tomllib.loads("\n".join(config_values))
+        assert config["mcp_servers"]["other-server"] == {"command": "other-helper"}
         assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
             v2.routing.configured_router_name()
         )
@@ -571,6 +578,26 @@ class TestLaunchCodex:
             "--search",
             *model_args,
         ]
+        statusline_args = [
+            "--config",
+            "features.tui_extensions_statusline=true",
+            "--config",
+            'tui.status_line_provider={server = "ug-smart-router-statusline", tool = "statusline"}',
+        ]
+        expected_tui_args = [*statusline_args, *expected_tui_args]
+        assert statusline_args[1] in config_values
+        assert statusline_args[3] in config_values
+        server_config = next(
+            value
+            for value in config_values
+            if value.startswith("mcp_servers.ug-smart-router-statusline=")
+        )
+        assert json.dumps(sys.executable) in server_config
+        assert (
+            'args = ["-P", "-X", "utf8", "-m", "ucode.smart_routing.codex_statusline"]'
+            in server_config
+        )
+        assert json.dumps(os.environ["UCODE_SESSION_ENV_FILE"]) in server_config
         if platform_name == "nt":
             assert tui_argv[:4] == [
                 "codex",
@@ -583,6 +610,8 @@ class TestLaunchCodex:
         else:
             assert tui_argv == ["codex", *expected_tui_args]
         assert not any(arg.startswith("hooks.") for arg in tui_argv)
+        assert not any(arg.startswith("mcp_servers.") for arg in tui_argv)
+        assert user_config.read_bytes() == saved_config
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
         assert interposer_args["kwargs"]["available_models"] == [
             "system.ai.gpt-5-6-sol",
