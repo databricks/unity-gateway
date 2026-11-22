@@ -45,6 +45,7 @@ _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
 _TELEMETRY_KEY = "telemetry"
 _HEADERS_PROVIDER_KEY = "headersProvider"
+_UG_BINARY_NAMES = frozenset({"ug", "ug.exe", "ucode", "ucode.exe"})
 _SOURCE_FILES = (
     "extension.mjs",
     "ug-plugin.mjs",
@@ -499,9 +500,13 @@ def remove_headers_provider(settings_path: Path | None = None) -> bool:
     telemetry = settings.get(_TELEMETRY_KEY)
     provider = telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
     args = provider.get("args") if isinstance(provider, dict) else None
-    # ug wrote ``<ug> otel-headers --host <workspace> ...``; a user's own helper stays.
+    executable = provider.get("path") if isinstance(provider, dict) else None
+    # ug wrote ``<ug> otel-headers --host <workspace> ...``; a user's own helper stays, even one
+    # with the same arguments.
     if (
         not isinstance(telemetry, dict)
+        or not isinstance(executable, str)
+        or Path(executable).name.lower() not in _UG_BINARY_NAMES
         or not isinstance(args, list)
         or args[:1] != ["otel-headers"]
         or "--host" not in args

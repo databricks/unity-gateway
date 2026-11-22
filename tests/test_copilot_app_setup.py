@@ -860,7 +860,9 @@ class TestEarlierBuildsTracing:
         assert (home / ".profile").read_text() == ""
 
     @pytest.mark.parametrize(
-        "args", [[], ["--format", "otel-headers"]], ids=["no-args", "otel-headers-not-a-command"]
+        "args",
+        [[], ["--format", "otel-headers"], ["otel-headers", "--host", WS]],
+        ids=["no-args", "otel-headers-not-a-command", "ugs-arguments-another-executable"],
     )
     def test_a_users_own_headers_provider_stays(self, args):
         own = {"path": "/usr/bin/my-headers", "args": args}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,6 +8,7 @@ import { test } from "node:test";
 import {
   MAX_BUFFERED_SPANS,
   MAX_SPANS_PER_EXPORT,
+  OUTCOME_LOCK_ATTEMPTS,
   SERVICE_NAME,
   createExporter,
   createOutcomeLog,
@@ -647,4 +648,71 @@ test("the outcome log keeps the last entries and survives a broken file", async 
   writeFileSync(path, "not json");
   await broken({ n: 7 });
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), [{ n: 7 }]);
+});
+
+test("a session.error as the first live event still ends the replayed turn", async () => {
+  const { sessionId, events } = fixture("error");
+  const firstLive = events.findIndex((event) => event.type === "session.error");
+  const persisted = events.slice(0, firstLive).filter((event) => event.ephemeral !== true);
+  const { tracer, sent } = liveTracer(sessionId);
+
+  const replay = tracer.replay(async () => persisted);
+  for (const event of events.slice(firstLive)) tracer.handle(event);
+  await replay;
+  await tracer.shutdown();
+
+  const [agent] = sent();
+  assert.equal(agent.name, "invoke_agent");
+  assert.equal(agent.startTimeUnixNano, nanos(at(events, "user.message")));
+  assert.equal(agent.status.code, 2);
+  assert.equal(attrs(agent)["error.type"], events[firstLive].data.errorType);
+});
+
+test("a history whose last interaction already ended isn't sent again on a live turn start", async () => {
+  const { sessionId, events } = fixture("gpt");
+  const persisted = [
+    ...events.filter((event) => event.ephemeral !== true),
+    { type: "session.shutdown", timestamp: "2026-11-20T22:40:00.000Z", data: {} },
+  ];
+  const { tracer, sent } = liveTracer(sessionId);
+
+  await tracer.replay(async () => persisted);
+  const live = [
+    { type: "assistant.turn_start", timestamp: "2026-11-20T23:00:00.000Z", data: { turnId: "t2" } },
+    { type: "model.call_start", timestamp: "2026-11-20T23:00:00.100Z", data: { turnId: "t2", model: "system.ai.gpt-5-2" } },
+    { type: "model.call_finished", timestamp: "2026-11-20T23:00:01.000Z", data: { turnId: "t2", outcome: "success" } },
+    { type: "session.idle", timestamp: "2026-11-20T23:00:01.500Z", data: {} },
+  ];
+  for (const event of live) tracer.handle(event);
+  await tracer.shutdown();
+
+  assert.deepEqual(sent().map((span) => span.name), ["chat system.ai.gpt-5-2", "invoke_agent"]);
+  assert.equal(sent()[1].startTimeUnixNano, nanos(live[0].timestamp));
+});
+
+test("outcome logs of two extension processes don't lose each other's entries", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ug-tracing-log-"));
+  const path = join(dir, "tracing-exports.json");
+  const first = createOutcomeLog(path);
+  const second = createOutcomeLog(path);
+
+  await Promise.all([first({ n: 1 }), second({ n: 2 })]);
+
+  assert.deepEqual(
+    JSON.parse(readFileSync(path, "utf8")).sort((a, b) => a.n - b.n),
+    [{ n: 1 }, { n: 2 }],
+  );
+  assert.deepEqual(readdirSync(dir), ["tracing-exports.json"]);
+});
+
+test("an entry that can't get the outcome log's lock is dropped, not written over another", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ug-tracing-log-")), "tracing-exports.json");
+  writeFileSync(path, JSON.stringify([{ n: 1 }]));
+  const waits = [];
+  const record = createOutcomeLog(path, { lock: () => null, wait: async (ms) => waits.push(ms) });
+
+  await record({ n: 2 });
+
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), [{ n: 1 }]);
+  assert.equal(waits.length, OUTCOME_LOCK_ATTEMPTS - 1);
 });
