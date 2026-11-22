@@ -25,7 +25,9 @@ CUJ7 reconfigures with the Auto version before its personal Auto launch. Compone
 in `../test_cli.py` verify that this launch does not reinstall a shared replacement picker
 after reconfigure removes UG's ordinary discovery picker. Ordinary launches, other versions,
 an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
-The live journey retains saved-model restart, successful inference, and no-router assertions.
+The live journey requires a fresh Auto restart to retain the selected main model with
+successful inference. With Auto disabled, it instead requires inference on the static
+alias's default target and no router requests.
 `../test_claude_smart_routing_v2.py` covers the launch-only static picker for personal
 Auto launches — built each launch in temporary settings with one static Auto row and
 per-model aliases, never persisted — plus managed-denial narrowing, custom-option
@@ -2524,3 +2526,10 @@ Personal static Auto merge regressions cover discovery context limits in tempora
 settings and entering Auto from a bare native model ID when the picker adds `[1m]`.
 The native plugin component test checks that the chooser keeps that model and the next
 turn uses its target; it does not establish live gateway inference coverage.
+
+CUJ7's personal Auto journey also selects a discovered GLM model and a discovered GPT
+model through the native main-model chooser, preferring GLM 5.3 Flash and GPT 6.2 Sol.
+Each selection must complete a real file task, and every correlated task request must
+use the chosen gateway target with a successful response. Missing either model family
+fails the journey; it is not skipped. Each model uses a fresh session without prior
+conversation context, so this addition does not cover cache-warning confirmation.

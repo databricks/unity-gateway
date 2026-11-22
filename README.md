@@ -633,6 +633,9 @@ also prevents Auto.
 Changing machine-wide picker settings can require sudo; launching `ug claude` does
 not install or rewrite those settings.
 
+An Auto restart restores the main model saved by Auto. Without Auto, including with
+`--disable-smart-routing`, a saved static Auto alias resolves to its default target;
+the separate Auto main-model preference does not apply.
 An installed Auto row does not enable Auto on a later launch without the version.
 Ordinary launches preserve machine-wide picker metadata, so an old row can remain
 visible until you reconfigure without the Auto version. Each `ug configure` removes

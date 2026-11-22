@@ -277,9 +277,12 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
 CUJ 7's existing Claude discovery case reconfigures with the Auto version after its
 ordinary discovery launch, removing UG's earlier replacement picker. The Auto launch
 keeps its aliases in launch settings. It saves an Auto selection on the unmanaged
-workspace, completes a main-model file task, then restarts with routing disabled.
-The restart must complete another task on the same real model with paired successful
-HTTP evidence and no router request. It never seeds Auto aliases in shared settings.
+workspace and completes a main-model file task. A fresh Auto launch must complete another
+task on that saved main model with paired successful HTTP evidence. Restarting with routing
+disabled instead resolves the immutable static alias to its default target (the workspace's
+Opus default), completes a task on that target, and sends no router request. The selected main
+model lives in Auto's native store, not in the static alias. The journey never seeds Auto
+aliases in shared settings.
 
 
 CUJ7 includes independent Claude and Codex saved-provider smart-routing journeys. Its existing
@@ -291,3 +294,10 @@ inference, successful paired responses, and a selected offered model applied to 
 These fixtures have small catalogs. The allow-all Bedrock startup and oversized-catalog cases
 remain separate staging validation and are not established by these CUJs.
 CI pins Codex 0.165.0 for CUJ7, matching CUJ4's routing-capable version.
+
+CUJ7's personal Auto journey also selects a discovered GLM model and a discovered GPT
+model through the native main-model chooser, preferring GLM 5.3 Flash and GPT 6.2 Sol.
+Each selection must complete a real file task, and every correlated task request must
+use the chosen gateway target with a successful response. Missing either model family
+fails the journey; it is not skipped. Each model uses a fresh session without prior
+conversation context, so this addition does not cover cache-warning confirmation.

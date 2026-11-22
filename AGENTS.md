@@ -233,7 +233,9 @@ current model first. The chooser names the current model and explains that subag
 Native displays `Auto mode: Subagents smart routed.` before the chooser opens. Saving updates the prompt hint row's
 `Auto (<main model>)` without writing a confirmation to the transcript. Native `/effort`
 continues to work independently. A fresh launch
-without a launch-only model starts on the stored main model; a per-model alias selected
+with Auto enabled and without a launch-only model starts on the stored main model.
+Without Auto (including `--disable-smart-routing`), a saved static alias resolves to its
+immutable default target; the Auto store preference does not apply. A per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.
 Native context window and effort follow the static row (the default variant) for every
 main model; the mod's prompt hint row names the held main model, not the row's alias.

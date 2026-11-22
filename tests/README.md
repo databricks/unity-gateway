@@ -1246,6 +1246,10 @@ orchestration on and off. It mocks the router response, not native Claude render
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
+CUJ7 also checks both personal static Auto restart paths with completed tasks and paired
+successful inference: Auto enabled uses its saved main model; Auto disabled resolves the
+immutable native alias to its default target and sends no router requests.
+
 Personal launch-only static Auto coverage in the same file checks that a personal
 Auto launch with no published picker builds the ordinary replacement picker with one
 static Auto row first (`[1m]`-hinted family rows deduped against raw discovered ids),
@@ -2072,3 +2076,10 @@ Personal static Auto merge regressions cover discovery context limits in tempora
 settings and entering Auto from a bare native model ID when the picker adds `[1m]`.
 The native plugin component test checks that the chooser keeps that model and the next
 turn uses its target; it does not establish live gateway inference coverage.
+
+CUJ7's personal Auto journey also selects a discovered GLM model and a discovered GPT
+model through the native main-model chooser, preferring GLM 5.3 Flash and GPT 6.2 Sol.
+Each selection must complete a real file task, and every correlated task request must
+use the chosen gateway target with a successful response. Missing either model family
+fails the journey; it is not skipped. Each model uses a fresh session without prior
+conversation context, so this addition does not cover cache-warning confirmation.
