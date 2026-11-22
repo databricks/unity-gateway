@@ -385,7 +385,8 @@ export async function* routeAgentStream($: any, step: any, source: AsyncGenerato
   // Nothing to head when routing is off, so the reply streams untouched. An Auto launch keeps
   // the model's heading too: its session model is a picker alias, which cannot stand in as the
   // fallback reviewer once the server-side verdict is void.
-  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels) {
+  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels
+      || routing.options?.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI === '0') {
     return yield* source
   }
   const held: any[] = []
@@ -441,11 +442,13 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
+  const showModel = options.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI !== '0'
   routing.options = options
   routing.autoModels = autoModels
   for (const state of [names, pending, records, anchors]) state.clear()
   for (const state of [grouped, seen, attempted]) state.clear()
   unusedNames.splice(0, unusedNames.length, ...ANIMALS)
+
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     await routeCall({
       session: { id: () => $.session.id(), model: () => $.session.model() },
@@ -481,9 +484,9 @@ export const registerSubagentRouting = (
       routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
-    if (route && result.agentId && !result.deny && !result.model) {
+    if (showModel && route && result.agentId && !result.deny && !result.model) {
       $.ui.log('Claude did not report the launched model; routed labels cannot be verified for this subagent.')
-    } else if (route && result.agentId && !result.deny) {
+    } else if (showModel && route && result.agentId && !result.deny) {
       try {
         const session_id = await $.session.id()
         const saved = savedRoutedDisplay({ session_id, agent_id: result.agentId, name: taskLabel(route),
@@ -509,7 +512,7 @@ export const registerSubagentRouting = (
   // Claude's own notice already names the heading; a launch that differs from it is called out.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
-    if (e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
+    if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || !differs(saved.selected, saved.launched)) return next(e)
     return next({ ...e, props: { ...e.props,
@@ -519,6 +522,7 @@ export const registerSubagentRouting = (
 
   // The agent list reads the launch receipt, so it shows the launched model whatever the heading said.
   on('ui.render', { component: 'AgentRow' }, async ($, e, next) => {
+    if (!showModel) return next(e)
     const live = routedModels.record(e.requestId)
     const saved = routedDisplays.records.get(e.requestId)
     const display = live?.spawned?.model
@@ -533,13 +537,16 @@ export const registerSubagentRouting = (
     const original = await next(name && (record || pending.has(e.requestId)) ? {
       ...e,
       props: { ...e.props, tool: name,
-        ...(record && input !== null && typeof input === 'object' && !Array.isArray(input)
+        ...(showModel && record && input !== null && typeof input === 'object' && !Array.isArray(input)
           && record.spawned?.model && differs(record.model, record.spawned.model)
           ? { input: { ...input, description: receiptLabel({ animal: record.name, title: record.title,
             selected: record.model, launched: record.spawned.model }) } } : {}),
       },
     } : e)
-    if (!record && !pending.has(e.requestId)) return original
+    // The in-progress line names no model, so blind configs still show it; only the
+    // decided selection names the model and stays hidden when showModel is false.
+    const nothingToShow = record ? !showModel : !pending.has(e.requestId)
+    if (nothingToShow) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
@@ -563,7 +570,8 @@ export const registerSubagentRouting = (
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
-  // also says routing is under way, timed from the oldest call still waiting.
+  // also says routing is under way, timed from the oldest call still waiting. Its text
+  // names no model, so blind configs show it too; only the decided selection is hidden.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
@@ -583,7 +591,7 @@ export const registerSubagentRouting = (
       if (ready.length) anchors.set(e.requestId, ready)
     }
     const ids = anchors.get(e.requestId)
-    if (!ids) return original
+    if (!showModel || !ids) return original
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
   })
