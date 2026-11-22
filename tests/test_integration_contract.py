@@ -33,10 +33,14 @@ def _markers(nodes):
     }
 
 
-def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("AGY_CLI_DISABLE_AUTO_UPDATE", "true"), ("CODEX_SPARKLE_ENABLED", "false")],
+)
+def test_isolated_sessions_disable_agent_updates(tmp_path, monkeypatch, name, value):
+    monkeypatch.setenv(name, "1")
 
-    assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+    assert clean_environment(tmp_path)[name] == value
 
 
 def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):

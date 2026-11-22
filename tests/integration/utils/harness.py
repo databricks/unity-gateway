@@ -74,6 +74,7 @@ def clean_environment(home: Path) -> dict[str, str]:
             "CODEX_HOME": str(home / ".codex"),
             "DATABRICKS_CONFIG_FILE": str(home / ".databrickscfg"),
             "DISABLE_AUTOUPDATER": "1",
+            "CODEX_SPARKLE_ENABLED": "false",
             # agy requires the literal "true"; "1" leaves background updates enabled.
             "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1",
