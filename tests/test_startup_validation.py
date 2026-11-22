@@ -64,9 +64,10 @@ def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
     if not disabled:
         assert controls.read_text() == "{}"
     errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
-    assert [(labels.get("operation"), labels.get("phase")) for _, labels in errors] == (
-        [(metrics.STARTUP_VALIDATION_OPERATION, "startup")] if failed else []
+    assert [(labels["operation"], labels["continued_with_fallback"]) for _, labels in errors] == (
+        [("route_validation", True)] if failed else []
     )
+    assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
 
 
 def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monkeypatch):
@@ -189,11 +190,16 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
     assert isinstance(result.pop("validation_ms"), int)
     assert result == {
         "routing_disabled": True,
-        "reason": "insufficient_eligible_options",
-        "eligible": ["system.ai.claude-sonnet"],
-        "ineligible": [
-            {"model": "system.ai.claude-haiku-4-5", "reason": "model_not_in_recipe"},
-            {"model": "custom", "reason": None},
+        "router_name": "stable",
+        "routing_unsupported_reason": "insufficient_eligible_options",
+        "eligible_route_options": [{"model": "system.ai.claude-sonnet", "harness": "claude"}],
+        "ineligible_route_options": [
+            {
+                "model": "system.ai.claude-haiku-4-5",
+                "harness": "claude",
+                "reason": "model_not_in_recipe",
+            },
+            {"model": "custom", "harness": "claude", "reason": None},
         ],
-        "available": ["claude-sonnet-5-5"],
+        "available_route_options": [{"model": "claude-sonnet-5-5", "harness": "claude_code"}],
     }

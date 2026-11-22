@@ -3,15 +3,15 @@ import { parseRoutingExplanation, type RoutingExplanation } from './subagent-rou
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
 export const LOGS_COMMAND_TIMEOUT_MS = 10000;
-export const STARTUP_CHECK_ROW = "Smart routing disabled: This session's model list isn't supported by Smart Router";
-const STARTUP_CHECK_REASONS: Record<string, string> = {
+export const ROUTE_VALIDATION_ROW = "Smart routing disabled: This session's model list isn't supported by Smart Router";
+const ROUTE_VALIDATION_REASONS: Record<string, string> = {
   insufficient_eligible_options: 'At least two supported models are required',
   missing_required_tier_option: 'Required models are missing from this list',
   INCOMPLETE_REQUIRED_OPTIONS: 'Required models are missing from this list',
   harness_not_supported: 'Harness not supported',
   mixed_harnesses_not_supported: 'Mixed harnesses not supported',
 };
-const STARTUP_CHECK_GENERIC_REASON = "Smart Routing does not support this agent's model list.";
+const ROUTE_VALIDATION_GENERIC_REASON = "Smart Routing does not support this agent's model list.";
 const MODEL_REASONS: Record<string, string> = {
   model_not_supported: 'Model source not supported',
   model_not_in_recipe: 'Not available in Smart Router',
@@ -21,15 +21,16 @@ const MODEL_REASONS: Record<string, string> = {
   harness_not_supported: '',
 };
 const MODEL_GENERIC_REASON = 'Not eligible for routing';
-// Reason codes are identifiers; anything else is a server-written sentence shown as sent.
+// Matches a bare reason code: unknown codes get the generic reason, while free text is a server sentence shown as sent.
 const REASON_CODE = /^[A-Za-z0-9_]+$/;
-type StartupCheck = {
-  check_id: string;
+type RouteOption = { model: string; harness: string | null };
+type RouteValidation = {
+  validation_id: string;
   at: number;
-  reason: string | null;
-  eligible: string[];
-  ineligible: { model: string; reason: string | null }[];
-  available: string[];
+  routing_unsupported_reason: string | null;
+  eligible_route_options: RouteOption[];
+  ineligible_route_options: (RouteOption & { reason: string | null })[];
+  available_route_options: RouteOption[];
   validation_ms: number;
 };
 type Decision = {
@@ -63,20 +64,23 @@ const isDecision = (d: Decision): boolean =>
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
 
-const isStringList = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every(item => typeof item === 'string');
+const isNullableString = (value: unknown): boolean => value === null || typeof value === 'string';
 
-const isStartupCheck = (c: StartupCheck): boolean =>
-  Boolean(c) && typeof c.check_id === 'string' && Boolean(c.check_id) &&
-  Number.isFinite(c.at) && Number.isFinite(new Date(c.at * 1000).getTime()) &&
-  (c.reason === null || typeof c.reason === 'string') && isStringList(c.eligible) &&
-  isStringList(c.available) && Number.isFinite(c.validation_ms) && Array.isArray(c.ineligible) &&
-  c.ineligible.every(option => option !== null && typeof option === 'object' &&
-    typeof option.model === 'string' && (option.reason === null || typeof option.reason === 'string'));
+const isRouteOptionList = (value: unknown, withReason = false): boolean =>
+  Array.isArray(value) && value.every(option => option !== null && typeof option === 'object' &&
+    typeof option.model === 'string' && isNullableString(option.harness) &&
+    (!withReason || isNullableString(option.reason)));
 
-export function startupCheckReason(reason: string | null): string {
-  if (reason !== null && Object.hasOwn(STARTUP_CHECK_REASONS, reason)) return STARTUP_CHECK_REASONS[reason];
-  return reason?.trim() && !REASON_CODE.test(reason.trim()) ? reason.trim() : STARTUP_CHECK_GENERIC_REASON;
+const isRouteValidation = (v: RouteValidation): boolean =>
+  Boolean(v) && typeof v.validation_id === 'string' && Boolean(v.validation_id) &&
+  Number.isFinite(v.at) && Number.isFinite(new Date(v.at * 1000).getTime()) &&
+  isNullableString(v.routing_unsupported_reason) && isRouteOptionList(v.eligible_route_options) &&
+  isRouteOptionList(v.ineligible_route_options, true) && isRouteOptionList(v.available_route_options) &&
+  Number.isFinite(v.validation_ms);
+
+export function routeValidationReason(reason: string | null): string {
+  if (reason !== null && Object.hasOwn(ROUTE_VALIDATION_REASONS, reason)) return ROUTE_VALIDATION_REASONS[reason];
+  return reason?.trim() && !REASON_CODE.test(reason.trim()) ? reason.trim() : ROUTE_VALIDATION_GENERIC_REASON;
 }
 
 export function modelReason(reason: string | null): string {
@@ -177,7 +181,7 @@ function age(at: number): string {
 }
 
 let rows: Decision[] = [];
-let checks: StartupCheck[] = [];
+let validations: RouteValidation[] = [];
 let failed = false;
 // The reader CLI's own error hint, when its failure carries one.
 let cliError: string | undefined;
@@ -226,7 +230,7 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
       }
     } catch {}
     rows = [];
-    checks = [];
+    validations = [];
     failed = true;
     return `Smart Router logs: ${readError}`;
   }
@@ -235,12 +239,12 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
     try { data = JSON.parse(stdout); } catch { throw new Error('invalid logs JSON'); }
     if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
     rows = data.decisions.filter(isDecision).reverse();
-    checks = Array.isArray(data.startup_checks) ? data.startup_checks.filter(isStartupCheck).reverse() : [];
+    validations = Array.isArray(data.route_validations) ? data.route_validations.filter(isRouteValidation).reverse() : [];
     failed = false;
     return '';
   } catch (error) {
     rows = [];
-    checks = [];
+    validations = [];
     failed = true;
     return `Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`;
   }
@@ -360,7 +364,7 @@ function explanationSection(
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
-  let checkDetail: StartupCheck | null = null;
+  let validationDetail: RouteValidation | null = null;
   let detailRequest = 0;
 
   // Match both launch modes to coexist with the routing module's unmatched spawn hook.
@@ -378,7 +382,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };
     detailRequest++;
     detail = null;
-    checkDetail = null;
+    validationDetail = null;
     await load($, options);
     try {
       const pane = await $.ui.open({ id: ROUTING_LOGS_PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
@@ -409,28 +413,29 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       });
     const back = () => Button({
       key: 'back', plain: true, autoFocus: true, children: ['← Back'],
-      onPress: () => { detailRequest++; detail = null; checkDetail = null; $.ui.invalidate('ui.render'); },
+      onPress: () => { detailRequest++; detail = null; validationDetail = null; $.ui.invalidate('ui.render'); },
     });
-    if (checkDetail) {
+    if (validationDetail) {
+      const { eligible_route_options: eligible, ineligible_route_options: ineligible, available_route_options: available } = validationDetail;
       const labelWidth = 'Validation Time: '.length + 1;
       const children = [
         back(),
-        labeledRow(labelWidth, 'Reason: ', Text({ children: [startupCheckReason(checkDetail.reason)] })),
-        labeledRow(labelWidth, 'Validation Time: ', Text({ children: [`${(checkDetail.validation_ms / 1000).toFixed(1)}s`] })),
+        labeledRow(labelWidth, 'Reason: ', Text({ children: [routeValidationReason(validationDetail.routing_unsupported_reason)] })),
+        labeledRow(labelWidth, 'Validation Time: ', Text({ children: [`${(validationDetail.validation_ms / 1000).toFixed(1)}s`] })),
       ];
-      if (checkDetail.eligible.length || checkDetail.ineligible.length) {
+      if (eligible.length || ineligible.length) {
         children.push(Text({ dimColor: true, children: ['Models'] }));
-        for (const model of checkDetail.eligible) {
-          children.push(Text({ children: [`✓ ${shortModel(model)}`] }));
+        for (const option of eligible) {
+          children.push(Text({ children: [`✓ ${shortModel(option.model)}`] }));
         }
-        for (const option of checkDetail.ineligible) {
+        for (const option of ineligible) {
           const reason = modelReason(option.reason);
           children.push(Text({ children: [`✗ ${shortModel(option.model)}${reason ? `  ${reason}` : ''}`] }));
         }
       }
-      if (checkDetail.available.length) {
+      if (available.length) {
         children.push(Text({ dimColor: true, children: ['Supported models'] }));
-        for (const model of checkDetail.available) children.push(Text({ children: [`  ${shortModel(model)}`] }));
+        for (const option of available) children.push(Text({ children: [`  ${shortModel(option.model)}`] }));
       }
       return Box({ flexDirection: 'column', children });
     }
@@ -471,15 +476,15 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     }
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
-    const entries: (Decision | StartupCheck)[] = [...rows, ...checks].sort((a, b) => b.at - a.at);
+    const entries: (Decision | RouteValidation)[] = [...rows, ...validations].sort((a, b) => b.at - a.at);
     for (const row of entries) {
-      if ('check_id' in row) {
+      if ('validation_id' in row) {
         // Age (8) + "  " + the fixed text fills the row.
         const room = Math.max(1, columns - 10);
-        const text = STARTUP_CHECK_ROW.length > room ? STARTUP_CHECK_ROW.slice(0, Math.max(0, room - 1)) + '…' : STARTUP_CHECK_ROW;
+        const text = ROUTE_VALIDATION_ROW.length > room ? ROUTE_VALIDATION_ROW.slice(0, Math.max(0, room - 1)) + '…' : ROUTE_VALIDATION_ROW;
         children.push(Button({
-          key: row.check_id, plain: true, label: `${age(row.at).padStart(8)}  ${text}`,
-          onPress: () => { detailRequest++; checkDetail = row; $.ui.invalidate('ui.render'); },
+          key: row.validation_id, plain: true, label: `${age(row.at).padStart(8)}  ${text}`,
+          onPress: () => { detailRequest++; validationDetail = row; $.ui.invalidate('ui.render'); },
         }));
         continue;
       }

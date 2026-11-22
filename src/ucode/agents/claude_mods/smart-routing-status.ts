@@ -5,11 +5,11 @@ import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
-// The band shows once the startup check finishes and after each toggle, and hides once the
+// The band shows once the route validation finishes and after each toggle, and hides once the
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
 const band = { isVisible: true, isHideArmed: false, isUnsupported: false }
 let validationWatchStarted = false
-// Claude draws before session.start, so the band starts held until the startup check settles;
+// Claude draws before session.start, so the band starts held until the route validation settles;
 // an unsupported model list turns routing off and must never flash ON.
 const validation = { isPending: true }
 
@@ -27,7 +27,7 @@ export function showStatusBand(): void {
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  // A turn that ends while the startup check is pending keeps the hide armed for the next turn.
+  // A turn that ends while the route validation is pending keeps the hide armed for the next turn.
   if (!band.isHideArmed || validation.isPending) return false
   band.isVisible = false
   band.isHideArmed = false

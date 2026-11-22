@@ -285,12 +285,12 @@ const VALIDATION_POLL_MS = 100;
 const VALIDATION_WAIT_MS = 5000;
 
 // Persists the unsupported result as a Smart Router logs row; the warning band is transient.
-async function recordStartupCheck($: EngineInterface, options: PluginOptions, resultPath: string): Promise<void> {
+async function recordRouteValidation($: EngineInterface, options: PluginOptions, resultPath: string): Promise<void> {
   const result = await $.process.run(
-    [...logsReaderCommand(options), '--session', await $.session.id(), '--record-startup-check', resultPath],
+    [...logsReaderCommand(options), '--session', await $.session.id(), '--record-route-validation', resultPath],
     { timeoutMs: LOGS_COMMAND_TIMEOUT_MS },
   );
-  if (result.exitCode !== 0) $.ui.log(`Smart Router logs: startup check not recorded (exit ${result.exitCode})`, { to: 'debug' });
+  if (result.exitCode !== 0) $.ui.log(`Smart Router logs: route validation not recorded (exit ${result.exitCode})`, { to: 'debug' });
 }
 
 async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
@@ -302,7 +302,7 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
       $.ui.invalidate('ui.render');
       return;
     }
-    const resultPath = controls.slice(0, -5) + '.validation.json';
+    const resultPath = controls.replace(/\.json$/, '.validation.json');
     let complete = false;
     let waited = 0;
     let poll: { cancel: () => void } | undefined;
@@ -326,7 +326,7 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
       complete = true;
       if (result.routing_disabled === true) {
         warnUnsupportedModelList();
-        void recordStartupCheck($, options, resultPath).catch(() => {});
+        void recordRouteValidation($, options, resultPath).catch(() => {});
         try {
           await setRouting($, options, false, false);
         } catch {}

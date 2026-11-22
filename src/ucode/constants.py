@@ -9,6 +9,8 @@ AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 AGENT_COPILOT = "copilot"
 AGENT_VSCODE = "vscode"
+# The Gateway reports Claude route options under this harness name.
+ROUTER_HARNESS_CLAUDE_CODE = "claude_code"
 
 # `ug configure --mdm` telemetry: the exported variable and its value when the machine is not MDM.
 MDM_OS_ENV = "MDM_OS"

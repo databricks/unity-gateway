@@ -46,7 +46,7 @@ HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
 HTTP_RETRY_COUNT = "http_retry_count"
 UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
 ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
-STARTUP_VALIDATION_OPERATION = "smart_routing_startup_validation"
+ROUTE_VALIDATION_DURATION_MS = "route_validation_duration_ms"
 PROXY_REQUEST_OPERATION = "proxy_request"
 PROXY_REQUEST_DURATION_MS = f"{PROXY_REQUEST_OPERATION}_duration_ms"
 PROXY_UPSTREAM_HEADERS_DURATION_MS = "proxy_upstream_headers_duration_ms"
@@ -71,6 +71,7 @@ DURATION_METRICS = frozenset(
         AGENT_CONFIGURATION_DURATION_MS,
         SKILLS_REFRESH_DURATION_MS,
         ROUTING_DECISION_DURATION_MS,
+        ROUTE_VALIDATION_DURATION_MS,
         UG_USAGE_DURATION_MS,
         HTTP_REQUEST_DURATION_MS,
         PROXY_UPSTREAM_HEADERS_DURATION_MS,

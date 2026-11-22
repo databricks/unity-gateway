@@ -432,31 +432,34 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
     assert "\x1b" not in result.output
 
 
-def test_record_startup_check_lists_it_beside_decisions(log_dir, tmp_path):
+def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
     write(payload())
     check = {
         "routing_disabled": True,
-        "reason": "insufficient_eligible_options",
-        "eligible": [],
-        "ineligible": [{"model": "m", "reason": "model_not_in_recipe"}],
-        "available": ["a"],
+        "router_name": "stable",
+        "routing_unsupported_reason": "insufficient_eligible_options",
+        "eligible_route_options": [],
+        "ineligible_route_options": [
+            {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
+        ],
+        "available_route_options": [{"model": "a", "harness": "claude_code"}],
         "validation_ms": 120,
     }
     result_file = tmp_path / "env.validation.json"
     result_file.write_text(json.dumps(check))
-    args = ["smart-router-logs", "--session", "s1", "--record-startup-check", str(result_file)]
+    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
     recorded = runner.invoke(cli.app, args)
     assert recorded.exit_code == 0, recorded.output
     assert json.loads(recorded.output) == {"v": 1}
     listed = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
     document = json.loads(listed.output)
     assert len(document["decisions"]) == 1
-    [row] = document["startup_checks"]
-    assert row.pop("check_id") and row.pop("at")
+    [row] = document["route_validations"]
+    assert row.pop("validation_id") and row.pop("at")
     check.pop("routing_disabled")
     assert row == {
         "v": session_log.SCHEMA_VERSION,
-        "type": session_log.STARTUP_CHECK_TYPE,
+        "type": session_log.ROUTE_VALIDATION_TYPE,
         "harness": "claude",
         "session_id": "s1",
         **check,
@@ -464,12 +467,12 @@ def test_record_startup_check_lists_it_beside_decisions(log_dir, tmp_path):
 
 
 @pytest.mark.parametrize("content", [None, "not json", "[]"])
-def test_record_startup_check_reports_an_unreadable_result(log_dir, tmp_path, content):
+def test_record_route_validation_reports_an_unreadable_result(log_dir, tmp_path, content):
     result_file = tmp_path / "env.validation.json"
     if content is not None:
         result_file.write_text(content)
-    args = ["smart-router-logs", "--session", "s1", "--record-startup-check", str(result_file)]
+    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 1
-    assert json.loads(result.output)["error"].startswith("cannot record startup check: ")
+    assert json.loads(result.output)["error"].startswith("cannot record route validation: ")
     assert not log_dir.exists()

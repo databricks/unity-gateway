@@ -21,8 +21,15 @@ from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw
 
 SCHEMA_VERSION = 1
 DECISION_TYPE = "decision"
-STARTUP_CHECK_TYPE = "startup_check"
-STARTUP_CHECK_FIELDS = ("reason", "eligible", "ineligible", "available", "validation_ms")
+ROUTE_VALIDATION_TYPE = "route_validation"
+ROUTE_VALIDATION_FIELDS = (
+    "router_name",
+    "routing_unsupported_reason",
+    "eligible_route_options",
+    "ineligible_route_options",
+    "available_route_options",
+    "validation_ms",
+)
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600
 PREVIEW_CHARS = 160
@@ -133,8 +140,8 @@ def _append(path: Path, record: dict[str, Any]) -> None:
             release_file_lock(log)
 
 
-def append_startup_check(harness: str, session_id: str, result: dict[str, Any]) -> None:
-    """Record an unsupported startup model-list check; filesystem errors propagate to the caller."""
+def append_route_validation(harness: str, session_id: str, result: dict[str, Any]) -> None:
+    """Record an unsupported route validation; filesystem errors propagate to the caller."""
     path = session_log_path(harness, session_id)
     if path is None:
         raise ValueError("session id is required")
@@ -142,12 +149,12 @@ def append_startup_check(harness: str, session_id: str, result: dict[str, Any]) 
         path,
         {
             "v": SCHEMA_VERSION,
-            "type": STARTUP_CHECK_TYPE,
-            "check_id": uuid.uuid4().hex,
+            "type": ROUTE_VALIDATION_TYPE,
+            "validation_id": uuid.uuid4().hex,
             "at": time.time(),
             "harness": harness,
             "session_id": session_id,
-            **{key: result.get(key) for key in STARTUP_CHECK_FIELDS},
+            **{key: result.get(key) for key in ROUTE_VALIDATION_FIELDS},
         },
     )
 

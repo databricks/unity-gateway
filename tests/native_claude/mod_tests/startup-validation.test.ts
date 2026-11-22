@@ -201,7 +201,7 @@ for (const { name, endsBeforeResult, routed } of turnCases) {
   });
 }
 
-test('without the startup check the band shows from the first paint', { options: ROUTED }, async ($, on) => {
+test('without route validation the band shows from the first paint', { options: ROUTED }, async ($, on) => {
   const { state } = engine(on);
   const ui = await $.ui.mount(abovePrompt);
   expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
@@ -224,7 +224,7 @@ for (const disabled of [true, false]) {
     await clock.advance(100);
     expect(runs).toEqual(disabled ? [[
       '/bin/ug', 'smart-router-logs', '--session', 'session-one',
-      '--record-startup-check', '/session/env.validation.json',
+      '--record-route-validation', '/session/env.validation.json',
     ]] : []);
     await ui.unmount();
   });
