@@ -155,10 +155,14 @@ def _own_model_id(model: str) -> str:
     return model if model.count(".") >= 2 else f"databricks.{model}"
 
 
+# The app's picker lists ug's rows next to GitHub's own models, some with the same names.
+APP_LABEL_SUFFIX = " (Databricks)"
+
+
 def _model_rows(
     catalog: Iterable[CopilotModel], wire: str, *, provider_service: str | None
 ) -> list[dict[str, Any]]:
-    """The app's model rows for ``catalog``'s models on ``wire``.
+    """The app's model rows for ``catalog``'s models on ``wire``, labelled as Databricks models.
 
     A Claude row's id is Copilot's catalog id for the model behind it, which is what makes the app
     apply Claude's request settings, and its wire model is the gateway's id. Other rows get an id
@@ -187,7 +191,7 @@ def _model_rows(
         row: dict[str, Any] = {
             "modelId": model_id,
             "wireModel": model.id,
-            "displayName": labels[model],
+            "displayName": labels[model] + APP_LABEL_SUFFIX,
             "supportsVision": wire == WIRE_ANTHROPIC,
         }
         if wire == WIRE_RESPONSES:

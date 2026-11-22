@@ -215,7 +215,17 @@ class TestDesiredProviders:
             "/ai-gateway/openai/v1",
         ]
         assert desired.headers == {MODEL_PROVIDER_SERVICE_HEADER: "my-mps"}
-        assert [m.name for p in desired.plugin for m in p.models] == [m.id for m in CATALOG]
+        assert [m.name for p in desired.plugin for m in p.models] == [
+            m.id + copilot_app.APP_LABEL_SUFFIX for m in CATALOG
+        ]
+
+    def test_rows_are_labelled_as_databricks_models(self):
+        desired = copilot_app.desired_providers(WORKSPACE, CATALOG)
+
+        names = [row["displayName"] for p in desired.app for row in p.models]
+        assert names
+        assert all(name.endswith(" (Databricks)") for name in names)
+        assert [m.name for p in desired.plugin for m in p.models] == names
         assert copilot_app.desired_providers(WORKSPACE, CATALOG).headers == {}
 
     def test_only_claude_rows_use_copilot_catalog_ids(self):
