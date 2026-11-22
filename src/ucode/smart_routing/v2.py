@@ -1389,7 +1389,7 @@ def launch_codex(
                 [
                     binary,
                     *provider_args,
-                    *codex_config_args(codex_statusline.tui_config(statusline_config)),
+                    *codex_config_args(codex_statusline.tui_config(overlay)),
                     "--remote",
                     tui_url,
                     *model_args,
