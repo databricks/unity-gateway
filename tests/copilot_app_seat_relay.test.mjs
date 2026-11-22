@@ -211,8 +211,20 @@ test("inference goes to the gateway with the GitHub token, the swap header and t
 });
 
 test("every relay route maps to its gateway path, with the query kept", async () => {
-  for (const [key, path] of GATEWAY_ROUTES) {
-    const [method, route] = key.split(" ");
+  const expected = [
+    ["POST", "/chat/completions", "/ai-gateway/openai/v1/chat/completions"],
+    ["POST", "/responses", "/ai-gateway/openai/v1/responses"],
+    ["POST", "/v1/messages", "/ai-gateway/anthropic/v1/messages"],
+    ["GET", "/meta", "/ai-gateway/github-copilot/v1/meta"],
+    ["GET", "/models", "/ai-gateway/v1/models"],
+    ["POST", "/auto", "/ai-gateway/github-copilot/v1/auto"],
+  ];
+  assert.deepEqual(
+    [...GATEWAY_ROUTES].sort(),
+    expected.map(([method, route, path]) => [`${method} ${route}`, path]).sort(),
+  );
+  for (const [method, route, path] of expected) {
+    const key = `${method} ${route}`;
     gateway.requests.length = 0;
     const response = await call(`${route}?a=1&b=2`, { method, body: method === "POST" ? "{}" : undefined });
     assert.equal(response.status, 200, key);
@@ -407,6 +419,74 @@ test("a client that stops mid-stream ends the gateway request", async () => {
   for (let i = 0; i < 50 && !gateway.last.closed; i++) await delay(20);
   assert.equal(gateway.last.closed, true);
   upstreamResponse.end();
+});
+
+async function waitFor(until) {
+  for (let waited = 0; !until() && waited < 1000; waited += 10) await delay(10);
+}
+
+function gate() {
+  let open;
+  const opened = new Promise((resolve) => (open = resolve));
+  return { opened, open, waiting: false };
+}
+
+async function abandon(path, init, isWaiting) {
+  const controller = new AbortController();
+  const pending = call(path, { ...init, signal: controller.signal }).catch(() => null);
+  await waitFor(isWaiting);
+  assert.equal(isWaiting(), true);
+  controller.abort();
+  await pending;
+  await delay(50);
+}
+
+test("a client that goes away during the host lookup starts no upstream request", async () => {
+  for (const [path, init] of [
+    ["/chat/completions", { method: "POST", body: "{}" }],
+    ["/_ping", { method: "GET" }],
+  ]) {
+    const lookup = gate();
+    await start({
+      copilotHost: async () => {
+        lookup.waiting = true;
+        await lookup.opened;
+        return HOST;
+      },
+    });
+    await abandon(path, init, () => lookup.waiting);
+    lookup.open();
+    await delay(50);
+    assert.equal(gateway.requests.length + copilot.requests.length, 0, path);
+    assert.deepEqual(logged, [], path);
+  }
+});
+
+test("a client that goes away during a mint starts no gateway request", async () => {
+  for (const gatedCall of [1, 2]) {
+    const mint = gate();
+    let calls = 0;
+    const gatedToken = async () => {
+      calls++;
+      if (calls === gatedCall) {
+        mint.waiting = true;
+        await mint.opened;
+      }
+      return `dbx-${calls}`;
+    };
+    gatedToken.invalidate = () => {};
+    await start({ token: gatedToken });
+    gateway.requests.length = 0;
+    gateway.reply = (req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error_code: "UNAUTHENTICATED", message: "expired" }));
+    };
+    await abandon("/chat/completions", { method: "POST", body: "{}" }, () => mint.waiting);
+    mint.open();
+    await delay(50);
+    assert.equal(gateway.requests.length, gatedCall - 1, `mint ${gatedCall}`);
+    assert.deepEqual(logged, [], `mint ${gatedCall}`);
+  }
 });
 
 test("an unreachable gateway is a 502", async () => {

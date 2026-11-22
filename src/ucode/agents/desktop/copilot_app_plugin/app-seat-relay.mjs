@@ -262,6 +262,19 @@ function startUpstream(url, { method, headers, body, agent, connectTimeoutMs, re
   return { request, response };
 }
 
+// A client gone before the upstream request starts (a turn stopped during the host lookup or a
+// mint) must not start one: nothing would cancel it.
+function startTracked(cancel, url, options) {
+  if (cancel.closed) {
+    const failure = new Error("client went away");
+    failure.code = "CLIENT_CLOSED";
+    throw failure;
+  }
+  const started = startUpstream(url, options);
+  cancel.current = started.request;
+  return started;
+}
+
 function hasDatabricksPrefix(name) {
   return DATABRICKS_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
@@ -499,16 +512,13 @@ export function createSeatRelay({
   async function forwardGateway(req, res, { authorization, body, host, call, query, cancel }) {
     const url = new URL(GATEWAY_ROUTES.get(`${req.method} ${call}`) + query, gateway);
     const outcome = { route: "gateway", method: req.method, path: call };
-    const send = async (databricksToken) => {
-      const { request, response } = startUpstream(url, {
+    const send = async (databricksToken) =>
+      startTracked(cancel, url, {
         method: req.method,
         headers: gatewayHeaders(req, authorization, body, host, databricksToken),
         body,
         ...upstreamOptions(url),
-      });
-      cancel.current = request;
-      return response;
-    };
+      }).response;
     let databricksToken = await mintToken(res, outcome);
     if (databricksToken === null) return;
     try {
@@ -543,14 +553,12 @@ export function createSeatRelay({
     const url = new URL(call + query, directBase(host));
     const outcome = { route: "direct", method: req.method, path: call };
     try {
-      const { request, response } = startUpstream(url, {
+      const reply = await startTracked(cancel, url, {
         method: req.method,
         headers: directHeaders(req, authorization, body),
         body,
         ...upstreamOptions(url),
-      });
-      cancel.current = request;
-      const reply = await response;
+      }).response;
       observe({ ...outcome, status: reply.statusCode });
       await relay(res, reply);
     } catch (error) {
@@ -562,9 +570,11 @@ export function createSeatRelay({
   }
 
   async function serve(req, res) {
-    const cancel = { current: null };
+    const cancel = { current: null, closed: false };
     res.once("close", () => {
-      if (!res.writableFinished) cancel.current?.destroy();
+      if (res.writableFinished) return;
+      cancel.closed = true;
+      cancel.current?.destroy();
     });
     const [rawPath, ...rest] = req.url.split("?");
     const query = rest.length ? `?${rest.join("?")}` : "";
