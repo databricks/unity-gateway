@@ -545,7 +545,8 @@ export const registerSubagentRouting = (
     } : e)
     // The in-progress line names no model, so blind configs still show it; only the
     // decided selection names the model and stays hidden when showModel is false.
-    if (record ? !showModel : !pending.has(e.requestId)) return original
+    const nothingToShow = record ? !showModel : !pending.has(e.requestId)
+    if (nothingToShow) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {

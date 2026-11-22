@@ -2515,7 +2515,3 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 Configure loading indicators: skill download component coverage verifies the shared spinner
 starts before bundle requests and reports completed/total downloads. MCP and skill
 reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
-
-Native routing component tests also verify that hidden model details produce no saved
-model labels while subagents still launch on their routed models. This is component
-coverage, not a live gateway or TUI check.

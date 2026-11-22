@@ -2054,7 +2054,3 @@ That last case runs on Linux (the store is a CA bundle file) and on the Windows 
 adds the CA to the certificate store and sets `UG_TEST_OS_TRUSTED_CA_DIR`; it is skipped on macOS
 and on a Windows machine without that variable. No test goes through a real TLS-inspection proxy,
 and `ug upgrade` is not run against one.
-
-Native routing component tests also verify that hidden model details produce no saved
-model labels while subagents still launch on their routed models. This is component
-coverage, not a live gateway or TUI check.
