@@ -166,31 +166,77 @@ class TestFetchModelServiceRates:
         assert reason == "endpoint-rates returned an unexpected response shape"
 
 
-class TestPricingText:
-    def test_prefers_usd_and_marks_it_estimated(self):
+class TestPricingFqn:
+    def test_plain_and_1m_ids_map_to_their_fqn(self):
+        assert pricing.pricing_fqn("system.ai.glm-5-3") == "system.ai.glm-5-3"
+        assert pricing.pricing_fqn("system.ai.claude-opus-4-8[1m]") == "system.ai.claude-opus-4-8"
+
+    def test_discovery_aliases_unwrap_to_the_embedded_fqn(self):
         assert (
-            pricing.pricing_text(GLM_RATES["system.ai.glm-5-3"])
-            == "$1.40 input / $4.40 output / $0.26 cache read per 1M tokens (est.)"
+            pricing.pricing_fqn("anthropic-aigw-982d9f93-system.ai.glm-5-3") == "system.ai.glm-5-3"
+        )
+        assert pricing.pricing_fqn("anthropic-aigw-1-system.ai.glm-5-3[1m]") == "system.ai.glm-5-3"
+
+    def test_non_system_ai_ids_name_nothing(self):
+        assert pricing.pricing_fqn("main.default.claude-opus") is None
+        assert pricing.pricing_fqn("claude-opus-4-8") is None
+
+
+class TestUsdPricingOverrides:
+    GLM_OVERRIDES = {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheRead": 0.26,
+        # No cache-creation rate is served, so the cache write falls back to the input rate.
+        "cacheWrite": 1.4,
+    }
+
+    def test_builds_rows_from_usd_rates(self):
+        assert pricing.usd_pricing_overrides(GLM_RATES) == {"system.ai.glm-5-3": self.GLM_OVERRIDES}
+
+    def test_cache_write_prefers_the_1h_rate_then_the_5m_rate(self):
+        overrides = pricing.usd_pricing_overrides(
+            {
+                "system.ai.claude-opus-4-8": {
+                    "USD": {
+                        "input": 5.0,
+                        "output": 25.0,
+                        "cache_read": 0.5,
+                        "cache_creation": 6.25,
+                        "cache_creation_1h": 10.0,
+                    }
+                },
+                "system.ai.claude-haiku-4-5": {
+                    "USD": {
+                        "input": 0.8,
+                        "output": 4.0,
+                        "cache_read": 0.08,
+                        "cache_creation": 1.0,
+                    }
+                },
+            }
         )
 
-    def test_falls_back_to_dbu_without_usd(self):
+        assert overrides["system.ai.claude-opus-4-8"]["cacheWrite"] == 10.0
+        assert overrides["system.ai.claude-haiku-4-5"]["cacheWrite"] == 1.0
+
+    def test_skips_models_without_usd_or_without_a_required_field(self):
         assert (
-            pricing.pricing_text({"DBU": {"input": 20.0, "output": 62.85714}})
-            == "20.00 DBU input / 62.86 DBU output per 1M tokens"
+            pricing.usd_pricing_overrides(
+                {
+                    "system.ai.dbu-only": {
+                        "DBU": {"input": 20.0, "output": 62.86, "cache_read": 3.71}
+                    },
+                    "system.ai.no-cache-read": {
+                        "USD": {"input": 1.4, "output": 4.4, "cache_creation": 1.4}
+                    },
+                }
+            )
+            == {}
         )
 
-    def test_is_none_without_rates(self):
-        assert pricing.pricing_text({}) is None
-        assert pricing.pricing_text({"USD": {}}) is None
-
-
-class TestPricingFor:
-    def test_matches_ids_without_the_1m_hint(self):
-        model_pricing = {"system.ai.claude-opus-4-8": "$5.00 input"}
-
-        assert pricing.pricing_for(model_pricing, "system.ai.claude-opus-4-8[1m]") == "$5.00 input"
-        assert pricing.pricing_for(model_pricing, "system.ai.claude-haiku-4-5") is None
-        assert pricing.pricing_for(None, "system.ai.claude-opus-4-8") is None
+    def test_empty_rates_build_no_rows(self):
+        assert pricing.usd_pricing_overrides({}) == {}
 
 
 class TestRefreshModelPricing:
@@ -215,7 +261,22 @@ class TestRefreshModelPricing:
         # Only system.ai models are requested, with ug's own `[1m]` hint stripped.
         assert seen == [(WS, "workspace-token", ["system.ai.glm-5-3"])]
         assert state[pricing.MODEL_PRICING_STATE_KEY] == {
-            "system.ai.glm-5-3": "$1.40 input / $4.40 output / $0.26 cache read per 1M tokens (est.)"
+            "system.ai.glm-5-3": TestUsdPricingOverrides.GLM_OVERRIDES
+        }
+
+    def test_aliased_models_are_priced_under_both_keys(self, monkeypatch):
+        monkeypatch.setenv(pricing.MODEL_PRICING_ENV, "1")
+        self._patch_fetch(monkeypatch, GLM_RATES)
+        state = {"workspace": WS}
+        # Gateway discovery lists MPS-wrapped services under a hashed alias; a session on one
+        # sends the alias verbatim, so the row must be keyed by it and by the canonical FQN.
+        alias = "anthropic-aigw-982d9f93-system.ai.glm-5-3"
+
+        pricing.refresh_model_pricing(state, [alias])
+
+        assert state[pricing.MODEL_PRICING_STATE_KEY] == {
+            alias: TestUsdPricingOverrides.GLM_OVERRIDES,
+            "system.ai.glm-5-3": TestUsdPricingOverrides.GLM_OVERRIDES,
         }
 
     def test_failed_fetch_clears_the_cache_and_warns(self, monkeypatch):

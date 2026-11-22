@@ -293,7 +293,14 @@ CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDEN
 CLAUDE_BLANKED_PROVIDER_ENV_KEYS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
 CLAUDE_BLANKED_ENV_KEYS = CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS + CLAUDE_BLANKED_PROVIDER_ENV_KEYS
 CLAUDE_BLANKED_ENV_PATHS = [["env", key] for key in CLAUDE_BLANKED_ENV_KEYS]
-CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+# `modelPricing` rides with the picker keys: ug writes and prunes it alongside the picker it
+# prices, so a configure that switches source or drops prices cleans the block up.
+CLAUDE_MANAGED_PICKER_KEYS = (
+    "availableModels",
+    "enforceAvailableModels",
+    "modelPicker",
+    "modelPricing",
+)
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
 # The managed config's harness-native settings (resolved from the manifest), and the leaves last
@@ -705,7 +712,7 @@ def render_overlay(
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
     picker_catalog: AnthropicModelCatalog | None = None,
-    model_pricing: dict[str, str] | None = None,
+    model_pricing: dict[str, dict[str, float]] | None = None,
     managed_http_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
@@ -844,13 +851,13 @@ def render_overlay(
     if static_models and not provider and not parent_schema:
         overlay["availableModels"] = list(static_models)
         overlay["enforceAvailableModels"] = True
-        options = []
-        for m in static_models:
-            option = {"model": maybe_add_gpt_1m_suffix(m), "label": model_picker_label(m)}
-            if line := pricing.pricing_for(model_pricing, m):
-                option["description"] = line
-            options.append(option)
-        overlay["modelPicker"] = {"replaceBuiltInOptions": True, "options": options}
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [
+                {"model": maybe_add_gpt_1m_suffix(m), "label": model_picker_label(m)}
+                for m in static_models
+            ],
+        }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
     elif picker_catalog and picker_catalog.model_ids and not relayed:
         overlay["modelPicker"] = {
@@ -859,15 +866,21 @@ def render_overlay(
                 _picker_option(
                     maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model) or model_picker_label(model),
-                    _picker_description(
-                        picker_catalog.model_id_to_description.get(model),
-                        pricing.pricing_for(model_pricing, model),
-                    ),
+                    picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
             ],
         }
         keys.append(["modelPicker"])
+
+    # Claude Code prices its sessions at these USD-per-million-token rates when the managed
+    # settings carry them (it ignores modelPricing from any non-managed source). modelPricing
+    # rides the picker keys' lifecycle: tracked when written, pruned with them when a later
+    # configure switches to a provider or model location.
+    if model_pricing and not provider and not parent_schema and not relayed:
+        overlay["modelPricing"] = {"overrides": model_pricing}
+        if ["modelPricing"] not in keys:
+            keys.append(["modelPricing"])
 
     for option in overlay.get("modelPicker", {}).get("options", []):
         display_model = unwrap_anthropic_gateway_model(option["model"])
@@ -899,12 +912,6 @@ def _picker_option(model: str, label: str, description: str | None = None) -> di
         family, version = match.groups()
         option["behavesAs"] = f"claude-{family.lower()}-{version.replace('.', '-')}"
     return option
-
-
-def _picker_description(description: str | None, pricing_line: str | None) -> str | None:
-    """A picker row's description: the catalog's own text, then the pricing line when known."""
-    parts = [part for part in (description, pricing_line) if part]
-    return "; ".join(parts) if parts else None
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -1803,6 +1810,24 @@ def _relay_blocking_managed_settings() -> list[str]:
         return []
 
 
+def _is_ug_recorded_model_pricing(merged: dict, snapshots: ManagedFileSnapshots) -> bool:
+    """Whether ``merged``'s modelPricing block is the one ug recorded writing.
+
+    ``False`` for a block an administrator authored themselves, so a reconfigure that carries
+    no prices preserves theirs."""
+    recorded = (snapshots.ug_picker or {}).get("modelPricing")
+    return recorded is not None and merged.get("modelPricing") == recorded
+
+
+def _revert_recorded_model_pricing(merged: dict, snapshots: ManagedFileSnapshots | None) -> None:
+    """Put the pre-ug modelPricing back: the baseline's block when one existed, else none."""
+    baseline = (snapshots.original_before_ug or {}) if snapshots is not None else {}
+    if "modelPricing" in baseline:
+        merged["modelPricing"] = baseline["modelPricing"]
+    else:
+        merged.pop("modelPricing", None)
+
+
 def write_tool_config(
     state: dict,
     model: str | None,
@@ -2010,6 +2035,20 @@ def write_tool_config(
         merged = deep_merge_dict(base, overlay_for_merge)
         for key in stale_picker_keys:
             merged.pop(key, None)
+        if "modelPricing" in overlay_for_merge:
+            # The block is a full snapshot of the workspace's current USD rates, so replace it
+            # wholesale: a deep merge would keep a model that stopped serving rates at stale
+            # prices.
+            merged["modelPricing"] = overlay_for_merge["modelPricing"]
+        elif "modelPricing" in merged:
+            # This write carries no prices (flag off, or USD no longer served). A foreign block
+            # an administrator authored — one ug never recorded writing — always stays; the
+            # block ug itself recorded writing reverts to the pre-ug baseline, so a
+            # reconfigure cleans up ug's own prices instead of leaving them stale.
+            if managed_settings_snapshots is None or _is_ug_recorded_model_pricing(
+                merged, managed_settings_snapshots
+            ):
+                _revert_recorded_model_pricing(merged, managed_settings_snapshots)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         if managed_config_present:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no

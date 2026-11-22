@@ -1,27 +1,29 @@
-"""Opt-in system.ai model pricing for ug's model pickers.
+"""Opt-in system.ai model pricing for Claude Code's managed settings.
 
 ``ug configure`` fetches per-million-token rates for the workspace's Databricks-hosted model
-services from the v2 endpoint-rates API and renders one price line per model row in Claude
-Code's managed model picker. The whole feature stays off unless ``UG_MODEL_PRICING`` opts in:
-off, ug never calls the rates API, writes no pricing state, and pickers render exactly as they
-did before pricing existed.
+services from the v2 endpoint-rates API and writes them into the managed settings as a
+``modelPricing.overrides`` block, so Claude Code prices sessions in USD instead of guessing at
+list price. The whole feature stays off unless ``UG_MODEL_PRICING`` opts in: off, ug never
+calls the rates API, writes no pricing state, and the settings render exactly as they did
+before pricing existed.
 """
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlencode
 
 from ucode.databricks import _http_get_json, get_databricks_token, workspace_origin
 from ucode.env import env_bool
 from ucode.ui import print_warning
 
-# Opt-in gate for every pricing behavior: the rates fetch, the state cache, and the price lines
-# a picker renders.
+# Opt-in gate for every pricing behavior: the rates fetch, the state cache, and the
+# modelPricing block the managed settings carry.
 MODEL_PRICING_ENV = "UG_MODEL_PRICING"
 
-# `ug configure` caches the workspace's model prices here, keyed by model service FQN, so a
-# plain launch renders the same picker rows without another rates round trip. The key keeps
-# the `claude_` prefix because the Claude model picker is its only consumer today.
+# `ug configure` caches the workspace's USD price rows here, keyed by model service FQN, so a
+# plain launch writes the same modelPricing block without another rates round trip. The key
+# keeps the `claude_` prefix because Claude Code is its only consumer today.
 MODEL_PRICING_STATE_KEY = "claude_model_pricing"
 
 
@@ -34,7 +36,7 @@ def model_pricing_enabled() -> bool:
 # lists only services visible to the caller and silently omits unknown names.
 _ENDPOINT_RATES_API_PATH = "/api/ai-gateway/v2/endpoint-rates:batchGet"
 
-# Wire `token_type` enum names to the short kinds the picker renders.
+# Wire `token_type` enum names to the short kinds the overrides builder reads.
 _ENDPOINT_RATE_TOKEN_TYPES = {
     "TOKEN_TYPE_INPUT": "input",
     "TOKEN_TYPE_OUTPUT": "output",
@@ -91,57 +93,80 @@ def fetch_model_service_rates(
     return rates, None
 
 
-def pricing_fqn(model: str) -> str:
-    """The rates API's model service FQN for a picker id: drop ug's own ``[1m]`` hint."""
-    return model.removesuffix("[1m]")
+# Gateway discovery aliases embed the canonical FQN after their prefix, e.g.
+# ``anthropic-aigw-<hash>-system.ai.glm-5-3``.
+_ALIASED_FQN_RE = re.compile(r"(system\.ai\.[A-Za-z0-9_.-]+)$")
 
 
-def pricing_for(model_pricing: dict[str, str] | None, model: str) -> str | None:
-    """The cached pricing line for a picker model id, matched by FQN."""
-    return (model_pricing or {}).get(pricing_fqn(model))
+def pricing_fqn(model: str) -> str | None:
+    """The rates API's system.ai FQN a picker id names, or ``None`` when it names none.
 
-
-def pricing_text(unit_rates: dict[str, dict[str, float]]) -> str | None:
-    """One picker line of per-million-token prices from a model's rates grouped by unit.
-
-    USD is the reader-facing unit, but it is a workspace-wide list-price estimate of the DBU
-    rate; the DBU rate is the authoritative fallback when no USD estimate is served.
+    Drops ug's own ``[1m]`` hint and unwraps gateway discovery aliases (which carry a hash
+    prefix Claude Code sessions send verbatim). Plain non-system.ai ids name nothing the
+    rates API can serve.
     """
-    for unit, price_fmt in (("USD", "${:.2f}"), ("DBU", "{:.2f} DBU")):
-        rates = unit_rates.get(unit) or {}
-        parts = [
-            f"{price_fmt.format(rates[kind])} {kind.replace('_', ' ')}"
-            for kind in ("input", "output", "cache_read")
-            if rates.get(kind) is not None
-        ]
-        if parts:
-            suffix = " (est.)" if unit == "USD" else ""
-            return f"{' / '.join(parts)} per 1M tokens{suffix}"
-    return None
+    model = model.removesuffix("[1m]")
+    if model.startswith("system.ai."):
+        return model
+    match = _ALIASED_FQN_RE.search(model)
+    return match.group(1) if match else None
 
 
-def cached_model_pricing(state: dict) -> dict[str, str] | None:
-    """The prices ``ug configure`` cached, for a launch that must not fetch them itself.
+def usd_pricing_overrides(
+    rates: dict[str, dict[str, dict[str, float]]],
+) -> dict[str, dict[str, float]]:
+    """Claude Code ``modelPricing.overrides`` rows (USD per million tokens) from served rates.
+
+    A row needs the USD input, output and cache-read rates: Claude Code's schema requires all
+    four fields, so a model served only in DBU (or missing one of them) is skipped rather than
+    priced partly or with DBU numbers written as dollars. ``cacheWrite`` is Claude Code's single
+    cache-write rate covering both cache lifetimes, so take the 1-hour write rate first (ug
+    enables 1-hour prompt caching), then the 5-minute one, then the input rate — a cache write is
+    never cheaper than processing the same token as fresh input.
+    """
+    overrides: dict[str, dict[str, float]] = {}
+    for fqn, per_unit in rates.items():
+        usd = per_unit.get("USD") or {}
+        if any(usd.get(kind) is None for kind in ("input", "output", "cache_read")):
+            continue
+        cache_write = next(
+            (
+                rate
+                for kind in ("cache_creation_1h", "cache_creation", "input")
+                if (rate := usd.get(kind)) is not None
+            ),
+        )
+        overrides[fqn] = {
+            "input": round(usd["input"], 4),
+            "output": round(usd["output"], 4),
+            "cacheRead": round(usd["cache_read"], 4),
+            "cacheWrite": round(cache_write, 4),
+        }
+    return overrides
+
+
+def cached_model_pricing(state: dict) -> dict[str, dict[str, float]] | None:
+    """The price rows ``ug configure`` cached, for a launch that must not fetch them itself.
 
     ``None`` while the feature is off, so a stale cache from an earlier priced run never
-    reaches a picker row.
+    reaches the managed settings.
     """
     if not model_pricing_enabled():
         return None
     return state.get(MODEL_PRICING_STATE_KEY) or None
 
 
-def refresh_model_pricing(state: dict, models: list[str]) -> dict[str, str]:
-    """Fetch system.ai rates for ``models``, cache their pricing lines, and return them.
+def refresh_model_pricing(state: dict, models: list[str]) -> dict[str, dict[str, float]]:
+    """Fetch system.ai rates for ``models``, cache their USD price rows, and return them.
 
-    ``ug configure`` calls this so the managed picker carries prices; a plain launch renders
-    from the cache through ``cached_model_pricing``. A failed fetch leaves the picker unpriced
-    rather than failing configuration, and clears the cache so a launch's file still matches.
-    ``UG_MODEL_PRICING`` off skips the fetch and every cache write.
+    ``ug configure`` calls this so the managed settings carry a ``modelPricing`` block; a plain
+    launch renders from the cache through ``cached_model_pricing``. A failed fetch leaves the
+    settings unpriced rather than failing configuration, and clears the cache so a launch's
+    file still matches. ``UG_MODEL_PRICING`` off skips the fetch and every cache write.
     """
     if not model_pricing_enabled():
         return {}
-    fqns = sorted({pricing_fqn(model) for model in models if model.startswith("system.ai.")})
+    fqns = sorted({fqn for fqn in map(pricing_fqn, models) if fqn is not None})
     if not fqns:
         return {}
     workspace = state["workspace"]
@@ -156,6 +181,15 @@ def refresh_model_pricing(state: dict, models: list[str]) -> dict[str, str]:
         state[MODEL_PRICING_STATE_KEY] = {}
         print_warning(f"Model prices are unavailable for the model picker: {reason}")
         return {}
-    pricing = {fqn: text for fqn, unit_rates in rates.items() if (text := pricing_text(unit_rates))}
+    rows = usd_pricing_overrides(rates)
+    # Key every row by its canonical FQN and by each picker id that names it: a session on an
+    # aliased model sends the alias verbatim, so Claude Code's exact-key lookup needs it too.
+    pricing: dict[str, dict[str, float]] = {}
+    for model in models:
+        fqn = pricing_fqn(model)
+        if fqn is None or fqn not in rows:
+            continue
+        pricing.setdefault(fqn, rows[fqn])
+        pricing.setdefault(model.removesuffix("[1m]"), rows[fqn])
     state[MODEL_PRICING_STATE_KEY] = pricing
     return pricing
