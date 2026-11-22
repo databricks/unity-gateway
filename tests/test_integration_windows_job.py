@@ -8,9 +8,11 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
 
 # Starts a child that outlives it, then exits at once, like a VS Code process orphaned on quit.
+# The child gets no inherited pipes, or the test's communicate() would wait for it too.
 PARENT = (
     "import subprocess, sys; "
-    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
     "print('started', flush=True)"
 )
 
