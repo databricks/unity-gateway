@@ -22,6 +22,7 @@ from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw
 SCHEMA_VERSION = 1
 DECISION_TYPE = "decision"
 ROUTE_VALIDATION_TYPE = "route_validation"
+ROUTING_DISABLED_FIELD = "routing_disabled"
 ROUTE_VALIDATION_FIELDS = (
     "router_name",
     "routing_unsupported_reason",
@@ -29,6 +30,7 @@ ROUTE_VALIDATION_FIELDS = (
     "ineligible_route_options",
     "available_route_options",
     "validation_ms",
+    ROUTING_DISABLED_FIELD,
 )
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600

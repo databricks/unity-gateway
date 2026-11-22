@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing';
-import { ROUTE_VALIDATION_ROW, modelReason, routeValidationReason } from '../hooks/routing-logs.ts';
+import { ROUTE_VALIDATION_ON_ROW, ROUTE_VALIDATION_ROW, modelReason, routeValidationReason } from '../hooks/routing-logs.ts';
 
 const options = { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', logsCommand: ['/bin/ug', 'smart-router-logs'] };
 const pane = {
@@ -732,3 +732,15 @@ test('a UG route agent type is not shown as the prompt label', { options }, asyn
   expect(tree).not.toContain('ucode-route-');
   await ui.unmount();
 });
+
+for (const [routingDisabled, row] of [[true, ROUTE_VALIDATION_ROW], [false, ROUTE_VALIDATION_ON_ROW]] as const) {
+  test(`a route validation row with routing_disabled ${routingDisabled} names the routing state`, { options }, async ($, on) => {
+    on('session.id', () => ({ value: 'session-one' }));
+    on('ui.open', () => ({ value: { isPlaced: true } }));
+    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: [], route_validations: [{ ...validation, routing_disabled: routingDisabled }] }) } }));
+    await $.command.run(command);
+    const ui = await $.ui.mount(pane);
+    expect(JSON.stringify(await ui.drawn())).toContain(`"label":"  2m ago  ${row.slice(0, 80 - 10 - 1)}…"`);
+    await ui.unmount();
+  });
+}

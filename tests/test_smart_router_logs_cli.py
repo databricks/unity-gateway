@@ -456,7 +456,6 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
     assert len(document["decisions"]) == 1
     [row] = document["route_validations"]
     assert row.pop("validation_id") and row.pop("at")
-    check.pop("routing_disabled")
     assert row == {
         "v": session_log.SCHEMA_VERSION,
         "type": session_log.ROUTE_VALIDATION_TYPE,
