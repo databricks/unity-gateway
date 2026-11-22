@@ -17,6 +17,22 @@ import { withSessionId } from "./ug-plugin.mjs";
 export const SESSIONS_FILE = "seat-relay-sessions.json";
 export const SANDBOX_ENV = "COPILOT_EXTENSION_SANDBOXED";
 export const APPLY_TIMEOUT_MS = 5_000;
+const PRODUCT_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[^\s(),;/]+$/;
+const USER_AGENT_COMMENT = /\([^()]*\)/g;
+
+// ug's User-Agent for one of the runtime's calls: the runtime's own product tokens (such as
+// `copilot/1.0.106-8 ... client/github-app`) between ug's product and platform, so the gateway
+// attributes the call to Copilot at the runtime's version.
+export function seatUserAgent(template, runtimeUserAgent) {
+  const [ucode, ...rest] = (template ?? "ucode/unknown").split(" ");
+  const platform = rest.join(" ");
+  const tokens = (runtimeUserAgent ?? "")
+    .replace(USER_AGENT_COMMENT, " ")
+    .split(/\s+/)
+    .filter((token) => PRODUCT_TOKEN.test(token));
+  if (!tokens[0]?.toLowerCase().startsWith("copilot/")) tokens.unshift("copilot/unknown");
+  return [ucode, ...tokens, platform].filter(Boolean).join(" ");
+}
 export const REVERT_TIMEOUT_MS = 2_000;
 const INFERENCE_CALLS = new Set(["POST /chat/completions", "POST /responses", "POST /v1/messages"]);
 
@@ -105,13 +121,17 @@ export function createSeatRedirect(
     userAgent: relay.headers?.["User-Agent"] ?? relay.headers?.["user-agent"],
     fallback: async () => (session ? copilotHostForStatus(await session.rpc.gitHubAuth.getStatus()) : null),
   });
+  const subagents = subagentHeaders(sessionId ?? "");
   const server = createSeatRelay({
     gatewayBase: relay.gatewayBase,
     providerService: relay.providerService,
     token: tokenSource,
     copilotHost,
     headers: withSessionId(relay.headers, sessionId),
-    requestHeaders: subagentHeaders(sessionId ?? ""),
+    requestHeaders: (requestHeaders, body) => ({
+      "User-Agent": seatUserAgent(relay.userAgent, requestHeaders["user-agent"]),
+      ...subagents(requestHeaders, body),
+    }),
     hintFor: (error) => (error?.code === "ENOENT" ? config.missingUgHint : config.loginHint),
     log,
     observe: (event) => {

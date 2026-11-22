@@ -392,6 +392,7 @@ def copilot_app_plugin_config(
     calls go through."""
     from ucode.agents.copilot import OTEL_TRACES_PATH, proxy_headers
     from ucode.databricks import databricks_cli_path, ug_binary
+    from ucode.telemetry import ucode_user_agent, ug_version
     from ucode.workspace import selector_headers, workspace_headers
 
     workspace = state["workspace"]
@@ -432,6 +433,7 @@ def copilot_app_plugin_config(
             else None
         ),
         seat_relay=seat_relay,
+        user_agent=ucode_user_agent(ug_version()) if seat_relay else None,
     )
 
 

@@ -17,6 +17,7 @@ import {
   noteRedirect,
   redirectEnabled,
   redirectSkipReason,
+  seatUserAgent,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/app-seat-redirect.mjs";
 import { shutdownBeforeTerminating } from "../src/ucode/agents/desktop/copilot_app_plugin/app-tracing.mjs";
 
@@ -44,7 +45,8 @@ function config(overrides = {}) {
       gatewayBase: `http://127.0.0.1:${server.address().port}`,
       providerService: "main.default.copilot_seat",
       askGitHub: false,
-      headers: { "User-Agent": "unity-gateway/1.0", "x-tag": "a" },
+      headers: { "x-tag": "a" },
+      userAgent: "ucode/1.0 (macos 15; arm64)",
     },
     ...overrides,
   };
@@ -83,10 +85,11 @@ async function start(t, overrides = {}, options = {}) {
   return { redirect, entries, logged };
 }
 
+const RUNTIME_UA = "copilot/1.0.106-8 term/unknown client/github-app (darwin; arm64)";
 const infer = (url) =>
   fetch(`${url}/responses`, {
     method: "POST",
-    headers: { authorization: GITHUB_AUTH, "content-type": "application/json" },
+    headers: { authorization: GITHUB_AUTH, "content-type": "application/json", "user-agent": RUNTIME_UA },
     body: JSON.stringify({ model: "gpt-5", input: "hi" }),
   });
 
@@ -98,6 +101,16 @@ test("redirectEnabled needs the seatRelay config, no remove mode and no sandbox"
   assert.equal(redirectEnabled({ ...on, remove: true }, {}), false);
   assert.equal(redirectEnabled(on, { [SANDBOX_ENV]: "1" }), false);
   assert.equal(redirectEnabled({}, {}), false);
+});
+
+test("seatUserAgent puts the runtime's products between ug's product and platform", () => {
+  assert.equal(
+    seatUserAgent("ucode/1.0 (linux ubuntu-24.04; x86_64)", RUNTIME_UA),
+    "ucode/1.0 copilot/1.0.106-8 term/unknown client/github-app (linux ubuntu-24.04; x86_64)",
+  );
+  assert.equal(seatUserAgent("ucode/1.0 (linux; x86_64)", "GitHubCopilotChat/0.35 (x)"), "ucode/1.0 copilot/unknown GitHubCopilotChat/0.35 (linux; x86_64)");
+  assert.equal(seatUserAgent("ucode/1.0 (linux; x86_64)", undefined), "ucode/1.0 copilot/unknown (linux; x86_64)");
+  assert.equal(seatUserAgent(undefined, "copilot/2"), "ucode/unknown copilot/2");
 });
 
 test("redirectSkipReason tells the sandbox apart from nothing to route", () => {
@@ -141,7 +154,7 @@ test("apply points the session at the relay, and its calls reach the gateway wit
   assert.equal(seen.headers["databricks-model-provider-service"], "main.default.copilot_seat");
   assert.equal(seen.headers["x-databricks-github-copilot-api-host"], "api.business.githubcopilot.com");
   assert.equal(seen.headers["session-id"], "session-1");
-  assert.equal(seen.headers["user-agent"], "unity-gateway/1.0");
+  assert.equal(seen.headers["user-agent"], "ucode/1.0 copilot/1.0.106-8 term/unknown client/github-app (macos 15; arm64)");
   assert.equal(seen.headers["x-tag"], "a");
   assert.deepEqual(entries, []);
 });

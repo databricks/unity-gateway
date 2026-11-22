@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -246,6 +247,7 @@ class TestSeatRelayProvider:
         assert relay["askGitHub"] is True
         assert relay["headers"]["x-databricks-use-coding-agent-mode"] == "true"
         assert "User-Agent" not in relay["headers"]
+        assert re.fullmatch(r"ucode/\S+ \(.*\)", relay["userAgent"])
         assert plugin.seat_relay_provider() == "copilot-seats"
         assert "GitHub Copilot models go through copilot-seats" in _out(capsys)
         assert self.checked == [("copilot-seats", "vscode")]

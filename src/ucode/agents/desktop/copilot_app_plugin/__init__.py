@@ -127,6 +127,9 @@ class PluginConfig:
     # The relayed Model Provider Service the app's own GitHub Copilot calls go through; None
     # leaves them direct.
     seat_relay: str | None = None
+    # ug's own User-Agent (`ucode/<v> (<platform>)`); the relay puts the runtime's product tokens
+    # between the two, so the gateway attributes the call to Copilot at the runtime's version.
+    user_agent: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -250,6 +253,7 @@ def extension_config(config: PluginConfig) -> dict:
                 "gatewayBase": config.workspace.rstrip("/"),
                 "providerService": config.seat_relay,
                 "headers": dict(config.headers),
+                "userAgent": config.user_agent,
                 "askGitHub": True,
             }
             if config.seat_relay

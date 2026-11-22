@@ -174,12 +174,17 @@ class TestExtensionConfig:
     def test_the_seat_relay_is_off_unless_it_names_a_provider_service(self):
         assert plugin.extension_config(_config())["seatRelay"] is None
         config = plugin.extension_config(
-            _config(headers={"X-Team": "data"}, seat_relay="main.default.copilot_seats")
+            _config(
+                headers={"X-Team": "data"},
+                seat_relay="main.default.copilot_seats",
+                user_agent="ucode/1.0 (linux ubuntu-24.04; x86_64)",
+            )
         )
         assert config["seatRelay"] == {
             "gatewayBase": "https://example.cloud.databricks.com",
             "providerService": "main.default.copilot_seats",
             "headers": {"X-Team": "data"},
+            "userAgent": "ucode/1.0 (linux ubuntu-24.04; x86_64)",
             "askGitHub": True,
         }
 
