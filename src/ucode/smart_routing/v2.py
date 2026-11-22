@@ -70,6 +70,7 @@ from ucode.skills import (
 )
 from ucode.smart_routing import (
     claude_routing,
+    codex_statusline,
     orchestrator,
     routing,
     session_log,
@@ -1256,6 +1257,8 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
+    statusline_config = codex_statusline.launch_config(session_env_path)
+    config_io.deep_merge_dict(overlay, statusline_config)
     config_args = codex_config_args(overlay)
     if app_server_launch:
         # The caller owns this app-server's address, model and clients, so run its command as is.
@@ -1311,7 +1314,15 @@ def launch_codex(
             )
         model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, *model_args, *tool_args]
+            [
+                binary,
+                *provider_args,
+                *codex_config_args(codex_statusline.tui_config(statusline_config)),
+                "--remote",
+                tui_url,
+                *model_args,
+                *tool_args,
+            ]
         )
         try:
             returncode = tui.wait()

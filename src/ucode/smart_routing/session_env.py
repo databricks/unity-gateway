@@ -73,8 +73,8 @@ def _read_with_retry(path: Path) -> dict[str, str]:
             time.sleep(CONTROLS_READ_RETRY_SECONDS)
 
 
-def session_routing_enabled(path: Path) -> bool:
-    overrides = _read_with_retry(path)
+def session_routing_enabled(path: Path, *, retry: bool = True) -> bool:
+    overrides = _read_with_retry(path) if retry else _read(path)
     return not all(
         overrides.get(key) == "0"
         for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
