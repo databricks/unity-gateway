@@ -7,7 +7,13 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { removeInBackground } from "./app-remove.mjs";
 import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
-import { clearRedirect, createSeatRedirect, keepAliveOnErrors } from "./app-seat-redirect.mjs";
+import {
+  clearRedirect,
+  createSeatRedirect,
+  keepAliveOnErrors,
+  noteRedirect,
+  redirectSkipReason,
+} from "./app-seat-redirect.mjs";
 import { OUTCOME_LOG_FILE, createOutcomeLog, createTracer, shutdownBeforeTerminating } from "./app-tracing.mjs";
 import {
   buildProviders,
@@ -65,11 +71,15 @@ if (config.remove) {
     record: createOutcomeLog(join(syncOptions.stateDir, OUTCOME_LOG_FILE)),
   });
   let redirect = null;
+  if (redirectSkipReason(config) === "sandboxed") {
+    noteRedirect(syncOptions.stateDir, { redirect: "sandboxed" });
+  }
   try {
     redirect = createSeatRedirect(config, { tokenSource, log: logSyncFailure, stateDir: syncOptions.stateDir });
     await redirect?.listen();
   } catch (error) {
     logSyncFailure(`Databricks seat relay: not started: ${error?.message ?? error}`);
+    noteRedirect(syncOptions.stateDir, { redirect: "not started", error: String(error?.code ?? error?.message ?? error) });
     redirect = null;
   }
   const shutdownSteps = [tracer && ((ms) => tracer.shutdown(ms)), redirect && ((ms) => redirect.shutdown(ms))];

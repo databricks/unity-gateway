@@ -14,7 +14,9 @@ import {
   clearRedirect,
   createSeatRedirect,
   keepAliveOnErrors,
+  noteRedirect,
   redirectEnabled,
+  redirectSkipReason,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/app-seat-redirect.mjs";
 import { shutdownBeforeTerminating } from "../src/ucode/agents/desktop/copilot_app_plugin/app-tracing.mjs";
 
@@ -96,6 +98,24 @@ test("redirectEnabled needs the seatRelay config, no remove mode and no sandbox"
   assert.equal(redirectEnabled({ ...on, remove: true }, {}), false);
   assert.equal(redirectEnabled(on, { [SANDBOX_ENV]: "1" }), false);
   assert.equal(redirectEnabled({}, {}), false);
+});
+
+test("redirectSkipReason tells the sandbox apart from nothing to route", () => {
+  const on = config();
+  assert.equal(redirectSkipReason(on, {}), null);
+  assert.equal(redirectSkipReason(on, { [SANDBOX_ENV]: "1" }), "sandboxed");
+  assert.equal(redirectSkipReason({ ...on, remove: true }, { [SANDBOX_ENV]: "1" }), "off");
+  assert.equal(redirectSkipReason({}, { [SANDBOX_ENV]: "1" }), "off");
+});
+
+test("noteRedirect records a start that couldn't redirect in the sessions file", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ug-seat-redirect-"));
+  await noteRedirect(stateDir, { redirect: "sandboxed" }, { sessionId: "s1", now: () => 1_700_000_000_000 });
+  await noteRedirect(stateDir, { redirect: "not started", error: "EACCES" }, { sessionId: "s2", now: () => 1_700_000_001_000 });
+  assert.deepEqual(JSON.parse(readFileSync(join(stateDir, SESSIONS_FILE), "utf8")), [
+    { time: "2023-11-14T22:13:20.000Z", sessionId: "s1", redirect: "sandboxed" },
+    { time: "2023-11-14T22:13:21.000Z", sessionId: "s2", redirect: "not started", error: "EACCES" },
+  ]);
 });
 
 test("createSeatRedirect is null when the redirect is off", async (t) => {

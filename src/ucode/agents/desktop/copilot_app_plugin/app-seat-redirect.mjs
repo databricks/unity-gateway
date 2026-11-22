@@ -20,16 +20,35 @@ export const APPLY_TIMEOUT_MS = 5_000;
 export const REVERT_TIMEOUT_MS = 2_000;
 const INFERENCE_CALLS = new Set(["POST /chat/completions", "POST /responses", "POST /v1/messages"]);
 
-export function redirectEnabled(config, env = process.env) {
+function relayConfigured(config) {
   const relay = config?.seatRelay;
   return Boolean(
     relay &&
       typeof relay === "object" &&
       typeof relay.gatewayBase === "string" &&
-      typeof relay.providerService === "string" &&
-      !config.remove &&
-      !env[SANDBOX_ENV],
+      typeof relay.providerService === "string",
   );
+}
+
+// Why this start doesn't redirect: "off" (nothing to route, or remove mode), "sandboxed" (the
+// runtime's extension sandbox blocks loopback), or null when it does.
+export function redirectSkipReason(config, env = process.env) {
+  if (!relayConfigured(config) || config.remove) return "off";
+  if (env[SANDBOX_ENV]) return "sandboxed";
+  return null;
+}
+
+export function redirectEnabled(config, env = process.env) {
+  return redirectSkipReason(config, env) === null;
+}
+
+// An entry in the sessions file for a start that couldn't redirect, so status can say why.
+export function noteRedirect(stateDir, entry, { sessionId = process.env.SESSION_ID, now = Date.now } = {}) {
+  return createOutcomeLog(join(stateDir, SESSIONS_FILE))({
+    time: new Date(now()).toISOString(),
+    ...(sessionId ? { sessionId } : {}),
+    ...entry,
+  });
 }
 
 function updateUrl(session, copilotUrl) {
