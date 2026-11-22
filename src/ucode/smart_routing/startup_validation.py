@@ -20,19 +20,21 @@ from ucode.smart_routing import routing
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
 # urllib applies the timeout per socket operation, so a result past this deadline counts as a timeout.
 VALIDATION_TIMEOUT_SECONDS = 4
+# available_route_options name the router's canonical harness, not the requested one.
+CLAUDE_AVAILABLE_HARNESSES = (AGENT_CLAUDE, "claude_code")
 
 
 def result_path(session_controls: Path) -> Path:
     return session_controls.with_suffix(".validation.json")
 
 
-def _models(options: object, *, harness: str | None = None) -> list[str]:
+def _models(options: object, *, harnesses: tuple[str, ...] | None = None) -> list[str]:
     return [
         option["model"]
         for option in (options if isinstance(options, list) else [])
         if isinstance(option, dict)
         and isinstance(option.get("model"), str)
-        and (harness is None or option.get("harness") == harness)
+        and (harnesses is None or option.get("harness") in harnesses)
     ]
 
 
@@ -51,7 +53,9 @@ def _unsupported_details(payload: dict[str, Any], validation_ms: int) -> dict[st
             for option in (ineligible if isinstance(ineligible, list) else [])
             if isinstance(option, dict) and isinstance(option.get("model"), str)
         ],
-        "available": _models(payload.get("available_route_options"), harness=AGENT_CLAUDE),
+        "available": _models(
+            payload.get("available_route_options"), harnesses=CLAUDE_AVAILABLE_HARNESSES
+        ),
         "validation_ms": validation_ms,
     }
 

@@ -170,8 +170,8 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
             "malformed",
         ],
         "available_route_options": [
-            {"model": "system.ai.claude-sonnet", "harness": "claude"},
-            {"model": "gpt-5", "harness": "codex"},
+            {"model": "claude-sonnet-5-5", "harness": "claude_code"},
+            {"model": "claude-sonnet-5-5", "harness": "codex"},
         ],
     }
     monkeypatch.setattr(validation, "_http_post_json", lambda *a, **k: (payload, None))
@@ -193,5 +193,5 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
             {"model": "system.ai.claude-haiku-4-5", "reason": "model_not_in_recipe"},
             {"model": "custom", "reason": None},
         ],
-        "available": ["system.ai.claude-sonnet"],
+        "available": ["claude-sonnet-5-5"],
     }
