@@ -54,6 +54,7 @@ _SOURCE_FILES = (
     "app-restart.mjs",
     "app-tracing.mjs",
     "app-seat-relay.mjs",
+    "app-seat-redirect.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -251,6 +252,7 @@ _EXTENSION_STATE_FILES = (
     "app-restart.json",
     "app-restart.log",
     "tracing-exports.json",
+    "seat-relay-sessions.json",
 )
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"

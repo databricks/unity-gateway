@@ -7,7 +7,8 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { removeInBackground } from "./app-remove.mjs";
 import { launchRestart, tellRestart } from "./app-restart.mjs";
 import { syncInBackground } from "./app-rows.mjs";
-import { OUTCOME_LOG_FILE, createOutcomeLog, createTracer, exportBeforeTerminating } from "./app-tracing.mjs";
+import { clearRedirect, createSeatRedirect, keepAliveOnErrors } from "./app-seat-redirect.mjs";
+import { OUTCOME_LOG_FILE, createOutcomeLog, createTracer, shutdownBeforeTerminating } from "./app-tracing.mjs";
 import {
   buildProviders,
   createTokenSource,
@@ -36,7 +37,8 @@ async function withRetries(attempt) {
 if (config.remove) {
   const removal = withRetries(() => removeInBackground(config, syncOptions, logSyncFailure));
   try {
-    await joinSession();
+    const session = await joinSession();
+    await clearRedirect(session);
   } catch (error) {
     logSyncFailure(`Databricks models: couldn't join the session: ${error?.message ?? error}`);
   }
@@ -62,13 +64,29 @@ if (config.remove) {
     log: logSyncFailure,
     record: createOutcomeLog(join(syncOptions.stateDir, OUTCOME_LOG_FILE)),
   });
-  if (tracer) exportBeforeTerminating(tracer);
+  let redirect = null;
+  try {
+    redirect = createSeatRedirect(config, { tokenSource, log: logSyncFailure, stateDir: syncOptions.stateDir });
+    await redirect?.listen();
+  } catch (error) {
+    logSyncFailure(`Databricks seat relay: not started: ${error?.message ?? error}`);
+    redirect = null;
+  }
+  const shutdownSteps = [tracer && ((ms) => tracer.shutdown(ms)), redirect && ((ms) => redirect.shutdown(ms))];
+  if (shutdownSteps.some(Boolean)) shutdownBeforeTerminating(shutdownSteps.filter(Boolean));
   session = await joinSession({
     providers: buildProviders(config, bearerTokenProvider),
     models: config.models,
   });
+  // Before anything else: the first turn's calls must already go through.
+  if (redirect) {
+    if (await redirect.apply(session)) keepAliveOnErrors(logSyncFailure);
+  } else {
+    await clearRedirect(session);
+  }
   session.on((event) => {
     tracer?.handle(event);
+    redirect?.handle(event);
     if (event?.type === "session.shutdown") tracer?.shutdown();
     if (!isAuthRejection(event)) return;
     tokenSource.invalidate();

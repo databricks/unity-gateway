@@ -255,6 +255,7 @@ class TestWritePlugin:
             "app-restart.mjs",
             "app-tracing.mjs",
             "app-seat-relay.mjs",
+            "app-seat-redirect.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (
@@ -599,6 +600,7 @@ class TestExtensionSource:
             "app-remove.mjs",
             "app-restart.mjs",
             "app-seat-relay.mjs",
+            "app-seat-redirect.mjs",
         ],
     )
     def test_syntax(self, name):

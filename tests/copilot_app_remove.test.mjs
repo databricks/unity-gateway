@@ -235,13 +235,22 @@ const FAKE_SDK = `data:text/javascript,${encodeURIComponent(`
   export async function joinSession(...args) {
     globalThis.ugJoinCalls.push(args);
     if (globalThis.ugJoinFails) throw new Error("no session");
-    return { on() {}, log() {} };
+    return { on() {}, log() {}, rpc: { options: { update: async (options) => (globalThis.ugOptionUpdates.push(options), { success: true }) } } };
   }
 `)}`;
 
 async function runExtension(t, options, { joinFails = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ug-copilot-extension-"));
-  for (const name of ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs", "app-restart.mjs", "app-tracing.mjs"]) {
+  for (const name of [
+    "extension.mjs",
+    "ug-plugin.mjs",
+    "app-rows.mjs",
+    "app-remove.mjs",
+    "app-restart.mjs",
+    "app-tracing.mjs",
+    "app-seat-relay.mjs",
+    "app-seat-redirect.mjs",
+  ]) {
     copyFileSync(join(SOURCE, name), join(dir, name));
   }
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...CONFIG, providers: [{ name: CLAUDE }], models: [{ id: "m" }] }));
@@ -252,6 +261,7 @@ async function runExtension(t, options, { joinFails = false } = {}) {
   const previousHome = process.env.COPILOT_HOME;
   process.env.COPILOT_HOME = options.home;
   globalThis.ugJoinCalls = [];
+  globalThis.ugOptionUpdates = [];
   globalThis.ugJoinFails = joinFails;
   t.after(() => {
     hooks.deregister();
@@ -261,7 +271,7 @@ async function runExtension(t, options, { joinFails = false } = {}) {
   const errors = [];
   t.mock.method(console, "error", (line) => errors.push(line));
   await import(pathToFileURL(join(dir, "extension.mjs")).href);
-  return { joins: globalThis.ugJoinCalls, errors };
+  return { joins: globalThis.ugJoinCalls, errors, optionUpdates: globalThis.ugOptionUpdates };
 }
 
 const hookSkip = skip || (typeof nodeModule.registerHooks === "function" ? false : "this Node can't stub the SDK import");
@@ -269,9 +279,10 @@ const extensionTest = (name, fn) => nodeTest(name, { skip: hookSkip }, fn);
 
 extensionTest("in remove mode the extension removes ug and joins its session without serving", async (t) => {
   const { app, path, options } = await setup(t);
-  const { joins, errors } = await runExtension(t, options);
+  const { joins, errors, optionUpdates } = await runExtension(t, options);
   assert.deepEqual(joins, [[]]);
   assert.deepEqual(errors, []);
+  assert.deepEqual(optionUpdates, [{ copilotUrl: null }]);
   assert.deepEqual([...app.providers.keys()], ["mine"]);
   assert.deepEqual(read(path), {});
 });

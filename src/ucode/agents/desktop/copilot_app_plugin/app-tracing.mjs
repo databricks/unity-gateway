@@ -599,12 +599,16 @@ export function latestInteraction(events) {
 }
 
 // The CLI stops an extension with SIGTERM, whose default would end the process with exports still
-// in flight. The signal is raised again afterwards, so the process still ends the way it would have.
-export function exportBeforeTerminating(tracer, proc = process, ms = TERMINATE_WAIT_MS) {
+// in flight. The steps run together within `ms`, and the signal is raised again afterwards, so the
+// process still ends the way it would have.
+export function shutdownBeforeTerminating(steps, proc = process, ms = TERMINATE_WAIT_MS) {
   proc.once("SIGTERM", () => {
-    tracer
-      .shutdown(ms)
-      .catch(() => {})
-      .finally(() => proc.kill(proc.pid, "SIGTERM"));
+    Promise.allSettled(steps.map((step) => Promise.resolve().then(() => step(ms)))).finally(() =>
+      proc.kill(proc.pid, "SIGTERM"),
+    );
   });
+}
+
+export function exportBeforeTerminating(tracer, proc = process, ms = TERMINATE_WAIT_MS) {
+  shutdownBeforeTerminating([(wait) => tracer.shutdown(wait)], proc, ms);
 }
