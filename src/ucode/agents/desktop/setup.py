@@ -292,9 +292,6 @@ def revert_desktop() -> str:
 
 
 COPILOT_APP_ENV = "UG_EXPERIMENTAL_COPILOT_APP"
-# The extension's own span export is off: the gateway traces every relayed call itself, with the
-# content, and these spans doubled its token counts. Set to turn the export back on for a comparison.
-COPILOT_APP_TRACING_ENV = "UG_COPILOT_APP_TRACING"
 
 _COPILOT_APP_LINUX_BINARY = Path("/usr/bin/github")
 _COPILOT_APP_WINDOWS_KEY = r"Software\GitHub Inc.\GitHub Copilot"
@@ -389,7 +386,7 @@ def copilot_app_plugin_config(
 ) -> copilot_app_plugin.PluginConfig:
     """The plugin's config for ``desired``, with the headers ``ug copilot`` sends but its
     User-Agent."""
-    from ucode.agents.copilot import OTEL_TRACES_PATH, proxy_headers
+    from ucode.agents.copilot import proxy_headers
     from ucode.databricks import databricks_cli_path, ug_binary
     from ucode.workspace import selector_headers, workspace_headers
 
@@ -425,11 +422,6 @@ def copilot_app_plugin_config(
         custom_oauth=custom_oauth if isinstance(custom_oauth, dict) else None,
         app_providers=desired.plugin_app,
         owned_provider_ids=copilot_app.OWNED_PROVIDER_IDS,
-        traces_endpoint=(
-            workspace.rstrip("/") + OTEL_TRACES_PATH
-            if state.get("copilot_otel_tracing") and env_bool(COPILOT_APP_TRACING_ENV)
-            else None
-        ),
     )
 
 
@@ -705,6 +697,4 @@ def copilot_app_status(
             "`ug configure --agents copilot` again."
         )
     row = f"plugin {plugin_label}, models {_COPILOT_REGISTRATION_LABELS.get(registration, registration)}"
-    if copilot_app_plugin.tracing_on():
-        row += ", tracing on"
     return CopilotAppStatus(row, tuple(warnings))

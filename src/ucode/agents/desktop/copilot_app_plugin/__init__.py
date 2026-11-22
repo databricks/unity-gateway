@@ -52,7 +52,7 @@ _SOURCE_FILES = (
     "app-rows.mjs",
     "app-remove.mjs",
     "app-restart.mjs",
-    "app-tracing.mjs",
+    "app-state.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -119,9 +119,6 @@ class PluginConfig:
     # Every provider id ug may have written to the app; the extension deletes those not in
     # ``app_providers``.
     owned_provider_ids: tuple[str, ...] = ()
-    # Where the extension exports the spans it builds from the session's events; None turns
-    # tracing off.
-    traces_endpoint: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -235,22 +232,12 @@ def extension_config(config: PluginConfig) -> dict:
             "providers": [_app_entry(rows) for rows in config.app_providers],
             "ownedProviderIds": list(config.owned_provider_ids),
         },
-        "tracing": (
-            {"endpoint": config.traces_endpoint, "headers": dict(config.headers)}
-            if config.traces_endpoint
-            else None
-        ),
     }
 
 
 # What the extension keeps between runs, in its own directory; a reinstall carries them over, so
 # an unchanged configure neither resyncs nor restarts the app.
-_EXTENSION_STATE_FILES = (
-    "app-sync.json",
-    "app-restart.json",
-    "app-restart.log",
-    "tracing-exports.json",
-)
+_EXTENSION_STATE_FILES = ("app-sync.json", "app-restart.json", "app-restart.log")
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
 # Older leftovers are from a run that crashed, never from one still writing.
@@ -482,12 +469,6 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     }
     _object(settings, _ENABLED_KEY, path)[PLUGIN_KEY] = True
     _write_settings(path, settings)
-
-
-def tracing_on(root: Path | None = None) -> bool:
-    """Whether the installed extension exports spans."""
-    config = _read_extension_config(root or plugin_root())
-    return config is not None and isinstance(config.get("tracing"), dict)
 
 
 def remove_headers_provider(settings_path: Path | None = None) -> bool:

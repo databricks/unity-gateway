@@ -241,7 +241,7 @@ const FAKE_SDK = `data:text/javascript,${encodeURIComponent(`
 
 async function runExtension(t, options, { joinFails = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ug-copilot-extension-"));
-  for (const name of ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs", "app-restart.mjs", "app-tracing.mjs"]) {
+  for (const name of ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs", "app-restart.mjs", "app-state.mjs"]) {
     copyFileSync(join(SOURCE, name), join(dir, name));
   }
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...CONFIG, providers: [{ name: CLAUDE }], models: [{ id: "m" }] }));

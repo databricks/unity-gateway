@@ -159,18 +159,6 @@ class TestExtensionConfig:
             "ownedProviderIds": [],
         }
 
-    def test_tracing_is_off_unless_it_has_an_endpoint(self):
-        assert plugin.extension_config(_config())["tracing"] is None
-        config = plugin.extension_config(
-            _config(
-                headers={"X-Team": "data"}, traces_endpoint="https://h/ai-gateway/otel/v1/traces"
-            )
-        )
-        assert config["tracing"] == {
-            "endpoint": "https://h/ai-gateway/otel/v1/traces",
-            "headers": {"X-Team": "data"},
-        }
-
     def test_a_pat_token_command_and_hint(self):
         config = plugin.extension_config(_config(use_pat=True))
         assert config["tokenCommand"][-1] == "--use-pat"
@@ -253,7 +241,7 @@ class TestWritePlugin:
             "app-rows.mjs",
             "app-remove.mjs",
             "app-restart.mjs",
-            "app-tracing.mjs",
+            "app-state.mjs",
             "config.json",
         }
         assert (extension / "extension.mjs").read_text() == (
@@ -738,7 +726,6 @@ class TestStagedWrite:
     def test_a_reinstall_swaps_in_a_new_tree_and_keeps_the_extensions_state(self, home):
         root = plugin.install(_config())
         (self._extension(root) / "app-restart.json").write_text('{"digest": "d"}')
-        (self._extension(root) / "tracing-exports.json").write_text("[]")
         (self._extension(root) / "app-sync.lock").write_text("owner")
 
         plugin.install(_config(profile="other"))
@@ -746,7 +733,6 @@ class TestStagedWrite:
         config = json.loads((self._extension(root) / "config.json").read_text())
         assert config["tokenCommand"][-1] == "other"
         assert (self._extension(root) / "app-restart.json").read_text() == '{"digest": "d"}'
-        assert (self._extension(root) / "tracing-exports.json").read_text() == "[]"
         assert not (self._extension(root) / "app-sync.lock").exists()
         assert (root / "created-settings").is_file()
         assert self._siblings(root) == []
