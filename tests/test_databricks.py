@@ -771,42 +771,28 @@ class TestDiscoverModelServices:
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
         assert db_mod.cached_model_service_entries(WS) is None
 
-    def test_incomplete_walk_is_not_memoized(self, monkeypatch):
+    @pytest.mark.parametrize("complete_only", [False, True], ids=["best-effort", "complete-only"])
+    def test_incomplete_walk_is_not_memoized(self, monkeypatch, complete_only):
         db_mod.clear_model_services_cache()
-        pages = [
-            {"model_services": [_model_service("system.ai.gpt-5")], "next_page_token": "t2"},
-        ]
-
-        def blip(url, token):
-            if pages:
-                return pages.pop(0), None
-            return None, "HTTP 503"
-
-        monkeypatch.setattr(db_mod, "_get_model_services_page", blip)
-
-        entries, reason = db_mod.list_model_service_entries(WS, "token")
-        # Today's best-effort behavior: the partial listing comes back with no reason.
-        assert reason is None
+        page = Mock(
+            side_effect=[
+                (
+                    {
+                        "model_services": [_model_service("system.ai.gpt-5")],
+                        "next_page_token": "t2",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", page)
+        entries, reason = db_mod.list_model_service_entries(
+            WS, "token", complete_only=complete_only
+        )
         assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
-        # But a truncated walk never feeds the memo the launch-cache cold save reads.
+        assert reason == ("HTTP 503" if complete_only else None)
         assert db_mod.cached_model_service_entries(WS) is None
-
-    def test_complete_only_reports_a_truncated_walk(self, monkeypatch):
-        db_mod.clear_model_services_cache()
-        pages = [
-            {"model_services": [_model_service("system.ai.gpt-5")], "next_page_token": "t2"},
-        ]
-
-        def blip(url, token):
-            if pages:
-                return pages.pop(0), None
-            return None, "HTTP 503"
-
-        monkeypatch.setattr(db_mod, "_get_model_services_page", blip)
-
-        entries, reason = db_mod.list_model_service_entries(WS, "token", complete_only=True)
-        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
-        assert reason == "HTTP 503"
 
     def test_complete_only_accepts_a_complete_walk(self, monkeypatch):
         db_mod.clear_model_services_cache()
@@ -6015,28 +6001,23 @@ class TestHttpGetJsonTimeout:
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
         monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: False)
 
-    def test_urllib_get_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "fetch, args",
+        [
+            (db_mod._http_get_json, ()),
+            (db_mod._http_post_json, ({"k": "v"},)),
+            (db_mod._http_get_bytes, ()),
+        ],
+        ids=["get-json", "post-json", "get-bytes"],
+    )
+    def test_urllib_read_timeout_returns_reason(self, monkeypatch, fetch, args):
         self._urlopen_timeout(monkeypatch)
+        assert fetch(f"{WS}/api/2.0/anything", "tok", *args) == (
+            None,
+            "network error: The read operation timed out",
+        )
 
-        payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok")
-
-        assert (payload, reason) == (None, "network error: The read operation timed out")
-
-    def test_urllib_post_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        self._urlopen_timeout(monkeypatch)
-
-        payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
-
-        assert (payload, reason) == (None, "network error: The read operation timed out")
-
-    def test_urllib_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        self._urlopen_timeout(monkeypatch)
-
-        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
-
-        assert (body, reason) == (None, "network error: The read operation timed out")
-
-    def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+    def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch, mock_pooled_client):
         import httpx
 
         attempts = []
@@ -6045,9 +6026,7 @@ class TestHttpGetJsonTimeout:
             attempts.append(request)
             raise httpx.ReadTimeout("The read operation timed out", request=request)
 
-        client = httpx.Client(transport=httpx.MockTransport(timeout))
-        _force_pooled(monkeypatch)
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
+        mock_pooled_client(timeout)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", lambda _seconds: None)
 
@@ -7572,16 +7551,15 @@ def test_model_service_backing_model_reads_the_first_live_foundation_model():
     assert model_service_backing_model({"config": {}}) is None
 
 
-def test_http_get_reuses_keep_alive_connection(fresh_pooled_client):
+@pytest.fixture
+def pooled_server(fresh_pooled_client):
+    """Real HTTP/1.1 peer for connection reuse and status translation."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class CountingServer(ThreadingHTTPServer):
         daemon_threads = True
-
-        def __init__(self, address, handler):
-            self.connection_count = 0
-            self.connection_count_lock = threading.Lock()
-            super().__init__(address, handler)
+        connection_count = 0
+        connection_count_lock = threading.Lock()
 
         def get_request(self):
             request, address = super().get_request()
@@ -7593,8 +7571,12 @@ def test_http_get_reuses_keep_alive_connection(fresh_pooled_client):
         protocol_version = "HTTP/1.1"
 
         def do_GET(self):
-            body = b"{}"
-            self.send_response(200)
+            status, body = {
+                "/bad": (400, b"Invalid Token"),
+                "/redirect": (302, b"redirect"),
+                "/failure": (503, b"unavailable"),
+            }.get(self.path, (200, b"{}"))
+            self.send_response(status)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -7606,58 +7588,32 @@ def test_http_get_reuses_keep_alive_connection(fresh_pooled_client):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        url = f"http://127.0.0.1:{server.server_port}/api"
-        for _ in range(2):
-            body, reason = db_mod._http_get_bytes(url, "token")
-            assert body == b"{}"
-            assert reason is None
-        assert server.connection_count == 1
+        yield server, f"http://127.0.0.1:{server.server_port}"
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
 
 
-def test_http_transport_preserves_status_errors(fresh_pooled_client):
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+def test_http_get_reuses_keep_alive_connection(pooled_server):
+    server, url = pooled_server
+    for _ in range(2):
+        assert db_mod._http_get_bytes(f"{url}/api", "token") == (b"{}", None)
+    assert server.connection_count == 1
 
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
 
-        def do_GET(self):
-            if self.path == "/bad":
-                status, body = 400, b"Invalid Token"
-            elif self.path == "/redirect":
-                status, body = 302, b"redirect"
-            else:
-                status, body = 503, b"unavailable"
-            self.send_response(status)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        url = f"http://127.0.0.1:{server.server_port}"
-        _, reason = db_mod._http_get_bytes(f"{url}/bad", "token")
-        assert reason == "HTTP 400 Bad Request: Invalid Token"
-        _, reason = db_mod._http_get_bytes(f"{url}/redirect", "token")
-        assert reason == "HTTP 302 Found: redirect"
-        _, reason = db_mod._http_get_bytes(f"{url}/failure", "token")
-        assert reason == "HTTP 503 Service Unavailable: unavailable"
-        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
-            db_mod._http_open(db_mod.urllib_request.Request(f"{url}/failure"), timeout=5)
-        assert raised.value.code == 503
-        assert raised.value.read() == b"unavailable"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
+def test_http_transport_preserves_status_errors(pooled_server):
+    _, url = pooled_server
+    for path, reason in [
+        ("bad", "HTTP 400 Bad Request: Invalid Token"),
+        ("redirect", "HTTP 302 Found: redirect"),
+        ("failure", "HTTP 503 Service Unavailable: unavailable"),
+    ]:
+        assert db_mod._http_get_bytes(f"{url}/{path}", "token") == (None, reason)
+    with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+        db_mod._http_open(db_mod.urllib_request.Request(f"{url}/failure"), timeout=5)
+    assert raised.value.code == 503
+    assert raised.value.read() == b"unavailable"
 
 
 def test_http_transport_maps_refused_connections_to_network_errors(fresh_pooled_client):
@@ -7702,6 +7658,24 @@ def test_http_transport_passes_headers_and_timeout(monkeypatch):
     assert headers["connection"] == "keep-alive"
     assert headers["user-agent"] == f"Python-urllib/{db_mod.urllib_request.__version__}"
     assert "accept" not in headers
+
+
+@pytest.fixture
+def mock_pooled_client(monkeypatch):
+    import httpx
+
+    clients = []
+
+    def install(handler, **kwargs):
+        client = httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+        clients.append(client)
+        _force_pooled(monkeypatch)
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+        return client
+
+    yield install
+    for client in clients:
+        client.close()
 
 
 def _clear_proxy_env(monkeypatch):
@@ -7825,21 +7799,9 @@ class TestPooledClientDispatch:
         """Point urllib's urlopen at a recorder and make any pooled-client build fail loud."""
         opened = []
 
-        class _Response:
-            headers = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-            def read(self):
-                return b"{}"
-
         def urlopen(request, timeout):
             opened.append((request, timeout))
-            return _Response()
+            return _FakeResponse({})
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
         monkeypatch.setattr(
@@ -7864,37 +7826,23 @@ class TestPooledClientDispatch:
         assert db_mod._use_pooled_client() is True
         assert opened == [(request, 5), (request, 5)]
 
-    def test_python_trust_store_uses_urlopen(self, monkeypatch):
-        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "python")
-        opened = self._urlopen_sentinel(monkeypatch)
-
-        request = db_mod.urllib_request.Request("https://x/y")
-        db_mod._http_open(request, timeout=5)
-
-        assert opened == [(request, 5)]
-
-    def test_https_proxy_env_uses_urlopen(self, monkeypatch):
+    @pytest.mark.parametrize("configuration", ["python-store", "env-proxy", "system-proxy"])
+    def test_nondefault_setup_uses_urlopen(self, monkeypatch, configuration):
         _clear_proxy_env(monkeypatch)
-        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
-        monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
-        opened = self._urlopen_sentinel(monkeypatch)
-
-        request = db_mod.urllib_request.Request("https://x/y")
-        db_mod._http_open(request, timeout=5)
-
-        assert opened == [(request, 5)]
-
-    def test_system_proxy_uses_urlopen(self, monkeypatch):
-        _clear_proxy_env(monkeypatch)
-        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
         monkeypatch.setattr(
-            db_mod.urllib_request, "getproxies", lambda: {"https": "http://system-proxy:8080"}
+            db_mod.tls,
+            "effective_trust_store",
+            lambda: "python" if configuration == "python-store" else "os",
         )
+        if configuration == "env-proxy":
+            monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
+        elif configuration == "system-proxy":
+            monkeypatch.setattr(
+                db_mod.urllib_request, "getproxies", lambda: {"https": "http://system-proxy:8080"}
+            )
         opened = self._urlopen_sentinel(monkeypatch)
-
         request = db_mod.urllib_request.Request("https://x/y")
         db_mod._http_open(request, timeout=5)
-
         assert opened == [(request, 5)]
 
     def test_all_proxy_alone_still_pools_direct(self, monkeypatch):
@@ -7954,7 +7902,9 @@ class TestPooledRedirectErrors:
     """httpx errors urllib's opener would have surfaced as HTTP errors keep their shape, so
     callers see a status-shaped reason instead of a network failure."""
 
-    def test_too_many_redirects_maps_to_http_error_with_the_last_real_status(self, monkeypatch):
+    def test_too_many_redirects_maps_to_http_error_with_the_last_real_status(
+        self, mock_pooled_client
+    ):
         """Exceeding the redirect budget raises the LAST 3xx, like urllib's redirect handler
         does — not a made-up status. The response hook on the pooled client tracks it."""
         from urllib.error import HTTPError
@@ -7967,13 +7917,11 @@ class TestPooledRedirectErrors:
             sent.append(request)
             return httpx.Response(302, headers={"Location": "https://x/next"}, content=b"moved")
 
-        client = httpx.Client(
-            transport=httpx.MockTransport(always_redirect),
+        mock_pooled_client(
+            always_redirect,
             event_hooks={"response": [db_mod._remember_redirect]},
             max_redirects=db_mod.urllib_request.HTTPRedirectHandler.max_redirections,
         )
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
-        _force_pooled(monkeypatch)
 
         with pytest.raises(HTTPError) as raised:
             db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
@@ -7985,7 +7933,7 @@ class TestPooledRedirectErrors:
         assert len(sent) == 11
 
 
-def test_latin1_header_values_are_sent_like_urllib(monkeypatch):
+def test_latin1_header_values_are_sent_like_urllib(mock_pooled_client):
     """http.client sends header values as latin-1; the pooled path does the same instead of
     failing on a non-ascii value (e.g. one from UG_HEADERS)."""
     import httpx
@@ -7996,9 +7944,7 @@ def test_latin1_header_values_are_sent_like_urllib(monkeypatch):
         seen.append(request.headers.raw)
         return httpx.Response(200, content=b"{}")
 
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
-    _force_pooled(monkeypatch)
+    mock_pooled_client(handler)
 
     request = db_mod.urllib_request.Request("https://x/y", headers={"X-Team": "Équipe"})
     with db_mod._http_open(request, timeout=5) as response:
@@ -8012,97 +7958,47 @@ class TestPooledRedirectPolicies:
     every other method or 307/308 raises the 3xx as an HTTPError instead of having its body
     replayed."""
 
-    @staticmethod
-    def _mock_client(monkeypatch, handler):
-        import httpx
-
-        client = httpx.Client(transport=httpx.MockTransport(handler))
-        _force_pooled(monkeypatch)
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
-        return client
-
-    def test_post_redirect_is_raised_not_followed(self, monkeypatch):
+    @pytest.mark.parametrize("method, status", [("POST", 307), ("PATCH", 302)])
+    def test_redirect_is_raised_not_followed(self, mock_pooled_client, method, status):
         import httpx
 
         sent = []
 
         def handler(request):
             sent.append(request)
-            return httpx.Response(307, headers={"Location": "https://example.test/moved"})
+            return httpx.Response(status, headers={"Location": "https://example.test/moved"})
 
-        self._mock_client(monkeypatch, handler)
-
+        mock_pooled_client(handler)
         with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
             db_mod._http_open(
                 db_mod.urllib_request.Request(
-                    "https://example.test/api", data=b"{}", method="POST"
+                    "https://example.test/api", data=b"{}", method=method
                 ),
                 timeout=5,
             )
-
-        assert raised.value.code == 307
+        assert raised.value.code == status
         assert raised.value.headers.get("Location") == "https://example.test/moved"
         assert len(sent) == 1
 
-    def test_post_302_is_followed_as_a_bodiless_get(self, monkeypatch):
+    @pytest.mark.parametrize("method, body", [("POST", b"{}"), ("GET", None)])
+    def test_redirect_is_followed_as_a_bodiless_get(self, mock_pooled_client, method, body):
         import httpx
 
         sent = []
 
         def handler(request):
-            sent.append((request.method, request.content))
+            sent.append((str(request.url), request.method, request.content))
             if len(sent) == 1:
                 return httpx.Response(302, headers={"Location": "https://example.test/final"})
             return httpx.Response(200, content=b"{}")
 
-        self._mock_client(monkeypatch, handler)
-
+        mock_pooled_client(handler)
         with db_mod._http_open(
-            db_mod.urllib_request.Request("https://example.test/api", data=b"{}", method="POST"),
+            db_mod.urllib_request.Request("https://example.test/start", data=body, method=method),
             timeout=5,
         ) as response:
             assert response.read() == b"{}"
-
-        assert sent == [("POST", b"{}"), ("GET", b"")]
-
-    def test_patch_redirect_is_raised_not_followed(self, monkeypatch):
-        import httpx
-
-        sent = []
-
-        def handler(request):
-            sent.append(request)
-            return httpx.Response(302, headers={"Location": "https://example.test/moved"})
-
-        self._mock_client(monkeypatch, handler)
-
-        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
-            db_mod._http_open(
-                db_mod.urllib_request.Request(
-                    "https://example.test/api", data=b"{}", method="PATCH"
-                ),
-                timeout=5,
-            )
-
-        assert raised.value.code == 302
-        assert len(sent) == 1
-
-    def test_get_redirect_is_followed(self, monkeypatch):
-        import httpx
-
-        sent = []
-
-        def handler(request):
-            sent.append(str(request.url))
-            if len(sent) == 1:
-                return httpx.Response(302, headers={"Location": "https://example.test/final"})
-            return httpx.Response(200, content=b"{}")
-
-        self._mock_client(monkeypatch, handler)
-
-        with db_mod._http_open(
-            db_mod.urllib_request.Request("https://example.test/start"), timeout=5
-        ) as response:
-            assert response.read() == b"{}"
-
-        assert sent == ["https://example.test/start", "https://example.test/final"]
+        assert sent == [
+            ("https://example.test/start", method, body or b""),
+            ("https://example.test/final", "GET", b""),
+        ]

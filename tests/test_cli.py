@@ -10614,14 +10614,10 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
         )
 
-        catalog_fetches = {"n": 0}
-
         def fake_catalog(*args, **kwargs):
             catalog_calls.append((threading.current_thread(), args, kwargs))
             catalog_started.set()
-            n = catalog_fetches["n"]
-            catalog_fetches["n"] += 1
-            error = catalog_error_msg or (catalog_error_once if n == 0 else None)
+            error = catalog_error_msg or (catalog_error_once if len(catalog_calls) == 1 else None)
             if error:
                 return db_mod.AnthropicModelCatalog(
                     model_ids=[], model_id_to_display_name={}, error_msg=error
@@ -10789,70 +10785,44 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
             "workspace", MINIMAL_STATE["workspace"]
         )
 
-    def test_speculative_catalog_error_refetches_with_live_token(
-        self, monkeypatch, metrics_recorder
+    @pytest.mark.parametrize(
+        "failure, expected_operation, catalog_calls",
+        [
+            ("catalog-auth", metrics_mod.MODELS_LIST_OPERATION, 2),
+            ("token-error", metrics_mod.DATABRICKS_TOKEN_FETCH_OPERATION, 1),
+            ("login-required", None, 1),
+        ],
+    )
+    def test_speculative_failure_falls_back_to_live_fetch(
+        self, monkeypatch, metrics_recorder, failure, expected_operation, catalog_calls
     ):
-        calls = self._invoke_with_overlapped_catalog(
-            monkeypatch, managed=None, catalog_error_once="HTTP 401 Unauthorized"
-        )
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert len(calls["catalog_calls"]) == 2
-        assert "main.default.claude-sonnet-5" in (
-            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
-        )
-        # The definitive auth failure was reported as handled before the refetch.
-        [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
-        assert count == 1
-        assert labels["operation"] == metrics_mod.MODELS_LIST_OPERATION
-        assert labels["continued_with_fallback"] is True
-
-    def test_speculative_token_failure_falls_back_to_the_serial_fetch(
-        self, monkeypatch, metrics_recorder
-    ):
-        """A background token failure must not fail the launch: the join falls back to the
-        serial fetch on the live token."""
-        # The token failure kills the speculation before any catalog request, so configure
-        # cannot see one start.
-        calls = self._invoke_with_overlapped_catalog(
-            monkeypatch,
-            managed=None,
-            token_error=RuntimeError("Databricks CLI returned no access token"),
-            expect_catalog_start=False,
-        )
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert len(calls["catalog_calls"]) == 1
-        # The raised exception is the background token fetch, reported under its operation.
-        [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
-        assert count == 1
-        assert labels["operation"] == metrics_mod.DATABRICKS_TOKEN_FETCH_OPERATION
-        assert labels["continued_with_fallback"] is True
-        assert "main.default.claude-sonnet-5" in (
-            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
-        )
-
-    def test_expected_login_miss_falls_back_without_an_error_report(
-        self, monkeypatch, metrics_recorder
-    ):
-        """A no-reauth speculation miss on missing credentials is expected: configure's auth
-        step performs the login, so the join falls back without reporting a token-fetch
-        failure; other failures still report."""
-        calls = self._invoke_with_overlapped_catalog(
-            monkeypatch,
-            managed=None,
-            token_error=db_mod.DatabricksLoginRequiredError(
+        token_error = {
+            "token-error": RuntimeError("Databricks CLI returned no access token"),
+            "login-required": db_mod.DatabricksLoginRequiredError(
                 "Databricks CLI returned no access token"
             ),
-            expect_catalog_start=False,
+        }.get(failure)
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            catalog_error_once="HTTP 401 Unauthorized" if failure == "catalog-auth" else None,
+            token_error=token_error,
+            expect_catalog_start=token_error is None,
         )
-
         assert calls["result"].exit_code == 0, calls["result"].output
-        assert len(calls["catalog_calls"]) == 1
-        assert metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR) == []
-        assert "main.default.claude-sonnet-5" in (
-            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        assert len(calls["catalog_calls"]) == catalog_calls
+        assert (
+            "main.default.claude-sonnet-5"
+            in calls["configure"].call_args.kwargs["picker_catalog"].model_ids
         )
+        errors = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
+        if expected_operation is None:
+            assert errors == []  # A login-required miss is expected during speculation.
+        else:
+            [(count, labels)] = errors
+            assert count == 1
+            assert labels["operation"] == expected_operation
+            assert labels["continued_with_fallback"] is True
 
     def test_persistent_403_makes_exactly_one_request(self, monkeypatch):
         """A non-auth catalog failure would fail a live-token fetch the same way, so the
@@ -10864,26 +10834,16 @@ class TestLaunchOverlapsPickerCatalogWithConfigure:
         assert calls["result"].exit_code == 0, calls["result"].output
         assert len(calls["catalog_calls"]) == 1
 
-    def test_auto_picker_starts_no_unmanaged_catalog(self, monkeypatch):
-        monkeypatch.setattr(cli_mod.smart_routing_config, "auto_mode_enabled", lambda: True)
-        monkeypatch.setattr(cli_mod, "_routes_launch", lambda *a, **k: True)
-
-        calls = self._invoke_with_overlapped_catalog(
-            monkeypatch, managed=None, auto_picker=True, expect_catalog_start=False
-        )
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["catalog_calls"] == []
-
-    def test_relayed_provider_launch_starts_no_catalog(self, monkeypatch):
+    @pytest.mark.parametrize("mode", ["auto", "relay"])
+    def test_launch_without_a_picker_starts_no_catalog(self, monkeypatch, mode):
         calls = self._invoke_with_overlapped_catalog(
             monkeypatch,
             managed=None,
-            persisted_provider="main.default.relay",
-            relayed=True,
+            auto_picker=mode == "auto",
+            persisted_provider="main.default.relay" if mode == "relay" else None,
+            relayed=mode == "relay",
             expect_catalog_start=False,
         )
-
         assert calls["result"].exit_code == 0, calls["result"].output
         assert calls["catalog_calls"] == []
 
