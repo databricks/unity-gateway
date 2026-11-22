@@ -392,6 +392,14 @@ These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
 the command fails or times out.
 
+`test_opencode_family.py` covers the code OpenCode and Kilo share in `agents/opencode_family.py`.
+Kilo's rendered auth plugin must equal OpenCode's V1 plugin for the same state, and OpenCode's V2
+plugin must share the V1 prelude. The plugin must list the same provider ids as `PROVIDER_KEYS`,
+and Kilo must write the V1 plugin whatever Kilo version is installed. The token command in the
+plugin must carry the host, the profile, `--use-pat` and `--force-refresh`. These are component checks.
+Version, path and token lookups are patched on the wrapper modules, so they do not establish live
+OpenCode or Kilo behavior.
+
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
@@ -1485,7 +1493,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug` | Configure Copilot with ug v0.2.0 (pinned commit; saves the bearer in `~/.copilot/ucode.env`), then configure with this ug, run a GPT task, revert | v0.2.0 left the bearer; after this ug's configure no file holds it; task completes; revert leaves no token and no `ucode.env` (non-blocking CI lane) |
 | `test_ug_configure_honors_managed_copilot_vscode_off` | Under the injected `copilot_vscode_off` managed config (Copilot entry with `vscode_integration.enabled: false`), `ug configure`, then `ug status` | Configure succeeds and says the workspace turns off GitHub Copilot in VS Code instead of looking for `code`; status shows `VS Code: off (workspace-managed)` |
 | `test_ug_configure_copilot_vscode_installs_and_reverts_the_extension` | Beside a developer's own VS Code `settings.json`, `ug configure --agents copilot` twice, then `ug revert` | `code --list-extensions` lists ug's extension after each configure, one copy installed; its `ug-config.json` names the workspace, a sign-in command, and the Claude and GPT test models on the Anthropic Messages and Responses wires; no file holds the bearer; after revert VS Code no longer lists it and the settings file is byte-identical. Configuration only (non-blocking CI lane) |
-| `test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window` | Configure, then in the real VS Code window on a fresh profile: continue without signing in, close Welcome, trust the folder, turn on Copilot Chat ("Add Models..." in the model picker or ug's "Turn On Copilot Chat" notice), pick the Claude test model, ask Agent mode to read a file; then pick the GPT test model and read a second file | Visible clicks and keys only, nothing seeded; each answer contains its own file value; the Claude turn's requests hit `/ai-gateway/anthropic/v1/messages` and the GPT turn's `/ai-gateway/mlflow/v1/responses`, each for its picked model with ug's User-Agent naming the bundled Copilot Chat and a non-empty 200; the saved chat records both turns on their Databricks models with a tool call, the value, no error; no file holds the bearer after the window closes (non-blocking CI lane, Linux and Windows) |
+| `test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window` | Configure, then in the real VS Code window on a fresh profile: continue without signing in, close Welcome, trust the folder, turn on Copilot Chat ("Add Models..." in the model picker or ug's "Turn On Copilot Chat" notice), stay in the Copilot session the chat opens on, pick the Claude test model, ask Agent mode to read a file; then pick the GPT test model and read a second file | Visible clicks and keys only, nothing seeded; each answer contains its own file value; the Claude turn's requests hit `/ai-gateway/anthropic/v1/messages` and the GPT turn's `/ai-gateway/mlflow/v1/responses`, each for its picked model with ug's User-Agent naming the bundled Copilot Chat and a non-empty 200; the Copilot session's saved events record both turns on their Databricks models with a tool call, the value, no error; no file holds the bearer after the window closes (non-blocking CI lane, Linux and Windows) |
 | `test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model` | `ug configure --agents copilot --provider` with the OpenAI MPS, then in the real window: first launch as above, pick the service's GPT model, read a file | The extension lists the service's model id; the answer contains the file value; every request hits `/ai-gateway/openai/v1/responses` with the provider service header, for that model, with a non-empty 200; the gateway's backend is not asserted (non-blocking CI lane, Linux and Windows) |
 | `test_vscode_copilot_chat_lists_the_new_models_after_reconfigure` | Claude turn, quit VS Code from the keyboard, `ug configure --agents copilot --provider` with the OpenAI MPS, reopen the same profile | After reconfigure the extension lists only the service's models; a turn on the service's model hits `/ai-gateway/openai/v1/responses` with the provider header and a non-empty 200; then the picker's search finds no workspace Claude model (non-blocking CI lane, Linux and Windows) |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
@@ -2011,6 +2019,10 @@ Copilot CLI registry label checks cover human-readable labels for qualified cata
 duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names
 remain raw so regional target distinctions are preserved. Native picker and inference validation
 remain separate from these component checks.
+
+Configure loading indicators: skill download component coverage verifies the shared spinner
+starts before bundle requests and reports completed/total downloads. MCP and skill
+reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
 
 ## Security scan rollout
 

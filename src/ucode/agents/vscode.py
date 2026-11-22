@@ -201,13 +201,17 @@ def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
 
 
 def copilot_models(
-    state: dict, provider: str | None = None, location: str | None = None
+    state: dict,
+    provider: str | None = None,
+    location: str | None = None,
+    *,
+    agent: str = "VS Code",
 ) -> list[CopilotModel]:
     """The models of a Model Provider Service (``provider``), a ``<catalog>.<schema>``
     (``location``) or the discovered catalog, as the Copilot CLI lists them; raises when there are
-    none. VS Code and the GitHub Copilot app both use it."""
+    none. VS Code and the GitHub Copilot app both use it; ``agent`` names which in errors."""
     if provider:
-        return provider_service_catalog(state, provider, None, tool="vscode")
+        return provider_service_catalog(state, provider, None, tool="vscode", agent=agent)
     if location:
         return location_catalog(state, location)
     catalog = copilot_catalog(state)
@@ -217,7 +221,7 @@ def copilot_models(
     if not catalog:
         reason = (state.get("_discovery_reasons") or {}).get("copilot")
         raise RuntimeError(
-            "No Claude, GPT, GLM, Kimi or DeepSeek models for VS Code "
+            f"No Claude, GPT, GLM, Kimi or DeepSeek models for {agent} "
             f"({reason or 'the workspace has none'})."
         )
     return catalog
