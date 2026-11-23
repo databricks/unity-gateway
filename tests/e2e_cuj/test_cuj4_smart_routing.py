@@ -16,6 +16,7 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from tests.integration.utils.managed import use_managed_config_fixture
 from ucode.constants import UG_ROUTE_VALIDATION_ENV_VAR
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
@@ -84,6 +85,21 @@ def _smart_router_band_hidden(tui):
     """The band above the prompt shows only for the turn after launch or a toggle."""
     pattern = r"\s*unity gateway smart router\s+(ON|OFF)\b"
     return not any(re.match(pattern, line) for line in tui.screen.display)
+
+
+def _unsupported_band_shown(tui, *, enabled):
+    """The band names the state and carries the unsupported warning; ON adds the logs hint."""
+    screen = "\n".join(tui.screen.display)
+    state = "ON" if enabled else "OFF"
+    if not re.search(rf"unity gateway smart router\s+{state}\b", screen):
+        return False
+    if "isn't supported by smart router" not in screen:
+        return False
+    return not enabled or "(/smart-router logs for details)" in screen
+
+
+def _validation_requests(recorder, checkpoint):
+    return [r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH]
 
 
 @dataclass(frozen=True)
@@ -876,14 +892,65 @@ class TestCujSmartRouting(BaseCujTest):
                     tui.exit_normally()
             finally:
                 session.env.pop(UG_ROUTE_VALIDATION_ENV_VAR, None)
-            [request] = [
-                r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
-            ]
+            [request] = _validation_requests(recorder, checkpoint)
             options = request.payload["route_options"]
             assert options and {option["harness"] for option in options} == {CLAUDE}
             response = recorder.response_for(request)
             assert response.status_code == 200
             assert response.payload["is_supported"] is True
+
+    def test_unsupported_model_list_turns_routing_off_at_startup_and_toggle_on_warns_again(
+        self, cuj
+    ):
+        """Scenario: launch Claude with an unsupported managed model list, then run /smart-router on.
+
+        Expected: the startup routes:validate request carries the session's Claude route options,
+        and the Gateway answers HTTP 200 with is_supported false, so the band shows OFF with the
+        unsupported warning. /smart-router on sends exactly one more routes:validate request with
+        the same answer, and the band shows ON with the warning and the logs hint while the prompt
+        hint row shows smart router ON.
+        """
+        session, _, recorder = cuj
+        use_managed_config_fixture(session, "claude_smart_routing_unsupported")
+        try:
+            with smart_router_preset(cuj, SUBAGENT_ORCH_V0_CLAUDE_ONLY):
+                session.env[UG_ROUTE_VALIDATION_ENV_VAR] = "1"
+                try:
+                    checkpoint = recorder.checkpoint()
+                    recorder.prepare_launch()
+                    with Terminal(session, "startup-route-validation-unsupported", [CLAUDE]) as tui:
+                        tui.boot(timeout=150)
+                        tui.wait_for(
+                            lambda _: _unsupported_band_shown(tui, enabled=False),
+                            "the OFF Smart Router band with the unsupported warning",
+                        )
+                        tui.submit("/smart-router on")
+                        tui.wait_for(
+                            lambda _: _unsupported_band_shown(tui, enabled=True),
+                            "the ON Smart Router band with the unsupported warning and logs hint",
+                        )
+                        tui.wait_for(
+                            lambda _: _smart_router_hint_shown(tui, enabled=True),
+                            "smart router ON in the prompt hint row",
+                        )
+                        tui.exit_normally()
+                finally:
+                    session.env.pop(UG_ROUTE_VALIDATION_ENV_VAR, None)
+        finally:
+            session.env.pop("UCODE_MANAGED_CONFIG_STUB", None)
+        requests = _validation_requests(recorder, checkpoint)
+        assert len(requests) == 2, "Expected one startup and one /smart-router on validation"
+        startup, toggle = requests
+        options = startup.payload["route_options"]
+        assert options and {option["harness"] for option in options} == {CLAUDE}
+        for request in (startup, toggle):
+            response = recorder.response_for(request)
+            assert response.status_code == 200
+            assert response.payload["is_supported"] is False
+            assert (
+                response.payload["metadata"]["routing_unsupported_reason"]
+                == "insufficient_eligible_options"
+            )
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(
