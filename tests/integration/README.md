@@ -914,6 +914,8 @@ and every change of the recognized screen (`<name>-states.json`). Playwright con
 window's DevTools page target exists, and connects again if that connection misses the workbench.
 An answer without the file's value also keeps the tool results and the last response of its turn
 (`missed-answer-<model>.json`).
+On Windows the window runs in a job object, so closing it ends every VS Code process, including
+ones whose parent already exited, before the bearer check reads the home.
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation that asks for approval fails (a finished tool call's collapsed row asks for none). The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window
