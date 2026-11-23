@@ -30,7 +30,8 @@ import socket
 import subprocess
 import tempfile
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from xml.sax.saxutils import escape
@@ -89,21 +90,162 @@ def _install_locations(command: str) -> list[Path]:
             root / folder / "bin" / f"{command}.cmd"
             for root in [*roots, windows_program_files_dir()]
         ]
-    return [Path("/usr/bin") / command, Path("/snap/bin") / command]
+    snap = "code-insiders" if insiders else "code"
+    flatpak = "com.visualstudio.code-insiders" if insiders else "com.visualstudio.code"
+    return [
+        Path("/usr/bin") / command,
+        Path("/usr/share") / snap / "bin" / command,
+        Path("/snap") / snap / "current/usr/share" / snap / "bin" / command,
+        *(
+            root / "app" / flatpak / "current/active/files/extra/vscode/bin" / command
+            for root in (Path("/var/lib/flatpak"), Path.home() / ".local/share/flatpak")
+        ),
+    ]
+
+
+def _path_candidates(command: str) -> list[Path]:
+    """Every `command` on PATH, in PATH order: the first one can be another product's."""
+    names = [command]
+    if current_os() is OS.WINDOWS:
+        names = [f"{command}{ext}" for ext in (".cmd", ".exe", ".bat", "")]
+    found: list[Path] = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        for name in names:
+            candidate = Path(entry) / name
+            if candidate.is_file() and candidate not in found:
+                found.append(candidate)
+    return found
+
+
+# The products whose `code` ug sets up; others answer to `code` too (VSCodium, Cursor, Code - OSS).
+_DESKTOP_PRODUCTS = {"Code": False, "Code - Insiders": True}
+
+
+@dataclass(frozen=True)
+class VSCodeInstall:
+    """A desktop VS Code install: its `code` command, app folder and parsed product.json."""
+
+    code: Path
+    app: Path
+    product: dict
+
+    @property
+    def insiders(self) -> bool:
+        return _DESKTOP_PRODUCTS.get(str(self.product.get("nameShort")), False)
+
+    @property
+    def version(self) -> str:
+        return str(self.product.get("version") or "unknown version")
+
+    def runtime(self) -> Path | None:
+        return bundled_runtime(self.code)
+
+
+def _app_dirs(code: Path) -> list[Path]:
+    """The app folders `code` may belong to, most specific first."""
+    bin_dir = code.resolve().parent
+    # macOS keeps `code` in the app folder's bin; Linux packages keep the app under resources/app.
+    apps = [bin_dir.parent, bin_dir.parent / "resources" / "app"]
+    if current_os() is OS.WINDOWS:
+        apps = [*_windows_app_dirs(bin_dir, code), *apps]
+    return apps
+
+
+def _product(app: Path) -> dict | None:
+    try:
+        product = json.loads((app / "product.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return product if isinstance(product, dict) else None
+
+
+def _install_at(code: Path) -> VSCodeInstall | None:
+    """The desktop VS Code `code` belongs to, or None when it is another product or no app."""
+    for app in _app_dirs(code):
+        if (product := _product(app)) is not None:
+            if product.get("nameShort") in _DESKTOP_PRODUCTS:
+                return VSCodeInstall(code, app, product)
+            return None
+    return None
+
+
+def describe_command(code: Path) -> str:
+    """What a `code` command that isn't the desktop VS Code is, for messages."""
+    for app in _app_dirs(code):
+        if (product := _product(app)) is not None:
+            return str(product.get("nameLong") or product.get("nameShort") or "another product")
+    resolved = str(code.resolve())
+    if ".vscode-server" in resolved or "remote-cli" in resolved:
+        return "VS Code Server's command"
+    if not code.resolve().exists():
+        return "a link to a VS Code that isn't there anymore"
+    return "not a desktop VS Code install"
+
+
+def _candidates(command: str) -> Iterable[Path]:
+    yield from _path_candidates(command)
+    yield from (path for path in _install_locations(command) if path.is_file())
+
+
+def vscode_installs(command: str | None = None) -> list[VSCodeInstall]:
+    """Every desktop VS Code install found, PATH first, each app folder once."""
+    installs: list[VSCodeInstall] = []
+    seen: set[Path] = set()
+    for name, _ in CODE_COMMANDS:
+        if command is not None and name != command:
+            continue
+        for candidate in _candidates(name):
+            install = _install_at(candidate)
+            if install is None or install.app.resolve() in seen:
+                continue
+            seen.add(install.app.resolve())
+            installs.append(install)
+    return installs
+
+
+def first_code_on_path() -> Path | None:
+    """What a shell would run for `code`, whatever product it is."""
+    for name, _ in CODE_COMMANDS:
+        if found := _path_candidates(name):
+            return found[0]
+    return None
+
+
+def requested_install(path: str) -> VSCodeInstall:
+    """The install a `--vscode-code` or `UG_VSCODE_CODE` override names; a bad one raises."""
+    code = Path(path).expanduser()
+    if not code.is_file():
+        raise RuntimeError(f"VS Code's `code` command wasn't found at {code}.")
+    install = _install_at(code)
+    if install is None:
+        raise RuntimeError(f"{code} is {describe_command(code)}, not the desktop VS Code's `code`.")
+    return install
+
+
+def find_install(*, prefer_runtime: bool = False) -> VSCodeInstall | None:
+    """The desktop VS Code to set up: the `UG_VSCODE_CODE` override, else the first install found,
+    or with ``prefer_runtime`` the first one with a bundled Copilot runtime."""
+    if override := os.environ.get("UG_VSCODE_CODE"):
+        return requested_install(override)
+    installs = vscode_installs()
+    if prefer_runtime:
+        with_runtime = next((i for i in installs if i.runtime() is not None), None)
+        if with_runtime is not None:
+            return with_runtime
+    return installs[0] if installs else None
 
 
 def _find_command(command: str) -> Path | None:
-    if found := shutil.which(command):
-        return Path(found)
-    return next((path for path in _install_locations(command) if path.is_file()), None)
+    installs = vscode_installs(command)
+    return installs[0].code if installs else None
 
 
 def find_code() -> Path | None:
     """VS Code's `code` command, or Insiders' when only that is installed."""
-    for command, _ in CODE_COMMANDS:
-        if found := _find_command(command):
-            return found
-    return None
+    install = find_install()
+    return install.code if install else None
 
 
 def extensions_dir(folder: str) -> Path:
@@ -291,30 +433,35 @@ RUNTIME_WRAPPER_NAME = "ug-copilot-runtime"
 _NODE_ARCHES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 
 
+def _runtime_in(app: Path) -> Path | None:
+    """The Copilot runtime bundled under ``app`` for this OS. Any CPU architecture the install
+    ships counts: VS Code's own architecture decides which prebuild it bundles (an Intel VS Code on
+    an Apple Silicon Mac, a Universal build with both), and ug's Python may well differ."""
+    system = {OS.MACOS: "darwin", OS.LINUX: "linux", OS.WINDOWS: "win32"}.get(current_os())
+    if system is None:
+        return None
+    name = "copilot-runtime.exe" if system == "win32" else "copilot-runtime"
+    sdks = app / "node_modules.asar.unpacked" / "@github"
+    try:
+        targets = sorted(
+            entry.name.removeprefix("copilot-sdk-")
+            for entry in sdks.iterdir()
+            if entry.name.startswith(f"copilot-sdk-{system}-")
+        )
+    except OSError:
+        return None
+    own = f"{system}-{_NODE_ARCHES.get(platform.machine().lower(), '')}"
+    for target in sorted(targets, key=lambda t: t != own):
+        runtime = sdks / f"copilot-sdk-{target}" / "prebuilds" / target / name
+        if runtime.is_file():
+            return runtime
+    return None
+
+
 def bundled_runtime(code: Path) -> Path | None:
     """The Copilot runtime bundled with the VS Code install that ``code`` belongs to."""
-    system = {OS.MACOS: "darwin", OS.LINUX: "linux", OS.WINDOWS: "win32"}.get(current_os())
-    arch = _NODE_ARCHES.get(platform.machine().lower())
-    if system is None or arch is None:
-        return None
-    target = f"{system}-{arch}"
-    name = "copilot-runtime.exe" if system == "win32" else "copilot-runtime"
-    bin_dir = code.resolve().parent
-    # macOS keeps `code` in the app folder's bin; Linux packages keep the app under resources/app.
-    apps = [bin_dir.parent, bin_dir.parent / "resources" / "app"]
-    if system == "win32":
-        apps = [*_windows_app_dirs(bin_dir, code), *apps]
-    for app in apps:
-        runtime = (
-            app
-            / "node_modules.asar.unpacked"
-            / "@github"
-            / f"copilot-sdk-{target}"
-            / "prebuilds"
-            / target
-            / name
-        )
-        if runtime.is_file():
+    for app in _app_dirs(code):
+        if (runtime := _runtime_in(app)) is not None:
             return runtime
     return None
 
@@ -442,7 +589,9 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
     runs it through ``provider``'s seat relay. Returns why it couldn't, or None."""
     runtime = bundled_runtime(code)
     if runtime is None:
-        return "This VS Code has no bundled Copilot runtime ug can run through the seat relay."
+        return (
+            f"the VS Code install of {code} has no bundled Copilot runtime ug can run through it."
+        )
     insiders = code.name.startswith("code-insiders")
     settings = user_dir(insiders) / "settings.json"
     command = seat_relay_command(state, provider)
@@ -630,22 +779,59 @@ def next_steps(*, seat_relay: bool = False) -> str:
     return f"In VS Code: {restart}, then open Chat, click the model picker and choose a Databricks model."
 
 
+# `ug configure --vscode-code <path>` for this run; `UG_VSCODE_CODE` is the same for every run.
+_requested_code: str | None = None
+
+
+def request_code(path: str | None) -> None:
+    global _requested_code
+    _requested_code = path
+
+
+def _install_to_configure(seat_relay: bool) -> VSCodeInstall | None:
+    """The desktop VS Code configure sets up, with one note when it isn't what `code` on PATH runs.
+    A bad override raises. None, after a note, when there is no desktop VS Code."""
+    if _requested_code:
+        return requested_install(_requested_code)
+    install = find_install(prefer_runtime=seat_relay)
+    on_path = first_code_on_path()
+    if install is None:
+        if on_path is None:
+            print_note(
+                "VS Code's `code` command wasn't found, so VS Code was skipped. To add it, install "
+                "VS Code (on macOS, also run \"Shell Command: Install 'code' command in PATH\"), "
+                "then rerun `ug configure --agents copilot`."
+            )
+        else:
+            print_note(
+                f"`code` on PATH ({on_path}) is {describe_command(on_path)}, and no desktop VS Code "
+                "was found in the usual places, so VS Code was skipped. Pass its `code` command "
+                "with `ug configure --agents copilot --vscode-code <path>`."
+            )
+        return None
+    if on_path is not None and on_path.resolve() != install.code.resolve():
+        print_note(
+            f"Using VS Code at {install.app}; `code` on PATH ({on_path}) is {describe_command(on_path)}."
+        )
+    return install
+
+
 def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
     Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
     workspace's managed headers, its managed default model and its selection on a host that serves
     several workspaces, and when the workspace traces Copilot, the trace receiver. Returns False, after a warning, if any
     step fails."""
-    code = find_code()
-    if code is None:
-        print_note(
-            "VS Code's `code` command wasn't found, so VS Code was skipped. To add it, install VS "
-            "Code (on macOS, also run \"Shell Command: Install 'code' command in PATH\"), then "
-            "rerun `ug configure --agents copilot`."
-        )
-        return False
     try:
         seat_relay = bool(provider) and uses_seat_relay(state, cast(str, provider), tool="vscode")
+        install = _install_to_configure(seat_relay)
+    except RuntimeError as exc:
+        print_warning(f"{exc} VS Code was left unchanged.")
+        return False
+    if install is None:
+        return False
+    code = install.code
+    try:
         # A seat relay serves Copilot's own models, so the extension lists none of Databricks'.
         catalog = [] if seat_relay else copilot_models(state, provider, location)
     except RuntimeError as exc:
@@ -660,11 +846,11 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
-    if seat_relay and bundled_runtime(code) is None:
+    if seat_relay and install.runtime() is None:
         print_warning(
-            "This VS Code has no bundled Copilot runtime ug can run through the seat relay, so "
-            "VS Code was left unchanged. Update VS Code, then rerun `ug configure --agents "
-            "copilot`."
+            f"VS Code {install.version} at {install.app} has no bundled Copilot runtime ug can run "
+            "through the seat relay, so VS Code was left unchanged. Update VS Code, then rerun "
+            "`ug configure --agents copilot`."
         )
         return False
     # The extension makes it VS Code's default for new chats, unless the developer set their own.
@@ -695,19 +881,34 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     else:
         print_kv("VS Code extension", f"{installed}, routing Copilot through {provider}")
     print_note(next_steps(seat_relay=seat_relay))
+    # Revert works on the same install, whatever `code` is on PATH by then.
+    state[CODE_PATH_STATE_KEY] = str(code)
     return True
 
 
-def revert() -> str:
+# The `code` configure set up, saved in the workspace state for revert.
+CODE_PATH_STATE_KEY = "vscode_code"
+
+
+def _recorded_code(state: dict | None, command: str) -> Path | None:
+    """The `code` the last configure used, while it is still that desktop VS Code."""
+    recorded = (state or {}).get(CODE_PATH_STATE_KEY)
+    if not isinstance(recorded, str) or Path(recorded).stem != command:
+        return None
+    code = Path(recorded)
+    return code if code.is_file() and _install_at(code) is not None else None
+
+
+def revert(state: dict | None = None) -> str:
     """Remove the user settings the extension wrote, then uninstall it and its config with it:
-    "removed" or "unchanged"."""
+    "removed" or "unchanged". ``state`` names the `code` configure used, when it is known."""
     removed = False
     for command, folder in CODE_COMMANDS:
         removed = remove_seat_relay_route(insiders=command == "code-insiders") or removed
         # Look on disk first, so revert runs `code` only for people who set VS Code up.
         if not any(extensions_dir(folder).glob(f"{EXTENSION_ID}-*")):
             continue
-        code = _find_command(command)
+        code = _recorded_code(state, command) or _find_command(command)
         # VS Code can leave an uninstalled extension's folder behind until it next starts.
         if code is None or (version := installed_version(code)) is None:
             continue

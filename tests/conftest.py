@@ -125,6 +125,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     )
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
+    monkeypatch.setattr(vscode_mod, "find_install", lambda prefer_runtime=False: None)
+    monkeypatch.setattr(vscode_mod, "first_code_on_path", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
     monkeypatch.setattr(
         vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"

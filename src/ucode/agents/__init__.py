@@ -751,11 +751,19 @@ def request_vscode_with_copilot(requested: bool = True) -> None:
     _vscode_with_copilot = requested
 
 
+def request_vscode_code(path: str | None) -> None:
+    """The `code` command ``ug configure --vscode-code`` names for this run, instead of the one ug
+    finds."""
+    from . import vscode
+
+    vscode.request_code(path)
+
+
 def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
     """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with, or remove
     an earlier setup when the workspace's managed config turns VS Code off."""
     if state.get("copilot_vscode_integration") is False:
-        _remove_vscode_for_managed_config()
+        _remove_vscode_for_managed_config(state)
         return
     if not _vscode_with_copilot:
         return
@@ -767,13 +775,13 @@ def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | 
     vscode.configure(state, provider=provider, location=parent_schema)
 
 
-def _remove_vscode_for_managed_config() -> None:
+def _remove_vscode_for_managed_config(state: dict) -> None:
     if is_dry_run():
         print_note("Dry run: VS Code isn't changed.")
         return
     from . import vscode
 
-    removed = vscode.revert() == "removed"
+    removed = vscode.revert(state) == "removed"
     print_note(
         "This workspace's managed configuration turns off GitHub Copilot in VS Code, so "
         + ("the VS Code extension was removed." if removed else "VS Code was skipped.")

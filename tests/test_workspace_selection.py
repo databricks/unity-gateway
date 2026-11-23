@@ -407,7 +407,9 @@ class TestAgentConfigs:
 
     def test_vscode_selection_comes_after_admin_headers(self, selected, monkeypatch):
         written = {}
-        monkeypatch.setattr(vscode, "find_code", lambda: Path("code"))
+        install = vscode.VSCodeInstall(Path("code"), Path("app"), {"nameShort": "Code"})
+        monkeypatch.setattr(vscode, "find_install", lambda prefer_runtime=False: install)
+        monkeypatch.setattr(vscode, "first_code_on_path", lambda: Path("code"))
         monkeypatch.setattr(
             vscode, "install_extension", lambda code, config: written.update(config)
         )
