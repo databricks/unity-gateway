@@ -7,6 +7,7 @@ import importlib.util
 import json
 import re
 import urllib.error
+from fnmatch import fnmatchcase
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -223,7 +224,7 @@ def test_workflow_uses_pinned_open_code_review_action_and_cli():
         "src/ucode/agents/desktop/connector_skills/cowork.md",
     ):
         assert (ROOT / path).is_file(), path
-        assert any(ROOT / path in ROOT.glob(pattern) for pattern in rules["include"]), path
+        assert any(fnmatchcase(path, pattern) for pattern in rules["include"]), path
 
 
 def test_workflow_posts_findings_inline_and_drops_summary_only_when_nothing_was_routed():
