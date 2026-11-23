@@ -3596,6 +3596,9 @@ def smart_router_logs_cmd(
     decision: Annotated[str | None, typer.Option("--decision")] = None,
     harness: Annotated[str, typer.Option("--harness")] = AGENT_CLAUDE,
     output_format: Annotated[str, typer.Option("--format")] = "json",
+    record_route_validation: Annotated[
+        Path | None, typer.Option("--record-route-validation")
+    ] = None,
 ) -> None:
     """Print a session's recorded smart-routing decisions as JSON, or a table with --format table."""
     from ucode.smart_routing import session_log
@@ -3613,6 +3616,16 @@ def smart_router_logs_cmd(
         raise fail(f"unknown harness {harness!r}; expected {AGENT_CLAUDE} or {AGENT_CODEX}")
     if output_format not in ("json", "table"):
         raise fail(f"unknown format {output_format!r}; expected json or table")
+    if record_route_validation is not None:
+        try:
+            result = json.loads(record_route_validation.read_text(encoding="utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("expected a JSON object")
+            session_log.append_route_validation(harness, session, result)
+        except (OSError, ValueError) as exc:
+            raise fail(f"cannot record route validation: {exc}") from exc
+        sys.stdout.write(json.dumps({"v": 1}) + "\n")
+        return
     try:
         records = session_log.read_decisions(harness, session)
     except OSError as exc:
@@ -3631,8 +3644,16 @@ def smart_router_logs_cmd(
         sys.stdout.write(session_log.render_table(records) + "\n")
         return
     if decision is None:
+        validations = session_log.read_records(harness, session, session_log.ROUTE_VALIDATION_TYPE)
         sys.stdout.write(
-            json.dumps({"v": 1, "decisions": [session_log.overview(r) for r in records]}) + "\n"
+            json.dumps(
+                {
+                    "v": 1,
+                    "decisions": [session_log.overview(r) for r in records],
+                    "route_validations": validations,
+                }
+            )
+            + "\n"
         )
         return
     record = next((r for r in records if r.get("decision_id") == decision), None)
