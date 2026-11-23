@@ -99,7 +99,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   on('prompt.submit', async ($, e, next) => {
     // The native client permits one unmatched prompt handler, shared with routing recovery.
     if (e.origin?.kind === 'task-notification') {
-      try { recordSubagentRateLimit(e.text, await $.clock.now()) } catch {}
+      recordSubagentRateLimit(e.text, (delay, expire) => $.clock.after(delay, expire))
     }
     if (band.isVisible) band.isHideArmed = true
     return next(e)

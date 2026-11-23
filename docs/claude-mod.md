@@ -134,10 +134,12 @@ verification message, without changing the model injected into the spawn request
 A confirmed native background-task 429 excludes that model and equivalent aliases from
 new router requests for 60 seconds. The router chooses from the remaining candidates;
 failed selection or no available candidate denies the new spawn while cooldown is active.
-Cooldowns survive `/clear`; known exclusions remain when the clock is unavailable
-until expiry can be confirmed. The failed child is not retried. Resumes and explicitly
-disabled routing keep their native behavior. Outside cooldown, command failures and
-invalid responses preserve the original call and log a diagnostic.
+Cooldowns and background-child failure tracking survive `/clear`. A native timer releases
+each exclusion after 60 seconds independently of wall-clock reads. A new confirmed failure
+restarts that model's minute; if the timer cannot run, the exclusion remains. The failed
+child is not retried. Resumes and explicitly disabled routing keep their native behavior.
+Outside cooldown, command failures
+and invalid responses preserve the original call and log a diagnostic.
 
 ### Routing explanations
 
