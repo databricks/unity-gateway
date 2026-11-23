@@ -842,7 +842,9 @@ class _ClaudeModelSettingGuard:
         if manual is not None and (
             not isinstance(manual, dict)
             or not isinstance(manual.get("token"), str)
-            or not isinstance(manual.get("model"), str)
+            or "model" not in manual
+            or manual["model"] is not None
+            and not isinstance(manual["model"], str)
             or type(manual.get("pid")) is not int
             or manual["pid"] <= 0
         ):
@@ -881,7 +883,7 @@ class _ClaudeModelSettingGuard:
                     pass
 
     def _write_recovery(self, recovery: dict) -> None:
-        if recovery["pending"]:
+        if recovery["pending"] or "manual" in recovery:
             config_io.atomic_write_json(self._recovery_path, recovery)
         else:
             self._recovery_path.unlink(missing_ok=True)
@@ -1043,33 +1045,30 @@ class _ClaudeModelSettingGuard:
         if self._lock is None:
             return False
         try:
-            if manual_model is None:
-                # History and picker input do not expose the chosen model.
-                self._recovery_path.unlink(missing_ok=True)
-            else:
-                recovery = self._read_recovery()
-                if (
-                    recovery.get("manual_started_at", 0) > self._manual_started_at
-                    or self._manual_registered
-                    and recovery.get("manual_choice") != self._token
-                ):
-                    self._clear()
-                    return True
+            recovery = self._read_recovery()
+            if (
+                recovery.get("manual_started_at", 0) > self._manual_started_at
+                or self._manual_registered
+                and recovery.get("manual_choice") != self._token
+            ):
+                self._clear()
+                return True
+            if manual_model is not None:
                 recovery["pending"].pop(self._token, None)
-                recovery["manual_choice"] = self._token
-                # Keep input order when registration has to wait for another writer.
-                recovery["manual_started_at"] = self._manual_started_at
-                if recovery["pending"]:
-                    # Keep older writers until confirmation, cancellation or child exit.
-                    recovery["manual"] = {
-                        "token": self._token,
-                        "model": manual_model,
-                        "pid": os.getpid(),
-                    }
-                    self._write_recovery(recovery)
-                    self._manual_registered = True
-                    return False
+            recovery["manual_choice"] = self._token
+            # Keep input order when registration has to wait for another writer.
+            recovery["manual_started_at"] = self._manual_started_at
+            if recovery["pending"] or manual_model is None:
+                # Opaque input stays tentative until the native command or prompt settles.
+                recovery["manual"] = {
+                    "token": self._token,
+                    "model": manual_model,
+                    "pid": os.getpid(),
+                }
                 self._write_recovery(recovery)
+                self._manual_registered = True
+                return False
+            self._write_recovery(recovery)
         finally:
             self._release_settings_lock()
         self._clear()
@@ -1089,9 +1088,17 @@ class _ClaudeModelSettingGuard:
             recovery = self._read_recovery()
             if recovery.get("manual", {}).get("token") == self._token:
                 if confirmed:
-                    recovery["before"] = {"model": self._manual_model}
+                    if self._manual_model is None:
+                        # A native opaque choice cannot supply the raw saved-default selector.
+                        recovery["pending"].clear()
+                    else:
+                        recovery["before"] = {"model": self._manual_model}
                 del recovery["manual"]
-            recovery["pending"].pop(self._token, None)
+            resume_routed = (
+                not confirmed and self._manual_model is None and self._token in recovery["pending"]
+            )
+            if not resume_routed:
+                recovery["pending"].pop(self._token, None)
             finished = {
                 token: entry
                 for token, entry in recovery["pending"].items()
@@ -1103,20 +1110,28 @@ class _ClaudeModelSettingGuard:
                     self._restore_default(current, recovery["before"], deadline=deadline)
                 for token in finished:
                     del recovery["pending"][token]
+            resume_routed = resume_routed and self._token in recovery["pending"]
             self._write_recovery(recovery)
         finally:
             self._release_settings_lock()
+        if resume_routed:
+            self._cancelled = False
+            self._manual_model = None
+            self._manual_confirmed = None
+            self._manual_registered = False
+            self._manual_started_at = 0
+            return False
         self._clear()
         return True
 
     def confirm_manual_choice(self) -> bool:
-        if not self._cancelled or self._manual_model is None:
+        if not self._cancelled:
             return True
         self._manual_confirmed = True
         return self._finish_manual_choice(confirmed=True)
 
     def cancel_manual_choice(self) -> bool:
-        if not self._cancelled or self._manual_model is None:
+        if not self._cancelled:
             return True
         self._manual_confirmed = False
         return self._finish_manual_choice(confirmed=False)
@@ -1164,7 +1179,7 @@ class _ClaudeModelSettingGuard:
         try:
             while True:
                 try:
-                    if self._cancelled and self._manual_model is not None:
+                    if self._cancelled:
                         if self._finish_manual_choice(
                             confirmed=self._manual_confirmed is True, deadline=deadline
                         ):

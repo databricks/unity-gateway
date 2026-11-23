@@ -140,26 +140,27 @@ class OutputMarkerDetector:
 
 
 class ManualModelConfirmation:
-    """Match a completed native result for a known manual model command."""
+    """Match a completed native model result after a possible manual command."""
 
-    def __init__(self, model: str) -> None:
-        self._model = _squash(model).casefold()
+    def __init__(self, model: str | None) -> None:
+        self._model = _squash(model).casefold() if model is not None else None
         self._buffer = b""
 
     def observe(self, chunk: bytes) -> Literal["confirmed", "cancelled"] | None:
         self._buffer = (self._buffer + chunk)[-8192:]
         text = re.sub(r"[^\S\r\n]+", "", strip_ansi(self._buffer)).casefold()
-        if re.search(r"(?:^|[^a-z0-9])modelswitchcancelled[\r\n]", text):
+        prefix = r"(?:^|[\r\n])(?:⎿)?"
+        if re.search(prefix + r"modelswitchcancelled[\r\n]", text):
             return "cancelled"
         for result in re.finditer(
-            r"(?:^|[^a-z0-9])(setmodelto|modelsetto|keptmodelas)(.*?)"
+            prefix + r"(setmodelto|modelsetto|keptmodelas)(.*?)"
             r"(?:andsavedasyourdefaultfornewsessions|[\r\n])",
             text,
         ):
             if result[1] == "keptmodelas":
                 return "cancelled"
             label = result[2]
-            if label == self._model:
+            if label and (self._model is None or label == self._model):
                 return "confirmed"
             # Native family shortcuts render a display version instead of the saved alias.
             if self._model in {"opus", "sonnet", "haiku", "fable"} and re.fullmatch(
@@ -507,12 +508,13 @@ def serve_first_prompt_socket(
                             submitted = prompt
                     except Exception as exc:  # noqa: BLE001 - hooks must fail open
                         log(f"[ERR] first-prompt request: {exc!r}")
+                    if submitted is not None:
+                        # Classify the prompt before Claude can emit its reply.
+                        on_submitted_prompt(submitted)
                     stream.write((json.dumps(response) + "\n").encode())
                     stream.flush()
                     if blocked is not None:
                         on_blocked_prompt(*blocked)
-                    if submitted is not None:
-                        on_submitted_prompt(submitted)
         finally:
             server.close()
 
@@ -582,6 +584,7 @@ def run_claude_pty(
     pending: dict[str, tuple[str, str] | None] = {"value": None}
     # Set when the UserPromptSubmit hook fires after the claim, confirming submission.
     submitted_event = threading.Event()
+    submitted_count = 0
 
     def on_blocked_prompt(prompt: str, model: str) -> None:
         with pending_lock:
@@ -589,7 +592,10 @@ def run_claude_pty(
         log(f"[ROUTE] first prompt -> {model!r}")
 
     def on_submitted_prompt(_prompt: str) -> None:
-        submitted_event.set()
+        nonlocal submitted_count
+        with pending_lock:
+            submitted_count += 1
+            submitted_event.set()
 
     server_thread = serve_first_prompt_socket(
         socket_path,
@@ -640,6 +646,8 @@ def run_claude_pty(
             switch_complete: OutputMarkerDetector | None = None
             switch_cancelled: OutputMarkerDetector | None = None
             manual_complete: ManualModelConfirmation | None = None
+            manual_unknown = False
+            manual_prompt_after: int | None = None
             model_pending = False
             deferred_restore = False
             restore_ready = False
@@ -651,13 +659,22 @@ def run_claude_pty(
             def observe_input(data: bytes, now: float) -> None:
                 nonlocal phase, model_pending, deferred_restore, restore_ready, manual_complete
                 nonlocal next_restore_check, restore_check_interval
+                nonlocal manual_unknown, manual_prompt_after
                 if phase == "waiting_prompt":
                     return
                 observation = user_input.observe(data, now)
                 if observation.model_command:
                     # A known manual target must also survive other sessions' late writes.
                     model = observation.manual_model
-                    manual_complete = ManualModelConfirmation(model) if model is not None else None
+                    manual_complete = ManualModelConfirmation(model)
+                    manual_unknown = model is None
+                    with pending_lock:
+                        # An old replay acknowledgement cannot classify newly entered input.
+                        manual_prompt_after = (
+                            submitted_count
+                            if manual_unknown and (not submit_attempts or submitted_event.is_set())
+                            else None
+                        )
                     try:
                         model_pending = abandon_model_setting(model) is False
                     except (OSError, ValueError, RuntimeError) as exc:
@@ -689,6 +706,27 @@ def run_claude_pty(
                     defer_model_setting()
                     deferred_restore = True
 
+            def settle_manual_choice(outcome: Literal["confirmed", "cancelled"]) -> None:
+                nonlocal model_pending, deferred_restore, restore_ready, manual_complete
+                nonlocal next_restore_check, restore_check_interval, manual_prompt_after
+                try:
+                    complete_manual = (
+                        confirm_manual_model_setting
+                        if outcome == "confirmed"
+                        else cancel_manual_model_setting
+                    )
+                    model_pending = complete_manual() is False
+                except (OSError, ValueError, RuntimeError) as exc:
+                    model_pending = True
+                    log(f"[WARN] {outcome} manual model handoff deferred: {exc}")
+                deferred_restore = model_pending
+                # An ordinary prompt does not acknowledge this session's delayed routed write.
+                restore_ready = model_pending and not manual_unknown
+                next_restore_check = 0.0
+                restore_check_interval = MODEL_RESTORE_INTERVAL_S
+                manual_complete = None
+                manual_prompt_after = None
+
             def clear_keys() -> bytes:
                 # The box can still hold the blocked prompt and an unrun /model command.
                 return clear_input_keys(
@@ -713,6 +751,7 @@ def run_claude_pty(
                         observe_input(data, time.monotonic())
                         os.write(master_fd, data)
 
+                chunk = b""
                 if master_fd in ready_fds:
                     try:
                         chunk = os.read(master_fd, 8192)
@@ -732,24 +771,19 @@ def run_claude_pty(
                         assert switch_cancelled is not None
                         if phase == "waiting_cancel":
                             switch_cancelled.observe(chunk)
-                    outcome = (
-                        manual_complete.observe(chunk) if manual_complete is not None else None
-                    )
-                    if outcome is not None:
-                        try:
-                            complete_manual = (
-                                confirm_manual_model_setting
-                                if outcome == "confirmed"
-                                else cancel_manual_model_setting
-                            )
-                            model_pending = complete_manual() is False
-                        except (OSError, ValueError, RuntimeError) as exc:
-                            model_pending = True
-                            log(f"[WARN] {outcome} manual model handoff deferred: {exc}")
-                        deferred_restore = restore_ready = model_pending
-                        next_restore_check = 0.0
-                        restore_check_interval = MODEL_RESTORE_INTERVAL_S
-                        manual_complete = None
+
+                if manual_complete is not None:
+                    with pending_lock:
+                        ordinary_prompt = (
+                            manual_prompt_after is not None
+                            and submitted_count > manual_prompt_after
+                        )
+                    if ordinary_prompt:
+                        settle_manual_choice("cancelled")
+                    elif chunk:
+                        outcome = manual_complete.observe(chunk)
+                        if outcome is not None:
+                            settle_manual_choice(outcome)
 
                 if phase == "waiting_prompt":
                     with pending_lock:

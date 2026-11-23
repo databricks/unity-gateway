@@ -2134,8 +2134,9 @@ class TestSubagentRouting:
 
 class TestModelSettingRecovery:
     @pytest.mark.parametrize("older_completion", ["restore", "confirm_manual_choice"])
+    @pytest.mark.parametrize("older_model", [None, "opus"])
     def test_unregistered_older_choice_cannot_replace_a_newer_choice(
-        self, tmp_path, monkeypatch, older_completion
+        self, tmp_path, monkeypatch, older_completion, older_model
     ):
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
@@ -2152,7 +2153,7 @@ class TestModelSettingRecovery:
         try:
             # Only the older choice's initial registration loses the lock.
             monkeypatch.setattr(v2, "acquire_exclusive_file_lock", busy_lock)
-            assert older.abandon("opus") is False
+            assert older.abandon(older_model) is False
             monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire)
             assert newer.abandon("fable") is False
             settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
@@ -2471,9 +2472,12 @@ finally:
         if completed:
             assert second("restore")
         chooser = second if completed else first
-        assert chooser("abandon")
+        assert chooser("abandon") is False
+        assert first("restore") is False
+        assert second("restore") is False
         model = "sonnet" if completed else "opus"
         settings.write_text(json.dumps({"model": model, "theme": "light"}))
+        assert chooser("confirm_manual_choice")
         assert second("restore") is True
         assert first("restore") is True
         assert json.loads(settings.read_text()) == {"model": model, "theme": "light"}
@@ -2722,7 +2726,8 @@ finally:
         assert guard("begin", routed_model="sonnet")
         recovery_dir = tmp_path / ".ucode"
         recovery = next(recovery_dir.glob("claude-v2-model-*.json"))
-        assert guard("abandon")
+        assert guard("abandon") is False
+        assert guard("confirm_manual_choice")
         recovery.write_text("{")
         blocked = start()
         for _ in range(2):
@@ -3029,3 +3034,94 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+class TestOpaqueModelSettingRecovery:
+    @pytest.mark.parametrize("same_session", [False, True])
+    def test_opaque_input_keeps_routed_tokens_until_classified(
+        self, tmp_path, monkeypatch, same_session
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = pending if same_session else v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        try:
+            assert chooser.abandon(None) is False
+            recovery = json.loads(pending._recovery_path.read_text())
+            assert pending._token in recovery["pending"]
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore() is False
+            assert chooser.cancel_manual_choice() is (not same_session)
+            assert pending.is_routed()
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    def test_opaque_input_blocks_a_new_routed_writer_until_cancelled(self, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        pending = v2._ClaudeModelSettingGuard(settings)
+        try:
+            assert chooser.abandon(None) is False
+            assert pending.begin("sonnet") is False
+            assert chooser.cancel_manual_choice()
+            assert pending.begin("sonnet")
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+
+class TestOpaqueInputSettlement:
+    def test_cancelling_opaque_input_recovers_an_exited_writer(self, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        try:
+            assert chooser.abandon(None) is False
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert pending.finish(timeout=0) is False
+            assert chooser.cancel_manual_choice()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+            assert not pending._recovery_path.exists()
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    def test_ordinary_prompt_cancels_before_tentative_registration_gets_the_lock(
+        self, tmp_path, monkeypatch
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+
+        def busy_lock(_file, *, timeout):
+            raise TimeoutError("another process holds the journal lock")
+
+        try:
+            # Contention affects the lock only; recovery reads and writes stay real.
+            with monkeypatch.context() as lock:
+                lock.setattr(v2, "acquire_exclusive_file_lock", busy_lock)
+                assert chooser.abandon(None) is False
+            assert chooser.cancel_manual_choice()
+            assert pending._token in json.loads(pending._recovery_path.read_text())["pending"]
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)

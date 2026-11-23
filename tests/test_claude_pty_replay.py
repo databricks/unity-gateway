@@ -448,10 +448,14 @@ finally:
 sys.exit(result)
 """
 
-    def run(body):
+    def run(body, *, wrapper_setup=""):
         _write_fake_claude(tmp_path / "fc.py", body)
+        configured_wrapper = wrapper.replace(
+            "try:\n    result = claude_pty.run_claude_pty(",
+            wrapper_setup + "\ntry:\n    result = claude_pty.run_claude_pty(",
+        )
         result = subprocess.run(
-            [sys.executable, "-c", wrapper, str(tmp_path)],
+            [sys.executable, "-c", configured_wrapper, str(tmp_path)],
             stdin=0,
             env={**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)},
             timeout=45,
@@ -1514,3 +1518,339 @@ class TestOnSubmittedPromptCallback:
             stop.set()
 
         assert submitted == [], "on_submitted_prompt must not fire for the initial block"
+
+
+class TestOpaqueInputRecovery:
+    @pytest.mark.parametrize(
+        "command, prompt, outcome",
+        [
+            (b"\x1b[A\r", "fix the bug", None),
+            (b"explain\t\r", "explain this code", None),
+            ("explain caf\u00e9\x1b[D\r".encode(), "explain caf\u00e9", None),
+            (b"/model\r", None, b"Set model to fable\n"),
+            (b"\x1b[A\r", None, b"Set model to fable\n"),
+            (b"/mo\t\r", None, b"Set model to fable\n"),
+            (b"/model\r", None, b"Kept model as haiku\n"),
+            (b"\x1b[A\r", None, b"Model switch cancelled\n"),
+            (b"/mo\t\r", None, b"Kept model as haiku\n"),
+        ],
+        ids=[
+            "history-prompt",
+            "completion-prompt",
+            "unicode-edit-prompt",
+            "picker-choice",
+            "history-choice",
+            "completion-choice",
+            "picker-cancel",
+            "history-cancel",
+            "completion-cancel",
+        ],
+    )
+    def test_opaque_input_waits_for_native_classification(
+        self, replay_model_switch, tmp_path, command, prompt, outcome
+    ):
+        body = (
+            f"COMMAND = {command!r}\nPROMPT = {prompt!r}\nOUTCOME = {outcome!r}\n"
+            + r"""
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+os.write(1, b"Set model to sonnet\n")
+read_until(b"\x1b[201~")
+assert os.read(0, 1) == b"\r"
+assert send_hook(socket_path, "hello")["action"] == "allow"
+deadline = time.monotonic() + 3
+while not (test_dir / "restored").exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert (test_dir / "restored").exists()
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("opus")
+    (test_dir / "ready").touch()
+    assert read_until(b"\r") == COMMAND
+    assert other._recovery_path.exists(), "opaque input discarded peer recovery"
+    recovery = json.loads(other._recovery_path.read_text())
+    assert other._token in recovery["pending"]
+    assert recovery["before"] == {"model": "haiku"}
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    deadline = time.monotonic() + 3
+    while not other.is_routed():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert other.restore() is False, "a possible manual choice must settle first"
+    if PROMPT is not None:
+        assert send_hook(socket_path, PROMPT)["action"] == "allow"
+    else:
+        if OUTCOME.startswith(b"Set model"):
+            settings.write_text(json.dumps({"model": "fable", "unrelated": "preserved"}))
+        os.write(1, OUTCOME[:5])
+        os.write(1, OUTCOME[5:])
+    deadline = time.monotonic() + 3
+    while not other.restore():
+        assert time.monotonic() < deadline, "native classification did not release recovery"
+        time.sleep(0.01)
+    capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+finally:
+    other.finish()
+"""
+        )
+        with _stdin_after(tmp_path / "ready", [command]):
+            capture, settings, _ = replay_model_switch(body)
+        expected = "fable" if outcome and outcome.startswith(b"Set model") else "haiku"
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": expected, "unrelated": "preserved"}
+        )
+
+    @pytest.mark.parametrize(
+        "output, expected",
+        [
+            (b"Set model to fable\n", "confirmed"),
+            (b"Model set to a custom label\n", "confirmed"),
+            (b"Set model to\n", None),
+            (b"Set model to fable", None),
+            (b"Switch model? Yes, switch to fable\n", None),
+            ("❯ Set model to fable\n".encode(), None),
+            (b"Please explain: Set model to fable\n", None),
+            ("  ⎿  Set model to fable\n".encode(), "confirmed"),
+            ("  ⎿  Kept model as haiku\n".encode(), "cancelled"),
+            (b"Kept model as haiku\n", "cancelled"),
+            (b"Model switch cancelled\n", "cancelled"),
+        ],
+    )
+    def test_opaque_input_needs_a_complete_native_result(self, output, expected):
+        detector = claude_pty.ManualModelConfirmation(None)
+        observations = [detector.observe(bytes([byte])) for byte in output]
+        assert next((result for result in observations if result is not None), None) == expected
+
+
+class TestOpaqueInputAcknowledgements:
+    def test_ordinary_prompt_keeps_its_own_delayed_routed_write_recoverable(
+        self, replay_model_switch, tmp_path
+    ):
+        body = r"""
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+(test_dir / "ready").touch()
+assert read_until(b"\r") == b"\x1b[A\r"
+recovery_path = next((Path.home() / ".ucode").glob("claude-v2-model-*.json"))
+assert json.loads(recovery_path.read_text())["pending"]
+assert send_hook(socket_path, "a different ordinary prompt")["action"] == "allow"
+deadline = time.monotonic() + 3
+while "manual" in json.loads(recovery_path.read_text()):
+    assert time.monotonic() < deadline
+    time.sleep(0.01)
+assert json.loads(recovery_path.read_text())["pending"]
+assert json.loads(settings.read_text())["model"] == "haiku"
+assert not (test_dir / "restored").exists()
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+deadline = time.monotonic() + 3
+while not (test_dir / "restored").exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.01)
+capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+"""
+        with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
+            capture, settings, _ = replay_model_switch(body)
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
+    def test_old_replay_acknowledgement_does_not_cancel_a_new_opaque_choice(
+        self, replay_model_switch, tmp_path
+    ):
+        body = r"""
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+os.write(1, b"Set model to sonnet\n")
+read_until(b"\x1b[201~")
+assert os.read(0, 1) == b"\r"
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("opus")
+    (test_dir / "ready").touch()
+    assert read_until(b"\r") == b"\x1b[A\r"
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    deadline = time.monotonic() + 3
+    while not other.is_routed():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert other.restore() is False
+    assert send_hook(socket_path, "hello")["action"] == "allow"
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        assert other.restore() is False
+        time.sleep(0.01)
+    assert "manual" in json.loads(other._recovery_path.read_text())
+    os.write(1, b"Kept model as haiku\n")
+    deadline = time.monotonic() + 3
+    while not other.restore():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+finally:
+    other.finish()
+"""
+        with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
+            capture, settings, _ = replay_model_switch(body)
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
+
+class TestOpaqueInputHookOrder:
+    @pytest.mark.parametrize("reply", [b"Set model to fable\n", b"```\nModel set to fable\n```\n"])
+    def test_ordinary_prompt_classification_precedes_reply_text(
+        self, replay_model_switch, tmp_path, reply
+    ):
+        # Synchronize the real select so the hook and reply arrive in the same PTY turn.
+        setup = r"""
+serve = claude_pty.serve_first_prompt_socket
+
+def observe_submission(*args, **kwargs):
+    submitted = kwargs["on_submitted_prompt"]
+    def record(prompt):
+        submitted(prompt)
+        if prompt == "quote the model result":
+            (root / "ordinary-classified").touch()
+    kwargs["on_submitted_prompt"] = record
+    return serve(*args, **kwargs)
+
+claude_pty.serve_first_prompt_socket = observe_submission
+native_select = claude_pty.select.select
+
+def wait_for_reply(readers, writers, errors, timeout):
+    if (root / "arm-reply").exists() and not (root / "reply-read-ready").exists():
+        (root / "reply-read-ready").touch()
+        timeout = 3
+    return native_select(readers, writers, errors, timeout)
+
+claude_pty.select.select = wait_for_reply
+"""
+        body = (
+            f"REPLY = {reply!r}\n"
+            + r"""
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+os.write(1, b"Set model to sonnet\n")
+read_until(b"\x1b[201~")
+assert os.read(0, 1) == b"\r"
+assert send_hook(socket_path, "hello")["action"] == "allow"
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("opus")
+    (test_dir / "ready").touch()
+    assert read_until(b"\r") == b"\x1b[A\r"
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    deadline = time.monotonic() + 3
+    while not other.is_routed():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert other.restore() is False
+    (test_dir / "arm-reply").touch()
+    deadline = time.monotonic() + 3
+    while not (test_dir / "reply-read-ready").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert send_hook(socket_path, "quote the model result")["action"] == "allow"
+    deadline = time.monotonic() + 3
+    while not (test_dir / "ordinary-classified").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    os.write(1, REPLY)
+    deadline = time.monotonic() + 3
+    while not other.restore():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+finally:
+    other.finish()
+"""
+        )
+        with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
+            capture, settings, observations = replay_model_switch(body, wrapper_setup=setup)
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+        assert observations["errors"] == []
+
+
+class TestPromptHookAcknowledgement:
+    def test_prompt_is_classified_before_allow_is_sent(self, tmp_path):
+        import socket
+
+        socket_path = tmp_path / "first.sock"
+        stop = threading.Event()
+        ready = threading.Event()
+        classified = threading.Event()
+        release = threading.Event()
+
+        def submitted(_prompt):
+            classified.set()
+            assert release.wait(5)
+
+        server = claude_pty.serve_first_prompt_socket(
+            socket_path,
+            _route_sonnet,
+            lambda _prompt, _model: None,
+            stop,
+            on_submitted_prompt=submitted,
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        try:
+            assert ready.wait(5)
+            assert (
+                claude_pty.request_first_prompt_route(socket_path, {"prompt": "first prompt"})[
+                    "action"
+                ]
+                == "block"
+            )
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(socket_path))
+                client.sendall(
+                    (
+                        json.dumps({"method": "route_first_prompt", "prompt": "ordinary prompt"})
+                        + "\n"
+                    ).encode()
+                )
+                assert classified.wait(5)
+                # The native child must not start its reply before classification completes.
+                client.settimeout(0.1)
+                with pytest.raises(TimeoutError):
+                    client.recv(1)
+                release.set()
+                client.settimeout(3)
+                with client.makefile("rb") as stream:
+                    assert json.loads(stream.readline()) == {"action": "allow"}
+        finally:
+            release.set()
+            stop.set()
+            server.join(timeout=2)
+        assert not server.is_alive()
