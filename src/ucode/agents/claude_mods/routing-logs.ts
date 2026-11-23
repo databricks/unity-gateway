@@ -13,6 +13,7 @@ const ROUTE_VALIDATION_REASONS: Record<string, string> = {
   mixed_harnesses_not_supported: 'Mixed harnesses not supported',
 };
 const ROUTE_VALIDATION_GENERIC_REASON = "Smart Routing does not support this agent's model list.";
+export const ROUTE_VALIDATION_FAILED_REASON = "Smart Router couldn't validate this agent's model list.";
 const MODEL_REASONS: Record<string, string> = {
   model_not_supported: 'Model source not supported',
   model_not_in_recipe: 'Not available in Smart Router',
@@ -88,7 +89,7 @@ export function routeValidationReason(reason: string | null): string {
 }
 
 function validationReason(validation: RouteValidation): string {
-  if (validation.validation_failed) return validation.validation_failure_reason ?? '';
+  if (validation.validation_failed) return validation.validation_failure_reason?.trim() || ROUTE_VALIDATION_FAILED_REASON;
   return routeValidationReason(validation.routing_unsupported_reason);
 }
 
