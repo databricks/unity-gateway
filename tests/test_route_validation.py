@@ -13,7 +13,7 @@ import pytest
 
 from tests.conftest import metric_observations
 from ucode import databricks, metrics
-from ucode.smart_routing import startup_validation as validation
+from ucode.smart_routing import route_validation as validation
 from ucode.smart_routing.session_env import session_routing_enabled
 from ucode.workspace import activate
 

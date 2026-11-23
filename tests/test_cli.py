@@ -2244,7 +2244,7 @@ class TestSubcommandRouting:
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
         with patch(
-            "ucode.smart_routing.startup_validation.validate", return_value=validation
+            "ucode.smart_routing.route_validation.validate", return_value=validation
         ) as validate:
             result = runner.invoke(
                 app,

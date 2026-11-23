@@ -2080,7 +2080,7 @@ and `ug upgrade` is not run against one.
 ## Smart Router startup validation
 
 The check runs only with `UG_STARTUP_ROUTE_VALIDATION=1`; launch and mod tests cover the default
-without it (no request, band from the first paint). `test_startup_validation.py` covers the background check with a controlled transport: an
+without it (no request, band from the first paint). `test_route_validation.py` covers the background check with a controlled transport: an
 unsupported model list turns routing off for the session; HTTP errors, malformed responses,
 exceptions and a result past the 4 s deadline leave routing on; result-write failures are
 isolated. The smart-routing launch

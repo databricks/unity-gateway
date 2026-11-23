@@ -73,9 +73,9 @@ from ucode.smart_routing import (
     claude_routing,
     codex_statusline,
     orchestrator,
+    route_validation,
     routing,
     session_log,
-    startup_validation,
 )
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -651,7 +651,7 @@ def validate_claude_model_list(
     provider: str | None = None,
 ) -> dict | None:
     """Validate the session's model list and record an unsupported result without disabling routing."""
-    result = startup_validation.validate(
+    result = route_validation.validate(
         workspace,
         token,
         _claude_route_options(available_models),
@@ -1039,7 +1039,7 @@ def launch_claude(
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
             if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
-                startup_validation.start(
+                route_validation.start(
                     workspace,
                     token,
                     _claude_route_options(model_ids),

@@ -1688,7 +1688,7 @@ class TestV2ModelPickerDiscovery:
         self, tmp_path, monkeypatch, provider, model, expected
     ):
         validation_start = Mock()
-        monkeypatch.setattr(v2.startup_validation, "start", validation_start)
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
         monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
         monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
         catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
@@ -1706,7 +1706,7 @@ class TestV2ModelPickerDiscovery:
 
     def test_startup_validation_is_off_by_default(self, tmp_path, monkeypatch):
         validation_start = Mock()
-        monkeypatch.setattr(v2.startup_validation, "start", validation_start)
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
         catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0

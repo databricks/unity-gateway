@@ -1,6 +1,6 @@
 # Integration tests
 
-Startup compatibility validation has component coverage in `../test_startup_validation.py`,
+Startup compatibility validation has component coverage in `../test_route_validation.py`,
 the smart-routing launch tests, and the native Claude mod suite. They control the validation
 response or transport. CUJ 4 adds one live supported journey: with `UG_STARTUP_ROUTE_VALIDATION=1`
 and the published model list, ug sends one recorded routes:validate request that the Gateway
