@@ -669,12 +669,14 @@ def run_claude_pty(
                     manual_complete = ManualModelConfirmation(model)
                     manual_unknown = model is None
                     with pending_lock:
-                        # An old replay acknowledgement cannot classify newly entered input.
-                        manual_prompt_after = (
-                            submitted_count
-                            if manual_unknown and (not submit_attempts or submitted_event.is_set())
-                            else None
-                        )
+                        manual_prompt_after = submitted_count if manual_unknown else None
+                        # Skip the outstanding replay acknowledgement, then classify later hooks.
+                        if (
+                            manual_prompt_after is not None
+                            and submit_attempts
+                            and not submitted_event.is_set()
+                        ):
+                            manual_prompt_after += 1
                     try:
                         model_pending = abandon_model_setting(model) is False
                     except (OSError, ValueError, RuntimeError) as exc:

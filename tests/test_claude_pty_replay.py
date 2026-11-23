@@ -1716,6 +1716,64 @@ finally:
             == {"model": "haiku", "unrelated": "preserved"}
         )
 
+    @pytest.mark.parametrize(
+        "reply",
+        [b"Set model to fable\n", b"Here is the explanation.\n"],
+        ids=["model-result-text", "ordinary-text"],
+    )
+    def test_ordinary_prompt_after_old_replay_acknowledgement_releases_recovery(
+        self, replay_model_switch, tmp_path, reply
+    ):
+        body = (
+            f"REPLY = {reply!r}\n"
+            + r"""
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+os.write(1, b"Set model to sonnet\n")
+read_until(b"\x1b[201~")
+assert os.read(0, 1) == b"\r"
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("opus")
+    (test_dir / "ready").touch()
+    assert read_until(b"\r") == b"\x1b[A\r"
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    deadline = time.monotonic() + 3
+    while not other.is_routed():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert other.restore() is False
+    assert send_hook(socket_path, "hello")["action"] == "allow"
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        assert other.restore() is False
+        time.sleep(0.01)
+    assert "manual" in json.loads(other._recovery_path.read_text())
+    assert send_hook(socket_path, "quote the model result")["action"] == "allow"
+    os.write(1, REPLY)
+    deadline = time.monotonic() + 3
+    while not other.restore():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+finally:
+    other.finish()
+"""
+        )
+        with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
+            capture, settings, _ = replay_model_switch(body)
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
 
 class TestOpaqueInputHookOrder:
     @pytest.mark.parametrize("reply", [b"Set model to fable\n", b"```\nModel set to fable\n```\n"])
