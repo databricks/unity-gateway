@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing';
-import { ROUTE_VALIDATION_ROW, modelReason, routeValidationReason } from '../hooks/routing-logs.ts';
+import { ROUTE_VALIDATION_FAILED_REASON, ROUTE_VALIDATION_FAILED_ROW, ROUTE_VALIDATION_ROW, modelReason, routeValidationReason } from '../hooks/routing-logs.ts';
 
 const options = { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', logsCommand: ['/bin/ug', 'smart-router-logs'] };
 const pane = {
@@ -126,6 +126,37 @@ test('a route validation row opens its detail without another read', { options }
   expect(tree.indexOf('Supported models')).toBeLessThan(tree.indexOf('  glm-5'));
   await ui.press({ key: 'back' });
   expect(JSON.stringify(await ui.drawn())).toContain('"key":"c1"');
+  await ui.unmount();
+});
+
+const failedValidation = {
+  v: 1, type: 'route_validation', validation_id: 'c2', at: now - 120, harness: 'claude', session_id: 'session-one',
+  router_name: 'stable', routing_unsupported_reason: null, validation_failed: true,
+  validation_failure_reason: 'Smart Router returned an error (HTTP 500)',
+  eligible_route_options: [], ineligible_route_options: [], available_route_options: [], validation_ms: 1234,
+};
+
+for (const [reason, shown] of [
+  ['Smart Router returned an error (HTTP 500)', 'Smart Router returned an error (HTTP 500)'],
+  [null, ROUTE_VALIDATION_FAILED_REASON],
+] as const) test(`a failed route validation row with reason ${reason} opens a detail with no model lists`, { options }, async ($, on) => {
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  const validation = { ...failedValidation, validation_failure_reason: reason };
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: [], route_validations: [validation] }) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  let tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(`"key":"c2","label":"  2m ago  ${ROUTE_VALIDATION_FAILED_ROW}"`);
+  expect(tree).not.toContain(ROUTE_VALIDATION_ROW);
+  await ui.press({ key: 'c2' });
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(shown);
+  expect(tree).not.toContain('Smart Routing does not support this agent');
+  expect(tree).toContain('"children":["Validation Time: "]');
+  expect(tree).toContain('1.2s');
+  expect(tree).not.toContain('Models');
+  expect(tree).not.toContain('Supported models');
   await ui.unmount();
 });
 

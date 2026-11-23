@@ -100,15 +100,9 @@ def test_missing_session_returns_empty_list(log_dir):
     assert read_overviews(session="absent") == []
 
 
-def test_unreadable_log_returns_error_envelope(log_dir, monkeypatch):
+def test_unreadable_log_returns_error_envelope(log_dir):
     """A log that exists but cannot be read must not be reported as empty history."""
-
-    def deny_read(self, *args, **kwargs):
-        raise PermissionError(13, "Permission denied", str(self))
-
-    write(payload())
-    path = log_dir / "claude-s1.jsonl"
-    monkeypatch.setattr(type(path), "read_text", deny_read)
+    (log_dir / "claude-s1.jsonl").mkdir(parents=True)
     result = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
     assert result.exit_code == 1
     document = json.loads(result.output)
@@ -220,12 +214,8 @@ def test_table_empty_message(log_dir):
     ]
 
 
-def test_table_error_is_one_plain_line(log_dir, monkeypatch):
-    def deny_read(self, *args, **kwargs):
-        raise PermissionError(13, "Permission denied", str(self))
-
-    write_codex()
-    monkeypatch.setattr(type(log_dir), "read_text", deny_read)
+def test_table_error_is_one_plain_line(log_dir):
+    (log_dir / "codex-c1.jsonl").mkdir(parents=True)
     result = table()
     assert result.exit_code == 1
     assert result.output.startswith("error: cannot read session log at ")
@@ -432,19 +422,40 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
     assert "\x1b" not in result.output
 
 
-def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
+@pytest.mark.parametrize(
+    "check",
+    [
+        pytest.param(
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "routing_unsupported_reason": "insufficient_eligible_options",
+                "eligible_route_options": [],
+                "ineligible_route_options": [
+                    {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
+                ],
+                "available_route_options": [{"model": "a", "harness": "claude_code"}],
+                "validation_ms": 120,
+            },
+            id="unsupported",
+        ),
+        pytest.param(
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "validation_failed": True,
+                "validation_failure_reason": "Smart Router returned an error (HTTP 500)",
+                "eligible_route_options": [],
+                "ineligible_route_options": [],
+                "available_route_options": [],
+                "validation_ms": 90,
+            },
+            id="failed",
+        ),
+    ],
+)
+def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check):
     write(payload())
-    check = {
-        "routing_disabled": True,
-        "router_name": "stable",
-        "routing_unsupported_reason": "insufficient_eligible_options",
-        "eligible_route_options": [],
-        "ineligible_route_options": [
-            {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
-        ],
-        "available_route_options": [{"model": "a", "harness": "claude_code"}],
-        "validation_ms": 120,
-    }
     result_file = tmp_path / "env.validation.json"
     result_file.write_text(json.dumps(check))
     args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
@@ -456,12 +467,15 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
     assert len(document["decisions"]) == 1
     [row] = document["route_validations"]
     assert row.pop("validation_id") and row.pop("at")
-    check.pop("routing_disabled")
+    check = {key: value for key, value in check.items() if key != "routing_disabled"}
     assert row == {
         "v": session_log.SCHEMA_VERSION,
         "type": session_log.ROUTE_VALIDATION_TYPE,
         "harness": "claude",
         "session_id": "s1",
+        "routing_unsupported_reason": None,
+        "validation_failed": None,
+        "validation_failure_reason": None,
         **check,
     }
 
