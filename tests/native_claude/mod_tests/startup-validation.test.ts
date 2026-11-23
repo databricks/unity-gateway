@@ -1,7 +1,7 @@
 import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import {
-  DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING,
+  DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
 } from '../hooks/constants.ts';
 
 const ROUTED = {
@@ -91,7 +91,7 @@ for (const { name, result, routed } of cases) {
     expect(shown).toContain('host content');
     expect(shown).toContain('unity gateway smart router');
     expect(shown.includes(WARNING)).toBe(!routed);
-    expect(await hint($)).toBe(routed ? 'smart router ON' : 'smart router OFF');
+    expect(await hint($)).toBe(`smart router ${routed ? 'ON' : UNSUPPORTED_ROUTER_STATE}`);
     expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
     expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
       .toBe(routed ? 'task_v3' : DISABLED_RECIPE);
@@ -177,7 +177,7 @@ const turnCases = [
 
 for (const { name, endsBeforeResult, routed } of turnCases) {
   test(name, { options: VALIDATED }, async ($, on) => {
-    const { clock, files } = engine(on);
+    const { clock, files, hint } = engine(on);
     on('prompt.submit', ($, e) => ({ text: e.text }));
     on('turn.complete', () => ({ text: '' }));
     const ui = await $.ui.mount(abovePrompt);
@@ -192,6 +192,7 @@ for (const { name, endsBeforeResult, routed } of turnCases) {
       await $.prompt.submit({ text: 'next prompt' });
       await $.turn.complete({ answer: 'done' });
       expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+      expect(await hint($)).toBe(`smart router ${UNSUPPORTED_ROUTER_STATE}`);
     }
     if (!endsBeforeResult) {
       await $.turn.complete({ answer: 'done' });

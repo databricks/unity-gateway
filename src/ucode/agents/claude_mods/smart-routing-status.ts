@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
-import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING } from './constants.ts'
+import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
@@ -98,7 +98,8 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    let state = validation.isPending ? '' : `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    const routerState = enabled ? 'ON' : band.isUnsupported ? UNSUPPORTED_ROUTER_STATE : 'OFF'
+    let state = validation.isPending ? '' : `smart router ${routerState}${agents}`
     if (auto && state) {
       // The static Auto row is the default variant's alias; name the session's main model.
       const target = autoTarget(auto, await $.session.model())

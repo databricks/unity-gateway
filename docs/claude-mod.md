@@ -12,7 +12,9 @@ The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entr
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
 Every routed launch includes the status band above the prompt. It shows at launch and after
 each `/smart-router on|off`, and hides once the next prompt's turn completes. The prompt hint row (the line under the
-input with the permission mode) carries `smart router ON` or `smart router OFF`, followed by
+input with the permission mode) carries `smart router ON` or `smart router OFF`, or
+`smart router ERROR (/smart-router logs for details)` once the startup check turns routing off
+until the next `/smart-router on|off`, followed by
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
