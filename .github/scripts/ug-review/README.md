@@ -25,8 +25,13 @@ approve adds the label (addLabels creates a missing repository label), while a
 reject or a run without a recommendation removes any existing one. A missing or
 unparseable marker, a failed gateway request, or a review that is incomplete or
 carries warnings — with or without findings — becomes "No recommendation": the
-note comment says why. The recommendation never approves or merges the PR, and
-the review job reaches it only after the completeness check passed.
+note comment says why. After the completeness check passes, an approve recommendation
+can also post an app approval for an in-repository PR whose author has write, maintain,
+or admin access, provided OCR's finding filter did not fail. Missing or invalid findings
+also result in no recommendation. The workflow rechecks the reviewed head before and after
+approval. A new push dismisses stale approvals from that app only, not human approvals. The
+workflow never merges the PR. See [approver setup](APPROVER.md) for the app, branch
+protection, and the limits of asynchronous dismissal.
 
 The job retains the existing protected runner, workspace, service principal, and
 `UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET`. `auth.py` uses the same OAuth
@@ -76,7 +81,7 @@ Use a small deliberate logic bug on a disposable PR to test positive findings,
 and remove it afterward. Remove and re-add a label, or post a new comment, to rerun.
 Marking a draft PR ready for review requests one review; a PR opened as ready
 does not. Existing labels, label removal, label edits, and ordinary pushes do not
-request another review.
+request another review. Pushes do run stale app-approval dismissal on in-repository PRs.
 
 ## Polly review
 

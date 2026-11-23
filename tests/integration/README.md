@@ -2152,8 +2152,9 @@ conditions with synthetic events, including integration commands with or without
 not live GitHub delivery or contributor classification.
 `../test_ug_review_bot.py` covers gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow
-contract as component tests. This integration suite does not establish
-live review-model access or GitHub comment posting.
+contract as component tests. The approver helper's Node component tests exercise eligibility,
+head races, and bot-only stale-review dismissal with a fake API. This integration suite does not
+establish live review-model access, GitHub review posting, or branch-protection behavior.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and set the ug/agent versions. Manual runs execute the complete integration suite.
