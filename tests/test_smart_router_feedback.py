@@ -190,7 +190,7 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
     assert not session_env.session_routing_enabled(controls)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows PowerShell 5.1 and 7 parsers")
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell and native argv handling")
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(
     "reason,literal",
@@ -201,20 +201,41 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
             "'too slow‘‘; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #'",
         ),
         (
-            "it's ‘slow’ ‚here‛.\nKeep $env:UG_QUOTING_SENTINEL and "
-            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal.",
-            "'it''s ‘‘slow’’ ‚‚here‛‛.\nKeep $env:UG_QUOTING_SENTINEL and "
-            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal.'",
+            'it\'s ‘slow’ ‚here‛.\nKeep "double quotes", one\\"quote and two\\\\"quotes.\r\n'
+            "Keep $env:UG_QUOTING_SENTINEL and "
+            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal, ending in \\",
+            '\'it\'\'s ‘‘slow’’ ‚‚here‛‛.\nKeep "double quotes", one\\"quote and two\\\\"quotes.\r\n'
+            "Keep $env:UG_QUOTING_SENTINEL and "
+            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal, ending in \\'",
         ),
     ],
     ids=["curly-apostrophe", "command-breakout", "all-quotes-multiline"],
 )
 def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, reason, literal):
     executable = shutil.which(shell)
-    assert executable is not None, f"Required Windows parser is unavailable: {shell}"
+    assert executable is not None, f"Required Windows shell is unavailable: {shell}"
     sentinel = tmp_path / "embedded-command-executed"
-    parser = tmp_path / "parse-reason.ps1"
-    # ParseInput never invokes the deliberately executable text in these reasons.
+    argv_path = tmp_path / "received-argv.json"
+    recorder = tmp_path / "record argv.py"
+    recorder.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['UG_QUOTING_ARGV']).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "sys.exit(int(os.environ.get('UG_QUOTING_EXIT_CODE', '0')))\n",
+        encoding="utf-8",
+    )
+    skill = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    native_command = skill.split("```powershell\n", 1)[1].split("\n```", 1)[0]
+    assert native_command.count("'<reason>'") == 1
+    assert native_command.count("'-m', 'ucode.cli'") == 1
+    # Keep the documented launch and quoting, substituting only the child that records argv.
+    recorder_arg = subprocess.list2cmdline([str(recorder)]).replace("'", "''")
+    native_command = native_command.replace("'<reason>'", literal).replace(
+        "'-m', 'ucode.cli'", f"'{recorder_arg}'"
+    )
+    parser = tmp_path / "parse-and-run-reason.ps1"
     parser.write_text(
         """
 $ErrorActionPreference = 'Stop'
@@ -239,6 +260,9 @@ $elements = @($commands[0].CommandElements)
     quote_type = $elements[6].StringConstantType.ToString()
     reason = $elements[6].Value
 } | ConvertTo-Json -Compress
+# PowerShell 5.1 always uses legacy native binding; exercise it explicitly in 7 too.
+$PSNativeCommandArgumentPassing = 'Legacy'
+& ([scriptblock]::Create($inputCase.execution))
 """,
         encoding="utf-8",
     )
@@ -246,17 +270,25 @@ $elements = @($commands[0].CommandElements)
         '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude '
         f"--disable-smart-routing --smart-router-feedback {literal}"
     )
+    env = {
+        **os.environ,
+        "UCODE_SMART_ROUTER_PYTHON": sys.executable,
+        "UG_QUOTING_SENTINEL": str(sentinel),
+        "UG_QUOTING_ARGV": str(argv_path),
+        "UG_QUOTING_EXIT_CODE": "0",
+    }
+    invocation = [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(parser)]
+    payload = json.dumps({"command": command, "execution": native_command})
     result = subprocess.run(
-        [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(parser)],
-        input=json.dumps({"command": command}),
-        env={**os.environ, "UG_QUOTING_SENTINEL": str(sentinel)},
+        invocation,
+        input=payload,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=20,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert not sentinel.exists()
     assert json.loads(result.stdout) == {
         "errors": [],
         "statements": 1,
@@ -267,6 +299,25 @@ $elements = @($commands[0].CommandElements)
         "quote_type": "SingleQuoted",
         "reason": reason,
     }
+    assert json.loads(argv_path.read_text(encoding="utf-8")) == [
+        "claude",
+        "--disable-smart-routing",
+        "--smart-router-feedback",
+        reason,
+    ]
+    assert not sentinel.exists()
+    if reason == "it’s too slow for this task":
+        failed = subprocess.run(
+            invocation,
+            input=payload,
+            env={**env, "UG_QUOTING_EXIT_CODE": "7"},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+        )
+        assert failed.returncode != 0
+        assert "Smart Router exited with code 7" in failed.stderr
 
 
 @pytest.mark.parametrize("reenable", ["claude", "codex", "native"])
