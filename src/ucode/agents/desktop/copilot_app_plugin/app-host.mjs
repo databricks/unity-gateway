@@ -12,7 +12,8 @@ import { windowsTool } from "./app-windows.mjs";
 // session whose process tree is hidden.
 export const SANDBOX_MARKER_ENV = "COPILOT_EXTENSION_SANDBOXED";
 export const MAX_ANCESTORS = 12;
-const COMMAND_TIMEOUT_MS = 3_000;
+// A cold PowerShell with endpoint security can take several seconds to list the processes.
+const COMMAND_TIMEOUT_MS = 10_000;
 
 function parentFromProc(pid) {
   try {

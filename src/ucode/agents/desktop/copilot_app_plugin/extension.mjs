@@ -43,8 +43,12 @@ async function withRetries(attempt) {
   return result;
 }
 
-const host = await runningUnderApp();
+// The host check lists the processes, which on Windows can take seconds, so the relay starts
+// listening and checks for a proxy meanwhile; the session is only joined once both are known.
+const hostStarted = Date.now();
+const hostCheck = runningUnderApp().then((host) => ({ ...host, ms: Date.now() - hostStarted }));
 if (config.remove) {
+  const host = await hostCheck;
   const removal = withRetries(() => removeInBackground(config, syncOptions, logSyncFailure));
   if (host.app) {
     try {
@@ -55,57 +59,77 @@ if (config.remove) {
     }
   }
   await removal;
-} else if (!host.app) {
-  // A Copilot CLI or VS Code session that loaded the app's plugin keeps its own models.
-  await noteRedirect(syncOptions.stateDir, { redirect: "not the app", host: host.via });
 } else {
-  const restart = withRetries(() => syncInBackground(config, syncOptions, logSyncFailure)).then((synced) =>
-    synced === "changed" ? launchRestart({ ...syncOptions, ugPath: config.ugPath }) : null,
-  );
-  let session;
-  // session.log is async, and a rejected one must not end the extension.
-  const say = (message, level = "error") =>
-    Promise.resolve()
-      .then(() => session.log(message, { level }))
-      .catch(() => {});
-  const tokenSource = createTokenSource(config);
-  const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
-    const hint = hintFor(error, config);
-    if (!session || !hint) return false;
-    say(hint);
-    return true;
-  });
   let redirect = null;
-  if (redirectSkipReason(config) === "sandboxed") {
-    noteRedirect(syncOptions.stateDir, { redirect: "sandboxed" });
+  let listening = null;
+  const tokenSource = createTokenSource(config);
+  const sandboxed = redirectSkipReason(config) === "sandboxed";
+  if (!sandboxed) {
+    try {
+      redirect = createSeatRedirect(config, {
+        tokenSource,
+        log: logSyncFailure,
+        stateDir: syncOptions.stateDir,
+        hostCheck,
+      });
+      listening = redirect?.listen().then(() => null, (error) => error) ?? null;
+    } catch (error) {
+      listening = Promise.resolve(error);
+    }
   }
-  try {
-    redirect = createSeatRedirect(config, { tokenSource, log: logSyncFailure, stateDir: syncOptions.stateDir });
-    await redirect?.listen();
-  } catch (error) {
-    logSyncFailure(`Databricks seat relay: not started: ${error?.message ?? error}`);
-    noteRedirect(syncOptions.stateDir, { redirect: "not started", error: String(error?.code ?? error?.message ?? error) });
-    redirect = null;
-  }
-  if (redirect) shutdownBeforeTerminating([(ms) => redirect.shutdown(ms)]);
-  session = await joinSession({
-    providers: buildProviders(config, bearerTokenProvider),
-    models: config.models,
-  });
-  // Before anything else: the first turn's calls must already go through.
-  if (redirect) {
-    if (await redirect.apply(session)) keepAliveOnErrors(logSyncFailure);
-    else if (redirect.state === "proxied") say(PROXIED_MESSAGE, "warning");
+  const host = await hostCheck;
+  if (!host.app) {
+    // A Copilot CLI or VS Code session that loaded the app's plugin keeps its own models.
+    await listening;
+    await redirect?.close();
+    await noteRedirect(syncOptions.stateDir, { redirect: "not the app", host: host.via, hostMs: host.ms });
   } else {
-    await clearRedirect(session);
+    const restart = withRetries(() => syncInBackground(config, syncOptions, logSyncFailure)).then((synced) =>
+      synced === "changed" ? launchRestart({ ...syncOptions, ugPath: config.ugPath }) : null,
+    );
+    let session;
+    // session.log is async, and a rejected one must not end the extension.
+    const say = (message, level = "error") =>
+      Promise.resolve()
+        .then(() => session.log(message, { level }))
+        .catch(() => {});
+    const bearerTokenProvider = withLoginHint(tokenSource, (error) => {
+      const hint = hintFor(error, config);
+      if (!session || !hint) return false;
+      say(hint);
+      return true;
+    });
+    if (sandboxed) noteRedirect(syncOptions.stateDir, { redirect: "sandboxed", hostMs: host.ms });
+    const listenError = await listening;
+    if (listenError) {
+      logSyncFailure(`Databricks seat relay: not started: ${listenError?.message ?? listenError}`);
+      noteRedirect(syncOptions.stateDir, {
+        redirect: "not started",
+        error: String(listenError?.code ?? listenError?.message ?? listenError),
+        hostMs: host.ms,
+      });
+      redirect = null;
+    }
+    if (redirect) shutdownBeforeTerminating([(ms) => redirect.shutdown(ms)]);
+    session = await joinSession({
+      providers: buildProviders(config, bearerTokenProvider),
+      models: config.models,
+    });
+    // Before anything else: the first turn's calls must already go through.
+    if (redirect) {
+      if (await redirect.apply(session)) keepAliveOnErrors(logSyncFailure);
+      else if (redirect.state === "proxied") say(PROXIED_MESSAGE, "warning");
+    } else {
+      await clearRedirect(session);
+    }
+    session.on((event) => {
+      redirect?.handle(event);
+      if (!isAuthRejection(event)) return;
+      tokenSource.invalidate();
+      // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
+      if (event.type === "session.error") say(config.loginHint);
+    });
+    const launched = await restart;
+    if (launched) await tellRestart(session, launched);
   }
-  session.on((event) => {
-    redirect?.handle(event);
-    if (!isAuthRejection(event)) return;
-    tokenSource.invalidate();
-    // The app's own message for a 401 names Copilot's API-key settings, not Databricks sign-in.
-    if (event.type === "session.error") say(config.loginHint);
-  });
-  const launched = await restart;
-  if (launched) await tellRestart(session, launched);
 }

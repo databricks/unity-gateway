@@ -219,7 +219,7 @@ test("a redirect the app refuses or fails is recorded as unavailable", async (t)
   await refused.redirect.listen();
   assert.equal(await refused.redirect.apply(fakeSession({ update: async () => ({ success: false }) })), false);
   assert.deepEqual(refused.entries, [
-    { time: "2023-11-14T22:13:20.000Z", sessionId: "session-1", redirect: "unavailable", builtInCalls: 0, relayedCalls: 0 },
+    { time: "2023-11-14T22:13:20.000Z", sessionId: "session-1", redirect: "unavailable", proxyMs: 0, builtInCalls: 0, relayedCalls: 0 },
   ]);
   assert.deepEqual(refused.logged, []);
 
@@ -251,6 +251,7 @@ test("after a turn, the session's built-in and relayed call counts are recorded 
       time: "2023-11-14T22:13:20.000Z",
       sessionId: "session-1",
       redirect: "applied",
+      proxyMs: 0,
       builtInCalls: 1,
       relayedCalls: 2,
       lastGatewayError: "500",
@@ -352,6 +353,7 @@ test("a proxy that could capture loopback skips the redirect, clears it, and is 
       time: "2023-11-14T22:13:20.000Z",
       sessionId: "session-1",
       redirect: "proxied",
+      proxyMs: 0,
       reason: "HTTP_PROXY without a loopback exception in NO_PROXY",
       builtInCalls: 0,
       relayedCalls: 0,

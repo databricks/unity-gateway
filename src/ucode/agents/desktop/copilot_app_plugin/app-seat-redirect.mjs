@@ -113,6 +113,7 @@ export function createSeatRedirect(
     applyTimeoutMs = APPLY_TIMEOUT_MS,
     githubUserUrl,
     proxyCheck = () => detectLoopbackProxy({ env }),
+    hostCheck = null,
   } = {},
 ) {
   if (!redirectEnabled(config, env)) return null;
@@ -122,6 +123,8 @@ export function createSeatRedirect(
   let redirect = null;
   let proxy = null;
   let proxyPending = null;
+  let proxyMs = null;
+  let hostMs = null;
   let builtInCalls = 0;
   let relayedCalls = 0;
   let lastGatewayError = null;
@@ -167,6 +170,8 @@ export function createSeatRedirect(
       redirect,
       ...(proxy?.reason ? { reason: proxy.reason } : {}),
       ...(proxy?.error ? { proxyCheck: proxy.error } : {}),
+      ...(hostMs !== null ? { hostMs } : {}),
+      ...(proxyMs !== null ? { proxyMs } : {}),
       builtInCalls,
       relayedCalls,
       ...(lastGatewayError ? { lastGatewayError } : {}),
@@ -174,9 +179,15 @@ export function createSeatRedirect(
   }
 
   function checkProxy() {
-    proxyPending ??= Promise.resolve()
+    if (proxyPending) return proxyPending;
+    const started = now();
+    proxyPending = Promise.resolve()
       .then(() => proxyCheck())
-      .catch((error) => ({ captured: false, reason: null, error: String(error?.message ?? error) }));
+      .catch((error) => ({ captured: false, reason: null, error: String(error?.message ?? error) }))
+      .then((result) => {
+        proxyMs = now() - started;
+        return result;
+      });
     return proxyPending;
   }
 
@@ -200,6 +211,7 @@ export function createSeatRedirect(
     },
     async apply(joined) {
       session = joined;
+      hostMs = (await hostCheck)?.ms ?? null;
       proxy = await checkProxy();
       if (proxy.error) log(`Databricks seat relay: proxy check failed: ${proxy.error}`);
       if (proxy.captured) {
