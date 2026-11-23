@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import io
 import json
 import time
+from email.message import Message
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from tests.conftest import metric_observations
-from ucode import metrics
+from ucode import databricks, metrics
 from ucode.smart_routing import route_validation as validation
 from ucode.smart_routing.session_env import session_routing_enabled
+from ucode.workspace import activate
 
 
 def _wait_for_result(path):
@@ -25,15 +28,16 @@ def _wait_for_result(path):
 
 
 @pytest.mark.parametrize(
-    "response,failed",
+    "response,disabled,failed",
     [
-        ((None, "HTTP 503"), True),
-        (({"is_supported": "false"}, None), False),
-        (RuntimeError("network down"), True),
+        (({"is_supported": False}, None), True, False),
+        ((None, "HTTP 503"), False, True),
+        (({"is_supported": "false"}, None), False, False),
+        (RuntimeError("network down"), False, True),
     ],
 )
-def test_failed_or_malformed_check_leaves_routing_on(
-    response, failed, tmp_path, monkeypatch, metrics_recorder
+def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
+    response, disabled, failed, tmp_path, monkeypatch, metrics_recorder
 ):
     post = (
         Mock(side_effect=response)
@@ -52,14 +56,50 @@ def test_failed_or_malformed_check_leaves_routing_on(
     )
     result = _wait_for_result(validation.result_path(controls))
     post.assert_called_once()
-    assert result == {"routing_disabled": False}
-    assert session_routing_enabled(controls) is True
-    assert controls.read_text() == "{}"
+    assert result["routing_disabled"] is disabled
+    if not disabled:
+        assert result == {"routing_disabled": False}
+    assert session_routing_enabled(controls) is not disabled
+    if not disabled:
+        assert controls.read_text() == "{}"
     errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
     assert [(labels["operation"], labels["continued_with_fallback"]) for _, labels in errors] == (
         [("route_validation", True)] if failed else []
     )
     assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
+
+
+def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monkeypatch):
+    captured = []
+    activate("https://example.com", "111")
+
+    class Response(io.BytesIO):
+        status = 200
+        headers = Message()
+
+    def urlopen(request, **kwargs):
+        captured.append(request)
+        return Response(b'{"is_supported":true}')
+
+    monkeypatch.setattr(validation, "_http_post_json", databricks._http_post_json)
+    monkeypatch.setattr(databricks, "_http_open", urlopen)
+    controls = tmp_path / "env.json"
+    validation.start(
+        "https://example.com?w=111",
+        "test-token",
+        [("original.model", "claude")],
+        router_name="stable",
+        session_controls=controls,
+        provider="main.default.mps",
+    )
+    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.full_url == "https://example.com/ai-gateway/routing/v1/routes:validate"
+    assert request.get_header("Authorization") == "Bearer test-token"
+    assert request.get_header("X-databricks-workspace-id") == "111"
+    assert request.get_header("X-databricks-org-id") == "111"
+    assert request.get_header("Databricks-model-provider-service") == "main.default.mps"
 
 
 def test_unsupported_result_past_the_deadline_leaves_routing_on(tmp_path, monkeypatch):
@@ -180,3 +220,20 @@ def _validate(response, monkeypatch):
 @pytest.mark.parametrize("response", [(None, "HTTP 503"), RuntimeError("network down")])
 def test_validate_returns_none_on_failure_so_the_toggle_stays_silent(response, monkeypatch):
     assert _validate(response, monkeypatch) is None
+
+
+def test_validate_returns_the_unsupported_details(monkeypatch):
+    payload = {
+        "is_supported": False,
+        "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
+    }
+    result = _validate((payload, None), monkeypatch)
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == {
+        "is_supported": False,
+        "router_name": "stable",
+        "routing_unsupported_reason": "insufficient_eligible_options",
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
+    }

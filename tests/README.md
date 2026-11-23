@@ -2080,13 +2080,12 @@ and `ug upgrade` is not run against one.
 ## Smart Router startup validation
 
 The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the default
-without it (no request, band from the first paint). CUJ 4 covers the live Gateway for a supported
-model list and for an unsupported one, at startup and after `/smart-router on`, from the recorded
-routes:validate requests and responses. `test_route_validation.py` covers what the Gateway cannot
-produce on demand: HTTP errors, malformed or non-boolean `is_supported` values and exceptions leave
-routing on, and a validate call that fails returns nothing for `/smart-router on`. It also covers a
-result past the 4 s deadline leaving routing on, result-write failures being isolated, and
-unsupported details keeping only well-formed entries. The smart-routing launch
+without it (no request, band from the first paint). `test_route_validation.py` covers the background check with a controlled transport: an
+unsupported model list turns routing off for the session; HTTP errors, malformed responses,
+exceptions and a result past the 4 s deadline leave routing on; result-write failures are
+isolated. The smart-routing launch
 tests cover the resolved Claude model/harness list and provider.
 Claude's native mod tests cover the band hold, the result handling, the unsupported warning and its one-turn hide, the 5 s fallback, and the two transcript log lines (`Smart Router is off` and the warning) logged only when `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
-These component tests do not establish live classifier compatibility.
+The Claude back-on TUI journey in `tests/integration/test_ug_smart_routing_hooks.py` checks the live
+validate request that `/smart-router on` sends (HTTP 200, `is_supported: true`). These component tests
+do not establish live Gateway or classifier compatibility.
