@@ -51,6 +51,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
     from ucode.agents import copilot as copilot_mod
+    from ucode.agents import omni as omni_mod
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import cowork as cowork_mod
@@ -90,6 +91,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setitem(
         antigravity_mod.SPEC, "backup_path", state_dir / "antigravity-skills.created"
     )
+    # Omni's native config and backup must also stay inside the disposable test home.
+    omni_config = tmp_path / ".omnigent" / "config.yaml"
+    omni_backup = state_dir / "omni-config.backup.yaml"
+    monkeypatch.setattr(omni_mod, "CONFIG_PATH", omni_config)
+    monkeypatch.setattr(omni_mod, "BACKUP_PATH", omni_backup)
+    monkeypatch.setitem(omni_mod.SPEC, "config_path", omni_config)
+    monkeypatch.setitem(omni_mod.SPEC, "backup_path", omni_backup)
     # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
     # so no test reads or installs the machine-wide copy.
     monkeypatch.setattr(

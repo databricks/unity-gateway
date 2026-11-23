@@ -1,4 +1,4 @@
-"""Omnigent command dispatch and terminal handoff coverage."""
+"""Omnigent configuration, launch, and revert component coverage."""
 
 import os
 from unittest.mock import patch
@@ -156,6 +156,96 @@ def test_configure_omni_updates_provider_preserves_settings_and_registers_native
     assert omni.BACKUP_PATH.read_text() == original
 
 
+@pytest.mark.parametrize(
+    ("existing_workspace", "args"),
+    [
+        (False, []),
+        (True, ["start"]),
+        (True, ["run", "--harness", "codex", "-p", "hello world"]),
+        (True, ["claude", "--", "-p", "hello world"]),
+        (True, ["codex", "--", "--model=example-model"]),
+    ],
+)
+def test_omni_first_launch_configures_before_handoff(omni_config, existing_workspace, args):
+    import yaml
+
+    from ucode.state import load_state, save_state
+
+    omni, _, state = omni_config
+    if existing_workspace:
+        state["available_tools"] = ["codex"]
+        save_state(state)
+
+    def handoff(argv):
+        config = yaml.safe_load(omni.CONFIG_PATH.read_text())
+        assert config["providers"]["unity-gateway"]["profile"] == state["profile"]
+        persisted = load_state()
+        assert "omni" in persisted["available_tools"]
+        assert persisted["mcp_clients"] == ["claude", "codex"]
+        if existing_workspace:
+            assert "codex" in persisted["available_tools"]
+        assert argv == ["/bin/omnigent", *args]
+
+    with (
+        patch("ucode.cli.load_state", side_effect=load_state),
+        patch("ucode.cli.ensure_bootstrap_dependencies") as bootstrap,
+        patch(
+            "ucode.cli._prompt_for_configuration",
+            return_value=(state["workspace"], state["profile"]),
+        ) as prompt,
+        patch("ucode.cli.configure_shared_state", return_value=state) as discover,
+        patch.object(omni.shutil, "which", return_value="/bin/omnigent"),
+        patch.object(omni, "exec_or_spawn", side_effect=handoff) as launch,
+        patch("ucode.skills_download.refresh_downloaded_skills_on_launch"),
+    ):
+        result = CliRunner().invoke(app, ["omni", *args])
+
+    assert result.exit_code == 0, result.output
+    bootstrap.assert_called_once_with("omni")
+    discover.assert_called_once_with(state["workspace"], profile=state["profile"], tools=["omni"])
+    launch.assert_called_once()
+    if existing_workspace:
+        prompt.assert_not_called()
+    else:
+        prompt.assert_called_once_with("omni")
+
+
+@pytest.mark.parametrize("failure", ["bootstrap", "configure"])
+def test_omni_first_launch_setup_failure_does_not_start_agent(failure):
+    with (
+        patch("ucode.cli.load_state", return_value={}),
+        patch("ucode.cli.ensure_bootstrap_dependencies") as bootstrap,
+        patch("ucode.cli._auto_configure_tool") as configure,
+        patch("ucode.agents.omni.exec_or_spawn") as launch,
+    ):
+        failing_step = bootstrap if failure == "bootstrap" else configure
+        failing_step.side_effect = RuntimeError("Omni setup failed")
+        result = CliRunner().invoke(app, ["omni"])
+
+    assert result.exit_code == 1
+    assert "Omni setup failed" in result.output
+    launch.assert_not_called()
+    if failure == "bootstrap":
+        configure.assert_not_called()
+
+
+@pytest.mark.parametrize("args", [["--help"], ["stop"]])
+def test_omni_auxiliary_commands_do_not_bootstrap_an_unconfigured_workspace(args):
+    with (
+        patch("ucode.cli.load_state", return_value={}),
+        patch("ucode.cli.ensure_bootstrap_dependencies") as bootstrap,
+        patch("ucode.cli._auto_configure_tool") as configure,
+        patch("ucode.agents.omni.shutil.which", return_value="/bin/omnigent"),
+        patch("ucode.agents.omni.exec_or_spawn") as launch,
+    ):
+        result = CliRunner().invoke(app, ["omni", *args])
+
+    assert result.exit_code == 0, result.output
+    bootstrap.assert_not_called()
+    configure.assert_not_called()
+    launch.assert_called_once_with(["/bin/omnigent", *args])
+
+
 @pytest.mark.parametrize("native", ["claude", "codex"])
 def test_configure_omni_installs_only_available_family(omni_config, native):
     import yaml
@@ -196,6 +286,24 @@ def test_configure_omni_install_failure_does_not_publish_config(omni_config):
         omni.write_tool_config(state)
     assert not omni.CONFIG_PATH.exists()
     assert "omni" not in state.get("available_tools", [])
+
+
+def test_configure_omni_write_failure_preserves_config_backup_and_state(omni_config):
+    from ucode.state import load_state
+
+    omni, _, state = omni_config
+    original = "host:\n  name: keep-my-host\n"
+    omni.CONFIG_PATH.write_text(original)
+    previous_state = load_state()
+    with patch.object(omni.os, "replace", side_effect=PermissionError("config is read-only")):
+        with pytest.raises(PermissionError, match="config is read-only"):
+            omni.write_tool_config(state)
+
+    assert omni.CONFIG_PATH.read_text() == original
+    assert omni.BACKUP_PATH.read_text() == original
+    assert not list(omni.CONFIG_PATH.parent.glob(".ug-omni-*.yaml"))
+    assert "omni" not in state.get("managed_configs", {})
+    assert load_state() == previous_state
 
 
 def test_configure_omni_dry_run_does_not_install_write_or_print_credentials(omni_config, capsys):
@@ -440,6 +548,56 @@ def test_omni_revert_keeps_config_created_after_initial_setup(omni_config):
     omni.CONFIG_PATH.write_text(yaml.safe_dump(changed))
     assert omni.revert_config()
     assert yaml.safe_load(omni.CONFIG_PATH.read_text())["host"] == {"name": "new-host"}
+
+
+def test_omni_revert_restores_existing_ug_provider_and_preserves_user_default_change(omni_config):
+    import yaml
+
+    omni, _, state = omni_config
+    original_provider = {
+        "kind": "databricks",
+        "profile": "previous-profile",
+        "default": "openai",
+        "native_gemini": True,
+    }
+    original = {
+        "providers": {
+            "unity-gateway": original_provider,
+            "personal": {"kind": "subscription", "cli": "claude", "default": True},
+        }
+    }
+    omni.CONFIG_PATH.write_text(yaml.safe_dump(original))
+    omni.write_tool_config(state)
+    changed = yaml.safe_load(omni.CONFIG_PATH.read_text())
+    changed["providers"]["personal"]["default"] = "anthropic"
+    omni.CONFIG_PATH.write_text(yaml.safe_dump(changed))
+
+    assert omni.revert_config()
+
+    reverted = yaml.safe_load(omni.CONFIG_PATH.read_text())
+    assert reverted["providers"]["unity-gateway"] == original_provider
+    assert reverted["providers"]["personal"] == changed["providers"]["personal"]
+    assert not omni.BACKUP_PATH.exists()
+
+
+@pytest.mark.parametrize("invalid_file", ["CONFIG_PATH", "BACKUP_PATH"])
+def test_omni_revert_invalid_yaml_keeps_config_and_backup_for_recovery(omni_config, invalid_file):
+    from ucode.state import load_state
+
+    omni, _, state = omni_config
+    omni.CONFIG_PATH.write_text("host:\n  name: keep-my-host\n")
+    omni.write_tool_config(state)
+    getattr(omni, invalid_file).write_text("[broken")
+    before_config = omni.CONFIG_PATH.read_bytes()
+    before_backup = omni.BACKUP_PATH.read_bytes()
+    before_state = load_state()
+
+    with pytest.raises(RuntimeError, match="fix the YAML and retry"):
+        omni.revert_config()
+
+    assert omni.CONFIG_PATH.read_bytes() == before_config
+    assert omni.BACKUP_PATH.read_bytes() == before_backup
+    assert load_state() == before_state
 
 
 def test_omni_does_not_enable_implicit_gateway_gemini_default():

@@ -1638,10 +1638,19 @@ executables, failure/exit propagation, configuration picker and explicit selecti
 repeat provider setup, unrelated settings/default preservation, available native
 families, invalid config and install failures, dry-run isolation, MCP client aliasing,
 downloaded-skill refresh, private backups, and revert preserving later host/provider
-edits. The shared CLI suite covers first-run bootstrap.
+edits. First-launch cases exercise the CLI, configuration writer, and persisted state
+before terminal handoff, including an existing workspace without Omni. Other cases
+cover setup failures preventing launch, offline help/stop without setup, atomic-write
+failure preserving the config and backup, restoration of an existing UG provider,
+user-changed defaults surviving revert, and malformed YAML retaining recovery files.
+Shared component fixtures isolate Omni's native config and backup from developer files.
+These checks control discovery, installation, and process boundaries; they do not run
+an installed Omnigent host.
 
 Manual Ubuntu ARM64 checks with Omnigent 0.22.0 cover installed configure, CLI
-startup, native Claude/Codex skill invocation, and a completed Claude web-search MCP
-call. The managed system-ai-web_search registration was absent in Claude; the
-Codex MCP request did not complete within the manual test window. These checks
-are not an automated live-integration lane or managed-policy/smart-routing coverage.
+startup, native Claude/Codex skill invocation, and completed web-search MCP calls
+through both clients. The MCP checks used Claude Code 2.1.330 and Codex 0.167.0.
+Codex required a per-call approval, submitted through Omnigent's web UI; its native
+tool response and final answer confirmed execution. A pending approval must not
+be reported as an unsupported MCP server. These checks are not an automated live
+integration lane or managed-policy/smart-routing coverage.
