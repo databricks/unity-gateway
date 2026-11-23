@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
 import { NO_DEBUG } from "./app-debug.mjs";
-import { copilotHome, readAppPid } from "./app-rows.mjs";
+import { copilotHome, readAppPid, readAppPidSource } from "./app-rows.mjs";
 import { windowsTool } from "./app-windows.mjs";
 
 // The Copilot CLI and VS Code's Copilot runtime read the same settings file as the desktop app,
@@ -117,7 +116,7 @@ export async function runningUnderApp({
     platform,
     pid,
     appPid,
-    appPidSource: existsSync(join(home, "run", "app-owner.pid")) ? "app-owner.pid" : "ws.port",
+    appPidSource: readAppPidSource(home),
     home,
     ancestors,
     sandboxMarker: env[SANDBOX_MARKER_ENV] ?? null,

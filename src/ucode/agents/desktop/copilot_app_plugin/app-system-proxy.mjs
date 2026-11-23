@@ -8,6 +8,7 @@ import { windowsTool } from "./app-windows.mjs";
 // settings, bypass lists, PAC files and auto-detect the way the OS does; macOS gives its manual
 // proxy, with PAC left unresolved; elsewhere there is nothing to ask.
 export const SYSTEM_PROXY_TIMEOUT_MS = 10_000;
+export const SYSTEM_PROXY_RETRY_MS = 30_000;
 const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.\-_:[\]]+\/$/;
 
 // `scutil --proxy`: `  Key : value` lines, with ExceptionsList as a nested `<array>` block.
@@ -72,7 +73,7 @@ export function macosSystemProxy(output, origin) {
     return { proxy: null, bypassed: true };
   }
   const secure = url.protocol === "https:" && settings.HTTPSEnable === "1" && settings.HTTPSProxy;
-  const plain = settings.HTTPEnable === "1" && settings.HTTPProxy;
+  const plain = url.protocol === "http:" && settings.HTTPEnable === "1" && settings.HTTPProxy;
   if (secure) return { proxy: `http://${settings.HTTPSProxy}:${settings.HTTPSPort || 80}`, bypassed: false };
   if (plain) return { proxy: `http://${settings.HTTPProxy}:${settings.HTTPPort || 80}`, bypassed: false };
   return { proxy: null, bypassed: false };
@@ -86,9 +87,17 @@ function runCommand(command, args) {
   });
 }
 
-// One lookup per origin for the life of the process; an answer can't be assumed stable longer.
-export function createSystemProxyResolver({ platform = process.platform, run = runCommand, debug = NO_DEBUG } = {}) {
+// One lookup per origin for the life of the process; an answer can't be assumed stable longer. A
+// failed lookup reads as direct, so it is asked again after a while.
+export function createSystemProxyResolver({
+  platform = process.platform,
+  run = runCommand,
+  debug = NO_DEBUG,
+  now = Date.now,
+  retryMs = SYSTEM_PROXY_RETRY_MS,
+} = {}) {
   const cache = new Map();
+  const failedAt = new Map();
   async function lookup(origin) {
     if (platform === "win32") {
       const output = await run(windowsTool("powershell.exe"), [
@@ -105,10 +114,15 @@ export function createSystemProxyResolver({ platform = process.platform, run = r
   return function resolveSystemProxy(url) {
     const origin = originOf(url);
     if (!origin) return Promise.resolve({ proxy: null, bypassed: false, error: "unsupported URL" });
-    if (cache.has(origin)) return cache.get(origin);
+    const failed = failedAt.get(origin);
+    if (cache.has(origin) && (failed === undefined || now() - failed < retryMs)) return cache.get(origin);
+    failedAt.delete(origin);
     const started = Date.now();
     const pending = lookup(origin)
-      .catch((error) => ({ proxy: null, bypassed: false, error: String(error?.code ?? error?.message ?? error) }))
+      .catch((error) => {
+        failedAt.set(origin, now());
+        return { proxy: null, bypassed: false, error: String(error?.code ?? error?.message ?? error) };
+      })
       .then((result) => {
         debug("proxy.resolve", { url: origin, platform, ...result, ms: Date.now() - started });
         return result;

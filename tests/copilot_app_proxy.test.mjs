@@ -154,6 +154,28 @@ test("Windows asks the system resolver about the relay's own URL, and falls back
   assert.equal(failed.reason, "a Windows PAC proxy");
   assert.equal(failed.decision.resolver.error, "ETIMEDOUT");
 
+  // An explicit <-loopback> stands: the resolver always bypasses loopback, whatever the settings say.
+  const loopback = await detectLoopbackProxy({
+    env: {},
+    platform: "win32",
+    run: async (command, args) => (args.includes("/v") ? CONNECTIONS("01") : REG_LOOPBACK),
+    port: 4242,
+    resolve: async () => assert.fail("not asked"),
+  });
+  assert.equal(loopback.reason, "a Windows proxy that includes loopback");
+
+  // An unreadable registry still asks the resolver.
+  const noRegistry = await detectLoopbackProxy({
+    env: {},
+    platform: "win32",
+    run: async () => {
+      throw Object.assign(new Error("spawn reg.exe ENOENT"), { code: "ENOENT" });
+    },
+    port: 4242,
+    resolve: async () => ({ proxy: "http://proxy.corp:3128", bypassed: false }),
+  });
+  assert.equal(noRegistry.reason, "the Windows proxy settings route loopback through proxy.corp:3128");
+
   // Without a port there is nothing to ask about, so the registry decides.
   const noPort = await detectLoopbackProxy({ env: {}, platform: "win32", run: reg, resolve: async () => assert.fail("no port") });
   assert.equal(noPort.reason, "a Windows PAC proxy");

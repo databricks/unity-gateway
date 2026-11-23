@@ -15,8 +15,11 @@ const TOKEN_PATTERNS = [
   /\bdapi[A-Za-z0-9-]+/g,
   /\bBearer\s+\S+/gi,
   /\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){1,2}/g,
-  /\btid=[^;\s"']+/g,
+  /\btid=[^\s"']+/g,
 ];
+// Environment-style names (COPILOT_GITHUB_TOKEN, COPILOT_API_KEY, ...) whose values are secrets.
+const SECRET_KEY = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|AUTH|CREDENTIALS?|COOKIE)(?:_|$)/;
+const SECRET_HEADER_WORDS = /token|secret|auth|key|password|cookie|credential/;
 const URL_CREDENTIALS = /(\w+:\/\/)[^/\s@]+@/g;
 const SECRET_HEADERS = new Set([
   "authorization",
@@ -61,7 +64,9 @@ export function redact(value, secrets = [], depth = 0) {
   if (value && typeof value === "object") {
     if (depth >= MAX_DEPTH) return "{...}";
     const out = {};
-    for (const [key, item] of Object.entries(value)) out[key] = redact(item, secrets, depth + 1);
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = SECRET_KEY.test(key) ? REDACTED : redact(item, secrets, depth + 1);
+    }
     return out;
   }
   return value;
@@ -73,14 +78,14 @@ export function redactHeaders(headers, secrets = []) {
   for (const [name, value] of Object.entries(headers ?? {})) {
     const key = name.toLowerCase();
     if (SECRET_HEADERS.has(key)) out[key] = REDACTED;
-    else if (SAFE_HEADERS.has(key) || (key.startsWith("x-databricks-") && !SECRET_HEADERS.has(key))) {
+    else if (SAFE_HEADERS.has(key) || (key.startsWith("x-databricks-") && !SECRET_HEADER_WORDS.test(key))) {
       out[key] = redact(Array.isArray(value) ? value.join(", ") : String(value), secrets);
     } else out[key] = OMITTED;
   }
   return out;
 }
 
-export const NO_DEBUG = Object.assign(() => {}, { addSecret: () => {}, path: null });
+export const NO_DEBUG = Object.assign(() => {}, { addSecret: () => {}, headers: () => ({}), path: null });
 
 export function createDebugLog(
   stateDir,

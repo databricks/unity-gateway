@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   DEBUG_LOG_FILE,
+  NO_DEBUG,
   OMITTED,
   REDACTED,
   createDebugLog,
@@ -18,12 +19,18 @@ test("redact strips credentials from strings, nested values and errors", () => {
   assert.equal(redact("http://user:pw@proxy.example:8080/x"), `http://${REDACTED}@proxy.example:8080/x`);
   assert.equal(redact("token dapiABCDEF0123456789"), `token ${REDACTED}`);
   assert.equal(redact("jwt eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig_part"), `jwt ${REDACTED}`);
-  assert.equal(redact("auth tid=abc123;exp=1"), `auth ${REDACTED};exp=1`);
+  assert.equal(redact("auth tid=abc123;exp=1"), `auth ${REDACTED}`);
+  assert.equal(redact('"tid=a1;exp=2;sku=s;proxy-ep=p.example;8kp=1:0f9e" next'), `"${REDACTED}" next`);
   assert.equal(redact("/s3cr3t-segment/meta", ["s3cr3t-segment"]), `/${REDACTED}/meta`);
   assert.deepEqual(redact({ a: ["ghu_1", { b: "github_pat_ABC" }], n: 3, ok: true }), {
     a: [REDACTED, { b: REDACTED }],
     n: 3,
     ok: true,
+  });
+  assert.deepEqual(redact({ env: { COPILOT_API_KEY: "sk-1", GH_TOKEN: "t", COPILOT_HOME: "/h" }, tokenLength: 4, credential: "oauth" }), {
+    env: { COPILOT_API_KEY: REDACTED, GH_TOKEN: REDACTED, COPILOT_HOME: "/h" },
+    tokenLength: 4,
+    credential: "oauth",
   });
   const error = Object.assign(new Error("mint failed: Bearer dapi123"), { code: 1 });
   const out = redact(error);
@@ -40,6 +47,7 @@ test("redactHeaders keeps names, allowlisted values, and never a credential", ()
     "Content-Type": "application/json",
     "User-Agent": "copilot/1.0",
     "x-databricks-github-copilot-api-host": "api.githubcopilot.com",
+    "x-databricks-session-secret": "s",
     "x-custom": "value",
   });
   assert.deepEqual(headers, {
@@ -49,8 +57,10 @@ test("redactHeaders keeps names, allowlisted values, and never a credential", ()
     "content-type": "application/json",
     "user-agent": "copilot/1.0",
     "x-databricks-github-copilot-api-host": "api.githubcopilot.com",
+    "x-databricks-session-secret": OMITTED,
     "x-custom": OMITTED,
   });
+  assert.deepEqual(NO_DEBUG.headers({ authorization: "Bearer gho_x" }), {});
 });
 
 test("createDebugLog appends one redacted JSON line per event and rotates at the cap", () => {
@@ -83,5 +93,6 @@ test("createDebugLog appends one redacted JSON line per event and rotates at the
 
   // Nothing throws when the directory is gone.
   const orphan = createDebugLog(join(dir, "missing"), {});
-  orphan("start", {});
+  assert.doesNotThrow(() => orphan("start", {}));
+  assert.ok(!existsSync(join(dir, "missing")));
 });

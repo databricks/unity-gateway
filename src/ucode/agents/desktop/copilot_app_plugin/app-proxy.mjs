@@ -61,13 +61,15 @@ function connectionFlags(values) {
   return hex.length >= 18 ? Number.parseInt(hex.slice(16, 18), 16) : 0;
 }
 
+const WINDOWS_LOOPBACK_REASON = "a Windows proxy that includes loopback";
+
 function registryCapture(settingsOutput, connectionsOutput) {
   const settings = parseRegQuery(settingsOutput);
   const flags = connectionFlags(parseRegQuery(connectionsOutput));
   if (settings.AutoConfigURL || flags & 0x04) return "a Windows PAC proxy";
   // WinINET leaves loopback alone unless the bypass list says <-loopback>.
   if (/0x1$/i.test(settings.ProxyEnable ?? "") && /<-loopback>/i.test(settings.ProxyOverride ?? "")) {
-    return "a Windows proxy that includes loopback";
+    return WINDOWS_LOOPBACK_REASON;
   }
   return null;
 }
@@ -102,8 +104,12 @@ function windowsHostOf(proxy) {
   }
 }
 
+// .NET Framework's resolver (Windows PowerShell) always bypasses loopback, so it can't overrule an
+// explicit <-loopback>.
 async function windowsDecision({ registry, port, resolve }) {
-  if (!port || !resolve) return { ...registry, decision: { registry, resolver: null } };
+  if (registry.reason === WINDOWS_LOOPBACK_REASON || !port || !resolve) {
+    return { ...registry, decision: { registry, resolver: null } };
+  }
   const resolver = await resolve(`http://127.0.0.1:${port}/`);
   if (resolver.error) return { ...registry, decision: { registry, resolver } };
   const captured = Boolean(resolver.proxy) && !resolver.bypassed;
@@ -138,7 +144,9 @@ export async function detectLoopbackProxy({
     }
     if (platform === "win32") {
       const regExe = windowsTool("reg.exe");
-      const reg = await run(regExe, ["query", WININET_KEY]);
+      const reg = await run(regExe, ["query", WININET_KEY]).catch(
+        (error) => (debug("proxy.system.settings", { error: String(error?.code ?? error?.message ?? error) }), ""),
+      );
       const connections = await run(regExe, ["query", `${WININET_KEY}\\Connections`, "/v", "DefaultConnectionSettings"]).catch(
         (error) => (debug("proxy.system.connections", { error: String(error?.code ?? error?.message ?? error) }), ""),
       );

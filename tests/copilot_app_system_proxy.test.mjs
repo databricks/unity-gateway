@@ -59,6 +59,9 @@ test("macosSystemProxy reads the manual proxy per scheme, honours the exceptions
   assert.deepEqual(macosSystemProxy(SCUTIL_MANUAL, "http://127.0.0.1:4242/"), { proxy: null, bypassed: true });
   assert.deepEqual(macosSystemProxy(SCUTIL_PAC, "https://ws.example/"), { proxy: null, bypassed: false, unresolved: "pac" });
   assert.deepEqual(macosSystemProxy("<dictionary> {\n}", "https://ws.example/"), { proxy: null, bypassed: false });
+  const httpOnly = SCUTIL_MANUAL.replace("HTTPSEnable : 1", "HTTPSEnable : 0");
+  assert.deepEqual(macosSystemProxy(httpOnly, "https://ws.example/"), { proxy: null, bypassed: false });
+  assert.deepEqual(macosSystemProxy(httpOnly, "http://ws.example/"), { proxy: "http://proxy.example:8080", bypassed: false });
 });
 
 test("the resolver runs the platform's tool once per origin and turns a failure into an answer", async () => {
@@ -85,6 +88,27 @@ test("the resolver runs the platform's tool once per origin and turns a failure 
     },
   });
   assert.deepEqual(await broken("https://ws.example/"), { proxy: null, bypassed: false, error: "ETIMEDOUT" });
+
+  let clock = 0;
+  let fail = true;
+  const flaky = createSystemProxyResolver({
+    platform: "win32",
+    now: () => clock,
+    retryMs: 1000,
+    run: async () => {
+      if (fail) throw Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
+      return '{"Proxy":"http://proxy.corp:3128/","Bypassed":false}';
+    },
+  });
+  assert.equal((await flaky("https://ws.example/")).error, "ETIMEDOUT");
+  fail = false;
+  clock = 999;
+  assert.equal((await flaky("https://ws.example/")).error, "ETIMEDOUT");
+  clock = 1000;
+  assert.deepEqual(await flaky("https://ws.example/"), { proxy: "http://proxy.corp:3128", bypassed: false });
+  clock = 10_000;
+  fail = true;
+  assert.deepEqual(await flaky("https://ws.example/"), { proxy: "http://proxy.corp:3128", bypassed: false });
 
   const garbage = createSystemProxyResolver({ platform: "win32", run: async () => "not json" });
   assert.match((await garbage("https://ws.example/")).error, /JSON/);
