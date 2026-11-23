@@ -3,6 +3,8 @@ import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 
+import { NO_DEBUG } from "./app-debug.mjs";
+
 // Loopback relay for the GitHub Copilot app's own Copilot API calls, hosted in ug's extension.
 // The extension points its session's Copilot API base at `http://127.0.0.1:<port>/<secret>`. The
 // relay set below goes to the workspace's AI Gateway seat relay: the runtime's own GitHub token
@@ -87,6 +89,14 @@ export function proxyEnvironment(env = process.env) {
     }
   }
   return picked;
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "<unparsed>";
+  }
 }
 
 export function loadSystemCertificates(tlsModule = tls) {
@@ -348,6 +358,7 @@ export function createCopilotHostResolver({
   missTtlMs = GITHUB_MISS_TTL_MS,
   timeoutMs = GITHUB_LOOKUP_TIMEOUT_MS,
   maxEntries = HOST_CACHE_ENTRIES,
+  debug = NO_DEBUG,
 } = {}) {
   const hosts = new Map();
   const missedAt = new Map();
@@ -376,29 +387,44 @@ export function createCopilotHostResolver({
       reply.on("error", () => {});
       if (reply.statusCode !== 200) {
         reply.resume();
+        debug("host.github", { status: reply.statusCode, host: null });
         return null;
       }
       const payload = JSON.parse((await readBody(reply, GATEWAY_DENIAL_BODY_LIMIT)).toString("utf8"));
-      return copilotApiHost(payload?.endpoints?.api);
-    } catch {
+      const host = copilotApiHost(payload?.endpoints?.api);
+      debug("host.github", { status: 200, host, plan: payload?.copilot_plan ?? null });
+      return host;
+    } catch (error) {
       reply?.destroy();
+      debug("host.github", { error: String(error?.code ?? error?.message ?? error), host: null });
       return null;
     }
   }
 
   return async function copilotHost(authorization) {
     const key = createHash("sha256").update(authorization).digest("hex");
+    const credential = authorization.slice("Bearer ".length, "Bearer ".length + 4);
     const known = hosts.get(key);
-    if (known) return known;
+    if (known) {
+      debug("host.resolve", { cache: "hit", host: known, credentialPrefix: credential });
+      return known;
+    }
     const missed = missedAt.get(key);
-    if (missed !== undefined && now() - missed < missTtlMs) return fallback(authorization);
+    if (missed !== undefined && now() - missed < missTtlMs) {
+      const fromFallback = await fallback(authorization);
+      debug("host.resolve", { cache: "recent miss", host: fromFallback, credentialPrefix: credential });
+      return fromFallback;
+    }
     const host = askGitHub ? await fromGitHub(authorization) : null;
     if (!host) {
       remember(missedAt, key, now());
-      return fallback(authorization);
+      const fromFallback = await fallback(authorization);
+      debug("host.resolve", { cache: "miss", askGitHub, host: fromFallback, via: "fallback", credentialPrefix: credential });
+      return fromFallback;
     }
     remember(hosts, key, host);
     missedAt.delete(key);
+    debug("host.resolve", { cache: "miss", host, via: "github", credentialPrefix: credential });
     return host;
   };
 }
@@ -426,14 +452,23 @@ export function createSeatRelay({
   readTimeoutMs = READ_TIMEOUT_MS,
   keepAliveTimeoutMs = KEEP_ALIVE_TIMEOUT_MS,
   env = process.env,
+  debug = NO_DEBUG,
 }) {
   const gateway = new URL(gatewayBase);
   const secret = randomBytes(32).toString("base64url");
   const secretBytes = Buffer.from(secret);
+  debug.addSecret?.(secret);
   const added = withoutReserved(addedHeaders);
   // Custom agents don't read the proxy variables on their own; `proxyEnv` (Node 24.5+) makes
   // them, and an older Node ignores it and connects directly as before.
   const proxyEnv = proxyEnvironment(env);
+  debug("relay.proxyEnv", {
+    variables: Object.keys(proxyEnv),
+    hosts: Object.fromEntries(
+      Object.entries(proxyEnv).map(([name, value]) => [name, name.toUpperCase() === "NO_PROXY" ? value : hostOf(value)]),
+    ),
+    gateway: gateway.host,
+  });
   const agents = {
     "http:": new http.Agent({ keepAlive: true, proxyEnv }),
     "https:": new https.Agent({ keepAlive: true, proxyEnv }),
@@ -456,6 +491,7 @@ export function createSeatRelay({
   function reject(req, res, status, message, label) {
     req.resume();
     observe({ route: "rejected", method: req.method, path: label, status });
+    debug("relay.request", { route: "rejected", method: req.method, path: label, status, requestHeaders: Object.keys(req.headers) });
     sendJson(res, status, message);
   }
 
@@ -513,17 +549,28 @@ export function createSeatRelay({
   function relay(res, response) {
     res.writeHead(response.statusCode, responseHeaders(response));
     response.on("error", () => res.destroy());
+    let bytes = 0;
+    response.on("data", (chunk) => (bytes += chunk.length));
     response.pipe(res);
     return new Promise((resolve) => {
-      res.once("close", resolve);
-      response.once("end", resolve);
+      res.once("close", () => resolve(bytes));
+      response.once("end", () => resolve(bytes));
     });
   }
 
   async function mintToken(res, outcome) {
+    const started = Date.now();
     try {
-      return await token();
+      const value = await token();
+      debug("relay.mint", { ok: true, ms: Date.now() - started, tokenLength: value?.length ?? 0 });
+      return value;
     } catch (error) {
+      debug("relay.mint", {
+        ok: false,
+        ms: Date.now() - started,
+        code: error?.code ?? null,
+        error: String(error?.message ?? error).slice(0, 300),
+      });
       const hint = hintFor(error) ?? "Databricks sign-in needed.";
       // Copilot hides the body of a 401 or 403, so the hint needs a status it shows.
       observe({ ...outcome, status: 400, error: "token" });
@@ -535,6 +582,18 @@ export function createSeatRelay({
   async function forwardGateway(req, res, { authorization, body, host, call, query, cancel }) {
     const url = new URL(GATEWAY_ROUTES.get(`${req.method} ${call}`) + query, gateway);
     const outcome = { route: "gateway", method: req.method, path: call };
+    const started = Date.now();
+    const trace = (fields) =>
+      debug("relay.request", {
+        ...outcome,
+        upstream: url.host,
+        upstreamPath: url.pathname,
+        copilotHost: host,
+        requestHeaders: Object.keys(req.headers),
+        bytesIn: body?.length ?? 0,
+        ms: Date.now() - started,
+        ...fields,
+      });
     const send = async (databricksToken) =>
       startTracked(cancel, url, {
         method: req.method,
@@ -543,30 +602,45 @@ export function createSeatRelay({
         ...upstreamOptions(url),
       }).response;
     let databricksToken = await mintToken(res, outcome);
-    if (databricksToken === null) return;
+    if (databricksToken === null) {
+      trace({ status: 400, error: "token" });
+      return;
+    }
     try {
       let response = await send(databricksToken);
+      let retried = false;
       if (response.statusCode === 401 || response.statusCode === 403) {
         // A stale Databricks swap token and a refused GitHub credential look the same from the
         // status alone. Refresh once and retry; a repeat is relayed.
+        debug("relay.retry", { ...outcome, status: response.statusCode });
         await readBody(response, GATEWAY_DENIAL_BODY_LIMIT).catch(() => response.destroy());
         token.invalidate();
         databricksToken = await mintToken(res, outcome);
-        if (databricksToken === null) return;
+        if (databricksToken === null) {
+          trace({ status: 400, error: "token", retried: true });
+          return;
+        }
         response = await send(databricksToken);
+        retried = true;
       }
       if (response.statusCode === 403) {
         const denial = await readBody(response, GATEWAY_DENIAL_BODY_LIMIT).catch(() => null);
         if (denial === null) response.destroy();
         observe({ ...outcome, status: 403 });
+        trace({ status: 403, retried, clientStatus: 400, responseHeaders: debug.headers?.(response.headers) });
         sendJson(res, 400, gatewayDenialMessage(denial));
         return;
       }
       observe({ ...outcome, status: response.statusCode });
-      await relay(res, response);
+      const bytesOut = await relay(res, response);
+      trace({ status: response.statusCode, retried, bytesOut, responseHeaders: debug.headers?.(response.headers) });
     } catch (error) {
-      if (res.headersSent || res.destroyed) return;
+      if (res.headersSent || res.destroyed) {
+        trace({ error: String(error?.code ?? error?.message ?? error), aborted: true });
+        return;
+      }
       observe({ ...outcome, status: 502, error: error?.code ?? "upstream" });
+      trace({ status: 502, error: String(error?.code ?? error?.message ?? error) });
       log(`Databricks seat relay: gateway request failed: ${error?.code ?? error?.name ?? "error"}`);
       sendJson(res, 502, "Unity Gateway couldn't be reached.");
     }
@@ -575,6 +649,16 @@ export function createSeatRelay({
   async function forwardDirect(req, res, { authorization, body, host, call, query, cancel }) {
     const url = new URL(call + query, directBase(host));
     const outcome = { route: "direct", method: req.method, path: call };
+    const started = Date.now();
+    const trace = (fields) =>
+      debug("relay.request", {
+        ...outcome,
+        upstream: url.host,
+        requestHeaders: Object.keys(req.headers),
+        bytesIn: body?.length ?? 0,
+        ms: Date.now() - started,
+        ...fields,
+      });
     try {
       const reply = await startTracked(cancel, url, {
         method: req.method,
@@ -583,10 +667,15 @@ export function createSeatRelay({
         ...upstreamOptions(url),
       }).response;
       observe({ ...outcome, status: reply.statusCode });
-      await relay(res, reply);
+      const bytesOut = await relay(res, reply);
+      trace({ status: reply.statusCode, bytesOut });
     } catch (error) {
-      if (res.headersSent || res.destroyed) return;
+      if (res.headersSent || res.destroyed) {
+        trace({ error: String(error?.code ?? error?.message ?? error), aborted: true });
+        return;
+      }
       observe({ ...outcome, status: 502, error: error?.code ?? "upstream" });
+      trace({ status: 502, error: String(error?.code ?? error?.message ?? error) });
       log(`Databricks seat relay: direct request failed: ${error?.code ?? error?.name ?? "error"}`);
       sendJson(res, 502, "GitHub Copilot couldn't be reached.");
     }
@@ -640,6 +729,7 @@ export function createSeatRelay({
       .catch(() => null);
     if (!host) {
       observe({ route: "rejected", method: req.method, path: call, status: 400, error: "host" });
+      debug("relay.request", { route: "rejected", method: req.method, path: call, status: 400, error: "host" });
       sendJson(
         res,
         400,

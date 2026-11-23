@@ -279,6 +279,21 @@ class TestSeatRelayProvider:
         assert result.row == "plugin installed, models through copilot-seats"
         assert result.warnings == ()
 
+    def test_status_points_at_the_diagnostics_log_once_the_extension_wrote_one(self):
+        desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
+        assert (
+            desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None).notes
+            == ()
+        )
+
+        log = plugin._extension_dir(plugin.plugin_root()) / "seat-relay-debug.log"
+        log.write_text('{"event":"start"}\n')
+
+        result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
+
+        assert result.notes == (f"Diagnostics: {log}",)
+        assert result.warnings == ()
+
     def test_status_warns_until_the_relay_is_configured(self):
         desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
 

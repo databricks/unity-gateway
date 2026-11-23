@@ -3,12 +3,13 @@ import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, join as joinPath } from "node:path";
 import { test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { RESTART_HINT } from "../src/ucode/agents/desktop/copilot_app_plugin/app-restart.mjs";
+import { DEBUG_LOG_FILE } from "../src/ucode/agents/desktop/copilot_app_plugin/app-debug.mjs";
 import { SESSIONS_FILE } from "../src/ucode/agents/desktop/copilot_app_plugin/app-seat-redirect.mjs";
 import { FakeApp } from "./copilot_app_fake.mjs";
 
@@ -28,6 +29,7 @@ const PLUGIN_FILES = [
   "app-host.mjs",
   "app-proxy.mjs",
   "app-windows.mjs",
+  "app-debug.mjs",
   "app-seat-relay.mjs",
   "app-seat-redirect.mjs",
 ];
@@ -250,6 +252,21 @@ test("under the app the extension serves its rows, redirects the session to the 
   assert.equal(signal, "SIGTERM");
   assert.deepEqual(kinds(run.entries(), "update").at(-1).options, { copilotUrl: null });
   assert.equal(run.stderr(), "");
+
+  // The diagnostics log has every step, and never a credential or the relay secret.
+  const debugText = readFileSync(joinPath(run.dir, DEBUG_LOG_FILE), "utf8");
+  const events = debugText.trim().split("\n").map((line) => JSON.parse(line).event);
+  for (const expected of ["start", "config", "host.check", "proxy.env", "relay.listening", "session.joined", "redirect.apply.done", "relay.mint", "relay.request", "redirect.shutdown"]) {
+    assert.ok(events.includes(expected), `${expected} missing from ${events}`);
+  }
+  const secret = update.options.copilotUrl.split("/").at(-1);
+  assert.ok(!debugText.includes(secret), "relay secret in the debug log");
+  assert.ok(!debugText.includes("gho_"), "GitHub token in the debug log");
+  assert.ok(!debugText.includes("Bearer dbx"), "Databricks token in the debug log");
+  const start = JSON.parse(debugText.split("\n")[0]);
+  assert.equal(start.event, "start");
+  assert.equal(start.env.SESSION_ID, "session-1");
+  assert.equal(start.sid, "session-1");
 });
 
 test("a 401 from the session invalidates the token and shows the sign-in hint once", async (t) => {
@@ -313,6 +330,10 @@ test("outside the app, as in a Copilot CLI session, the extension joins nothing 
   assert.equal(entry.host, "ancestry");
   assert.equal(typeof entry.hostMs, "number");
   assert.equal(run.stderr(), "");
+  const events = readFileSync(join(run.dir, DEBUG_LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const host = events.find((event) => event.event === "host.check");
+  assert.equal(host.app, false);
+  assert.equal(events.at(-1).event, "exit");
 });
 
 test("slow host and proxy checks overlap with the relay's start, and the applied entry records their timing", async (t) => {

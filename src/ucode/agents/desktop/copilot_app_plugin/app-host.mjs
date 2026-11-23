@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
+import { NO_DEBUG } from "./app-debug.mjs";
 import { copilotHome, readAppPid } from "./app-rows.mjs";
 import { windowsTool } from "./app-windows.mjs";
 
@@ -26,11 +28,22 @@ function parentFromProc(pid) {
   }
 }
 
-function runCommand(command, args) {
+// Resolves to the command's output, or null when it failed; `details` collects what happened.
+function runCommand(command, args, details = {}) {
+  const started = Date.now();
   return new Promise((resolve) => {
-    execFile(command, args, { timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout) =>
-      resolve(error ? null : String(stdout)),
-    );
+    execFile(command, args, { timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) => {
+      details.command = command;
+      details.args = args;
+      details.ms = Date.now() - started;
+      details.stdoutLength = String(stdout ?? "").length;
+      if (error) {
+        details.error = String(error.code ?? error.message);
+        details.killed = Boolean(error.killed);
+        details.stderr = String(stderr ?? "").slice(0, 300);
+      }
+      resolve(error ? null : String(stdout));
+    });
   });
 }
 
@@ -44,20 +57,26 @@ export function parsePidTable(output) {
   return parents;
 }
 
-async function parentLookup(platform, run) {
+async function parentLookup(platform, run, details = {}) {
   if (platform === "linux") return parentFromProc;
   let output = null;
-  if (platform === "darwin") output = await run("ps", ["-axo", "pid=,ppid="]);
+  if (platform === "darwin") output = await run("ps", ["-axo", "pid=,ppid="], details);
   if (platform === "win32") {
-    output = await run(windowsTool("powershell.exe"), [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
-    ]);
+    output = await run(
+      windowsTool("powershell.exe"),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+      ],
+      details,
+    );
   }
   if (output === null) return null;
   const parents = parsePidTable(output);
+  details.pairs = parents.size;
+  details.firstPairs = [...parents.entries()].slice(0, 20);
   return (pid) => parents.get(pid) ?? null;
 }
 
@@ -86,9 +105,25 @@ export async function runningUnderApp({
   platform = process.platform,
   pid = process.pid,
   run = runCommand,
+  debug = NO_DEBUG,
 } = {}) {
+  const started = Date.now();
   const appPid = readAppPid(home);
-  const parentOf = await parentLookup(platform, run);
+  const details = {};
+  const parentOf = await parentLookup(platform, run, details);
   const ancestors = parentOf ? ancestorsOf(pid, parentOf) : null;
-  return hostDecision({ appPid, ancestors, env });
+  const decision = hostDecision({ appPid, ancestors, env });
+  debug("host.check", {
+    platform,
+    pid,
+    appPid,
+    appPidSource: existsSync(join(home, "run", "app-owner.pid")) ? "app-owner.pid" : "ws.port",
+    home,
+    ancestors,
+    sandboxMarker: env[SANDBOX_MARKER_ENV] ?? null,
+    ...details,
+    ...decision,
+    ms: Date.now() - started,
+  });
+  return decision;
 }

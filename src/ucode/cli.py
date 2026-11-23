@@ -2020,6 +2020,8 @@ def status() -> int:
                 rows.append(("GitHub Copilot app", app_status.row))
                 for warning in app_status.warnings:
                     print_warning(warning)
+                for note in app_status.notes:
+                    print_note(note)
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared

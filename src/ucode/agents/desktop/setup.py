@@ -647,6 +647,7 @@ class CopilotAppStatus:
 
     row: str
     warnings: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
 
 
 _COPILOT_PLUGIN_LABELS = {
@@ -690,6 +691,7 @@ def copilot_app_status(
     if plugin_status == "removal_pending":
         return CopilotAppStatus(COPILOT_APP_REMOVAL_PENDING)
     warnings: list[str] = []
+    notes: list[str] = []
     try:
         if provider and _uses_seat_relay(state, provider):
             if copilot_app_plugin.seat_relay_provider() == provider:
@@ -697,6 +699,8 @@ def copilot_app_status(
             else:
                 registration = "not through the seat relay"
                 warnings.append(_seat_relay_warning(provider))
+            if diagnostics := copilot_app_plugin.debug_log_path():
+                notes.append(f"Diagnostics: {diagnostics}")
         else:
             desired = copilot_app.state_providers(
                 _with_expanded_sources(state), provider=provider, location=location
@@ -732,4 +736,4 @@ def copilot_app_status(
             "`ug configure --agents copilot` again."
         )
     row = f"plugin {plugin_label}, models {_COPILOT_REGISTRATION_LABELS.get(registration, registration)}"
-    return CopilotAppStatus(row, tuple(warnings))
+    return CopilotAppStatus(row, tuple(warnings), tuple(notes))

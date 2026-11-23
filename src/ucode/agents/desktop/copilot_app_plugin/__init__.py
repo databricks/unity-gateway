@@ -56,6 +56,7 @@ _SOURCE_FILES = (
     "app-host.mjs",
     "app-proxy.mjs",
     "app-windows.mjs",
+    "app-debug.mjs",
     "app-seat-relay.mjs",
     "app-seat-redirect.mjs",
 )
@@ -265,6 +266,8 @@ _EXTENSION_STATE_FILES = (
     "app-restart.log",
     "seat-relay-sessions.json",
     "seat-relay-requests.json",
+    "seat-relay-debug.log",
+    "seat-relay-debug.log.1",
 )
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
@@ -470,6 +473,12 @@ def _drop_entries(settings: dict, entries: list[tuple[str, str]]) -> None:
 
 def _has_ug_keys(settings: dict, root: Path) -> bool:
     return bool(_ug_entries(settings, root))
+
+
+def debug_log_path(root: Path | None = None) -> Path | None:
+    """The installed extension's diagnostics log, when it has written one."""
+    path = _extension_dir(root or plugin_root()) / "seat-relay-debug.log"
+    return path if path.is_file() else None
 
 
 def missing_ug_path(root: Path | None = None) -> str | None:

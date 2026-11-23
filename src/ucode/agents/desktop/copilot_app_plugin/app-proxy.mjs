@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 
+import { NO_DEBUG } from "./app-debug.mjs";
 import { windowsTool } from "./app-windows.mjs";
 
 // The relay URL is plain HTTP on 127.0.0.1. A proxy the runtime routes loopback through would get
@@ -107,23 +108,49 @@ function runCommand(command, args) {
 
 // Reads the system proxy settings for this platform, then decides. A failed read counts as no
 // capture, reported in `error`, so a broken tool doesn't turn the relay off.
-export async function detectLoopbackProxy({ env = process.env, platform = process.platform, run = runCommand } = {}) {
+export async function detectLoopbackProxy({
+  env = process.env,
+  platform = process.platform,
+  run = runCommand,
+  debug = NO_DEBUG,
+} = {}) {
+  const started = Date.now();
   const fromEnv = loopbackProxyCapture({ env, platform });
+  const proxyEnv = Object.fromEntries(
+    PROXY_ENV.concat("NO_PROXY").flatMap((name) => [name, name.toLowerCase()]).filter((k) => env[k]).map((k) => [k, env[k]]),
+  );
+  debug("proxy.env", { platform, ...fromEnv, env: proxyEnv });
   if (fromEnv.captured) return fromEnv;
   try {
     if (platform === "darwin") {
-      return loopbackProxyCapture({ env, platform, scutil: await run("scutil", ["--proxy"]) });
+      const scutil = await run("scutil", ["--proxy"]);
+      const result = loopbackProxyCapture({ env, platform, scutil });
+      debug("proxy.system", { platform, scutil, ...parseScutil(scutil), ...result, ms: Date.now() - started });
+      return result;
     }
     if (platform === "win32") {
       const regExe = windowsTool("reg.exe");
       const reg = await run(regExe, ["query", WININET_KEY]);
       const connections = await run(regExe, ["query", `${WININET_KEY}\\Connections`, "/v", "DefaultConnectionSettings"]).catch(
-        () => "",
+        (error) => (debug("proxy.system.connections", { error: String(error?.code ?? error?.message ?? error) }), ""),
       );
-      return loopbackProxyCapture({ env, platform, reg, connections });
+      const result = loopbackProxyCapture({ env, platform, reg, connections });
+      debug("proxy.system", {
+        platform,
+        regExe,
+        reg,
+        connections,
+        settings: parseRegQuery(reg),
+        connectionFlags: connectionFlags(parseRegQuery(connections)),
+        ...result,
+        ms: Date.now() - started,
+      });
+      return result;
     }
   } catch (error) {
-    return { captured: false, reason: null, error: String(error?.code ?? error?.message ?? error) };
+    const failure = { captured: false, reason: null, error: String(error?.code ?? error?.message ?? error) };
+    debug("proxy.system", { platform, ...failure, ms: Date.now() - started });
+    return failure;
   }
   return fromEnv;
 }
