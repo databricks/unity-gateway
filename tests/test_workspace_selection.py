@@ -413,8 +413,21 @@ class TestEndpointRatesTransport:
                         {"model_service": "system.ai.example"},
                     ]
                 },
-                [[{"model_service": "system.ai.example"}], None],
+                [[], "endpoint-rates returned an unexpected response shape"],
             ),
+            *[
+                (
+                    {"model_service_rates": [entry]},
+                    [[], "endpoint-rates returned an unexpected response shape"],
+                )
+                for entry in [
+                    "x",
+                    {},
+                    {"model_service": None},
+                    {"model_service": ""},
+                    {"model_service": " "},
+                ]
+            ],
         ],
     )
     def test_response_shapes(self, tmp_path, payload, expected):

@@ -3181,9 +3181,15 @@ def fetch_endpoint_rates(
     if not isinstance(payload, dict):
         return [], "endpoint-rates returned an unexpected response shape"
     rates = payload.get("model_service_rates", [])
-    if not isinstance(rates, list):
+    # An unidentifiable entry cannot establish which cached prices should be removed.
+    if not isinstance(rates, list) or any(
+        not isinstance(rate, dict)
+        or not isinstance(rate.get("model_service"), str)
+        or not rate["model_service"].strip()
+        for rate in rates
+    ):
         return [], "endpoint-rates returned an unexpected response shape"
-    return [rate for rate in rates if isinstance(rate, dict)], None
+    return rates, None
 
 
 # The `update_mask` paths a config PATCH sends. The server rejects paths outside its mutable set,
