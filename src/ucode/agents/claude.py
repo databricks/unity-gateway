@@ -13,7 +13,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -54,7 +53,6 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
-    RelayLookup,
     _debug,
     build_auth_shell_command,
     build_otel_headers_shell_command,
@@ -63,8 +61,8 @@ from ucode.databricks import (
     custom_model_services,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
-    model_service_relay_lookup,
     model_services_need_subscription_relay,
+    relay_backed_model_services,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -1696,11 +1694,6 @@ def disable_smart_routing(state: dict) -> bool:
     return changed
 
 
-# A relay-detection result saved by configure that launches reuse instead of refetching.
-CLAUDE_RELAY_DETECTION_KEY = "claude_relay_detection"
-_RELAY_DETECTION_REUSE_S = 24 * 60 * 60
-
-
 def static_models_need_subscription_relay(state: dict, *, configuring: bool = False) -> bool:
     """True when Claude's static model list (a managed ``model_services``/``sources``) includes a
     model service that routes to a subscription relay and the user already holds a Claude
@@ -1715,12 +1708,13 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
         return False
     models = state.get("claude_static_models")
     candidates = custom_model_services(models if isinstance(models, list) else [])
-    if not candidates:
-        state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
-        return False
-    relay_backed = None if configuring else _saved_relay_backed_services(state, candidates)
-    if relay_backed is None:
-        relay_backed = _detect_relay_backed_services(state, candidates)
+    relay_backed = relay_backed_model_services(
+        state,
+        candidates,
+        agent=AGENT_CLAUDE,
+        configuring=configuring,
+        token_provider=lambda: get_databricks_token(state["workspace"], state.get("profile")),
+    )
     if not relay_backed:
         return False
     if not (os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR) or _has_subscription_login()):
@@ -1740,44 +1734,6 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
             )
         return False
     return True
-
-
-def _saved_relay_backed_services(state: dict, candidates: list[str]) -> list[str] | None:
-    saved = state.get(CLAUDE_RELAY_DETECTION_KEY)
-    if not isinstance(saved, dict) or saved.get("models") != candidates:
-        return None
-    checked_at = saved.get("checked_at")
-    relay_backed = saved.get("relay_backed")
-    if not isinstance(checked_at, (int, float)) or not isinstance(relay_backed, list):
-        return None
-    if time.time() - checked_at > _RELAY_DETECTION_REUSE_S:
-        return None
-    return relay_backed
-
-
-def _detect_relay_backed_services(state: dict, candidates: list[str]) -> list[str]:
-    try:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
-    except RuntimeError:  # the configure/launch path reports auth itself
-        return []
-    lookups = {
-        model: model_service_relay_lookup(state["workspace"], token, model) for model in candidates
-    }
-    relay_backed = [model for model, lookup in lookups.items() if lookup is RelayLookup.RELAYED]
-    unknown = [model for model, lookup in lookups.items() if lookup is RelayLookup.UNKNOWN]
-    if unknown:
-        print_warning(
-            f"Couldn't check whether {', '.join(unknown)} need your Claude subscription, so they "
-            "use Databricks authentication this time. Run `ug claude` again to retry."
-        )
-        state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
-    else:
-        state[CLAUDE_RELAY_DETECTION_KEY] = {
-            "models": candidates,
-            "relay_backed": relay_backed,
-            "checked_at": time.time(),
-        }
-    return relay_backed
 
 
 def _relay_blocking_managed_settings() -> list[str]:

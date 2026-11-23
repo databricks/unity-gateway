@@ -777,7 +777,8 @@ class TestStaticModelsNeedSubscriptionRelay:
         monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
 
-        def lookup(_ws, _token, model):
+        def lookup(_ws, _token, model, *, provider_type):
+            assert provider_type == "anthropic"
             looked_up.append(model)
             if model in unknown:
                 return RelayLookup.UNKNOWN
@@ -785,7 +786,7 @@ class TestStaticModelsNeedSubscriptionRelay:
                 return RelayLookup.RELAYED
             return RelayLookup.NOT_RELAYED
 
-        monkeypatch.setattr(claude, "model_service_relay_lookup", lookup)
+        monkeypatch.setattr(db_mod, "model_service_relay_lookup", lookup)
         monkeypatch.setattr(claude, "_has_subscription_login", lambda: signed_in)
         return looked_up
 
@@ -840,7 +841,7 @@ class TestStaticModelsNeedSubscriptionRelay:
         looked_up = self._relay_backed(monkeypatch)
         state = dict(self._STATE)
         assert claude.static_models_need_subscription_relay(state, configuring=True)
-        assert state[claude.CLAUDE_RELAY_DETECTION_KEY]["relay_backed"] == ["main.default.relayed"]
+        assert state["claude_relay_detection"]["relay_backed"] == ["main.default.relayed"]
         looked_up.clear()
         assert claude.static_models_need_subscription_relay(state)
         assert looked_up == []
@@ -854,9 +855,7 @@ class TestStaticModelsNeedSubscriptionRelay:
         claude.static_models_need_subscription_relay(changed)
         assert looked_up == ["main.default.relayed"]
 
-        state[claude.CLAUDE_RELAY_DETECTION_KEY]["checked_at"] -= (
-            claude._RELAY_DETECTION_REUSE_S + 1
-        )
+        state["claude_relay_detection"]["checked_at"] -= db_mod._RELAY_DETECTION_REUSE_S + 1
         looked_up.clear()
         claude.static_models_need_subscription_relay(state)
         assert looked_up == ["main.default.relayed", "main.default.oss"]
@@ -866,7 +865,7 @@ class TestStaticModelsNeedSubscriptionRelay:
         state = dict(self._STATE)
         assert not claude.static_models_need_subscription_relay(state)
         assert "Couldn't check whether main.default.relayed" in capsys.readouterr().out
-        assert claude.CLAUDE_RELAY_DETECTION_KEY not in state
+        assert "claude_relay_detection" not in state
 
     @pytest.mark.parametrize("signed_in", [True, False])
     def test_global_configure_keeps_gateway_auth(self, monkeypatch, signed_in):
@@ -887,7 +886,7 @@ class TestStaticModelsNeedSubscriptionRelay:
     def test_no_relay_backed_service_skips_the_login_check(self, monkeypatch):
         self._relay_backed(monkeypatch)
         monkeypatch.setattr(
-            claude, "model_service_relay_lookup", lambda *_a: RelayLookup.NOT_RELAYED
+            db_mod, "model_service_relay_lookup", lambda *_a, **_k: RelayLookup.NOT_RELAYED
         )
         monkeypatch.setattr(
             claude, "_has_subscription_login", lambda: pytest.fail("no login check needed")

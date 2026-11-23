@@ -3366,7 +3366,7 @@ def otel_proxy_cmd(
         if not state:
             raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
         apply_pat_environment(state)
-        token_provider = codex_agent._otel_token_provider(state, host)
+        token_provider = codex_agent.proxy_token_provider(state, host)
         server, _cache, _client = gateway_proxy.start_otel_proxy(host, token_provider, port=port)
         if relay_port:
             # The Codex app is pinned to this port, so fail (and restart) rather than move.
@@ -4663,7 +4663,17 @@ def _launch_tool(
                     provider_models = authored
                     coding_agent_config_defaults = authored
         if tool == AGENT_CODEX and not provider and not parent_schema:
-            relayed = codex_agent.use_model_service_relay(state, model or forwarded_model)
+            routed = _routes_launch(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=provider,
+            )
+            relayed = not routed and codex_agent.use_model_service_relay(
+                state, model or forwarded_model
+            )
         if tool == AGENT_CODEX and managed_smart_routing_applies:
             if relayed:
                 routing_unavailable = (

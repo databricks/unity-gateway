@@ -7198,7 +7198,7 @@ class TestModelServiceDestinationModels:
             }
         }
 
-        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_providers(service) == ["main.team.provider"]
         assert db_mod.model_service_destination_models(service) is None
 
     def test_single_primary_without_traffic_is_live_for_both_consumers(self):
@@ -7217,7 +7217,7 @@ class TestModelServiceDestinationModels:
             }
         }
 
-        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_providers(service) == ["main.team.provider"]
         assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
 
     @pytest.mark.parametrize(
@@ -7415,6 +7415,25 @@ class TestModelServicesNeedSubscriptionRelay:
             "https://ws", "tok", ["main.default.gpt"]
         )
 
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"], provider_type="openai"
+        )
+
+    @pytest.mark.parametrize("budget", [False, True])
+    def test_codex_seat_only_in_fallback(self, monkeypatch, budget):
+        service = self._service("main.default.gpt", self._hosted("system.ai.gpt"))
+        fallback = self._external("main.default.chatgpt")
+        routing = service["config"]["routing"]
+        if budget:
+            routing["budget_fallbacks"] = [{"destination": fallback}]
+        else:
+            routing["fallback"] = {"destinations": [fallback]}
+        self._patch(
+            monkeypatch,
+            {"main.default.gpt": service},
+            {"main.default.chatgpt"},
+            openai=frozenset({"main.default.chatgpt"}),
+        )
         assert db_mod.model_services_need_subscription_relay(
             "https://ws", "tok", ["main.default.gpt"], provider_type="openai"
         )

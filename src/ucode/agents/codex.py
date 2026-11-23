@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -63,10 +64,8 @@ from ucode.custom_oauth import (
     launch_token,
 )
 from ucode.databricks import (
-    OPENAI_PROVIDER_TYPE,
     CodexCatalogSource,
     CodexMpsModelCatalogUnavailable,
-    RelayLookup,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_mcp_proxy_argv,
@@ -74,8 +73,7 @@ from ucode.databricks import (
     build_tool_base_url,
     custom_model_services,
     get_model_provider_service,
-    model_service_relay_lookup,
-    model_services_need_subscription_relay,
+    relay_backed_model_services,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -1819,7 +1817,7 @@ def sync_app_model_catalog(catalog: dict) -> None:
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
     """The token Codex authenticates with: a custom-OAuth client token when configured,
     else the CLI profile. The single auth-selection point — the OTLP proxy's token
-    provider (_otel_token_provider) delegates here so both mint the same principal."""
+    provider (proxy_token_provider) delegates here so both mint the same principal."""
     return launch_token(state, workspace, force_refresh=force_refresh)
 
 
@@ -1861,7 +1859,7 @@ def _otel_proxy_overlay(endpoint: str) -> dict:
     }
 
 
-def _otel_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
+def proxy_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
     """The proxy's token_provider: mints from the same source Codex uses for inference
     (via _launch_token) so exported traces are attributed to the same principal."""
     return lambda force: _launch_token(state, workspace, force_refresh=force)
@@ -1890,7 +1888,7 @@ def _launch_codex_with_otel_proxy(
             # Only tracing launches need the proxy (and its `httpx` import).
             from ucode import gateway_proxy
 
-            otel = gateway_proxy.start_otel_proxy(workspace, _otel_token_provider(state, workspace))
+            otel = gateway_proxy.start_otel_proxy(workspace, proxy_token_provider(state, workspace))
             proxies.append(otel)
             threading.Thread(target=otel[0].serve_forever, daemon=True).start()
             endpoint = f"http://{LOOPBACK_HOST}:{otel[0].server_address[1]}/v1/traces"
@@ -1925,22 +1923,23 @@ def _has_chatgpt_login(binary: str) -> bool:
     return result.returncode == 0 and "ChatGPT" in f"{result.stdout}{result.stderr}"
 
 
-def use_model_service_relay(state: dict, selected_model: str | None = None) -> bool:
+def use_model_service_relay(
+    state: dict, selected_model: str | None = None, *, configuring: bool = False
+) -> bool:
     """Select per-user relay auth for a static list or an explicitly selected model service."""
     models = state.get("codex_static_models")
     candidates = custom_model_services(models if isinstance(models, list) else [])
     selection = selected_model or state.get("codex_default_model")
     if isinstance(selection, str) and selection not in candidates:
         candidates.extend(custom_model_services([selection]))
-    if not candidates or machine_wide_only():
+    if machine_wide_only():
         return False
-    workspace = state["workspace"]
-    try:
-        token = _launch_token(state, workspace)
-    except RuntimeError:
-        return False
-    if not model_services_need_subscription_relay(
-        workspace, token, candidates, provider_type=OPENAI_PROVIDER_TYPE
+    if not relay_backed_model_services(
+        state,
+        candidates,
+        agent=AGENT_CODEX,
+        configuring=configuring,
+        token_provider=lambda: _launch_token(state, state["workspace"]),
     ):
         return False
     if not (os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])):
@@ -2152,23 +2151,22 @@ def launch(
         # Only relayed launches need the proxy (and its `httpx` import).
         from ucode import gateway_proxy
 
-        relay = gateway_proxy.start_relay_proxy(
-            workspace,
-            lambda force: _launch_token(state, workspace, force_refresh=force),
-            0,
-            agent=AGENT_CODEX,
-            routes_to_subscription_relay=lambda model, token: (
-                model_service_relay_lookup(
-                    workspace, token, model, provider_type=OPENAI_PROVIDER_TYPE
-                )
-                is RelayLookup.RELAYED
-            ),
-        )
+        provider_config = profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
+        token_provider = proxy_token_provider(state, workspace)
+        if provider:
+            relay = gateway_proxy.start_relay_proxy(workspace, token_provider, 0, agent=AGENT_CODEX)
+        else:
+            secret = secrets.token_urlsafe(32)
+            os.environ["UG_CODEX_SESSION_SECRET"] = secret
+            provider_config.setdefault("env_http_headers", {})[
+                gateway_proxy.CODEX_SESSION_HEADER
+            ] = "UG_CODEX_SESSION_SECRET"
+            relay = gateway_proxy.start_codex_model_service_proxy(
+                workspace, token_provider, session_secret=secret
+            )
         threading.Thread(target=relay[0].serve_forever, daemon=True).start()
         port = relay[0].server_address[1]
-        profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["base_url"] = (
-            f"http://{LOOPBACK_HOST}:{port}/v1"
-        )
+        provider_config["base_url"] = f"http://{LOOPBACK_HOST}:{port}/v1"
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],

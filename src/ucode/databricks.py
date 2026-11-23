@@ -3703,14 +3703,20 @@ def model_service_backing_model(service: dict) -> str | None:
     return None
 
 
-def model_service_primary_providers(service: dict) -> list[str]:
-    """The Model Provider Services behind ``service``'s live primary destinations."""
+def model_service_providers(service: dict, *, include_fallbacks: bool = False) -> list[str]:
+    """Model providers that can receive traffic from this service."""
     providers: list[str] = []
-    for destination in _model_service_primary_destinations(service, strict=False) or []:
-        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
+    destinations = _model_service_primary_destinations(service, strict=False) or []
+    if include_fallbacks:
+        destinations.extend(_model_service_fallback_destinations(service) or [])
+    for destination in destinations:
+        if not isinstance(destination, dict) or destination.get("is_deleted"):
+            continue
+        external = destination.get("external_model_config")
+        provider = external.get("model_provider_service") if isinstance(external, dict) else None
         if isinstance(provider, str) and provider:
             providers.append(provider.removeprefix("model-provider-services/"))
-    return providers
+    return list(dict.fromkeys(providers))
 
 
 def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
@@ -3741,16 +3747,15 @@ def _model_service_primary_destinations(service: dict, *, strict: bool = True) -
     return destinations
 
 
-def model_service_destination_models(service: dict) -> list[str] | None:
-    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
-    destinations = _model_service_primary_destinations(service)
-    if destinations is None:
+def _model_service_fallback_destinations(service: dict) -> list | None:
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
         return None
-    routing = service["config"]["routing"]
     fallback = routing.get("fallback") or {}
     if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
         return None
-    destinations.extend(fallback.get("destinations", []))
+    destinations = list(fallback.get("destinations", []))
     budget_fallbacks = routing.get("budget_fallbacks") or []
     if not isinstance(budget_fallbacks, list):
         return None
@@ -3758,6 +3763,16 @@ def model_service_destination_models(service: dict) -> list[str] | None:
         if not isinstance(entry, dict):
             return None
         destinations.append(entry.get("destination"))
+    return destinations
+
+
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    destinations = _model_service_primary_destinations(service)
+    fallbacks = _model_service_fallback_destinations(service)
+    if destinations is None or fallbacks is None:
+        return None
+    destinations.extend(fallbacks)
     models = []
     for destination in destinations:
         if not isinstance(destination, dict):
@@ -3814,10 +3829,68 @@ def custom_model_services(models: list[str]) -> list[str]:
     return candidates
 
 
+_RELAY_DETECTION_REUSE_S = 24 * 60 * 60
+
+
+def _saved_relay_backed_services(saved: object, candidates: list[str]) -> list[str] | None:
+    if not isinstance(saved, dict) or saved.get("models") != candidates:
+        return None
+    checked_at = saved.get("checked_at")
+    relay_backed = saved.get("relay_backed")
+    if not isinstance(checked_at, (int, float)) or not isinstance(relay_backed, list):
+        return None
+    if not 0 <= time.time() - checked_at <= _RELAY_DETECTION_REUSE_S:
+        return None
+    return relay_backed
+
+
+def relay_backed_model_services(
+    state: dict,
+    candidates: list[str],
+    *,
+    agent: str,
+    configuring: bool,
+    token_provider: Callable[[], str],
+) -> list[str]:
+    """Reuse confirmed service lists for a day between launches of the same agent and workspace."""
+    key = f"{agent}_relay_detection"
+    if not candidates:
+        state.pop(key, None)
+        return []
+    if not configuring:
+        saved = _saved_relay_backed_services(state.get(key), candidates)
+        if saved is not None:
+            return saved
+    try:
+        token = token_provider()
+    except RuntimeError:
+        return []
+    provider_type = {AGENT_CLAUDE: ANTHROPIC_PROVIDER_TYPE, AGENT_CODEX: OPENAI_PROVIDER_TYPE}[
+        agent
+    ]
+    lookups = {
+        model: model_service_relay_lookup(
+            state["workspace"], token, model, provider_type=provider_type
+        )
+        for model in candidates
+    }
+    relayed = [model for model, result in lookups.items() if result is RelayLookup.RELAYED]
+    unknown = [model for model, result in lookups.items() if result is RelayLookup.UNKNOWN]
+    if unknown:
+        print_warning(
+            f"Couldn't check whether {', '.join(unknown)} need your subscription, so they "
+            f"use Databricks authentication this time. Run `ug {agent}` again to retry."
+        )
+        state.pop(key, None)
+    else:
+        state[key] = {"models": candidates, "relay_backed": relayed, "checked_at": time.time()}
+    return relayed
+
+
 def model_service_relay_lookup(
     workspace: str, token: str, model: str, *, provider_type: str = ANTHROPIC_PROVIDER_TYPE
 ) -> RelayLookup:
-    """Check the live primary destinations for a relay of this subscription provider."""
+    """Check for a subscription provider among eligible destinations, including Codex fallbacks."""
     if not custom_model_services([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
@@ -3860,7 +3933,9 @@ def _fetch_model_service_relay_lookup(
         _debug("relay detection", f"{name}: {reason}")
         return RelayLookup.UNKNOWN
     lookup = RelayLookup.NOT_RELAYED
-    for provider in model_service_primary_providers(service):
+    for provider in model_service_providers(
+        service, include_fallbacks=provider_type == OPENAI_PROVIDER_TYPE
+    ):
         entry, reason = get_model_provider_service(
             provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
         )

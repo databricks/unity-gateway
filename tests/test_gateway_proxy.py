@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from ucode import gateway_proxy
+from ucode import databricks, gateway_proxy
 
 
 def _make_jwt(exp: float | None) -> str:
@@ -974,28 +974,27 @@ class TestClaudeRelayProxyWiring:
 
 class TestCodexRelayProxy:
     @pytest.mark.parametrize(
-        ("model", "pinned", "expected_auth", "swap", "keep_pin"),
-        [
-            ("cat.s.seat", True, "chatgpt-token", True, False),
-            ("cat.s.seat", False, "chatgpt-token", True, False),
-            ("cat.s.foundry", True, "tok1", False, False),
-            ("system.ai.gpt-5.2", False, "tok1", False, False),
-            ("gpt-5.2", True, "chatgpt-token", True, True),
-            ("gpt-5.2", False, "tok1", False, False),
-        ],
+        ("model", "seat"),
+        [("cat.s.seat", True), ("cat.s.foundry", False), ("system.ai.gpt-5.2", False)],
     )
-    def test_relays_chatgpt_login_to_codex_upstream(
-        self, monkeypatch, model, pinned, expected_auth, swap, keep_pin
-    ):
+    def test_model_service_credentials(self, monkeypatch, model, seat):
         cache = Mock(token="tok1")
         cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
-        server, _cache, upstream = gateway_proxy.start_relay_proxy(
+
+        def lookup(workspace, token, name, *, provider_type):
+            assert (workspace, token, provider_type) == ("https://w", "tok1", "openai")
+            return (
+                databricks.RelayLookup.RELAYED
+                if name == "cat.s.seat"
+                else databricks.RelayLookup.NOT_RELAYED
+            )
+
+        monkeypatch.setattr(databricks, "model_service_relay_lookup", lookup)
+        server, _cache, upstream = gateway_proxy.start_codex_model_service_proxy(
             "https://w",
             lambda _f: "t",
-            0,
-            agent="codex",
-            routes_to_subscription_relay=lambda m, _: m == "cat.s.seat",
+            session_secret="test-session",
         )
         server.server_close()
         upstream.close()
@@ -1011,17 +1010,39 @@ class TestCodexRelayProxy:
         h.headers = {
             "Authorization": "Bearer chatgpt-token",
             "ChatGPT-Account-ID": "acct",
-            **({"Databricks-Model-Provider-Service": "cat.s.mps"} if pinned else {}),
+            gateway_proxy.CODEX_SESSION_HEADER: "test-session",
+            "Databricks-Model-Provider-Service": "cat.s.mps",
             "Content-Length": str(len(body)),
         }
         h.rfile = io.BytesIO(body)
         h.path, h.command, h.requestline = "/v1/responses", "POST", "POST /v1/responses HTTP/1.1"
         h._handle()
         sent = client.sent_headers[0]
-        assert sent["Authorization"] == f"Bearer {expected_auth}"
-        assert sent.get("ChatGPT-Account-ID") == ("acct" if swap else None)
-        assert sent.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER) == ("Bearer tok1" if swap else None)
-        assert sent.get("Databricks-Model-Provider-Service") == ("cat.s.mps" if keep_pin else None)
+        assert sent["Authorization"] == ("Bearer chatgpt-token" if seat else "Bearer tok1")
+        assert sent.get("ChatGPT-Account-ID") == ("acct" if seat else None)
+        assert sent.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER) == ("Bearer tok1" if seat else None)
+        assert "Databricks-Model-Provider-Service" not in sent
+        assert gateway_proxy.CODEX_SESSION_HEADER not in sent
+
+    @pytest.mark.parametrize(
+        ("path", "secret", "status"),
+        [
+            ("/api/2.0/clusters/list", "test-session", 404),
+            ("/v1/../api", "test-session", 404),
+            ("/v1/responses", "", 401),
+            ("/v1/responses", "wrong", 401),
+        ],
+    )
+    def test_rejects_before_forwarding(self, path, secret, status):
+        handler = object.__new__(gateway_proxy._CodexModelServiceProxyHandler)
+        handler.path = path
+        handler.session_secret = "test-session"
+        handler.headers = {gateway_proxy.CODEX_SESSION_HEADER: secret}
+        handler._safe_send_error = Mock()
+        handler._forward = Mock()
+        handler._handle()
+        assert handler._safe_send_error.call_args.args[0] == status
+        handler._forward.assert_not_called()
 
 
 class TestProxyMetrics:

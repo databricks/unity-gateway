@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import custom_oauth, gateway_proxy, managed_files
+from ucode import custom_oauth, databricks, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -1859,14 +1859,16 @@ class TestCodexLaunch:
         monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
         monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: signed_in)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
-        detect = Mock(return_value=True)
-        monkeypatch.setattr(codex, "model_services_need_subscription_relay", detect)
+        detect = Mock(return_value=databricks.RelayLookup.RELAYED)
+        monkeypatch.setattr(databricks, "model_service_relay_lookup", detect)
         state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
         assert codex.use_model_service_relay(state) is signed_in
-        detect.assert_called_once_with(WS, "tok", ["cat.s.seat"], provider_type="openai")
+        assert codex.use_model_service_relay(state) is signed_in
+        detect.assert_called_once_with(WS, "tok", "cat.s.seat", provider_type="openai")
 
+    @pytest.mark.parametrize("provider", [None, "cat.s.mps"])
     def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, provider
     ):
         self._patch(tmp_path, monkeypatch)
         server = Mock(server_address=("127.0.0.1", 54321))
@@ -1874,18 +1876,13 @@ class TestCodexLaunch:
         process = Mock()
         process.wait.return_value = 0
         popen = Mock(return_value=process)
-        started = {}
-
-        def start_relay_proxy(
-            workspace, token_provider, port, *, agent, routes_to_subscription_relay
-        ):
-            assert routes_to_subscription_relay("cat.s.chatgpt", "db-token")
-            started.update(workspace=workspace, token=token_provider(False), agent=agent)
-            return server, cache, client
-
-        detect = Mock(return_value=codex.RelayLookup.RELAYED)
-        monkeypatch.setattr(codex, "model_service_relay_lookup", detect)
-        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        start = Mock(return_value=(server, cache, client))
+        monkeypatch.setattr(
+            gateway_proxy,
+            "start_relay_proxy" if provider else "start_codex_model_service_proxy",
+            start,
+        )
+        monkeypatch.delenv("UG_CODEX_SESSION_SECRET", raising=False)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
         login_status = Mock(return_value=True)
         monkeypatch.setattr(codex, "_has_chatgpt_login", login_status)
@@ -1900,17 +1897,24 @@ class TestCodexLaunch:
                 {
                     "workspace": WS,
                     "codex_relayed": True,
-                    "_codex_launch_provider": "cat.s.mps",
+                    "_codex_launch_provider": provider,
                 },
                 ["exec", "hi"],
                 options=LaunchOptions(),
             )
 
         login_status.assert_called_once()
-        detect.assert_called_once_with(WS, "db-token", "cat.s.chatgpt", provider_type="openai")
-        assert started == {"workspace": WS, "token": "tok", "agent": "codex"}
+        assert start.call_args.args[0] == WS
+        assert start.call_args.args[1](False) == "tok"
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
+        if provider:
+            assert start.call_args.kwargs == {"agent": "codex"}
+        else:
+            secret = os.environ["UG_CODEX_SESSION_SECRET"]
+            assert start.call_args.kwargs == {"session_secret": secret}
+            assert any("UG_CODEX_SESSION_SECRET" in arg for arg in argv)
+            assert all(secret not in arg for arg in argv)
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
         assert argv[-2:] == ["exec", "hi"]
         cache.stop.assert_called_once_with()
@@ -3557,7 +3561,7 @@ class TestOtelTokenProvider:
     def test_token_provider_uses_default_profile(self, monkeypatch):
         get_token = Mock(return_value="token")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
-        provider = codex._otel_token_provider({"profile": "myprof"}, WS)
+        provider = codex.proxy_token_provider({"profile": "myprof"}, WS)
         assert provider(True) == "token"
         get_token.assert_called_once_with(WS, "myprof", force_refresh=True)
 
@@ -3573,7 +3577,7 @@ class TestOtelTokenProvider:
                 "scopes": ["offline_access", "model-serving"],
             }
         }
-        provider = codex._otel_token_provider(state, WS)
+        provider = codex.proxy_token_provider(state, WS)
         assert provider(True) == "custom-token"
         assert get_custom_token.call_args.kwargs["force_refresh"] is True
         get_default_token.assert_not_called()
