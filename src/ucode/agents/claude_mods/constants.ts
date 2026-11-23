@@ -9,6 +9,7 @@ export const SMART_ROUTER_ON_REPLY = 'Smart Router is on';
 export const SMART_ROUTER_OFF_REPLY = 'Smart Router is off';
 // Omnigent matches this warning exactly; update Omnigent if it changes.
 export const UNSUPPORTED_MODEL_LIST_WARNING = "⚠ This session's model list isn't supported by smart router";
+export const VALIDATION_FAILED_WARNING = "⚠ Smart Router couldn't validate this session's model list";
 export const LOGS_DETAILS_HINT = '(/smart-router logs for details)';
 export const UNSUPPORTED_ROUTER_STATE = `ERROR ${LOGS_DETAILS_HINT}`;
 export const OMNI_LAUNCH_MODE = 'omni';

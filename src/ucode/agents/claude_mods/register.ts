@@ -7,6 +7,7 @@ import {
   skipStartupValidation,
   startStartupValidation,
   warnUnsupportedModelList,
+  warnValidationFailed,
 } from './smart-routing-status.ts';
 import { routeAgentStream, endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
@@ -23,6 +24,7 @@ import {
   SMART_ROUTER_ON_REPLY,
   OMNI_LAUNCH_MODE,
   UNSUPPORTED_MODEL_LIST_WARNING,
+  VALIDATION_FAILED_WARNING,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
@@ -285,11 +287,11 @@ async function setRouting(
 }
 
 const VALIDATION_POLL_MS = 100;
-// Longer than the Python check's 4 s deadline, after which it never turns routing off.
+// Longer than the Python check's 4 s deadline, which always publishes its result first.
 const VALIDATION_WAIT_MS = 5000;
 const VALIDATE_COMMAND_TIMEOUT_MS = 10000;
 
-// Persists the unsupported result as a Smart Router logs row; the warning band is transient.
+// Persists the unsupported or failed result as a Smart Router logs row; the warning band is transient.
 // A resultPath of '-' reads the result from stdin.
 async function recordRouteValidation($: EngineInterface, options: PluginOptions, resultPath: string, stdin?: string): Promise<void> {
   const result = await $.process.run(
@@ -351,14 +353,16 @@ async function watchStartupValidation($: EngineInterface, options: PluginOptions
       }
       complete = true;
       if (result.routing_disabled === true) {
-        warnUnsupportedModelList();
+        const failed = result.validation_failed === true;
+        if (failed) warnValidationFailed();
+        else warnUnsupportedModelList();
         void recordRouteValidation($, options, resultPath).catch(() => {});
         try {
           await setRouting($, options, false, false);
         } catch {}
         if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) {
           $.ui.log(SMART_ROUTER_OFF_REPLY);
-          $.ui.log(UNSUPPORTED_MODEL_LIST_WARNING);
+          $.ui.log(failed ? VALIDATION_FAILED_WARNING : UNSUPPORTED_MODEL_LIST_WARNING);
         }
       }
       finish();

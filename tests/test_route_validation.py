@@ -1,11 +1,12 @@
-"""Startup validation with controlled HTTP and real background workers."""
+"""Startup validation against a loopback Smart Router, through the real HTTP transport."""
 
 from __future__ import annotations
 
-import io
 import json
+import socket
+import threading
 import time
-from email.message import Message
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,6 +18,77 @@ from ucode.smart_routing import route_validation as validation
 from ucode.smart_routing.session_env import session_routing_enabled
 from ucode.workspace import activate
 
+UNREACHABLE = "unreachable"
+UNEXPECTED_EXCEPTION = "unexpected-exception"
+
+
+class _Router:
+    status = 200
+    body = b'{"is_supported": true}'
+    pace = 0
+    url = None
+    closed_url = None
+
+    def __init__(self):
+        self.requests = []
+        self.answered = threading.Event()
+
+
+def _handler(router):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            router.requests.append((self.path, self.headers))
+            self.send_response(router.status)
+            self.send_header("Content-Length", str(len(router.body)))
+            self.end_headers()
+            for byte in router.body:
+                self.wfile.write(bytes([byte]))
+                time.sleep(router.pace)
+            router.answered.set()
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+def _closed_url():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+
+@pytest.fixture
+def router():
+    state = _Router()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(state))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    state.url = f"http://127.0.0.1:{server.server_port}"
+    state.closed_url = _closed_url()
+    yield state
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+@pytest.fixture(autouse=True)
+def real_transport(monkeypatch):
+    """Replaces conftest's stub so the check sends its request over the loopback socket."""
+    for name in (
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(validation, "_http_post_json", databricks._http_post_json)
+
 
 def _wait_for_result(path):
     deadline = time.monotonic() + 3
@@ -27,65 +99,133 @@ def _wait_for_result(path):
     pytest.fail("validation worker did not publish a result")
 
 
-@pytest.mark.parametrize(
-    "response,disabled,failed",
-    [
-        (({"is_supported": False}, None), True, False),
-        ((None, "HTTP 503"), False, True),
-        (({"is_supported": "false"}, None), False, False),
-        (RuntimeError("network down"), False, True),
-    ],
-)
-def test_unsupported_model_list_turns_routing_off_and_failures_are_silent(
-    response, disabled, failed, tmp_path, monkeypatch, metrics_recorder
-):
-    post = (
-        Mock(side_effect=response)
-        if isinstance(response, Exception)
-        else Mock(return_value=response)
-    )
-    monkeypatch.setattr(validation, "_http_post_json", post)
+def _run_check(workspace, tmp_path):
     controls = tmp_path / "env.json"
     controls.write_text("{}")
     validation.start(
-        "https://example.com",
+        workspace,
         "test-token",
         [("custom.model", "claude")],
         router_name="stable",
         session_controls=controls,
     )
-    result = _wait_for_result(validation.result_path(controls))
-    post.assert_called_once()
-    assert result["routing_disabled"] is disabled
-    if not disabled:
-        assert result == {"routing_disabled": False}
-    assert session_routing_enabled(controls) is not disabled
-    if not disabled:
-        assert controls.read_text() == "{}"
-    errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
-    assert [(labels["operation"], labels["continued_with_fallback"]) for _, labels in errors] == (
-        [("route_validation", True)] if failed else []
-    )
+    return controls, _wait_for_result(validation.result_path(controls))
+
+
+def _failed(reason):
+    return {
+        "routing_disabled": True,
+        "router_name": "stable",
+        "validation_failed": True,
+        "validation_failure_reason": reason,
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "reply,failure,error",
+    [
+        pytest.param((200, b'{"is_supported": true}'), None, None, id="supported"),
+        pytest.param(
+            (404, b'{"error_code": "NOT_FOUND"}'),
+            None,
+            ("routes_validate", "http_404"),
+            id="flag-off-404",
+        ),
+        pytest.param(
+            (400, b"bad request"),
+            "Smart Router returned an error (HTTP 400)",
+            ("routes_validate", "http_400"),
+            id="http-400",
+        ),
+        pytest.param(
+            (403, b"forbidden"),
+            "Smart Router returned an error (HTTP 403)",
+            ("routes_validate", "http_403"),
+            id="http-403",
+        ),
+        pytest.param(
+            (500, b"boom"),
+            "Smart Router returned an error (HTTP 500)",
+            ("routes_validate", "http_500"),
+            id="http-500",
+        ),
+        pytest.param(
+            (500, b'{"error_code": "NOT_FOUND"}'),
+            "Smart Router returned an error (HTTP 500)",
+            ("routes_validate", "http_500"),
+            id="http-500-not-found-body",
+        ),
+        pytest.param(
+            UNREACHABLE,
+            "Smart Router couldn't be reached",
+            ("routes_validate", "network_error"),
+            id="unreachable",
+        ),
+        pytest.param(
+            (200, b"<html>sign in</html>"),
+            "Smart Router returned an unexpected response",
+            ("routes_validate", "operation_failed"),
+            id="not-json",
+        ),
+        pytest.param(
+            (200, b"[]"), "Smart Router returned an unexpected response", None, id="not-object"
+        ),
+        pytest.param(
+            (200, b"{}"),
+            "Smart Router returned an unexpected response",
+            None,
+            id="missing-is-supported",
+        ),
+        pytest.param(
+            (200, b'{"is_supported": "false"}'),
+            "Smart Router returned an unexpected response",
+            None,
+            id="non-boolean-is-supported",
+        ),
+        pytest.param(
+            UNEXPECTED_EXCEPTION,
+            "Smart Router check failed unexpectedly",
+            ("route_validation", "operation_failed"),
+            id="exception",
+        ),
+    ],
+)
+def test_failed_check_turns_routing_off_except_for_a_flag_off_404(
+    reply, failure, error, tmp_path, router, metrics_recorder
+):
+    if reply == UNREACHABLE:
+        workspace = router.closed_url
+    elif reply == UNEXPECTED_EXCEPTION:
+        # An empty host makes workspace_origin raise inside the probe.
+        workspace = "https://"
+    else:
+        router.status, router.body = reply
+        workspace = router.url
+    controls, result = _run_check(workspace, tmp_path)
     assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
+    errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+    assert [
+        (labels["operation"], labels["error_code"], labels["continued_with_fallback"])
+        for _, labels in errors
+    ] == ([] if error is None else [(*error, True)])
+    if failure is None:
+        assert result == {"routing_disabled": False}
+        assert session_routing_enabled(controls) is True
+        assert controls.read_text() == "{}"
+        return
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == _failed(failure)
+    assert session_routing_enabled(controls) is False
 
 
-def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monkeypatch):
-    captured = []
-    activate("https://example.com", "111")
-
-    class Response(io.BytesIO):
-        status = 200
-        headers = Message()
-
-    def urlopen(request, **kwargs):
-        captured.append(request)
-        return Response(b'{"is_supported":true}')
-
-    monkeypatch.setattr(validation, "_http_post_json", databricks._http_post_json)
-    monkeypatch.setattr(databricks, "_http_open", urlopen)
+def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, router):
+    activate(router.url, "111")
     controls = tmp_path / "env.json"
     validation.start(
-        "https://example.com?w=111",
+        f"{router.url}?w=111",
         "test-token",
         [("original.model", "claude")],
         router_name="stable",
@@ -93,71 +233,78 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
         provider="main.default.mps",
     )
     assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
-    assert len(captured) == 1
-    request = captured[0]
-    assert request.full_url == "https://example.com/ai-gateway/routing/v1/routes:validate"
-    assert request.get_header("Authorization") == "Bearer test-token"
-    assert request.get_header("X-databricks-workspace-id") == "111"
-    assert request.get_header("X-databricks-org-id") == "111"
-    assert request.get_header("Databricks-model-provider-service") == "main.default.mps"
+    [(path, headers)] = router.requests
+    assert path == "/ai-gateway/routing/v1/routes:validate"
+    assert headers["Authorization"] == "Bearer test-token"
+    assert headers["X-Databricks-Workspace-Id"] == "111"
+    assert headers["X-Databricks-Org-Id"] == "111"
+    assert headers["Databricks-model-provider-service"] == "main.default.mps"
 
 
-def test_unsupported_result_past_the_deadline_leaves_routing_on(tmp_path, monkeypatch):
-    controls = tmp_path / "env.json"
-    controls.write_text("{}")
-    monkeypatch.setattr(
-        validation, "_http_post_json", lambda *a, **k: ({"is_supported": False}, None)
-    )
-    clock = iter([0.0, validation.VALIDATION_TIMEOUT_SECONDS + 1])
-    monkeypatch.setattr(validation, "time", SimpleNamespace(monotonic=lambda: next(clock)))
-    validation.start(
-        "https://example.com",
-        "test-token",
-        [("m", "claude")],
-        router_name="stable",
-        session_controls=controls,
-    )
-    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
-    assert controls.read_text() == "{}"
+def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot_overwrite(
+    tmp_path, monkeypatch, router, metrics_recorder
+):
+    """The body trickles in slower than the deadline but faster than the socket timeout, so only
+    the deadline ends the wait and the late body completes afterwards."""
+    monkeypatch.setattr(validation, "VALIDATION_TIMEOUT_SECONDS", 0.2)
+    router.pace = 0.02
+    router.body = b'{"is_supported": true}' + b" " * 30
+    controls, result = _run_check(router.url, tmp_path)
+    assert [
+        (labels["operation"], labels["error_code"])
+        for _, labels in metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+    ] == [("route_validation", "timeout")]
+    assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
+    assert router.answered.wait(3)
+    assert json.loads(validation.result_path(controls).read_text()) == result
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == _failed("Smart Router didn't respond in time")
+    assert session_routing_enabled(controls) is False
+
+
+class _SynchronousThread:
+    def __init__(self, *, target, args=(), daemon):
+        self._target, self._args = target, args
+
+    def start(self):
+        self._target(*self._args)
+
+    def join(self, timeout=None):
+        pass
 
 
 @pytest.mark.parametrize("failing", ["result", "controls"])
-def test_failed_write_is_isolated_and_keeps_the_result_honest(failing, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        validation.threading, "Thread", lambda *, target, daemon: SimpleNamespace(start=target)
-    )
-    monkeypatch.setattr(
-        validation, "_http_post_json", lambda *a, **k: ({"is_supported": False}, None)
-    )
+def test_failed_write_is_isolated_and_keeps_the_result_honest(
+    failing, tmp_path, monkeypatch, router
+):
+    # start() returns no handle; an inline worker lets the test assert the publish without sleeping.
+    monkeypatch.setattr(validation, "threading", SimpleNamespace(Thread=_SynchronousThread))
+    router.body = b'{"is_supported": false}'
     controls = tmp_path / "env.json"
     controls.write_text("{}")
-    failing_path = validation.result_path(controls) if failing == "result" else controls
-    real_write = validation.atomic_write_json
-
-    def write(path, value):
-        if path == failing_path:
-            raise OSError("read-only")
-        real_write(path, value)
-
-    monkeypatch.setattr(validation, "atomic_write_json", write)
+    if failing == "result":
+        validation.result_path(controls).mkdir()
+    else:
+        controls.unlink()
+        controls.mkdir()
     validation.start(
-        "https://example.com",
+        router.url,
         "test-token",
         [("m", "claude")],
         router_name="stable",
         session_controls=controls,
     )
     if failing == "result":
-        assert not validation.result_path(controls).exists()
+        assert validation.result_path(controls).is_dir()
         assert session_routing_enabled(controls) is False
     else:
         assert json.loads(validation.result_path(controls).read_text()) == {
             "routing_disabled": False
         }
-        assert controls.read_text() == "{}"
+        assert controls.is_dir()
 
 
-def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monkeypatch):
+def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, router):
     payload = {
         "is_supported": False,
         "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
@@ -176,16 +323,8 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
             {"model": "claude-sonnet-5-5", "harness": "codex"},
         ],
     }
-    monkeypatch.setattr(validation, "_http_post_json", lambda *a, **k: (payload, None))
-    controls = tmp_path / "env.json"
-    validation.start(
-        "https://example.com",
-        "test-token",
-        [("m", "claude")],
-        router_name="stable",
-        session_controls=controls,
-    )
-    result = _wait_for_result(validation.result_path(controls))
+    router.body = json.dumps(payload).encode()
+    _, result = _run_check(router.url, tmp_path)
     assert isinstance(result.pop("validation_ms"), int)
     assert result == {
         "routing_disabled": True,
