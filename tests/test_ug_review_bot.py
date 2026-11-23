@@ -136,7 +136,7 @@ def test_workflow_keeps_authorized_comment_trusted_checkout_and_existing_credent
 
 def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
     workflow = WORKFLOW_PATH.read_text()
-    assert "pull_request:\n    types: [labeled, ready_for_review]" in workflow
+    assert "pull_request:\n    types: [labeled, ready_for_review, synchronize]" in workflow
     assert "github.event_name == 'pull_request' &&" in workflow
     assert "github.event.pull_request.head.repo.full_name == github.repository &&" in workflow
     assert (
@@ -194,6 +194,8 @@ def _review_runs_on_pull_request_event(workflow: str, action: str, label, in_rep
         ("labeled", "code-review", True, True),
         ("labeled", "code-review", False, False),
         ("labeled", "bug", True, False),
+        ("synchronize", None, True, False),
+        ("synchronize", None, False, False),
     ],
 )
 def test_pull_request_guard_runs_ready_for_review_and_review_labels_only_in_repo(
@@ -364,6 +366,19 @@ def test_unparseable_or_failed_model_output_gives_no_recommendation(
     assert "ready-to-approve` label is removed" in body
 
 
+@pytest.mark.parametrize("comments", [None, {}, "invalid"])
+def test_missing_or_invalid_findings_do_not_recommend(monkeypatch, tmp_path, comments):
+    output_path, _, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "comments": comments},
+        AssertionError("Invalid findings must not reach the model."),
+    )
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    assert calls == []
+
+
 def test_findings_with_warnings_do_not_recommend(monkeypatch, tmp_path):
     finding = {"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}
     output_path, _, calls = _recommendation_environment(
@@ -416,3 +431,20 @@ def test_workflow_posts_recommendation_and_syncs_ready_to_approve_label():
     assert "createComment" in publish
     assert "addLabels({ ...args, labels: [label] })" in publish
     assert "removeLabel({ ...args, name: label })" in publish
+
+
+def test_approver_token_is_gated_for_reviews_and_same_repository_pushes():
+    workflow = WORKFLOW_PATH.read_text()
+    review, dismissal = workflow.split("\n  dismiss-approval:\n", 1)
+    assert "steps.recommendation.outputs.recommendation == 'approve'" in review
+    assert "steps.completeness.outputs.filter_failed == 'false'" in review
+    assert "const allowed = await eligible(github, context.repo" in review
+    assert "steps.approval-scope.outputs.eligible == 'true'" in review
+    assert review.index("Check approval eligibility") < review.index("Mint the approver app token")
+    assert "github.event.action == 'synchronize'" in dismissal
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in dismissal
+    assert "pr.head.repo?.full_name ===" in dismissal
+    assert "steps.dismissal-scope.outputs.eligible == 'true'" in dismissal
+    assert dismissal.index("Check the current PR") < dismissal.index("Mint the approver app token")
+    assert "ref: ${{ github.event.repository.default_branch }}" in dismissal
+    assert "const { dismissStale }" in dismissal

@@ -8,7 +8,7 @@ workflow to post on the pull request. A complete, warning-free review with no
 findings approves without a model call. A missing or unparseable marker, a
 failed model request, or an incomplete review becomes ``recommendation=none``:
 the posted note says why and any stale ``ready-to-approve`` label is removed.
-The recommendation is advisory; the workflow keeps the label in sync with it.
+The workflow keeps the label in sync and may approve an eligible pull request.
 """
 
 from __future__ import annotations
@@ -208,8 +208,9 @@ def build_body(
             lines += ["", f"Complete review of {files_reviewed} files; no findings."]
         lines += [
             "",
-            "Advisory only: this recommendation never approves or merges the pull"
-            " request. The `ready-to-approve` label tracks it.",
+            "The `ready-to-approve` label tracks this recommendation. Eligible"
+            " in-repository pull requests may also receive an app approval;"
+            " this recommendation never merges the pull request.",
         ]
     lines += ["", f"<!-- ug-review-recommendation-run:{run_id} -->"]
     return "\n".join(lines) + "\n"
@@ -234,7 +235,8 @@ def derive(
     if result.get("status") != "complete":
         return None, [], [], "the review did not complete, so there is nothing to judge"
     comments = result.get("comments")
-    comments = comments if isinstance(comments, list) else []
+    if not isinstance(comments, list):
+        return None, [], [], "the review findings are missing or invalid, so they cannot be judged"
     warnings = result.get("warnings")
     if warnings:
         return (

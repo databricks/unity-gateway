@@ -6,7 +6,7 @@ name: UG Review
 # Open Code Review reads PR blobs through Git; it never executes PR code.
 on:
   pull_request:
-    types: [labeled, ready_for_review]
+    types: [labeled, ready_for_review, synchronize]
   issue_comment:
     types: [created]
 
@@ -69,6 +69,7 @@ jobs:
         run: |
           # The review action's checkout deletes this directory; keep the later step's script.
           cp .github/scripts/ug-review/recommendation.py "$RUNNER_TEMP/ug-recommendation.py"
+          cp .github/scripts/ug-review/approver.cjs "$RUNNER_TEMP/ug-approver.cjs"
           delimiter="ug-review-policy-$(openssl rand -hex 16)"
           {
             echo "background<<$delimiter"
@@ -179,6 +180,7 @@ jobs:
             await github.rest.issues.deleteComment(args);
 
       - name: Report review completeness
+        id: completeness
         if: ${{ !cancelled() && steps.ocr.outcome != '' && steps.ocr.outcome != 'skipped' }}
         env:
           REVIEW_HEAD: ${{ steps.pr.outputs.head }}
@@ -205,6 +207,8 @@ jobs:
               if filter_failed:
                   output.write('**Finding-filter failure:** OCR retained findings without completing '
                                'its fact-checking pass. Validate them manually.\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'filter_failed={str(filter_failed).lower()}\n')
           if filter_failed:
               print('::warning::OCR finding filter failed; reported findings need manual validation.')
           if data.get('status') not in ('complete', 'skipped'):
@@ -268,6 +272,103 @@ jobs:
               }
             }
 
+      - name: Check approval eligibility
+        if: >-
+          ${{ steps.recommendation.outputs.recommendation == 'approve' &&
+              steps.completeness.outputs.filter_failed == 'false' }}
+        id: approval-scope
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REVIEW_HEAD: ${{ steps.pr.outputs.head }}
+          APPROVER_SCRIPT: ${{ runner.temp }}/ug-approver.cjs
+        with:
+          script: |
+            const { eligible } = require(process.env.APPROVER_SCRIPT);
+            const allowed = await eligible(github, context.repo, Number(process.env.PR_NUMBER),
+              process.env.REVIEW_HEAD);
+            core.setOutput('eligible', String(allowed));
+
+      - name: Mint the approver app token
+        if: ${{ steps.approval-scope.outputs.eligible == 'true' }}
+        id: approver-token
+        uses: actions/create-github-app-token@21cfef2b496dd8ef5b904c159339626a10ad380e  # v1.11.6
+        with:
+          app-id: ${{ vars.UG_APPROVER_APP_ID }}
+          private-key: ${{ secrets.UG_APPROVER_APP_PRIVATE_KEY }}
+
+      - name: Approve the reviewed commit
+        if: ${{ steps.approval-scope.outputs.eligible == 'true' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REVIEW_HEAD: ${{ steps.pr.outputs.head }}
+          APP_SLUG: ${{ steps.approver-token.outputs.app-slug }}
+          APPROVER_SCRIPT: ${{ runner.temp }}/ug-approver.cjs
+        with:
+          github-token: ${{ steps.approver-token.outputs.token }}
+          script: |
+            const { approve } = require(process.env.APPROVER_SCRIPT);
+            const approved = await approve(github, context.repo, Number(process.env.PR_NUMBER),
+              process.env.REVIEW_HEAD, `${process.env.APP_SLUG}[bot]`);
+            core.notice(approved ? 'Approved the reviewed commit.' : 'PR no longer eligible for approval.');
+
       - name: Remove temporary package credentials
         if: always()
         run: rm -f "$RUNNER_TEMP/ug-review-package-config/.npmrc"
+
+  dismiss-approval:
+    name: Dismiss stale UG approvals
+    if: >-
+      ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    concurrency:
+      group: ug-review-dismiss-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the trusted approver from the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts/ug-review/approver.cjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check the current PR is in this repository
+        id: dismissal-scope
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PR_NUMBER),
+            });
+            core.setOutput('eligible', String(pr.head.repo?.full_name ===
+              `${context.repo.owner}/${context.repo.repo}`));
+
+      - name: Mint the approver app token
+        if: ${{ steps.dismissal-scope.outputs.eligible == 'true' }}
+        id: approver-token
+        uses: actions/create-github-app-token@21cfef2b496dd8ef5b904c159339626a10ad380e  # v1.11.6
+        with:
+          app-id: ${{ vars.UG_APPROVER_APP_ID }}
+          private-key: ${{ secrets.UG_APPROVER_APP_PRIVATE_KEY }}
+
+      - name: Dismiss stale app approvals
+        if: ${{ steps.dismissal-scope.outputs.eligible == 'true' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          APP_SLUG: ${{ steps.approver-token.outputs.app-slug }}
+        with:
+          github-token: ${{ steps.approver-token.outputs.token }}
+          script: |
+            const { dismissStale } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/ug-review/approver.cjs`);
+            const count = await dismissStale(github, context.repo, Number(process.env.PR_NUMBER),
+              `${process.env.APP_SLUG}[bot]`);
+            core.notice(`Dismissed ${count} stale app approval(s).`);

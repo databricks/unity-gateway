@@ -1762,10 +1762,13 @@ It reuses the review service principal through the Databricks gateway's Anthropi
 Adding either `ug-review` or `code-review`, or marking a draft ready for review, also
 requests review on in-repository PRs. Fork reviews accept a member comment, or the author's
 comment when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered run has no secrets.
-Label removal and ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers
-gateway authentication,
+Label removal and ordinary pushes do not rerun reviews. Pushes dismiss stale app approvals
+on in-repository PRs. `test_ug_review_bot.py` covers gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
-not live inference or GitHub posting. It also covers the advisory recommendation
+not live inference or GitHub posting. `node --test .github/scripts/ug-review/approver.test.cjs`
+covers author permission and head checks, approval creation, push races, and bot-only dismissal
+with a fake GitHub API; it does not cover GitHub delivery or branch protection. The Python tests
+also cover the recommendation
 derived after a complete review: the `RECOMMENDATION: APPROVE|REJECT` marker parse,
 the zero-finding approve without a model call, a parsed reject from model findings,
 unparseable or failed model output degrading to "no recommendation" with no label
