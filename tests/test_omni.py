@@ -428,19 +428,28 @@ def test_omni_launch_refreshes_downloaded_skills_but_help_does_not():
         assert refresh.call_count == 1
 
 
-def test_omni_installer_uses_uv_databricks_extra_and_no_shell():
+@pytest.mark.parametrize("trust_store", ["os", "python"])
+def test_omni_installer_uses_uv_databricks_extra_and_tls_settings(monkeypatch, trust_store):
     from ucode.agents import omni
 
+    monkeypatch.setenv("UG_TLS_TRUST_STORE", trust_store)
+    monkeypatch.setenv("UG_OMNI_INSTALL_TEST", "inherited")
+    monkeypatch.delenv("UV_SYSTEM_CERTS", raising=False)
+    monkeypatch.delenv("UV_NATIVE_TLS", raising=False)
     with (
         patch.object(omni.shutil, "which", return_value="/bin/uv"),
         patch.object(omni.subprocess_cross_os, "run") as run,
     ):
         omni.install_binary()
-    run.assert_called_once_with(
-        ["/bin/uv", "tool", "install", "omnigent[databricks]>=0.22.0"],
-        check=True,
-        timeout=300,
-    )
+    run.assert_called_once()
+    assert run.call_args.args == (["/bin/uv", "tool", "install", "omnigent[databricks]>=0.22.0"],)
+    options = dict(run.call_args.kwargs)
+    environment = options.pop("env")
+    assert options == {"check": True, "timeout": 300}
+    inherited = environment.get("UG_OMNI_INSTALL_TEST")
+    assert inherited == "inherited"
+    trust_flags = [environment.get(name) for name in ("UV_SYSTEM_CERTS", "UV_NATIVE_TLS")]
+    assert trust_flags == (["1", "1"] if trust_store == "os" else [None, None])
 
 
 def test_omni_installer_reports_missing_uv():

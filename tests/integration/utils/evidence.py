@@ -147,6 +147,11 @@ def assert_no_bearer_on_disk(session) -> None:
         assert "OAUTH_TOKEN" not in text
 
 
+def copilot_ref(provider: str, model: str) -> str:
+    """The ``<provider>/<id>`` ref ug's Copilot registry gives ``model``: ids drop ``system.ai.``."""
+    return f"{provider}/{model.removeprefix('system.ai.')}"
+
+
 def copilot_selected_models(session) -> list[str]:
     """Every registry ref Copilot sessions under this home started on or switched to."""
     return [
@@ -320,6 +325,7 @@ def assert_subagent_routed(
     task: FileTask | SubagentCalculation,
     *,
     decision_ids: set[str] | None = None,
+    child_ids: set[str] | None = None,
 ) -> None:
     """Require a real gateway decision correlated with an actual child start."""
     root = session.home / ".ucode"
@@ -344,6 +350,8 @@ def assert_subagent_routed(
             metadata = next(
                 (row["payload"] for row in records if row.get("type") == "session_meta"), {}
             )
+            if child_ids is not None and metadata.get("id") not in child_ids:
+                continue
             source = metadata.get("source")
             if not isinstance(source, dict):
                 continue
@@ -397,6 +405,10 @@ def assert_subagent_routed(
         assert {row["decision_id"] for row in linked} == {
             row["decision_id"] for row in decisions
         }, "A routing decision had no matching completed child turn"
+        if child_ids is not None:
+            assert {row["child_id"] for row in linked} == child_ids, (
+                "An assignment's child did not complete on its routed model"
+            )
         return
     decision_ids = {decision["decision_id"] for decision in decisions}
     routed_starts = [row for row in audit if row.get("decision_id") in decision_ids]

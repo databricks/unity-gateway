@@ -1,6 +1,10 @@
 """Local environment/artifact safety checks for CUJ helpers."""
 
+import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from tests.e2e_cuj.helpers.session import UserSession
 from tests.integration.utils.harness import UserSession as IntegrationSession
@@ -48,3 +52,37 @@ def test_integration_session_redacts_relay_token_from_runner_env(tmp_path, monke
     session = IntegrationSession(tmp_path, tmp_path, Path("/installed/ug"), tmp_path / "artifacts")
 
     assert session.redact("token=claude-relay-token") == "token=<redacted>"
+
+
+@pytest.mark.parametrize("name", ["DATABRICKS_BEARER", "UG_INTEGRATION_CODEX_ACCESS_TOKEN"])
+@pytest.mark.parametrize("padding", ["", " \t\r\n"])
+def test_integration_session_redacts_credentials_from_runner_env(
+    tmp_path, monkeypatch, name, padding
+):
+    token = "inert-ci-token"
+    original = padding + token + padding
+    monkeypatch.setenv(name, original)
+    session = IntegrationSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
+    assert name not in session.env
+    session.env[name] = original
+    normalized = session.env.pop(name).strip()
+
+    result = session.run(
+        "-c",
+        "import sys; token = sys.stdin.read(); print(token); print(token, file=sys.stderr)",
+        input_text=normalized + "\n",
+    )
+    assert result.stdout.strip() == result.stderr.strip() == "<redacted>"
+    evidence = (session.artifacts / "command-1.json").read_text()
+    assert json.loads(evidence)["stdin"] == "<redacted>\n"
+    assert token not in evidence
+    assert session.redact(original) == "<redacted>"
+
+
+@pytest.mark.parametrize("token", ["", " \t\r\n"])
+def test_integration_session_ignores_blank_credentials(tmp_path, monkeypatch, token):
+    monkeypatch.setenv("DATABRICKS_BEARER", token)
+    session = IntegrationSession(tmp_path, tmp_path, Path("/installed/ug"), tmp_path / "artifacts")
+    text = "ordinary \t\r\n output"
+
+    assert session.redact(text) == text

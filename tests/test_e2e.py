@@ -27,6 +27,7 @@ from urllib import request as urllib_request
 import pytest
 
 from tests.conftest import e2e_state_for
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     build_shared_base_urls,
     build_tool_base_url,
@@ -654,6 +655,8 @@ class TestClaudeLaunch:
             "ANTHROPIC_BASE_URL": base_url,
             "ANTHROPIC_API_KEY": e2e_token,
         }
+        # Keep repository instructions out of the greeting smoke test.
+        monkeypatch.chdir(tmp_path)
         cmd = claude.validate_cmd("claude")
         result = _run_agent(cmd, env=env, timeout=90)
         combined = (result.stdout + result.stderr).strip()
@@ -713,13 +716,17 @@ class TestGeminiLaunch:
         # against the just-written config, to keep actual CLI smoke coverage
         # without bringing a validation probe back into `ucode configure`.
         env = gemini.build_runtime_env(e2e_workspace, model, e2e_token)
+        case_id = secrets.token_hex(12)
+        # Gemini splits custom headers at commas, so send a single JSON tag.
+        tags = json.dumps({"ug_ci_case": case_id})
+        env["GEMINI_CLI_CUSTOM_HEADERS"] += f",{AI_GATEWAY_REQUEST_TAGS_HEADER}:{tags}"
         try:
             result = _run_agent(gemini.validate_cmd("gemini"), env=env, timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            pytest.fail(f"model={model} timed out after {timeout_seconds}s")
+            pytest.fail(f"model={model} timed out after {timeout_seconds}s (ug_ci_case={case_id})")
         if result.returncode != 0 or not result.stdout.strip():
             pytest.fail(
-                f"Gemini launch failure: model={model} rc={result.returncode} "
+                f"Gemini launch failure: model={model} rc={result.returncode} ug_ci_case={case_id} "
                 f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
             )
 

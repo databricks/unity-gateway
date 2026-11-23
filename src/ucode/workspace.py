@@ -109,7 +109,11 @@ def host_type(host: str) -> str | None:
     )
     result: str | None = None
     try:
-        with urllib_request.urlopen(request, timeout=_HOST_TYPE_TIMEOUT_SECONDS) as response:
+        # Imported lazily: databricks imports this module. This unauthenticated request rides the
+        # same pooled HTTP client as every other workspace call.
+        from ucode.databricks import _http_open
+
+        with _http_open(request, timeout=_HOST_TYPE_TIMEOUT_SECONDS) as response:
             payload = json.loads(response.read().decode("utf-8"))
         value = payload.get("host_type") if isinstance(payload, dict) else None
         result = value.lower() if isinstance(value, str) else None

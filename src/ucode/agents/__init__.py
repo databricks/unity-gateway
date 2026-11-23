@@ -31,7 +31,12 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
+from ucode.managed_files import (
+    config_scope,
+    machine_wide_only,
+    managed_write_batch,
+    published_agent_config_used,
+)
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -157,7 +162,9 @@ def normalize_tool(tool: str) -> str:
     return normalized
 
 
-def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
+def _update_installed_tool_binary(
+    tool: str, version: str | None = None, *, continued_with_fallback: bool = True
+) -> bool:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
     package = spec["package"]
@@ -195,7 +202,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
             operation=metrics.DEPENDENCY_INSTALL_OPERATION,
             dependency=tool,
             action="downgrade" if version else "update",
-            continued_with_fallback=True,
+            continued_with_fallback=continued_with_fallback,
         ):
             subprocess_cross_os.run(
                 command, check=True, timeout=300, stdout=status_subprocess_stdout()
@@ -235,7 +242,7 @@ def ensure_minimum_version(
             )
         ):
             raise RuntimeError(version_error)
-        if not _update_installed_tool_binary(tool):
+        if not _update_installed_tool_binary(tool, continued_with_fallback=False):
             raise RuntimeError(version_error)
         version_error = version_check()
     if version_error:
@@ -564,8 +571,11 @@ def resolve_gemini_provider_model(
 
 
 def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
-    """Run by ``ug configure`` before any agent is configured; launches use the files present."""
-    if config_scope() != "user":
+    """Run by ``ug configure`` before any agent is configured; launches use the files present.
+
+    When the files come from a published agent configuration, the managed run owns them, so the
+    refusal doesn't apply."""
+    if config_scope() != "user" or published_agent_config_used():
         return
     for tool in tools:
         if tool == AGENT_CLAUDE:
@@ -588,7 +598,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
     apply. ``managed`` is the manifest from that read; None means no managed config is present.
     """
-    if config_scope() != "user" or managed is None:
+    if config_scope() != "user" or managed is None or published_agent_config_used():
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
@@ -782,6 +792,15 @@ def _remove_vscode_for_managed_config() -> None:
     )
 
 
+def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Install ug's plugin in the GitHub Copilot desktop app when it is installed."""
+    from ucode.agents.desktop import setup as desktop_setup
+
+    if not desktop_setup.copilot_app_installed():
+        return
+    desktop_setup.configure_copilot_app(state, provider=provider, location=parent_schema)
+
+
 def configure_single_tool(
     tool: str,
     state: dict,
@@ -808,6 +827,7 @@ def configure_single_tool(
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
     if with_vscode and tool == AGENT_COPILOT:
         configure_vscode(state, provider=provider, parent_schema=parent_schema)
+        configure_copilot_app(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -854,8 +874,15 @@ def _configure_one(
         return configure_tool(tool, state)
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:
-        # `ug configure` writes the managed model keys a plain launch would.
-        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
+        # `ug configure` writes the managed model keys a plain launch would. A static list that
+        # names a subscription-relayed model service needs the relayed launch (credential swap).
+        return configure_tool(
+            tool,
+            state,
+            model,
+            relayed=claude.static_models_need_subscription_relay(state, configuring=True),
+            derive_managed_model_inputs=True,
+        )
     return configure_tool(tool, state, model)
 
 
@@ -900,6 +927,7 @@ def configure_selected_tools(
             # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
             if tool == AGENT_COPILOT:
                 configure_vscode(state, provider=provider, parent_schema=parent_schema)
+                configure_copilot_app(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))

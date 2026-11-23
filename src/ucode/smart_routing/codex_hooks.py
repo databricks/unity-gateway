@@ -97,6 +97,9 @@ def _routing_hook_argv(
         argv += ["--profile", profile]
     if state.get("use_pat"):
         argv.append("--use-pat")
+    provider = state.get("_codex_launch_provider")
+    if isinstance(provider, str) and provider:
+        argv += ["--provider", provider]
     models = available_models if available_models is not None else routing_models(state)
     for model in models:
         if isinstance(model, str) and model:

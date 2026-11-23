@@ -45,6 +45,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     explicit_managed_writes,
     machine_wide_only,
+    published_agent_config_used,
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
@@ -120,7 +121,10 @@ MCP_CLIENTS = {
     },
     "copilot": {
         "binary": "copilot",
-        "display": "GitHub Copilot CLI",
+        # VS Code and the desktop app read the same user MCP file; `cli_display` names the CLI
+        # that `mcp list` probes.
+        "display": "GitHub Copilot (CLI, VS Code and app)",
+        "cli_display": "GitHub Copilot CLI",
         "list_command": "copilot mcp list --json",
     },
     "cursor": {
@@ -134,6 +138,7 @@ MCP_CLIENTS = {
         "list_command": "agy mcp list",
     },
 }
+
 # These clients read their user MCP files on every supported OS. UG can write those files
 # directly, including when a desktop app exists without a CLI on PATH.
 CONFIG_WRITABLE_MCP_CLIENTS: dict[str, Callable[[], Path]] = {
@@ -1317,6 +1322,37 @@ def _agent_managed_file_entries(
     return entries
 
 
+def resolve_machine_mcp_entries(
+    manifest: dict, workspace: str, *, profile: str | None = None, token: str | None = None
+) -> tuple[dict[str, dict[str, dict]], set[str]]:
+    """The managed config's ``mcp_servers`` as machine-wide entries, for a managed run.
+
+    Returns ``{agent: {name: entry}}`` for Claude and Codex, and the name of every server ug
+    registers for Claude, in the managed file or for each developer. A ``unity_catalog_location``
+    is listed as the run's own identity (``token``, else ``profile``). Entries carry no Databricks
+    CLI profile, since one machine file serves every developer and each signs in as themselves:
+    Claude gets only the native HTTP entries Claude Code signs in to itself, and Codex every server
+    ug registers for it. Raises ``RuntimeError`` when the servers can't be resolved.
+    """
+    selector = manifest.get("mcp_servers")
+    if not isinstance(selector, dict) or not selector:
+        return {"claude": {}, "codex": {}}, set()
+    servers = _resolve_managed_mcp_servers(
+        selector, workspace, profile, ["claude", "codex"], token=token
+    )
+    entries = {
+        agent: _agent_managed_file_entries(agent, servers, workspace, None, False)
+        for agent in ("claude", "codex")
+    }
+    claude_names = {
+        name
+        for server in servers
+        if "claude" in _mcp_server_clients(server)
+        if (name := _server_name(server))
+    }
+    return entries, claude_names
+
+
 def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]:
     """Register the managed config's ``mcp_servers`` for ``agents`` and reconcile removals.
 
@@ -1356,7 +1392,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         workspace, profile, clients = setup_mcp_clients(
             state, "Managed MCP Servers", agents=scope, action_note="Registering for"
         )
-        working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
+        with spinner("Loading workspace MCP servers..."):
+            working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
     else:
         # No MCP client configured: nothing to register, but still clear what a prior configure left.
         workspace = state.get("workspace")
@@ -1374,9 +1411,10 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         if working
         else {}
     )
-    login_required = _managed_connection_login_requirements(
-        working, workspace, profile, oauth_clients
-    )
+    with spinner("Checking workspace MCP connections..."):
+        login_required = _managed_connection_login_requirements(
+            working, workspace, profile, oauth_clients
+        )
 
     eligible = set()
     if "claude" in scope and claude.managed_mcp_uses_managed_file(workspace, use_pat=use_pat):
@@ -1429,6 +1467,17 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             written = False
         if is_eligible and written:
             delivered.update((name, agent) for name in entries)
+
+    if published_agent_config_used() and "claude" in configured:
+        # The managed run delivers these through Claude's managed file; registering them again at
+        # user scope would shadow them. Servers it couldn't deliver still fall back below.
+        in_managed_file = claude.read_managed_mcp_urls()
+        delivered.update(
+            (name, "claude")
+            for server in working
+            if (name := _server_name(server)) in in_managed_file
+            and "claude" in _mcp_server_clients(server)
+        )
 
     if machine_wide_only():
         # `ug configure --global` leaves per-user MCP registrations alone, so neither the fallback
@@ -3198,7 +3247,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     )
     # Only mention the enabled/disabled caveat for the agents actually probed through their CLI.
     config_state_clients = [
-        MCP_CLIENTS[client]["display"]
+        MCP_CLIENTS[client].get("cli_display", MCP_CLIENTS[client]["display"])
         for client in ("codex", "copilot")
         if client in probe_clients and client not in config_only
     ]

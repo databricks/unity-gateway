@@ -25,6 +25,11 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def claude_workspace_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
+    """Match the disposable project's full path even when the terminal wraps it."""
+    return "Accessing workspace:" in screen and "".join(str(cwd).split()) in "".join(screen.split())
+
+
 def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
     """Whether Codex 0.156+ is asking to trust exactly the test project, with Trust selected."""
     return (
@@ -49,9 +54,18 @@ def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
 
 
 def _normalize_smart_router_env_guard(command: str) -> str:
+    whitespace_guard = (
+        "if ([string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)) "
+    )
+    if command.startswith(whitespace_guard):
+        command = (
+            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+            + command.removeprefix(whitespace_guard)
+        )
     return re.sub(
-        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
-        r'\1"ENV_UNSET"\2',
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1Write-Output "ENV_UNSET"\2',
         command,
         count=1,
     )
@@ -65,7 +79,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
     if "Press enter to confirm or esc to cancel" not in dialog:
         return False
     command = re.search(
-        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>\ufffd][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
         dialog,
     )
     expected_commands = (
@@ -88,7 +102,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
-        r"^[ \t]*↑/↓ to select · Enter to view · Esc to close[ \t]*\s*\Z",
+        r"^[ \t]*↑/↓ to (?:select|navigate) · Enter to view · Esc to close[ \t]*\s*\Z",
         text,
     )
 
@@ -112,12 +126,17 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    # 2.1.322 adds a collapsed history heading after the current task rows.
+    # Newer versions omit the Completed count; every current row must still be done.
+    if rows and re.fullmatch(r"Earlier in this session \([0-9]+\)", rows[-1]):
+        rows.pop()
     if not rows:
         return False
-    completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
+    completed = re.fullmatch(r"Completed(?: \(([1-9][0-9]*)\))?", rows[0])
     return (
         completed is not None
-        and len(rows) - 1 == int(completed[1])
+        and len(rows) > 1
+        and (completed[1] is None or len(rows) - 1 == int(completed[1]))
         and all(re.fullmatch(r"(?:❯\s*)?✔\s+.+\s+done\s+·\s+.+", row) for row in rows[1:])
     )
 
@@ -131,6 +150,11 @@ class TerminalScreen(pyte.Screen):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        # Copilot sends the private form (`CSI ? 6 n`), which pyte's Stream passes as `private=True`
+        # but Screen.report_device_status does not accept.
+        super().report_device_status(mode, **kwargs)
 
     @property
     def display(self):
@@ -357,27 +381,28 @@ class TerminalProcess:
                 since = None
         raise AssertionError(f"TUI did not show {description} within {timeout}s:\n{self.visible}")
 
-    def selected_line(self):
+    def selected_line(self, *, after=None):
+        # Prior submitted prompts also begin with ❯. Once a menu is open, only
+        # its rows can identify the current selection.
+        text = self.visible if after is None else self.visible.rpartition(after)[2]
         return next(
-            (
-                line.strip()
-                for line in self.visible.splitlines()
-                if re.match(rf"^\s*{SELECTED}", line)
-            ),
+            (line.strip() for line in text.splitlines() if re.match(rf"^\s*{SELECTED}", line)),
             "",
         )
 
     def choose(self, prompt, label):
         """Navigate the visible menu with arrow keys; never write its saved state."""
-        self.wait_for(lambda text: prompt in text and self.selected_line(), prompt, timeout=120)
+        self.wait_for(
+            lambda text: prompt in text and self.selected_line(after=prompt), prompt, timeout=120
+        )
         visited = set()
         for _ in range(100):
-            current = self.selected_line()
+            current = self.selected_line(after=prompt)
             if label in current:
                 self.send("\r", f"choose {label}")
                 self.wait_for(
                     lambda text, before=current: (
-                        prompt not in text or self.selected_line() != before
+                        prompt not in text or self.selected_line(after=prompt) != before
                     ),
                     f"confirmation of {label}",
                 )
@@ -386,7 +411,8 @@ class TerminalProcess:
             visited.add(current)
             self.send("\x1b[B", f"move towards {label}")
             self.wait_for(
-                lambda text, before=current: self.selected_line() != before, "next menu option"
+                lambda text, before=current: self.selected_line(after=prompt) != before,
+                "next menu option",
             )
         raise AssertionError(f"Could not select {label}")
 
@@ -459,10 +485,8 @@ class AgentTerminal(TerminalProcess):
                         return
                     continue
                 ready_since = None
-            if (
-                self.agent != "antigravity"
-                and "Accessing workspace:" in text
-                and self.session.cwd.name in text
+            if self.agent != "antigravity" and claude_workspace_trust_dialog_shown(
+                text, self.session.cwd
             ):
                 ready_since = None
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
@@ -579,6 +603,7 @@ class AgentTerminal(TerminalProcess):
             }.get(self.agent, "Codex")
             if (
                 title in text
+                and "Accessing workspace:" not in text
                 and "Confirm folder trust" not in text
                 and "loading" not in text.lower()
                 and not re.search(r"(?m)^\s*>\s+You are in\b", text)

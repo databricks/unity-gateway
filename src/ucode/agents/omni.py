@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 import yaml
 
+from ucode import tls
 from ucode.config_io import APP_DIR, ToolSpec, ensure_parent_dir, is_dry_run
 from ucode.constants import AGENT_OMNI
 from ucode.launcher import exec_or_spawn
@@ -65,7 +66,12 @@ def install_binary() -> None:
     uv = shutil.which("uv")
     if not uv:
         raise RuntimeError(f"uv is required to install Omnigent. {INSTALL_HINT}.")
-    subprocess_cross_os.run([uv, "tool", "install", SPEC["package"]], check=True, timeout=300)
+    subprocess_cross_os.run(
+        [uv, "tool", "install", SPEC["package"]],
+        check=True,
+        timeout=300,
+        env=tls.uv_environment(),
+    )
 
 
 def default_model(state: dict) -> str | None:

@@ -115,6 +115,93 @@ def stop_process(proc: subprocess.Popen) -> None:
     proc.wait(timeout=5)
 
 
+class _JobAccounting(ctypes.Structure):
+    # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", ctypes.c_uint32),
+        ("TotalProcesses", ctypes.c_uint32),
+        ("ActiveProcesses", ctypes.c_uint32),
+        ("TotalTerminatedProcesses", ctypes.c_uint32),
+    ]
+
+
+class WindowsJob:
+    """A Windows job object holding a program and every process it starts.
+
+    taskkill /T and Popen.wait reach only processes whose parent is still alive. A child that
+    outlives its parent can keep a file under the session home open, and reading that file then
+    fails with PermissionError."""
+
+    def __init__(self):
+        handle = ctypes.c_void_p
+        self._kernel32 = kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._ntdll = ntdll = ctypes.WinDLL("ntdll")
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = handle
+        kernel32.AssignProcessToJobObject.argtypes = [handle, handle]
+        kernel32.QueryInformationJobObject.argtypes = [
+            handle,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        kernel32.TerminateJobObject.argtypes = [handle, ctypes.c_uint]
+        kernel32.CloseHandle.argtypes = [handle]
+        ntdll.NtResumeProcess.argtypes = [handle]
+        ntdll.NtResumeProcess.restype = ctypes.c_long
+        self.handle = kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def popen(self, args, **options) -> subprocess.Popen:
+        """Start ``args`` in the job.
+
+        It starts suspended and runs only once it is in the job, so no child it starts escapes."""
+        options["creationflags"] = options.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+        proc = subprocess.Popen(args, **options)
+        try:
+            process = ctypes.c_void_p(int(proc._handle))  # type: ignore[attr-defined]
+            if not self._kernel32.AssignProcessToJobObject(self.handle, process):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if status := self._ntdll.NtResumeProcess(process):
+                raise OSError(f"NtResumeProcess failed with NTSTATUS {status & 0xFFFFFFFF:#010x}")
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        return proc
+
+    def active_processes(self) -> int:
+        info = _JobAccounting()
+        if not self._kernel32.QueryInformationJobObject(
+            self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return info.ActiveProcesses
+
+    def wait_until_empty(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while self.active_processes():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+        return True
+
+    def close(self) -> None:
+        """End every process still in the job, wait for them to exit, and release the job."""
+        if not self.handle:
+            return
+        self._kernel32.TerminateJobObject(self.handle, 1)
+        self.wait_until_empty(10)
+        self._kernel32.CloseHandle(self.handle)
+        self.handle = None
+
+
 class UserSession:
     def __init__(self, root: Path, project_root: Path, binary: Path, artifacts: Path):
         self.home = root / "home"
@@ -137,10 +224,12 @@ class UserSession:
             "DATABRICKS_SECOND_BEARER",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            "UG_INTEGRATION_CODEX_ACCESS_TOKEN",
         ):
             for token in (os.environ.get(name), self.env.get(name)):
-                if token:
-                    text = text.replace(token, "<redacted>")
+                if token and token.strip():
+                    text = text.replace(token, "<redacted>").replace(token.strip(), "<redacted>")
         return ANSI.sub("", text) if strip_ansi else text
 
     def run(

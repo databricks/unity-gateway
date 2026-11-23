@@ -13,7 +13,8 @@ import pytest
 
 import ucode.agents as agents_mod
 import ucode.databricks as db_mod
-from ucode import managed_files
+from tests.conftest import metric_observations
+from ucode import managed_files, metrics
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -985,6 +986,32 @@ class TestInstallToolBinary:
         else:
             assert install_tool_binary("opencode", strict=False) is False
 
+    @pytest.mark.parametrize("required", [False, True], ids=["optional", "required"])
+    def test_update_failure_labels_recovery_by_caller(
+        self, monkeypatch, metrics_recorder, required
+    ):
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+        monkeypatch.setattr("ucode.agents.prompt_yes_no_default", lambda prompt, *, default: True)
+
+        # Fail only the external updater; exercise the actual upgrade policy and recorder.
+        def fail_run(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args)
+
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", fail_run)
+
+        if required:
+            with pytest.raises(RuntimeError, match="must upgrade"):
+                install_tool_binary("claude")
+        else:
+            assert agents_mod.update_tool_binary("claude") is False
+
+        [(count, labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert labels["operation"] == metrics.DEPENDENCY_INSTALL_OPERATION
+        assert labels["continued_with_fallback"] is (not required)
+
     def test_existing_binary_does_not_prompt_for_optional_update(self, monkeypatch, capsys):
         calls: list[list[str]] = []
 
@@ -1193,7 +1220,10 @@ class TestInstallToolBinary:
         monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
         monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "still too old")
         monkeypatch.setattr("ucode.agents.prompt_yes_no_default", lambda prompt, *, default: True)
-        monkeypatch.setattr("ucode.agents._update_installed_tool_binary", lambda _: update_succeeds)
+        monkeypatch.setattr(
+            "ucode.agents._update_installed_tool_binary",
+            lambda _, **kwargs: update_succeeds,
+        )
 
         with pytest.raises(RuntimeError, match="still too old"):
             install_tool_binary("claude")
@@ -1386,10 +1416,13 @@ class TestConfigureSelectedTools:
 
 
 class TestConfiguredPaths:
-    def test_claude_reports_its_settings_file_home_abbreviated(self):
+    def test_claude_reports_its_settings_file_home_abbreviated(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
         from ucode.agents import configured_paths
         from ucode.agents.claude import CLAUDE_SETTINGS_PATH
 
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         paths = configured_paths("claude", {})
         assert paths == [
             str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)
