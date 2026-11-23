@@ -4,6 +4,7 @@ import { parseRoutingExplanation, type RoutingExplanation } from './subagent-rou
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
 export const LOGS_COMMAND_TIMEOUT_MS = 10000;
 export const ROUTE_VALIDATION_ROW = 'Failed to enable smart routing. Press enter for details.';
+export const ROUTE_VALIDATION_FAILED_ROW = 'Failed to validate smart routing. Press enter for details.';
 const ROUTE_VALIDATION_REASONS: Record<string, string> = {
   insufficient_eligible_options: 'At least two supported models are required. Please reach out to your workspace admin',
   missing_required_tier_option: 'Required models are missing from this list',
@@ -28,6 +29,8 @@ type RouteValidation = {
   validation_id: string;
   at: number;
   routing_unsupported_reason: string | null;
+  validation_failed?: boolean;
+  validation_failure_reason?: string | null;
   eligible_route_options: RouteOption[];
   ineligible_route_options: (RouteOption & { reason: string | null })[];
   available_route_options: RouteOption[];
@@ -74,13 +77,19 @@ const isRouteOptionList = (value: unknown, withReason = false): boolean =>
 const isRouteValidation = (v: RouteValidation): boolean =>
   Boolean(v) && typeof v.validation_id === 'string' && Boolean(v.validation_id) &&
   Number.isFinite(v.at) && Number.isFinite(new Date(v.at * 1000).getTime()) &&
-  isNullableString(v.routing_unsupported_reason) && isRouteOptionList(v.eligible_route_options) &&
+  isNullableString(v.routing_unsupported_reason) && isNullableString(v.validation_failure_reason ?? null) &&
+  isRouteOptionList(v.eligible_route_options) &&
   isRouteOptionList(v.ineligible_route_options, true) && isRouteOptionList(v.available_route_options) &&
   Number.isFinite(v.validation_ms);
 
 export function routeValidationReason(reason: string | null): string {
   if (reason !== null && Object.hasOwn(ROUTE_VALIDATION_REASONS, reason)) return ROUTE_VALIDATION_REASONS[reason];
   return reason?.trim() && !REASON_CODE.test(reason.trim()) ? reason.trim() : ROUTE_VALIDATION_GENERIC_REASON;
+}
+
+function validationReason(validation: RouteValidation): string {
+  if (validation.validation_failed) return validation.validation_failure_reason ?? '';
+  return routeValidationReason(validation.routing_unsupported_reason);
 }
 
 export function modelReason(reason: string | null): string {
@@ -420,7 +429,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       const labelWidth = 'Validation Time: '.length + 1;
       const children = [
         back(),
-        labeledRow(labelWidth, 'Reason: ', Text({ children: [routeValidationReason(validationDetail.routing_unsupported_reason)] })),
+        labeledRow(labelWidth, 'Reason: ', Text({ children: [validationReason(validationDetail)] })),
         labeledRow(labelWidth, 'Validation Time: ', Text({ children: [`${(validationDetail.validation_ms / 1000).toFixed(1)}s`] })),
       ];
       if (eligible.length || ineligible.length) {
@@ -481,7 +490,8 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       if ('validation_id' in row) {
         // Age (8) + "  " + the fixed text fills the row.
         const room = Math.max(1, columns - 10);
-        const text = ROUTE_VALIDATION_ROW.length > room ? ROUTE_VALIDATION_ROW.slice(0, Math.max(0, room - 1)) + '…' : ROUTE_VALIDATION_ROW;
+        const rowText = row.validation_failed ? ROUTE_VALIDATION_FAILED_ROW : ROUTE_VALIDATION_ROW;
+        const text = rowText.length > room ? rowText.slice(0, Math.max(0, room - 1)) + '…' : rowText;
         children.push(Button({
           key: row.validation_id, plain: true, label: `${age(row.at).padStart(8)}  ${text}`,
           onPress: () => { detailRequest++; validationDetail = row; $.ui.invalidate('ui.render'); },

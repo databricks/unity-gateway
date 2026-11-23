@@ -1,13 +1,15 @@
 import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
-import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE } from './constants.ts'
+import {
+  SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE, VALIDATION_FAILED_WARNING,
+} from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
 // The band shows once the route validation finishes and after each toggle, and hides once the
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
-const band = { isVisible: true, isHideArmed: false, isUnsupported: false }
+const band = { isVisible: true, isHideArmed: false, isUnsupported: false, isValidationFailed: false }
 let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the route validation settles;
 // an unsupported model list turns routing off and must never flash ON.
@@ -22,6 +24,7 @@ export function showStatusBand(): void {
   band.isVisible = true
   band.isHideArmed = false
   band.isUnsupported = false
+  band.isValidationFailed = false
 }
 
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
@@ -79,6 +82,15 @@ export function warnUnsupportedModelList(): void {
   band.isUnsupported = true
 }
 
+export function warnValidationFailed(): void {
+  band.isValidationFailed = true
+}
+
+function routingWarning(): string | undefined {
+  if (band.isValidationFailed) return VALIDATION_FAILED_WARNING
+  return band.isUnsupported ? UNSUPPORTED_MODEL_LIST_WARNING : undefined
+}
+
 export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
@@ -98,7 +110,8 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const routerState = enabled ? 'ON' : band.isUnsupported ? UNSUPPORTED_ROUTER_STATE : 'OFF'
+    const warning = routingWarning()
+    const routerState = enabled ? 'ON' : warning ? UNSUPPORTED_ROUTER_STATE : 'OFF'
     let state = validation.isPending ? '' : `smart router ${routerState}${agents}`
     if (auto && state) {
       // The static Auto row is the default variant's alias; name the session's main model.
@@ -117,11 +130,12 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
+    const warning = routingWarning()
     const pill = enabled
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
-      : Text({ bold: true, color: 'black', backgroundColor: band.isUnsupported ? 'yellow' : 'gray', children: [' OFF '] })
-    const trailer = band.isUnsupported
-      ? Text({ color: 'yellow', children: [UNSUPPORTED_MODEL_LIST_WARNING] })
+      : Text({ bold: true, color: 'black', backgroundColor: warning ? 'yellow' : 'gray', children: [' OFF '] })
+    const trailer = warning
+      ? Text({ color: 'yellow', children: [warning] })
       : enabled
       ? Text({
           dimColor: true,

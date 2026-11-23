@@ -2,6 +2,7 @@ import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import {
   DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
+  VALIDATION_FAILED_WARNING,
 } from '../hooks/constants.ts';
 
 const ROUTED = {
@@ -14,6 +15,10 @@ const ROUTED = {
 const VALIDATED = { ...ROUTED, startupValidation: '1' };
 const OFF = '{"ENABLE_SMART_ROUTING_V2":"0","ENABLE_SMART_ROUTING_SUBAGENT_ONLY":"0","ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}';
 const WARNING = "This session's model list isn't supported by smart router";
+const FAILED = {
+  routing_disabled: true, validation_failed: true, validation_failure_reason: "Smart Router didn't respond in time",
+  router_name: 'stable', eligible_route_options: [], ineligible_route_options: [], available_route_options: [], validation_ms: 4000,
+};
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 const abovePrompt = {
   plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
@@ -64,12 +69,12 @@ function engine(on: On) {
 }
 
 const cases = [
-  // A failed check publishes the same silent result as a supported model list.
-  { name: 'supported or failed', result: { routing_disabled: false }, routed: true },
-  { name: 'unsupported', result: { routing_disabled: true }, routed: false },
+  { name: 'supported', result: { routing_disabled: false }, routed: true, warning: undefined },
+  { name: 'unsupported', result: { routing_disabled: true }, routed: false, warning: UNSUPPORTED_MODEL_LIST_WARNING },
+  { name: 'failed', result: FAILED, routed: false, warning: VALIDATION_FAILED_WARNING },
 ];
 
-for (const { name, result, routed } of cases) {
+for (const { name, result, routed, warning } of cases) {
   test(`startup validation ${name} holds the band until the result`, { options: VALIDATED }, async ($, on) => {
     const { clock, env, files, state, hint } = engine(on);
 
@@ -90,7 +95,9 @@ for (const { name, result, routed } of cases) {
     const shown = JSON.stringify(await ui.drawn());
     expect(shown).toContain('host content');
     expect(shown).toContain('unity gateway smart router');
-    expect(shown.includes(WARNING)).toBe(!routed);
+    for (const text of [UNSUPPORTED_MODEL_LIST_WARNING, VALIDATION_FAILED_WARNING]) {
+      expect(shown.includes(text)).toBe(text === warning);
+    }
     expect(await hint($)).toBe(`smart router ${routed ? 'ON' : UNSUPPORTED_ROUTER_STATE}`);
     expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
     expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
@@ -106,12 +113,13 @@ for (const { name, result, routed } of cases) {
 }
 
 const omniLogCases = [
-  { name: 'an unsupported result in Omnigent logs the off reply and the warning', launchMode: 'omni', disabled: true },
-  { name: 'an unsupported result outside Omnigent logs nothing', launchMode: undefined, disabled: true },
-  { name: 'a supported result in Omnigent logs nothing', launchMode: 'omni', disabled: false },
+  { name: 'an unsupported result in Omnigent logs the off reply and the warning', launchMode: 'omni', result: { routing_disabled: true }, warning: UNSUPPORTED_MODEL_LIST_WARNING },
+  { name: 'a failed check in Omnigent logs the off reply and the validation warning', launchMode: 'omni', result: FAILED, warning: VALIDATION_FAILED_WARNING },
+  { name: 'an unsupported result outside Omnigent logs nothing', launchMode: undefined, result: { routing_disabled: true }, warning: undefined },
+  { name: 'a supported result in Omnigent logs nothing', launchMode: 'omni', result: { routing_disabled: false }, warning: undefined },
 ];
 
-for (const { name, launchMode, disabled } of omniLogCases) {
+for (const { name, launchMode, result, warning } of omniLogCases) {
   test(name, { options: VALIDATED }, async ($, on) => {
     const { clock, env, files } = engine(on);
     const logs: string[] = [];
@@ -119,10 +127,10 @@ for (const { name, launchMode, disabled } of omniLogCases) {
     env.ISAAC_LAUNCH_MODE = launchMode;
     const ui = await $.ui.mount(abovePrompt);
     await $.session.start(start);
-    if (disabled) files['/session/env.json'] = OFF;
-    files['/session/env.validation.json'] = JSON.stringify({ routing_disabled: disabled });
+    if (result.routing_disabled) files['/session/env.json'] = OFF;
+    files['/session/env.validation.json'] = JSON.stringify(result);
     await clock.advance(100);
-    expect(logs).toEqual(launchMode && disabled ? [SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING] : []);
+    expect(logs).toEqual(launchMode && warning ? [SMART_ROUTER_OFF_REPLY, warning] : []);
     await ui.unmount();
   });
 }

@@ -1,6 +1,7 @@
-"""Startup Smart Router model-list check; an unsupported model list turns routing off for the session.
+"""Startup Smart Router model-list check.
 
-Nothing is shown to the user. A failed or timed-out check leaves routing on.
+An unsupported model list, or a failed check, turns routing off for the session. HTTP 404 is the
+flag-off answer from the endpoint, so it leaves routing on and records nothing.
 """
 
 from __future__ import annotations
@@ -21,9 +22,17 @@ from ucode.constants import (
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
 
-# The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
-# urllib applies the timeout per socket operation, so a result past this deadline counts as a timeout.
+# The Claude mod shows routing ON after 5 s without a result, so the check must publish sooner.
 VALIDATION_TIMEOUT_SECONDS = 4
+NOT_FOUND_STATUS = 404
+ROUTE_VALIDATION_TIMED_OUT = "route validation timed out"
+TIMED_OUT_MARKER = "timed out"
+NETWORK_ERROR_PREFIX = "network error:"
+CHECK_FAILED_REASON = "Smart Router check failed unexpectedly"
+TIMED_OUT_FAILURE_REASON = "Smart Router didn't respond in time"
+HTTP_ERROR_FAILURE_REASON = "Smart Router returned an error (HTTP {status})"
+UNREACHABLE_FAILURE_REASON = "Smart Router couldn't be reached"
+UNEXPECTED_RESPONSE_FAILURE_REASON = "Smart Router returned an unexpected response"
 
 
 def result_path(session_controls: Path) -> Path:
@@ -50,6 +59,10 @@ def _route_options(
     ]
 
 
+def _is_unsupported(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("is_supported") is False
+
+
 def _unsupported_details(payload: dict[str, Any], router_name: str) -> dict[str, Any]:
     metadata = payload.get("metadata")
     return {
@@ -67,11 +80,41 @@ def _unsupported_details(payload: dict[str, Any], router_name: str) -> dict[str,
     }
 
 
+def _failure_details(failure: str, router_name: str) -> dict[str, Any]:
+    return {
+        "router_name": router_name,
+        "validation_failed": True,
+        "validation_failure_reason": failure,
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
+    }
+
+
+def _failure_reason(payload: object, reason: str | None, status: int | None) -> str | None:
+    if reason is None:
+        supported = payload.get("is_supported") if isinstance(payload, dict) else None
+        return None if isinstance(supported, bool) else UNEXPECTED_RESPONSE_FAILURE_REASON
+    if status is not None:
+        return HTTP_ERROR_FAILURE_REASON.format(status=status)
+    if reason == CHECK_FAILED_REASON:
+        return CHECK_FAILED_REASON
+    if TIMED_OUT_MARKER in reason:
+        return TIMED_OUT_FAILURE_REASON
+    if reason.startswith(NETWORK_ERROR_PREFIX):
+        return UNREACHABLE_FAILURE_REASON
+    return UNEXPECTED_RESPONSE_FAILURE_REASON
+
+
 @metrics.timed(
     metrics.ROUTE_VALIDATION_DURATION_MS, reason_result=True, continued_with_fallback=True
 )
 def _validate_route_options(
-    workspace: str, token: str, body: dict[str, Any], provider: str | None
+    workspace: str,
+    token: str,
+    body: dict[str, Any],
+    provider: str | None,
+    status_sink: dict,
 ) -> tuple[object, str | None]:
     started = time.monotonic()
     payload, reason = _http_post_json(
@@ -80,10 +123,29 @@ def _validate_route_options(
         body,
         timeout=VALIDATION_TIMEOUT_SECONDS,
         headers={MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else None,
+        status_sink=status_sink,
     )
     if not reason and time.monotonic() - started > VALIDATION_TIMEOUT_SECONDS:
-        return None, "route validation timed out"
+        return None, ROUTE_VALIDATION_TIMED_OUT
     return payload, reason
+
+
+def _publish(path: Path, result: dict[str, Any]) -> None:
+    with suppress(OSError, RuntimeError):
+        atomic_write_json(path, result)
+
+
+def _probe(
+    workspace: str,
+    token: str,
+    body: dict[str, Any],
+    provider: str | None,
+    outcome: dict[str, Any],
+) -> None:
+    try:
+        outcome["response"] = _validate_route_options(workspace, token, body, provider, outcome)
+    except Exception:
+        outcome["response"] = (None, CHECK_FAILED_REASON)
 
 
 def start(
@@ -102,22 +164,31 @@ def start(
 
     def check() -> None:
         started = time.monotonic()
-        try:
-            payload, reason = _validate_route_options(workspace, token, body, provider)
-        except Exception as exc:
-            payload, reason = None, str(exc)
-        unsupported = (
-            not reason and isinstance(payload, dict) and payload.get("is_supported") is False
+        outcome: dict[str, Any] = {}
+        probe = threading.Thread(
+            target=_probe, args=(workspace, token, body, provider, outcome), daemon=True
         )
+        probe.start()
+        # A probe still running after the deadline only fills `outcome`, so it cannot publish late.
+        probe.join(VALIDATION_TIMEOUT_SECONDS)
+        payload, reason = outcome.get("response", (None, ROUTE_VALIDATION_TIMED_OUT))
+        status = outcome.get("status")
+        if status == NOT_FOUND_STATUS:
+            _publish(result_path(session_controls), {"routing_disabled": False})
+            return
+        failure = _failure_reason(payload, reason, status)
+        unsupported = _is_unsupported(payload)
         result: dict[str, Any] = {"routing_disabled": False}
-        if unsupported:
+        if failure is not None or unsupported:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-                result["routing_disabled"] = True
-                result.update(_unsupported_details(payload, router_name))
+                result = (
+                    {"routing_disabled": True, **_failure_details(failure, router_name)}
+                    if failure is not None
+                    else {"routing_disabled": True, **_unsupported_details(payload, router_name)}
+                )
                 result["validation_ms"] = round((time.monotonic() - started) * 1000)
-        with suppress(OSError, RuntimeError):
-            atomic_write_json(result_path(session_controls), result)
+        _publish(result_path(session_controls), result)
 
     with suppress(Exception):
         threading.Thread(target=check, daemon=True).start()
