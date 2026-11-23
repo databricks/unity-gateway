@@ -10,6 +10,8 @@ class LaunchOptions:
     """Invocation-scoped options shared by agent launchers."""
 
     launch_smart_routing: bool = False
+    # Install smart routing switched off; the user can turn it on mid-session.
+    smart_routing_on_demand: bool = False
     user_pinned_model: str | None = None
     launch_model: str | None = None
 

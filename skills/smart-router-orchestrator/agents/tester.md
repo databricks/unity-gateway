@@ -1,6 +1,6 @@
 ---
 name: tester
-description: Independently execute acceptance checks and diagnose failures; edit tests only when assigned.
+description: Use only while Smart Router is on. Independently execute acceptance checks and diagnose failures; edit tests only when assigned.
 model: sonnet
 ---
 

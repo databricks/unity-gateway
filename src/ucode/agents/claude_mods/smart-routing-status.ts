@@ -3,7 +3,7 @@ import { autoTarget, type AutoPicker } from './auto-model.ts'
 import {
   SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE, VALIDATION_FAILED_WARNING,
 } from './constants.ts'
-import { isRoutingEnabled } from './routing-state.ts'
+import { isRoutingEnabled, neverTurnedOn } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -68,6 +68,16 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
+// A session that started with Smart Router off shows nothing until the user turns it on.
+async function routingNeverTurnedOn($: any, onDemandFile: string): Promise<boolean> {
+  if (!onDemandFile) return false
+  try {
+    return neverTurnedOn(await $.fs.read(onDemandFile))
+  } catch {
+    return false
+  }
+}
+
 export function startStartupValidation(): boolean {
   if (validationWatchStarted) return false
   validationWatchStarted = true
@@ -91,7 +101,7 @@ function routingWarning(): string | undefined {
   return band.isUnsupported ? UNSUPPORTED_MODEL_LIST_WARNING : undefined
 }
 
-export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
+export const registerStatusBand = (on: On, auto?: AutoPicker, onDemandFile = ''): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
@@ -102,6 +112,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   // The prompt hint row always carries the state as a plain tail, so it stays visible after
   // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (await routingNeverTurnedOn($, onDemandFile)) return next(e)
     const { enabled } = await readRoutingState($)
     running = (await $.agent.list()).filter((agent) => agent.status === 'running').length
     // Background agents can change state without changing Claude's cached hint props.
@@ -126,7 +137,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
     const isBandShown = band.isVisible && !validation.isPending
-    if (!isBandShown) return theirs
+    if (!isBandShown || await routingNeverTurnedOn($, onDemandFile)) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 

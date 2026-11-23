@@ -16,7 +16,8 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import claude_hooks, routing, session_env, session_log, v2
+from ucode.smart_routing import config as smart_routing_config
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -938,6 +939,93 @@ class TestV2Launch:
             claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
 
         claude.exec_or_spawn.assert_not_called()
+
+    @staticmethod
+    def _launch_on_demand(tmp_path, monkeypatch, catalog_models: list[str]) -> dict:
+        """Run an on-demand launch and capture what Claude would start with."""
+        # The routing an explicit `--enable-smart-routing` launch materializes.
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "")
+        enabled = smart_routing_config.resolve_environment(
+            {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.DEFAULT_ENABLED_VERSION},
+            agent=AGENT_CLAUDE,
+        )
+        for key in v2.SMART_ROUTING_ENV_KEYS:
+            monkeypatch.setenv(key, enabled[key])
+        monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
+        monkeypatch.setattr(
+            v2.startup_validation,
+            "start",
+            lambda *_args, **_kwargs: pytest.fail("an on-demand session starts off unchecked"),
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent")
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=catalog_models, model_id_to_display_name={}
+            ),
+        )
+        captured: dict = {}
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+                controls = Path(settings["env"][v2.SESSION_ENV_VAR])
+                captured.update(
+                    argv=argv,
+                    settings=settings,
+                    controls=json.loads(controls.read_text()),
+                    on_demand=json.loads(session_env.on_demand_path(controls).read_text()),
+                )
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, args),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+                on_demand=True,
+            )
+        return captured
+
+    def test_on_demand_launch_installs_routing_switched_off(self, tmp_path, monkeypatch):
+        captured = self._launch_on_demand(tmp_path, monkeypatch, ["system.ai.claude-opus-4-8"])
+
+        routing_off = dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+        settings = captured["settings"]
+        options = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        # Routing and the orchestrator are installed, but Claude and its hooks start off.
+        assert {"SessionStart", "SubagentStart", "UserPromptSubmit"} <= settings["hooks"].keys()
+        assert options["orchestratorInstructions"]
+        assert {key: settings["env"][key] for key in routing_off} == routing_off
+        assert captured["controls"] == routing_off
+        # `on` restores the routing the mod options record, which the routed launch would use.
+        when_on = {key: options[key] for key in v2.SMART_ROUTING_ENV_KEYS}
+        assert when_on[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert captured["on_demand"] == {"when_on": when_on, "ever_on": False}
+        assert options["onDemandFile"] == str(
+            session_env.on_demand_path(Path(settings["env"][v2.SESSION_ENV_VAR]))
+        )
+        assert options["startupValidation"] == ""
+
+    def test_on_demand_launch_without_models_falls_back_to_a_normal_launch(
+        self, tmp_path, monkeypatch
+    ):
+        with pytest.raises(v2.ClaudeRoutingSetupError):
+            self._launch_on_demand(tmp_path, monkeypatch, [])
 
     @requires_pty
     def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):

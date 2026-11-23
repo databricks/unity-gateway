@@ -133,11 +133,16 @@ const hasBand = (tree: unknown): boolean => JSON.stringify(tree).includes('unity
 
 // The engine's own process, drawing, prompt, and turn answers sit beneath the mod, and
 // session controls are available so toggles succeed.
-function engine(on: On, env: Record<string, string | undefined>, agents: AgentInfo[] = []) {
+function engine(
+  on: On, env: Record<string, string | undefined>, agents: AgentInfo[] = [], runCli: () => void = () => {},
+) {
   const clock = mock.clock(on);
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  on('process.run', () => {
+    runCli();
+    return { value: { exitCode: 0, stdout: '', stderr: '' } };
+  });
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
@@ -300,6 +305,39 @@ test('the band is gone by the second turn after either toggle', { options: ROUTE
   }
 });
 
+const ON_DEMAND_FILE = '/session/smart-routing-on-demand.json';
+const ON_DEMAND = { ...ROUTED, onDemandFile: ON_DEMAND_FILE };
+const ROUTING_OFF = { ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0', ENABLE_SMART_ROUTER_ORCHESTRATOR: '0' };
+const WHEN_ON = { ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', ENABLE_SMART_ROUTER_ORCHESTRATOR: '1' };
+
+test('a session that starts off shows nothing until the user turns Smart Router on', { options: ON_DEMAND }, async ($, on) => {
+  // ug launches it with routing off in the environment and in both session files.
+  const { env } = setup(on, { launched: false });
+  const files: Record<string, string> = {
+    '/session/env.json': JSON.stringify(ROUTING_OFF),
+    [ON_DEMAND_FILE]: JSON.stringify({ when_on: WHEN_ON, ever_on: false }),
+  };
+  on('fs.read', ($, e) => ({ value: files[e.path] }));
+  // The CLI applies the recorded routing and records that the user turned it on.
+  const { tails } = engine(on, env, [], () => {
+    files['/session/env.json'] = JSON.stringify(WHEN_ON);
+    files[ON_DEMAND_FILE] = JSON.stringify({ when_on: WHEN_ON, ever_on: true });
+  });
+  on('session.start', () => ({ cwd: '/work' }));
+  await $.session.start(start);
+  expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+  const band = await $.ui.mount(ABOVE_PROMPT);
+  expect(hasBand(await band.drawn())).toBe(false);
+  expect(await hintTail($, tails)).toBe('');
+
+  expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBe('Smart Router is on');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
+  expect(hasBand(await band.drawn())).toBe(true);
+  expect(await hintTail($, tails)).toBe('smart router ON');
+});
+
 const ORCHESTRATED = { ...ROUTED, orchestratorInstructions: 'Delegate under the orchestrator.' };
 const CONTINUE = 'To continue a previously spawned agent, use SendMessage';
 const ROUTING_GUIDANCE = "Smart Router selects the execution model for each task-role subagent. This tool's built-in model choices are not Smart Router's model catalog. Do not infer that a requested model is unavailable because it is absent from this tool's choices. For a requested name outside those choices, launch a general-purpose subagent without the model argument. Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.";
@@ -370,10 +408,12 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     ...extra,
   });
   const runs: (readonly string[])[] = [];
+  const runEnvironments: (Readonly<Record<string, string>> | undefined)[] = [];
   const logs: string[] = [];
   const panes: string[] = [];
   on('process.run', ($, e) => {
     runs.push(e.argv);
+    runEnvironments.push(e.init?.env);
     const exitCode = e.argv.includes('--disable-smart-routing') ? offExitCode : 0;
     return { value: { exitCode, stdout: e.argv.includes('--inspect-target') ? '{"message_id":"m1"}' : '', stderr: '' } };
   });
@@ -387,7 +427,7 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     return { value: { isPlaced: true } };
   });
   on('ui.close', () => ({ value: undefined }));
-  return { env, writes, runs, logs, panes };
+  return { env, writes, runs, runEnvironments, logs, panes };
 }
 
 test('an omni launch skips the form only for an off marked --feedback-collected', { options: ROUTED }, async ($, on) => {
@@ -467,5 +507,20 @@ test('a failed off from the form logs no off reply', { options: WITH_ISAAC }, as
   expect(logs.at(-1)).toContain('Could not turn Smart Router off');
   expect(logs).not.toContain('Smart Router is off');
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  await form.unmount();
+});
+
+test('the Isaac report reads routing from session controls that carry every routing key', { options: WITH_ISAAC }, async ($, on) => {
+  const { runs, runEnvironments } = feedbackSession(on);
+  // An on-demand session's `on` writes all of its recorded routing keys.
+  const controls = { ...WHEN_ON, ENABLE_SMART_ROUTER_AUTO_MODE: '0', ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: '1' };
+  on('fs.read', () => ({ value: JSON.stringify(controls) }));
+
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text).toBeUndefined();
+  const form = await $.ui.mount(FEEDBACK_PANE);
+  await form.input({ key: 'reason', text: REASON });
+  const report = runEnvironments[runs.findIndex((argv) => argv.includes('--with-evidence'))];
+  expect(report).toMatchObject({ ...WHEN_ON, UCODE_SESSION_ENV_FILE: '' });
+  expect(report).not.toHaveProperty('ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI');
   await form.unmount();
 });

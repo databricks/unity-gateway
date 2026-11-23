@@ -1168,6 +1168,75 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
+    @pytest.mark.parametrize(
+        ("tool", "launch_args", "launch_env", "admin_enabled", "on_demand"),
+        [
+            ("claude", [], {}, None, True),
+            ("claude", [], {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"}, None, True),
+            ("claude", [], {}, False, True),
+            ("claude", [], {}, True, False),
+            ("claude", ["--disable-smart-routing"], {}, None, False),
+            ("claude", ["--enable-smart-routing"], {}, None, False),
+            (
+                "claude",
+                [],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ONLY_V0},
+                None,
+                False,
+            ),
+            ("claude", ["--", "-p", "hello"], {}, None, False),
+            ("claude", ["update"], {}, None, False),
+            ("claude", [], {"ENABLE_SMART_ROUTER_ON_DEMAND": "0"}, None, False),
+            ("codex", [], {}, None, False),
+        ],
+        ids=[
+            "no-choice",
+            "env-off",
+            "admin-off",
+            "admin-on",
+            "disable-flag",
+            "enable-flag",
+            "known-version",
+            "print-mode",
+            "native-subcommand",
+            "gate-off",
+            "codex",
+        ],
+    )
+    def test_a_launch_without_routing_installs_it_switched_off(
+        self, monkeypatch, tool, launch_args, launch_env, admin_enabled, on_demand
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ON_DEMAND", "1")
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        managed = (
+            None
+            if admin_enabled is None
+            else {"enabled_agents": {tool: {"smart_routing_enabled": admin_enabled}}}
+        )
+        env_before = _routing_env()
+        observed = []
+
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch("ucode.cli.redirect_output_to_stderr"),
+        ):
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                (options.smart_routing_on_demand, options.launch_smart_routing, _routing_env())
+            )
+            result = runner.invoke(app, [tool, *launch_args])
+
+        assert result.exit_code == 0, result.output
+        [(starts_off, routed, launch_env_seen)] = observed
+        assert starts_off is on_demand
+        if on_demand:
+            # The routed launcher installs the same routing `--enable-smart-routing` turns on.
+            assert routed is True
+            assert launch_env_seen == _version_routing_env(
+                smart_routing_config.DEFAULT_ENABLED_VERSION, tool
+            )
+        assert _routing_env() == env_before
+
     @pytest.mark.parametrize("bare", [False, True])
     @pytest.mark.parametrize(
         ("version", "legacy_flag", "enabled", "disabled"),

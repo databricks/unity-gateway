@@ -177,6 +177,12 @@ already-resolved version flags.
 
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+The one exception is `ENABLE_SMART_ROUTER_ON_DEMAND`, a temporary rollout gate rather than a
+routing parameter; keep it out of `SMART_ROUTING_ENV_KEYS` and the presets.
+An on-demand session starts with its controls off, and `smart-routing-on-demand.json` beside
+them records `when_on` (the routing `on` applies) and `ever_on`. Turn session routing on or off
+only through `session_env.set_session_routing`, and keep an on-demand session silent while
+`ever_on` is false.
 Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
 launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
 may delegate the session-control write to UG's CLI, which validates and replaces that file

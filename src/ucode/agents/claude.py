@@ -3348,7 +3348,7 @@ def launch(
                 os.environ.pop(key, None)
     routing_setup_failed = False
     if options.launch_smart_routing:
-        if not header_mod_active(require_current=True):
+        if not options.smart_routing_on_demand and not header_mod_active(require_current=True):
             print_warning(
                 "Cannot verify Smart Router language inheritance: it requires the current UG "
                 "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
@@ -3371,6 +3371,7 @@ def launch(
                     else lambda args, model: _launch_model_args(args, model or session_model)
                 ),
                 model_name=_maybe_add_1m_suffix,
+                on_demand=options.smart_routing_on_demand,
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())

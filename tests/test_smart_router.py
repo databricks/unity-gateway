@@ -67,6 +67,97 @@ def test_subagent_audit_mismatch_is_silent(monkeypatch, caplog, agent):
     assert "started launched" in caplog.text
 
 
+WHEN_ON = {
+    "ENABLE_SMART_ROUTING_V2": "0",
+    "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+    "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+}
+
+
+def _on_demand_session(tmp_path) -> tuple[Path, Path]:
+    controls = tmp_path / "env.json"
+    return controls, session_env.start_on_demand(controls, WHEN_ON)
+
+
+def _on_demand_state(on_demand: Path) -> dict:
+    return json.loads(on_demand.read_text())
+
+
+def test_on_demand_session_turns_on_the_routing_it_recorded(tmp_path, monkeypatch):
+    controls, on_demand = _on_demand_session(tmp_path)
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+    assert on_demand.name == "smart-routing-on-demand.json"
+    assert json.loads(controls.read_text()) == dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+    assert session_env.routing_never_turned_on()
+
+    for flag, state, expected in [
+        ("--enable-smart-routing", "on", WHEN_ON),
+        ("--disable-smart-routing", "off", dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")),
+        ("--enable-smart-routing", "on", WHEN_ON),
+    ]:
+        result = runner.invoke(cli.app, ["claude", flag])
+        assert result.exit_code == 0, result.output
+        assert f"Smart Router is {state} for this session" in result.output
+        assert json.loads(controls.read_text()) == expected
+        assert _on_demand_state(on_demand) == {"when_on": WHEN_ON, "ever_on": True}
+        assert not session_env.routing_never_turned_on()
+
+
+def test_a_session_routed_at_launch_turns_back_on_to_its_launch_routing(tmp_path, monkeypatch):
+    controls = tmp_path / "env.json"
+    controls.write_text(json.dumps(dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")))
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+
+    assert session_env.set_session_routing(True)
+    assert json.loads(controls.read_text()) == {}
+    assert not session_env.on_demand_path(controls).exists()
+    assert not session_env.routing_never_turned_on()
+
+
+@pytest.mark.parametrize("content", ["not json", "[]", '{"when_on": {}}', '{"ever_on": false}'])
+def test_an_invalid_on_demand_file_blocks_turning_routing_on(tmp_path, monkeypatch, content):
+    controls, on_demand = _on_demand_session(tmp_path)
+    on_demand.write_text(content)
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+
+    with pytest.raises(RuntimeError, match="are invalid"):
+        session_env.set_session_routing(True)
+    assert json.loads(controls.read_text()) == dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+    assert not session_env.routing_never_turned_on()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_hook_says_nothing_until_the_user_turns_routing_on(tmp_path, agent):
+    controls, _ = _on_demand_session(tmp_path)
+
+    def hook_context() -> str | None:
+        result = subprocess.run(
+            [sys.executable, "-m", "ucode.smart_routing.orchestrator", "--agent", agent],
+            input=json.dumps({"hook_event_name": "UserPromptSubmit"}),
+            # The launch environment keeps routing off; only the session controls turn it on.
+            env={
+                **os.environ,
+                **dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0"),
+                session_env.SESSION_ENV_VAR: str(controls),
+            },
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        return (
+            json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+            if result.stdout
+            else None
+        )
+
+    assert hook_context() is None
+    session_env.set_session_routing(True, env={session_env.SESSION_ENV_VAR: str(controls)})
+    assert "Smart Router Orchestrator is on for this session." in hook_context()
+    session_env.set_session_routing(False, env={session_env.SESSION_ENV_VAR: str(controls)})
+    assert hook_context().startswith("Smart Router Orchestrator is off for this session.")
+
+
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.

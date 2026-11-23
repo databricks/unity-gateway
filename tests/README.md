@@ -1176,6 +1176,13 @@ The model-forwarding cases fix Codex's reported version at 0.165.0 so managed ro
 does not depend on an agent installed on the test runner.
 `test_smart_router.py` also runs each agent's orchestrator hook in a fresh Python
 process and requires enabled workflow context, covering hook-startup import cycles.
+On-demand coverage (behind `ENABLE_SMART_ROUTER_ON_DEMAND`): `test_cli.py` checks which
+launches start with routing installed but off (admin config only sets the starting state;
+flags, known versions, print mode and native subcommands opt out), `test_smart_router.py`
+checks that `on` applies the recorded `when_on` routing and that the orchestrator hook stays
+silent until the first `on`, `test_claude_smart_routing_v2.py` checks the switched-off launch
+files and the fallback when models can't be read, and `register.test.ts` checks that the mod
+shows no band, hint, or recipe until `/smart-router on`.
 `test_codex_config.py` distinguishes native options and their
 values from positional prompts and utility subcommands. It reuses UG's model/config
 syntax instead of mirroring all native options. Other options with separate values
