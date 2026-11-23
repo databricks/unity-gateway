@@ -45,10 +45,10 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
     is skipped through its visible controls with UI Automation and the prompt is typed with real
     keystrokes followed by Send; nothing is seeded. Windows sandbox setup completes through
-    its visible controls before Send, including the existing post-restart readiness recheck.
-    Each screen gets 60 seconds and the answer four minutes,
-    without retries. GUI rendering of other screens, MCP, tracing and revert while the app runs
-    are not covered.
+    its visible controls before Send. The sole retry is one visible post-restart readiness
+    recheck; prompts are never resubmitted. Each screen gets 60 seconds, sandbox setup gets
+    180 seconds, and the answer four minutes. GUI rendering of other screens, MCP, tracing
+    and revert while the app runs are not covered.
     """
     session = live_session
     marker = fresh_id()
