@@ -427,6 +427,8 @@ accessibility tree captured before the fatal error in command evidence.
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+The Windows inference-only journey explicitly completes sandbox setup and the same
+post-restart readiness check as the skill journey before sending its first prompt.
 Both inference cases wait for the rendered draft, click Send, and require the user prompt in
 the native rollout before the answer wait. Failed answer waits also retain rollout evidence.
 Each module also runs `test_ug_codex_desktop_*_skill_calls_mcp`. It reuses the same
