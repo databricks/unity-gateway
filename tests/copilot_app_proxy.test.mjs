@@ -85,12 +85,12 @@ test("macOS: a manual proxy without a loopback exception, PAC and auto-discovery
   assert.equal(loopbackProxyCapture({ env: {}, platform: "linux", scutil: SCUTIL_PAC }).captured, false);
 });
 
-test("Windows: only <-loopback>, a PAC URL or auto-detect capture; a plain manual proxy leaves loopback alone", () => {
+test("Windows: only <-loopback> or a PAC captures; a plain manual proxy and the default auto-detect leave loopback alone", () => {
   const windows = (reg, connections = null) => loopbackProxyCapture({ env: {}, platform: "win32", reg, connections });
   assert.equal(windows(REG_MANUAL).captured, false);
   assert.equal(windows(REG_LOOPBACK).reason, "a Windows proxy that includes loopback");
   assert.equal(windows(REG_PAC).reason, "a Windows PAC proxy");
-  assert.equal(windows(REG_OFF, CONNECTIONS("09")).reason, "Windows proxy auto-detection");
+  assert.equal(windows(REG_OFF, CONNECTIONS("09")).captured, false);
   assert.equal(windows(REG_OFF, CONNECTIONS("05")).reason, "a Windows PAC proxy");
   assert.equal(windows(REG_OFF, CONNECTIONS("01")).captured, false);
   assert.equal(windows(null).captured, false);

@@ -68,6 +68,8 @@ export function parseRegQuery(output) {
 }
 
 // Byte 8 of DefaultConnectionSettings holds the connection flags: 0x04 PAC, 0x08 auto-detect.
+// Auto-detect is on by default on Windows and only matters on a network that publishes a PAC, so it
+// isn't a capture on its own.
 function connectionFlags(values) {
   const hex = values.DefaultConnectionSettings ?? "";
   return hex.length >= 18 ? Number.parseInt(hex.slice(16, 18), 16) : 0;
@@ -77,7 +79,6 @@ function registryCapture(settingsOutput, connectionsOutput) {
   const settings = parseRegQuery(settingsOutput);
   const flags = connectionFlags(parseRegQuery(connectionsOutput));
   if (settings.AutoConfigURL || flags & 0x04) return "a Windows PAC proxy";
-  if (flags & 0x08) return "Windows proxy auto-detection";
   // WinINET leaves loopback alone unless the bypass list says <-loopback>.
   if (/0x1$/i.test(settings.ProxyEnable ?? "") && /<-loopback>/i.test(settings.ProxyOverride ?? "")) {
     return "a Windows proxy that includes loopback";
