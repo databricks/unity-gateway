@@ -104,8 +104,24 @@ def test_blank_preview_is_omitted(log_dir, decision, task):
         ("  inspect\t  the parser  ", "inspect the parser"),
         ("inspect \x1b[31mparser\x1b[0m\x07\x08\x00", "inspect �[31mparser�[0m���"),
         ("inspect \x80\x9b31mparser\x7f", "inspect ��31mparser�"),
+        (
+            "inspect \u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069parser",
+            "inspect ������������parser",
+        ),
+        ("inspect \u200bparser\ufeff", "inspect �parser�"),
+        (
+            "inspect \u0645\u06cc\u200c\u0631\u0648\u0645 \U0001f469\u200d\U0001f4bb",
+            "inspect \u0645\u06cc\u200c\u0631\u0648\u0645 \U0001f469\u200d\U0001f4bb",
+        ),
     ],
-    ids=["whitespace", "ansi-c0", "c1-del"],
+    ids=[
+        "whitespace",
+        "ansi-c0",
+        "c1-del",
+        "bidi-format",
+        "zero-width-separators",
+        "language-and-emoji-joiners",
+    ],
 )
 def test_preview_whitespace_matches_notice_and_log(log_dir, decision, first_line, expected):
     task = first_line + "\nprivate second line"

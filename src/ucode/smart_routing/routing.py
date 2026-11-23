@@ -64,7 +64,12 @@ def format_prompt_preview(prompt: str | None) -> str | None:
     if prompt is None:
         return None
     line = next((line for line in prompt.splitlines() if line.strip()), "")
-    preview = re.sub(r"[\x00-\x1f\x7f-\x9f]", "\ufffd", " ".join(line.split()))
+    # Keep joiners used for script shaping and emoji sequences.
+    preview = re.sub(
+        r"[\x00-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]",
+        "\ufffd",
+        " ".join(line.split()),
+    )
     if not preview:
         return None
     if len(preview) > PROMPT_PREVIEW_CHARS:
