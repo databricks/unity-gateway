@@ -64,7 +64,7 @@ def format_prompt_preview(prompt: str | None) -> str | None:
     if prompt is None:
         return None
     line = next((line for line in prompt.splitlines() if line.strip()), "")
-    preview = " ".join(line.split())
+    preview = re.sub(r"[\x00-\x1f\x7f-\x9f]", "\ufffd", " ".join(line.split()))
     if not preview:
         return None
     if len(preview) > PROMPT_PREVIEW_CHARS:

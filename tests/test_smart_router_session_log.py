@@ -98,13 +98,24 @@ def test_blank_preview_is_omitted(log_dir, decision, task):
     assert "Prompt preview" not in routing.format_subagent_message("m", None, prompt=task)
 
 
-def test_preview_whitespace_matches_notice_and_log(log_dir, decision):
-    task = "  inspect\t  the parser  \nprivate second line"
+@pytest.mark.parametrize(
+    ("first_line", "expected"),
+    [
+        ("  inspect\t  the parser  ", "inspect the parser"),
+        ("inspect \x1b[31mparser\x1b[0m\x07\x08\x00", "inspect �[31mparser�[0m���"),
+        ("inspect \x80\x9b31mparser\x7f", "inspect ��31mparser�"),
+    ],
+    ids=["whitespace", "ansi-c0", "c1-del"],
+)
+def test_preview_whitespace_matches_notice_and_log(log_dir, decision, first_line, expected):
+    task = first_line + "\nprivate second line"
     write({"session_id": "s1"}, decision, task)
     record = json.loads((log_dir / "claude-s1.jsonl").read_text())
-    assert record["prompt"]["preview"] == "inspect the parser"
+    assert record["prompt"]["preview"] == expected
+    assert record["prompt"]["sha256"] == hashlib.sha256(task.encode()).hexdigest()
+    assert record["prompt"]["length"] == len(task)
     message = routing.format_subagent_message("m", None, prompt=task)
-    assert "Prompt preview : inspect the parser" in message
+    assert f"Prompt preview : {expected}" in message
     assert "private second line" not in message
 
 
