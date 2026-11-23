@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -989,6 +989,23 @@ class TestV2Launch:
             claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
 
         claude.exec_or_spawn.assert_not_called()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Claude smart routing requires Unix PTY support")
+    def test_setup_failure_launches_claude_unrouted_with_a_warning(self, monkeypatch):
+        error = v2.ClaudeRoutingSetupError("Smart routing could not start its socket")
+        monkeypatch.setattr(v2, "launch_claude", Mock(side_effect=error))
+        monkeypatch.setattr(claude, "exec_or_spawn", Mock())
+        monkeypatch.setattr(claude, "print_warning", Mock())
+
+        with patch.dict(os.environ):
+            claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
+            assert os.environ[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+            assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+
+        claude.exec_or_spawn.assert_called_once()
+        claude.print_warning.assert_any_call(
+            "Smart routing could not start its socket; starting Claude Code without Smart Routing."
+        )
 
     @requires_pty
     def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
@@ -2191,7 +2208,7 @@ class TestPtyFlow:
             lambda: pytest.fail("Claude must not launch without the routing socket"),
         )
 
-        with pytest.raises(RuntimeError, match="Claude was not launched"):
+        with pytest.raises(v2.ClaudeRoutingSetupError, match="prompt-routing socket"):
             claude_pty.run_claude_pty(
                 ["claude"],
                 route_prompt=lambda _prompt: claude_pty.FirstPromptRoute(

@@ -535,6 +535,68 @@ class TestBlockedPromptLeftInInputBox:
         assert submitted == ["fix the parser\nthen run the tests"]
 
 
+# A fake TUI with Claude Code 2.1.325's burst handling: it reads 64 or more bytes that
+# arrive together outside a bracketed paste as pasted text, so Ctrl-U and Enter in the
+# burst do nothing.
+_BURST_AS_PASTE_TUI = """\
+resp = send_hook(socket_path, BLOCKED_PROMPT)
+assert resp["action"] == "block"
+print("blocked", flush=True)
+tty.setraw(0)
+
+box = BLOCKED_PROMPT
+submitted = []
+pasting = False
+deadline = time.monotonic() + 10
+while len(submitted) < 2 and time.monotonic() < deadline:
+    if not sel.select([0], [], [], 0.1)[0]:
+        continue
+    data = os.read(0, 4096)
+    if not pasting and len(data) >= 64 and not data.startswith(b"\\x1b[200~"):
+        box += "".join(char for char in data.decode() if char.isprintable())
+        continue
+    while data:
+        if data.startswith((b"\\x1b[200~", b"\\x1b[201~")):
+            pasting, data = data.startswith(b"\\x1b[200~"), data[6:]
+            continue
+        char, data = data[:1].decode(), data[1:]
+        if char == "\\r" and not pasting:
+            submitted.append(box)
+            if box.startswith("/model "):
+                os.write(1, b"Set model to sonnet\\n")
+            box = ""
+        elif char == "\\x15" and not pasting:
+            box = box[:-1] if box.endswith("\\n") else box[: box.rfind("\\n") + 1]
+        elif char.isprintable() or char == "\\n":
+            box += char
+
+capture_path.write_text(json.dumps({"submitted": submitted}))
+"""
+
+
+class TestLongBlockedPrompt:
+    def test_clear_and_model_switch_are_typed_as_keys(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.5)
+        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.05)
+        prompt = "ROUTEME " + " ".join(f"word{i:03d}" for i in range(300))
+        assert len(claude_pty.clear_input_keys(prompt, claude_pty.DEFAULT_COLUMNS)) > 64
+        socket_path = tmp_path / "first.sock"
+        capture = tmp_path / "capture.json"
+        fake_claude = tmp_path / "fc.py"
+        _write_fake_claude(fake_claude, f"BLOCKED_PROMPT = {prompt!r}\n" + _BURST_AS_PASTE_TUI)
+
+        result = claude_pty.run_claude_pty(
+            [sys.executable, str(fake_claude), str(socket_path), str(capture)],
+            route_prompt=_route_sonnet,
+            socket_path=socket_path,
+        )
+
+        assert result == 0
+        assert json.loads(capture.read_text())["submitted"] == ["/model sonnet", prompt]
+
+
 # ---------------------------------------------------------------------------
 # Test F: serve_first_prompt_socket calls on_submitted_prompt after claim
 # ---------------------------------------------------------------------------

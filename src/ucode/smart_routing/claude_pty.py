@@ -43,6 +43,10 @@ READY_TIMEOUT_S = 10.0
 ESC_GAP_S = 0.3
 # Ctrl-U: Claude Code deletes back to the start of the current screen line.
 CLEAR_LINE = b"\x15"
+# Claude Code reads 64 or more bytes that arrive together as a paste, which drops
+# Ctrl-U and keeps Enter as text, so typed keys go out in smaller writes.
+KEYSTROKE_CHUNK_BYTES = 16
+KEYSTROKE_GAP_S = 0.02
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -150,15 +154,15 @@ def clear_input_keys(text: str, columns: int) -> bytes:
     return CLEAR_LINE * (2 * rows + 1)
 
 
-def inject_model_switch(master_fd: int, model: str, *, clear: bytes = b"") -> None:
-    """Type Claude Code's direct, persistent model command into an emptied input box."""
+def model_switch_keys(model: str) -> bytes:
+    """Return the keys of Claude Code's direct, persistent model command."""
     if not valid_model_name(model):
         raise ValueError(f"Unsafe Claude model name: {model!r}")
-    os.write(master_fd, clear + f"/model {model}\r".encode())
+    return f"/model {model}\r".encode()
 
 
-def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True, clear: bytes = b"") -> None:
-    """Replay a captured prompt as one bracketed paste, after the *clear* keystrokes.
+def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True) -> None:
+    """Replay a captured prompt as one bracketed paste.
 
     The replay loop pastes with ``submit=False`` and sends Enter after
     PASTE_SUBMIT_DELAY_S: a CR bundled with the paste close can be absorbed.
@@ -166,7 +170,7 @@ def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True, clear: by
     clean = prompt.replace("\r\n", "\n").replace("\r", "\n")
     clean = clean.replace("\x00", "").replace("\x1b", "")
     suffix = b"\r" if submit else b""
-    os.write(master_fd, clear + b"\x1b[200~" + clean.encode() + b"\x1b[201~" + suffix)
+    os.write(master_fd, b"\x1b[200~" + clean.encode() + b"\x1b[201~" + suffix)
 
 
 def inject_note(out_fd: int, message: str) -> None:
@@ -388,10 +392,12 @@ def run_claude_pty(
     ):
         time.sleep(0.01)
     if not socket_path.exists():
+        from ucode.smart_routing.v2 import ClaudeRoutingSetupError
+
         log("[ERR] first-prompt socket was not ready before Claude launch")
         stop.set()
-        raise RuntimeError(
-            "Smart routing could not start its local prompt-routing socket; Claude was not launched."
+        raise ClaudeRoutingSetupError(
+            "Smart routing could not start its local prompt-routing socket"
         )
 
     metrics.agent_handoff()
@@ -428,6 +434,43 @@ def run_claude_pty(
                     f"{routed_prompt}/model {routed_model}", terminal_columns(master_fd)
                 )
 
+            def forward_output(chunk: bytes) -> None:
+                nonlocal last_output
+                os.write(1, chunk)
+                last_output = time.monotonic()
+                if debug:
+                    log(f"[OUT] {strip_ansi(chunk)[:400]!r}")
+                keystroke = confirm.observe(chunk, last_output)
+                if keystroke is not None:
+                    os.write(master_fd, keystroke)
+                if phase == "switching" and switch_complete is not None:
+                    switch_complete.observe(chunk)
+
+            def type_keys(keys: bytes) -> None:
+                # Forwarding output between writes keeps Claude's redraws from stalling it,
+                # which would merge the writes back into one paste.
+                for start in range(0, len(keys), KEYSTROKE_CHUNK_BYTES):
+                    os.write(master_fd, keys[start : start + KEYSTROKE_CHUNK_BYTES])
+                    deadline = time.monotonic() + KEYSTROKE_GAP_S
+                    while (remaining := deadline - time.monotonic()) > 0:
+                        try:
+                            ready_fds, _, _ = select.select([master_fd], [], [], remaining)
+                        except InterruptedError:
+                            continue
+                        if not ready_fds:
+                            break
+                        try:
+                            chunk = os.read(master_fd, 8192)
+                        except OSError:
+                            return
+                        if not chunk:
+                            return
+                        forward_output(chunk)
+
+            def paste_prompt() -> None:
+                type_keys(clear_keys())
+                inject_prompt(master_fd, routed_prompt, submit=False)
+
             while True:
                 readable = [master_fd, 0] if stdin_open else [master_fd]
                 try:
@@ -452,15 +495,7 @@ def run_claude_pty(
                         chunk = b""
                     if not chunk:
                         break
-                    os.write(1, chunk)
-                    last_output = time.monotonic()
-                    if debug:
-                        log(f"[OUT] {strip_ansi(chunk)[:400]!r}")
-                    keystroke = confirm.observe(chunk, last_output)
-                    if keystroke is not None:
-                        os.write(master_fd, keystroke)
-                    if phase == "switching" and switch_complete is not None:
-                        switch_complete.observe(chunk)
+                    forward_output(chunk)
 
                 if phase == "waiting_prompt":
                     with pending_lock:
@@ -474,11 +509,12 @@ def run_claude_pty(
                 idle = last_output > 0.0 and now - last_output >= READY_QUIET_S
                 if phase == "waiting_to_switch" and idle:
                     prepare_model_switch(routed_model)
-                    inject_model_switch(master_fd, routed_model, clear=clear_keys())
-                    confirm.arm(now + CONFIRM_TIMEOUT_S)
+                    type_keys(clear_keys())
+                    confirm.arm(time.monotonic() + CONFIRM_TIMEOUT_S)
                     switch_complete = OutputMarkerDetector(("Set model to", "Model set to"))
-                    switch_started = now
                     phase = "switching"
+                    type_keys(model_switch_keys(routed_model))
+                    switch_started = time.monotonic()
                     log(f"[SWITCH] /model {routed_model}")
                 elif phase == "waiting_to_switch" and now - ready_capture >= READY_TIMEOUT_S:
                     # Output never went quiet; skip the switch and submit on the default model.
@@ -487,8 +523,8 @@ def run_claude_pty(
                         "Smart Routing could not find a quiet window to switch models; "
                         "submitting your prompt on the default model.",
                     )
-                    inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
-                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    paste_prompt()
+                    paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
                     log("[WARN] waiting_to_switch timed out; skipping /model, pasting prompt")
                 elif (
@@ -511,13 +547,13 @@ def run_claude_pty(
                     phase = "esc_gap"
                     log(f"[ERR] direct model switch timed out for {routed_model!r}")
                 elif phase == "esc_gap" and now >= esc_deadline:
-                    inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
-                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    paste_prompt()
+                    paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
                 elif phase == "waiting_persist" and model_switch_persisted():
                     restore_model_setting()
-                    inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
-                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    paste_prompt()
+                    paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
                     log("[PASTE] first prompt pasted; waiting for submit delay")
                 elif phase == "waiting_persist" and now - switch_started >= MODEL_PERSIST_TIMEOUT_S:
@@ -528,8 +564,8 @@ def run_claude_pty(
                         "Smart Routing could not confirm the default model was preserved. "
                         "Check /model if needed.",
                     )
-                    inject_prompt(master_fd, routed_prompt, submit=False, clear=clear_keys())
-                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    paste_prompt()
+                    paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
                     log("[ERR] routed model was not persisted before timeout; submitting anyway")
                 elif phase == "pasting" and now >= paste_deadline:
