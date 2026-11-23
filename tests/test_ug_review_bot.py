@@ -7,7 +7,6 @@ import importlib.util
 import json
 import re
 import urllib.error
-from fnmatch import fnmatchcase
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -216,6 +215,12 @@ def test_workflow_uses_pinned_open_code_review_action_and_cli():
     assert "rule: .github/open-code-review/rules.json" in workflow
     rules = json.loads((ROOT / ".github" / "open-code-review" / "rules.json").read_text())
     assert "tests/**/*.py" in rules["include"]
+    included_paths = {
+        path.relative_to(ROOT).as_posix()
+        for pattern in rules["include"]
+        for path in ROOT.glob(pattern)
+        if path.is_file()
+    }
     for path in (
         "README.md",
         "skills/smart-router/SKILL.md",
@@ -225,7 +230,7 @@ def test_workflow_uses_pinned_open_code_review_action_and_cli():
         "src/ucode/agents/desktop/connector_skills/cowork.md",
     ):
         assert (ROOT / path).is_file(), path
-        assert any(fnmatchcase(path, pattern) for pattern in rules["include"]), path
+        assert path in included_paths, path
 
 
 def test_workflow_posts_findings_inline_and_drops_summary_only_when_nothing_was_routed():
