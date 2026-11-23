@@ -46,7 +46,7 @@ function Wait-Control {
         if ($control) { return $control }
         Start-Sleep -Milliseconds 500
     } until ([DateTime]::UtcNow -ge $deadline)
-    Save-UI 'wait-failed'
+    Save-UI 'wait-failed' -Root $Root
     throw "Control not ready: $($Names -join ', ')"
 }
 
@@ -75,6 +75,55 @@ function Save-UI {
     Protect-DiagnosticText ($rows | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $evidence "$Name.json")
 }
 
+function Test-FolderAddress {
+    param([string]$Name, [string]$Value, [string]$ExpectedPath)
+    # Only the collapsed address describes a completed navigation, not text being entered.
+    if (-not $Name.StartsWith('Address: ', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $expected = $ExpectedPath.Replace('/', '\').TrimEnd('\')
+    foreach ($address in @($Name.Substring('Address: '.Length), $Value)) {
+        if ($address -and [string]::Equals($address.Replace('/', '\').TrimEnd('\'), $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Wait-FolderAddress {
+    param($Dialog, [string]$Path)
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $controls = $Dialog.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+        foreach ($control in $controls) {
+            if (-not $control.Current.IsEnabled -or $control.Current.IsOffscreen -or $control.Current.Name -notlike 'Address: *') { continue }
+            $value = ''
+            $pattern = $null
+            if ($control.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $value = $pattern.Current.Value }
+            if (Test-FolderAddress -Name $control.Current.Name -Value $value -ExpectedPath $Path) { return }
+        }
+        Start-Sleep -Milliseconds 200
+    } until ([DateTime]::UtcNow -ge $deadline)
+    Save-UI 'folder-navigation-failed' -Root $Dialog
+    throw "Native folder picker did not navigate to $Path"
+}
+
+function Wait-PickerAddressFocus {
+    param($Dialog)
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $focused = [Windows.Automation.AutomationElement]::FocusedElement
+        if ($focused -and $focused.Current.Name -eq 'Address') {
+            $ancestor = $focused
+            while ($ancestor) {
+                if ([Windows.Automation.Automation]::Compare($ancestor, $Dialog)) { return }
+                $ancestor = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($ancestor)
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    } until ([DateTime]::UtcNow -ge $deadline)
+    Save-UI 'folder-address-focus-failed' -Root $Dialog
+    throw 'Native folder picker address did not receive keyboard focus'
+}
+
 function Select-Folder {
     $folderButton = Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder')
     $folderButtonName = $folderButton.Current.Name
@@ -98,9 +147,11 @@ function Select-Folder {
     }
     [Windows.Forms.Clipboard]::SetText($task.folder)
     [Windows.Forms.SendKeys]::SendWait('^l')
+    Wait-PickerAddressFocus -Dialog $dialog
     [Windows.Forms.SendKeys]::SendWait('^v')
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Start-Sleep -Seconds 1
+    Wait-FolderAddress -Dialog $dialog -Path $task.folder
+    Save-UI 'folder-navigated' -Root $dialog
     Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
     $permission = Wait-Control -Names @(
         'Allow Claude to change files in “CoworkProbe”?',
