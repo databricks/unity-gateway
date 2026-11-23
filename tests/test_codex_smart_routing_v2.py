@@ -618,6 +618,12 @@ class TestLaunchCodex:
             assert tui_argv[5:] == expected_tui_args
         else:
             assert tui_argv == ["codex", *expected_tui_args]
+        tui_config = tomllib.loads(
+            "\n".join(
+                tui_argv[index + 1] for index, arg in enumerate(tui_argv) if arg == "--config"
+            )
+        )
+        assert tui_config["features"] == config["features"]
         assert not any(arg.startswith("hooks.") for arg in tui_argv)
         assert not any(arg.startswith("mcp_servers.") for arg in tui_argv)
         assert user_config.read_bytes() == saved_config
