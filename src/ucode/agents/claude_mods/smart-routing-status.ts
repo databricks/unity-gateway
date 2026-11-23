@@ -1,23 +1,34 @@
 import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
-import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
+import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
-// The band shows at launch and after each toggle, and hides once the next prompt's turn
-// completes. A prompt submitted while it shows arms the hide for that prompt's turn.
-const band = { isVisible: true, isHideArmed: false }
+// The band shows once the route validation finishes and after each toggle, and hides once the
+// next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
+const band = { isVisible: true, isHideArmed: false, isUnsupported: false }
+let validationWatchStarted = false
+// Claude draws before session.start, so the band starts held until the route validation settles;
+// an unsupported model list turns routing off and must never flash ON.
+const validation = { isPending: true }
+
+export function skipStartupValidation(): void {
+  validationWatchStarted = true
+  validation.isPending = false
+}
 
 export function showStatusBand(): void {
   band.isVisible = true
   band.isHideArmed = false
+  band.isUnsupported = false
 }
 
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  if (!band.isHideArmed) return false
+  // A turn that ends while the route validation is pending keeps the hide armed for the next turn.
+  if (!band.isHideArmed || validation.isPending) return false
   band.isVisible = false
   band.isHideArmed = false
   return true
@@ -54,6 +65,20 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
+export function startStartupValidation(): boolean {
+  if (validationWatchStarted) return false
+  validationWatchStarted = true
+  return true
+}
+
+export function settleStartupValidation(): void {
+  validation.isPending = false
+}
+
+export function warnUnsupportedModelList(): void {
+  band.isUnsupported = true
+}
+
 export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
@@ -73,27 +98,31 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
-    if (auto) {
+    const routerState = enabled ? 'ON' : band.isUnsupported ? UNSUPPORTED_ROUTER_STATE : 'OFF'
+    let state = validation.isPending ? '' : `smart router ${routerState}${agents}`
+    if (auto && state) {
       // The static Auto row is the default variant's alias; name the session's main model.
       const target = autoTarget(auto, await $.session.model())
       const main = target === undefined ? undefined : auto.models.find((row) => row.model === target)
       if (main) state = `Auto (${main.label}) · ${state}`
     }
-    const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
+    const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
     return next({ ...e, props: { ...e.props, tail } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible) return theirs
+    const isBandShown = band.isVisible && !validation.isPending
+    if (!isBandShown) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
     const pill = enabled
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
-      : Text({ bold: true, color: 'black', backgroundColor: 'gray', children: [' OFF '] })
-    const trailer = enabled
+      : Text({ bold: true, color: 'black', backgroundColor: band.isUnsupported ? 'yellow' : 'gray', children: [' OFF '] })
+    const trailer = band.isUnsupported
+      ? Text({ color: 'yellow', children: [UNSUPPORTED_MODEL_LIST_WARNING] })
+      : enabled
       ? Text({
           dimColor: true,
           italic: true,
@@ -106,7 +135,8 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       columnGap: 1,
       children: [Text({ bold: true, children: [BANNER] }), pill, trailer],
     })
-    const children = theirs ? [line, theirs] : [line]
+    const children = [line]
+    if (theirs) children.push(theirs)
     return Box({ flexDirection: 'column', children })
   })
 }

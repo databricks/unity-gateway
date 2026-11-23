@@ -20,6 +20,16 @@ from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_loc
 from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw_box
 
 SCHEMA_VERSION = 1
+DECISION_TYPE = "decision"
+ROUTE_VALIDATION_TYPE = "route_validation"
+ROUTE_VALIDATION_FIELDS = (
+    "router_name",
+    "routing_unsupported_reason",
+    "eligible_route_options",
+    "ineligible_route_options",
+    "available_route_options",
+    "validation_ms",
+)
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600
 PREVIEW_CHARS = 160
@@ -68,7 +78,7 @@ def append_decision(
         original = original if isinstance(original, dict) else {}
         record = {
             "v": SCHEMA_VERSION,
-            "type": "decision",
+            "type": DECISION_TYPE,
             "decision_id": uuid.uuid4().hex,
             "at": time.time(),
             "harness": harness,
@@ -100,34 +110,62 @@ def append_decision(
             "rationale": decision.rationale,
             "raw_rationale": decision.raw_rationale,
         }
-        line = (json.dumps(record, ensure_ascii=True) + "\n").encode("utf-8")
-        LOG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0)
-        try:
-            fd = os.open(path, flags | os.O_EXCL, 0o600)
-            created = True
-        except FileExistsError:
-            fd = os.open(path, flags, 0o600)
-            created = False
-        with os.fdopen(fd, "ab", buffering=0) as log:
-            if created:
-                for old in LOG_DIR.glob("*.jsonl"):
-                    try:
-                        if old != path and old.stat().st_mtime < time.time() - RETENTION_SECONDS:
-                            old.unlink()
-                    except OSError:
-                        pass
-            acquire_exclusive_file_lock(log, timeout=0.1)
-            try:
-                os.write(log.fileno(), line)
-            finally:
-                release_file_lock(log)
+        _append(path, record)
     except (OSError, TypeError, ValueError):
         pass
 
 
+def _append(path: Path, record: dict[str, Any]) -> None:
+    line = (json.dumps(record, ensure_ascii=True) + "\n").encode("utf-8")
+    LOG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, flags, 0o600)
+        created = False
+    with os.fdopen(fd, "ab", buffering=0) as log:
+        if created:
+            for old in LOG_DIR.glob("*.jsonl"):
+                try:
+                    if old != path and old.stat().st_mtime < time.time() - RETENTION_SECONDS:
+                        old.unlink()
+                except OSError:
+                    pass
+        acquire_exclusive_file_lock(log, timeout=0.1)
+        try:
+            os.write(log.fileno(), line)
+        finally:
+            release_file_lock(log)
+
+
+def append_route_validation(harness: str, session_id: str, result: dict[str, Any]) -> None:
+    """Record an unsupported route validation; filesystem errors propagate to the caller."""
+    path = session_log_path(harness, session_id)
+    if path is None:
+        raise ValueError("session id is required")
+    _append(
+        path,
+        {
+            "v": SCHEMA_VERSION,
+            "type": ROUTE_VALIDATION_TYPE,
+            "validation_id": uuid.uuid4().hex,
+            "at": time.time(),
+            "harness": harness,
+            "session_id": session_id,
+            **{key: result.get(key) for key in ROUTE_VALIDATION_FIELDS},
+        },
+    )
+
+
 def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
     """Return a session's decision records in chronological file order."""
+    return read_records(harness, session_id, DECISION_TYPE)
+
+
+def read_records(harness: str, session_id: str, record_type: str) -> list[dict[str, Any]]:
+    """Return a session's records of one type in chronological file order."""
     path = session_log_path(harness, session_id)
     if path is None:
         return []
@@ -149,7 +187,7 @@ def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
             continue
         if not isinstance(record, dict):
             continue
-        if record.get("v") != SCHEMA_VERSION or record.get("type") != "decision":
+        if record.get("v") != SCHEMA_VERSION or record.get("type") != record_type:
             continue
         records.append(record)
     return records

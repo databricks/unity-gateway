@@ -1,5 +1,12 @@
 # Integration tests
 
+Startup compatibility validation has component coverage in `../test_startup_validation.py`,
+the smart-routing launch tests, and the native Claude mod suite. They control the validation
+response or transport. CUJ 4 adds one live supported journey: with `UG_STARTUP_ROUTE_VALIDATION=1`
+and the published model list, ug sends one recorded routes:validate request that the Gateway
+answers with HTTP 200 and `is_supported: true`, and the band and hint row show ON without the
+unsupported warning. No live unsupported or classifier journey is claimed.
+
 The Codex footer has offline protocol, process-isolation, and launcher coverage in
 `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
 checks cover green ON/gray OFF badges, nullable snapshots, Python's `-P` provider

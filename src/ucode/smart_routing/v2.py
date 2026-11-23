@@ -42,6 +42,8 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    TRUE_ENV_VALUES,
+    UG_STARTUP_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -52,6 +54,7 @@ from ucode.databricks import (
     map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import published_agent_config_used
 from ucode.os_compatibility import subprocess_cross_os
@@ -65,7 +68,14 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, codex_statusline, orchestrator, routing, session_log
+from ucode.smart_routing import (
+    claude_routing,
+    codex_statusline,
+    orchestrator,
+    routing,
+    session_log,
+    startup_validation,
+)
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
@@ -411,6 +421,12 @@ def _claude_mod_launch_options(
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
+        "startupValidation": (
+            "1"
+            if source.get(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "").strip().lower()
+            in TRUE_ENV_VALUES
+            else ""
+        ),
     }
 
 
@@ -452,6 +468,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": "",
                     "title": "Isaac feedback directory",
                     "description": "Absolute directory for locally captured feedback",
+                },
+                "startupValidation": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Startup route validation",
+                    "description": "1 when ug runs the startup routes:validate check",
                 },
                 "routeCommand": {
                     "type": "string",
@@ -980,6 +1002,15 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+                startup_validation.start(
+                    workspace,
+                    token,
+                    _claude_route_options(model_ids),
+                    router_name=routing.configured_router_name(),
+                    session_controls=session_path,
+                    provider=state.get("_claude_launch_provider"),
+                )
             env[SESSION_ENV_VAR] = str(session_path)
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]

@@ -2,6 +2,37 @@ import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { parseRoutingExplanation, type RoutingExplanation } from './subagent-routing.ts';
 
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
+export const LOGS_COMMAND_TIMEOUT_MS = 10000;
+export const ROUTE_VALIDATION_ROW = 'Failed to enable smart routing. Press enter for details.';
+const ROUTE_VALIDATION_REASONS: Record<string, string> = {
+  insufficient_eligible_options: 'At least two supported models are required. Please reach out to your workspace admin',
+  missing_required_tier_option: 'Required models are missing from this list',
+  INCOMPLETE_REQUIRED_OPTIONS: 'Required models are missing from this list',
+  harness_not_supported: 'Harness not supported',
+  mixed_harnesses_not_supported: 'Mixed harnesses not supported',
+};
+const ROUTE_VALIDATION_GENERIC_REASON = "Smart Routing does not support this agent's model list.";
+const MODEL_REASONS: Record<string, string> = {
+  model_not_supported: 'Model source not supported',
+  model_not_in_recipe: 'Not available in Smart Router',
+  excluded_by_policy: 'Excluded by routing policy',
+  model_service_unresolved: 'Model service unresolved',
+  model_provider_service_unresolved: 'Model provider service unresolved',
+  harness_not_supported: '',
+};
+const MODEL_GENERIC_REASON = 'Not eligible for routing';
+// Matches a bare reason code: unknown codes get the generic reason, while free text is a server sentence shown as sent.
+const REASON_CODE = /^[A-Za-z0-9_]+$/;
+type RouteOption = { model: string; harness: string | null };
+type RouteValidation = {
+  validation_id: string;
+  at: number;
+  routing_unsupported_reason: string | null;
+  eligible_route_options: RouteOption[];
+  ineligible_route_options: (RouteOption & { reason: string | null })[];
+  available_route_options: RouteOption[];
+  validation_ms: number;
+};
 type Decision = {
   decision_id: string;
   at: number;
@@ -32,6 +63,29 @@ const isDecision = (d: Decision): boolean =>
   Number.isFinite(d.at) && Number.isFinite(new Date(d.at * 1000).getTime()) &&
   (d.preview === null || typeof d.preview === 'string') && typeof d.selected_model === 'string' &&
   Number.isFinite(d.routing_ms);
+
+const isNullableString = (value: unknown): boolean => value === null || typeof value === 'string';
+
+const isRouteOptionList = (value: unknown, withReason = false): boolean =>
+  Array.isArray(value) && value.every(option => option !== null && typeof option === 'object' &&
+    typeof option.model === 'string' && isNullableString(option.harness) &&
+    (!withReason || isNullableString(option.reason)));
+
+const isRouteValidation = (v: RouteValidation): boolean =>
+  Boolean(v) && typeof v.validation_id === 'string' && Boolean(v.validation_id) &&
+  Number.isFinite(v.at) && Number.isFinite(new Date(v.at * 1000).getTime()) &&
+  isNullableString(v.routing_unsupported_reason) && isRouteOptionList(v.eligible_route_options) &&
+  isRouteOptionList(v.ineligible_route_options, true) && isRouteOptionList(v.available_route_options) &&
+  Number.isFinite(v.validation_ms);
+
+export function routeValidationReason(reason: string | null): string {
+  if (reason !== null && Object.hasOwn(ROUTE_VALIDATION_REASONS, reason)) return ROUTE_VALIDATION_REASONS[reason];
+  return reason?.trim() && !REASON_CODE.test(reason.trim()) ? reason.trim() : ROUTE_VALIDATION_GENERIC_REASON;
+}
+
+export function modelReason(reason: string | null): string {
+  return reason !== null && Object.hasOwn(MODEL_REASONS, reason) ? MODEL_REASONS[reason] : MODEL_GENERIC_REASON;
+}
 
 // A v1 decision record. Optional explanation details are independently validated so
 // malformed metadata never hides the selected route.
@@ -92,7 +146,7 @@ async function openDecision($: EngineInterface, options: PluginOptions, id: stri
   try {
     result = await $.process.run(
       [...logsReaderCommand(options), '--session', await $.session.id(), '--decision', id],
-      { timeoutMs: 10000 },
+      { timeoutMs: LOGS_COMMAND_TIMEOUT_MS },
     );
   } catch (error) {
     $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'load failed'}`, { to: 'debug' });
@@ -127,6 +181,7 @@ function age(at: number): string {
 }
 
 let rows: Decision[] = [];
+let validations: RouteValidation[] = [];
 let failed = false;
 // The reader CLI's own error hint, when its failure carries one.
 let cliError: string | undefined;
@@ -152,7 +207,7 @@ async function runRoutingLogsReader($: any, options: PluginOptions): Promise<str
   try {
     const command = logsReaderCommand(options);
     const session = await $.session.id();
-    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: LOGS_COMMAND_TIMEOUT_MS });
     return applyRoutingLogsRead(result.stdout,
       result.exitCode !== 0 || result.isStdoutTruncated
         ? `logs command exited ${result.exitCode} or truncated output`
@@ -175,6 +230,7 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
       }
     } catch {}
     rows = [];
+    validations = [];
     failed = true;
     return `Smart Router logs: ${readError}`;
   }
@@ -183,10 +239,12 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
     try { data = JSON.parse(stdout); } catch { throw new Error('invalid logs JSON'); }
     if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
     rows = data.decisions.filter(isDecision).reverse();
+    validations = Array.isArray(data.route_validations) ? data.route_validations.filter(isRouteValidation).reverse() : [];
     failed = false;
     return '';
   } catch (error) {
     rows = [];
+    validations = [];
     failed = true;
     return `Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`;
   }
@@ -306,6 +364,7 @@ function explanationSection(
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
+  let validationDetail: RouteValidation | null = null;
   let detailRequest = 0;
 
   // Match both launch modes to coexist with the routing module's unmatched spawn hook.
@@ -323,6 +382,7 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };
     detailRequest++;
     detail = null;
+    validationDetail = null;
     await load($, options);
     try {
       const pane = await $.ui.open({ id: ROUTING_LOGS_PANE, title: 'Smart Router logs', focus: true, closeOnEscape: true });
@@ -342,35 +402,56 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
   on('ui.render', { component: 'Pane', requestId: ROUTING_LOGS_PANE }, ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
     const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
-    if (detail) {
+    // Each value wraps in its own column after a fixed, dim label column.
+    const labeledRow = (labelWidth: number, label: string, value: ReturnType<typeof Text>) =>
+      Box({
+        flexDirection: 'row',
+        children: [
+          Box({ width: labelWidth, flexShrink: 0, children: [Text({ dimColor: true, children: [label] })] }),
+          Box({ flexGrow: 1, children: [value] }),
+        ],
+      });
+    const back = () => Button({
+      key: 'back', plain: true, autoFocus: true, children: ['← Back'],
+      onPress: () => { detailRequest++; detail = null; validationDetail = null; $.ui.invalidate('ui.render'); },
+    });
+    if (validationDetail) {
+      const { eligible_route_options: eligible, ineligible_route_options: ineligible, available_route_options: available } = validationDetail;
+      const labelWidth = 'Validation Time: '.length + 1;
       const children = [
-        Button({
-          key: 'back', plain: true, autoFocus: true, children: ['← Back'],
-          onPress: () => { detailRequest++; detail = null; $.ui.invalidate('ui.render'); },
-        }),
+        back(),
+        labeledRow(labelWidth, 'Reason: ', Text({ children: [routeValidationReason(validationDetail.routing_unsupported_reason)] })),
+        labeledRow(labelWidth, 'Validation Time: ', Text({ children: [`${(validationDetail.validation_ms / 1000).toFixed(1)}s`] })),
       ];
+      if (eligible.length || ineligible.length) {
+        children.push(Text({ dimColor: true, children: ['Models'] }));
+        for (const option of eligible) {
+          children.push(Text({ children: [`✓ ${shortModel(option.model)}`] }));
+        }
+        for (const option of ineligible) {
+          const reason = modelReason(option.reason);
+          children.push(Text({ children: [`✗ ${shortModel(option.model)}${reason ? `  ${reason}` : ''}`] }));
+        }
+      }
+      if (available.length) {
+        children.push(Text({ dimColor: true, children: ['Supported models'] }));
+        for (const option of available) children.push(Text({ children: [`  ${shortModel(option.model)}`] }));
+      }
+      return Box({ flexDirection: 'column', children });
+    }
+    if (detail) {
+      const children = [back()];
       if (detail.failed) {
         children.push(Text({ children: ['Could not load this routing decision.'] }));
         if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
       } else {
-        // One labeled line per routing outcome; every label is dim so the block
-        // reads consistently, and each value wraps in its own column. The label
-        // column is fixed at the longest label plus a one-space gutter, so no
-        // label ever wraps or shrinks and every value starts at the same column.
+        // The label column is the longest label plus a one-space gutter, so no label wraps.
         const labelWidth = 'Prompt preview: '.length + 1;
-        const labeledRow = (label: string, value: ReturnType<typeof Text>) =>
-          Box({
-            flexDirection: 'row',
-            children: [
-              Box({ width: labelWidth, flexShrink: 0, children: [Text({ dimColor: true, children: [label] })] }),
-              Box({ flexGrow: 1, children: [value] }),
-            ],
-          });
-        children.push(labeledRow('Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
-        if (detail.subagent) children.push(labeledRow('Agent type: ', Text({ children: [detail.subagent] })));
-        children.push(labeledRow('Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
-        children.push(labeledRow('Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
-        children.push(labeledRow('Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
+        children.push(labeledRow(labelWidth, 'Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
+        if (detail.subagent) children.push(labeledRow(labelWidth, 'Agent type: ', Text({ children: [detail.subagent] })));
+        children.push(labeledRow(labelWidth, 'Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));
+        children.push(labeledRow(labelWidth, 'Routing Time: ', Text({ children: [`${(detail.routing_ms / 1000).toFixed(1)}s`] })));
+        children.push(labeledRow(labelWidth, 'Rationale: ', Text({ children: [detail.rationale?.trim() || 'No rationale returned.'] })));
         children.push(Text({ dimColor: true, children: ['Candidates'] }));
         for (const candidate of detail.candidates) {
           children.push(Text({ children: [`${candidate === detail.selected ? '● ' : '○ '}${shortModel(candidate)}`] }));
@@ -395,7 +476,18 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
     }
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];
     if (!rows.length) children.push(Text({ dimColor: true, children: ['No routed subagents in this session yet.'] }));
-    for (const row of rows) {
+    const entries: (Decision | RouteValidation)[] = [...rows, ...validations].sort((a, b) => b.at - a.at);
+    for (const row of entries) {
+      if ('validation_id' in row) {
+        // Age (8) + "  " + the fixed text fills the row.
+        const room = Math.max(1, columns - 10);
+        const text = ROUTE_VALIDATION_ROW.length > room ? ROUTE_VALIDATION_ROW.slice(0, Math.max(0, room - 1)) + '…' : ROUTE_VALIDATION_ROW;
+        children.push(Button({
+          key: row.validation_id, plain: true, label: `${age(row.at).padStart(8)}  ${text}`,
+          onPress: () => { detailRequest++; validationDetail = row; $.ui.invalidate('ui.render'); },
+        }));
+        continue;
+      }
       const model = shortModel(row.selected_model);
       // Age (8) + "  " + preview + "  " + model fills the row, so the model ends at the right edge.
       const room = Math.max(1, columns - model.length - 12);
