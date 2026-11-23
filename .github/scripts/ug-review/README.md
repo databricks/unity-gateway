@@ -47,8 +47,8 @@ repository's terminal-bench workflow. No registry secret is stored in GitHub. Th
 owner-only `.npmrc` lives under `runner.temp` and is removed even when review fails.
 TLS verification stays enabled.
 
-`.github/open-code-review/rules.json` adds workflow and Python test files, which
-OCR excludes by default, to the reviewed set. It also includes runtime skills under
+`.github/open-code-review/rules.json` adds root `README.md`, workflow files and
+Python tests, which OCR excludes by default, to the reviewed set. It also includes runtime skills under
 `skills/` and the connector skill templates in `src/ucode/agents/desktop/connector_skills/`.
 The trusted repository `AGENTS.md` and UG rubric are passed as the review background. Raw OCR artifacts are not
 uploaded; a final step reports coverage in the job summary and fails the job when

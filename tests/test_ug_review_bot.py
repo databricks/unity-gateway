@@ -217,6 +217,7 @@ def test_workflow_uses_pinned_open_code_review_action_and_cli():
     rules = json.loads((ROOT / ".github" / "open-code-review" / "rules.json").read_text())
     assert "tests/**/*.py" in rules["include"]
     for path in (
+        "README.md",
         "skills/smart-router/SKILL.md",
         "skills/smart-router-orchestrator/SKILL.codex.md",
         "skills/smart-router-orchestrator/agents/worker.md",
