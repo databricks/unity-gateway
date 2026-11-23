@@ -919,3 +919,21 @@ def test_native_off_waits_for_correlated_turn_start_reply(
     assert run.call_count == int(not reply_error)
     assert session_env.session_routing_enabled(controls)
     upload.assert_not_called()
+
+
+def test_native_on_turns_on_the_routing_an_on_demand_session_recorded(
+    native_router, inline_feedback
+):
+    controls, run, popen, _ = inline_feedback
+    when_on = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+    }
+    on_demand = session_env.start_on_demand(controls, when_on)
+
+    assert native_call(native_router, "on")["message"] == "Smart Router is on for this session."
+    assert json.loads(controls.read_text()) == when_on
+    assert json.loads(on_demand.read_text()) == {"when_on": when_on, "ever_on": True}
+    run.assert_not_called()
+    popen.assert_not_called()

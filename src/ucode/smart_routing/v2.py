@@ -1221,9 +1221,24 @@ def launch_codex(
     render_overlay: Callable[..., dict],
     launch_config: dict | None = None,
     available_models: list[str] | None = None,
+    on_demand: bool = False,
 ) -> NoReturn:
+    """Launch Codex through the smart-routing interposer.
+
+    An on-demand launch installs routing switched off. Codex fixes its recipe attribution at
+    launch, so that session sends none.
+    """
     from ucode.agents.args import has_explicit_model_arg
 
+    when_on: dict[str, str] = {}
+    if on_demand:
+        launch_routing = resolve_environment(agent=AGENT_CODEX)
+        when_on = {
+            key: launch_routing[key] for key in SMART_ROUTING_ENV_KEYS if key in launch_routing
+        }
+        # Codex, its hooks and its tools see routing off until the session controls turn it on.
+        # The orchestrator flag stays, so its hooks and skill are still installed.
+        os.environ.update({ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"})
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -1259,7 +1274,10 @@ def launch_codex(
         if not app_server_launch:
             overlay["model"] = start_model
     overlay["hooks"] = _v2_hooks(state, available_models)
-    overlay["responses_api_metadata.smart_router_recipe_name"] = routing.configured_router_name()
+    if not on_demand:
+        overlay["responses_api_metadata.smart_router_recipe_name"] = (
+            routing.configured_router_name()
+        )
     overlay["features.hooks"] = True
     overlay["features.multi_agent_v2.non_code_mode_only"] = False
     overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
@@ -1271,6 +1289,8 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    if on_demand:
+        start_on_demand(session_env_path, when_on)
     try:
         catalog_path = overlay.get("model_catalog_json") or custom_catalog_path()
         if catalog_path is not None:

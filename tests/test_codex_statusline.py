@@ -12,7 +12,13 @@ import pytest
 
 from ucode.constants import ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR
 from ucode.smart_routing import codex_statusline as statusline
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, set_session_environment, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    set_session_environment,
+    set_session_routing,
+    start_on_demand,
+    start_session,
+)
 
 
 def _labels(tree):
@@ -279,3 +285,16 @@ def test_real_stdio_process_keeps_sessions_separate_and_polls_live_controls():
             process.communicate(timeout=5)
             controls.unlink()
             controls.parent.rmdir()
+
+
+def test_footer_shows_no_indicator_until_an_on_demand_session_is_turned_on(tmp_path, monkeypatch):
+    controls = tmp_path / "env.json"
+    start_on_demand(controls, {ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"})
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    state = {"thread": {"model": {"display_name": "GPT Test"}}}
+
+    assert _labels(statusline.render(state)) == "GPT Test"
+    set_session_routing(True)
+    assert "smart router ON" in _labels(statusline.render(state))
+    set_session_routing(False)
+    assert "smart router OFF" in _labels(statusline.render(state))

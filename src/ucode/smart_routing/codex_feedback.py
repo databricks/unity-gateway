@@ -13,12 +13,11 @@ from uuid import UUID, uuid4
 
 from websockets.exceptions import ConnectionClosed
 
-from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing import feedback
 from ucode.smart_routing.session_env import (
     SESSION_ENV_VAR,
     session_routing_enabled,
-    set_session_environment,
+    set_session_routing,
 )
 
 TOOL_NAME = "ug_smart_router"
@@ -431,9 +430,7 @@ class CodexSmartRouter:
                     "message": "Feedback delivery could not start.",
                 }
         try:
-            set_session_environment(
-                {} if requested else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), env=env
-            )
+            set_session_routing(requested, env=env)
         except RuntimeError:
             if not result:
                 raise

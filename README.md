@@ -770,8 +770,10 @@ including descendants spawned by an old child, get the latest state through the
 spawn hook. Repeating the current state leaves session controls unchanged.
 
 Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
-`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`),
-except under a routed `ug codex app-server`, which has no interposer.
+`smart_router_recipe_name`, except one that starts switched off under
+`ENABLE_SMART_ROUTER_ON_DEMAND`; main turns add `smart_router_state` (`on` or `off`),
+except under a routed `ug codex app-server`, which has no interposer, and before such a session
+is first turned on.
 The hook stamps child task names with `__sr_on` or `__sr_off`, which Codex places in
 `agent_name`. Parse only the final path segment: `/root/old__sr_on/new__sr_off`
 means off for that grandchild. A child's marker takes precedence over main state.
@@ -869,12 +871,15 @@ no preset is applied, the inherited environment is unchanged, and commands conti
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
 Ordinary launches keep routing and orchestration off unless enabled explicitly or by workspace policy.
-With the temporary `ENABLE_SMART_ROUTER_ON_DEMAND=1` gate, an interactive Claude Code launch that
-would start without smart routing installs it switched off, so `/smart-router on` can turn it on
-mid-session. It turns on what `--enable-smart-routing` would: subagent routing and Smart Router
-Orchestrator. Until then the session shows no Smart Router band or hint, and its prompts carry no
-orchestrator text. `--disable-smart-routing`, a known version, and print mode keep the launch
-unrouted; workspace smart routing only decides whether the session starts on.
+With the temporary `ENABLE_SMART_ROUTER_ON_DEMAND=1` gate, an interactive Claude Code or Codex
+launch that would start without smart routing installs it switched off, so `/smart-router on`
+(`$smart-router on` in Codex) can turn it on mid-session. It turns on what `--enable-smart-routing`
+would: subagent routing and Smart Router Orchestrator. Until then the session shows no Smart Router
+band, hint, or footer indicator, and its prompts carry no orchestrator text.
+`--disable-smart-routing`, a known version, and print mode keep the launch unrouted; workspace
+smart routing only decides whether the session starts on. Codex qualifies only on 0.171.0 or newer,
+without workspace tracing or a ChatGPT subscription relay. Codex fixes recipe attribution at launch,
+so a session that starts off sends no `smart_router_recipe_name`, even after it is turned on.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.

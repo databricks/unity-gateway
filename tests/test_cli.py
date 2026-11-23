@@ -1187,7 +1187,6 @@ class TestSubcommandRouting:
             ("claude", ["--", "-p", "hello"], {}, None, False),
             ("claude", ["update"], {}, None, False),
             ("claude", [], {"ENABLE_SMART_ROUTER_ON_DEMAND": "0"}, None, False),
-            ("codex", [], {}, None, False),
         ],
         ids=[
             "no-choice",
@@ -1200,7 +1199,6 @@ class TestSubcommandRouting:
             "print-mode",
             "native-subcommand",
             "gate-off",
-            "codex",
         ],
     )
     def test_a_launch_without_routing_installs_it_switched_off(
@@ -1236,6 +1234,47 @@ class TestSubcommandRouting:
                 smart_routing_config.DEFAULT_ENABLED_VERSION, tool
             )
         assert _routing_env() == env_before
+
+    @pytest.mark.parametrize(
+        ("launch_args", "codex_version", "saved_state", "on_demand"),
+        [
+            ([], "0.171.0", {}, True),
+            (["app-server"], "0.171.0", {}, False),
+            ([], "0.170.0", {}, False),
+            ([], "0.171.0", {"codex_otel_tracing": True}, False),
+            ([], "0.171.0", {"codex_relayed": True}, False),
+        ],
+        ids=["interactive", "app-server", "older-codex", "tracing", "subscription-relay"],
+    )
+    def test_a_codex_launch_installs_routing_switched_off_only_when_nothing_else_changes(
+        self, monkeypatch, launch_args, codex_version, saved_state, on_demand
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ON_DEMAND", "1")
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: codex_version
+        )
+        observed = []
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.redirect_output_to_stderr"),
+        ):
+            calls["state"].update(saved_state)
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                (options.smart_routing_on_demand, _routing_env())
+            )
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        [(starts_off, launch_env_seen)] = observed
+        assert starts_off is on_demand
+        if on_demand:
+            assert launch_env_seen == _version_routing_env(
+                smart_routing_config.DEFAULT_ENABLED_VERSION, "codex"
+            )
+        else:
+            # No upgrade prompt or routing env reaches a launch that stays plain.
+            assert launch_env_seen == _routing_env()
 
     @pytest.mark.parametrize("bare", [False, True])
     @pytest.mark.parametrize(
