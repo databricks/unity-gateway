@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 import urllib.error as urllib_error
 from email.message import Message
@@ -72,60 +73,85 @@ def _failed(reason):
 
 
 @pytest.mark.parametrize(
-    "reply,failure",
+    "reply,failure,error",
     [
-        pytest.param(b'{"is_supported": true}', None, id="supported"),
-        pytest.param(_http_error(404, b'{"error_code": "NOT_FOUND"}'), None, id="flag-off-404"),
+        pytest.param(b'{"is_supported": true}', None, None, id="supported"),
+        pytest.param(
+            _http_error(404, b'{"error_code": "NOT_FOUND"}'),
+            None,
+            ("routes_validate", "http_404"),
+            id="flag-off-404",
+        ),
         pytest.param(
             _http_error(400, b"bad request"),
             "Smart Router returned an error (HTTP 400)",
+            ("routes_validate", "http_400"),
             id="http-400",
         ),
         pytest.param(
             _http_error(403, b"forbidden"),
             "Smart Router returned an error (HTTP 403)",
+            ("routes_validate", "http_403"),
             id="http-403",
         ),
         pytest.param(
             _http_error(500, b"boom"),
             "Smart Router returned an error (HTTP 500)",
+            ("routes_validate", "http_500"),
             id="http-500",
         ),
         pytest.param(
             _http_error(500, b'{"error_code": "NOT_FOUND"}'),
             "Smart Router returned an error (HTTP 500)",
+            ("routes_validate", "http_500"),
             id="http-500-not-found-body",
         ),
         pytest.param(
-            TimeoutError("timed out"), "Smart Router didn't respond in time", id="timeout"
+            TimeoutError("timed out"),
+            "Smart Router didn't respond in time",
+            ("routes_validate", "timeout"),
+            id="timeout",
         ),
         pytest.param(
             urllib_error.URLError(ConnectionRefusedError(111, "refused")),
             "Smart Router couldn't be reached",
+            ("routes_validate", "network_error"),
             id="unreachable",
         ),
         pytest.param(
-            b"<html>sign in</html>", "Smart Router returned an unexpected response", id="not-json"
+            b"<html>sign in</html>",
+            "Smart Router returned an unexpected response",
+            ("routes_validate", "operation_failed"),
+            id="not-json",
         ),
-        pytest.param(b"[]", "Smart Router returned an unexpected response", id="not-object"),
+        pytest.param(b"[]", "Smart Router returned an unexpected response", None, id="not-object"),
         pytest.param(
-            b"{}", "Smart Router returned an unexpected response", id="missing-is-supported"
+            b"{}", "Smart Router returned an unexpected response", None, id="missing-is-supported"
         ),
         pytest.param(
             b'{"is_supported": "false"}',
             "Smart Router returned an unexpected response",
+            None,
             id="non-boolean-is-supported",
         ),
         pytest.param(
-            RuntimeError("boom"), "Smart Router check failed unexpectedly", id="exception"
+            RuntimeError("boom"),
+            "Smart Router check failed unexpectedly",
+            ("route_validation", "operation_failed"),
+            id="exception",
         ),
     ],
 )
 def test_failed_check_turns_routing_off_except_for_a_flag_off_404(
-    reply, failure, tmp_path, monkeypatch, metrics_recorder
+    reply, failure, error, tmp_path, monkeypatch, metrics_recorder
 ):
     controls, result = _run_check(reply, tmp_path, monkeypatch)
     assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
+    errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+    assert [
+        (labels["operation"], labels["error_code"], labels["continued_with_fallback"])
+        for _, labels in errors
+    ] == ([] if error is None else [(*error, True)])
     if failure is None:
         assert result == {"routing_disabled": False}
         assert session_routing_enabled(controls) is True
@@ -134,15 +160,6 @@ def test_failed_check_turns_routing_off_except_for_a_flag_off_404(
     assert isinstance(result.pop("validation_ms"), int)
     assert result == _failed(failure)
     assert session_routing_enabled(controls) is False
-
-
-def test_flag_off_404_keeps_the_fallback_metric(tmp_path, monkeypatch, metrics_recorder):
-    _run_check(_http_error(404, b'{"error_code": "NOT_FOUND"}'), tmp_path, monkeypatch)
-    errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
-    assert [
-        (labels["operation"], labels["error_code"], labels["continued_with_fallback"])
-        for _, labels in errors
-    ] == [("routes_validate", "http_404", True)]
 
 
 def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monkeypatch):
@@ -178,15 +195,19 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
     assert request.get_header("Databricks-model-provider-service") == "main.default.mps"
 
 
-def test_a_check_past_the_deadline_publishes_a_timeout_and_turns_routing_off(tmp_path, monkeypatch):
+def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot_overwrite(
+    tmp_path, monkeypatch, metrics_recorder
+):
     monkeypatch.setattr(validation, "VALIDATION_TIMEOUT_SECONDS", 0.05)
+    release, answered = threading.Event(), threading.Event()
 
-    def slow_response(request, *, timeout):
-        time.sleep(0.5)
+    def held_response(request, *, timeout):
+        release.wait(3)
+        answered.set()
         return _Response(b'{"is_supported": true}')
 
     monkeypatch.setattr(validation, "_http_post_json", databricks._http_post_json)
-    monkeypatch.setattr(databricks, "_http_open", slow_response)
+    monkeypatch.setattr(databricks, "_http_open", held_response)
     controls = tmp_path / "env.json"
     controls.write_text("{}")
     validation.start(
@@ -197,6 +218,16 @@ def test_a_check_past_the_deadline_publishes_a_timeout_and_turns_routing_off(tmp
         session_controls=controls,
     )
     result = _wait_for_result(validation.result_path(controls))
+    assert not answered.is_set()
+    assert [
+        (labels["operation"], labels["error_code"])
+        for _, labels in metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+    ] == [("route_validation", "timeout")]
+    assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
+    release.set()
+    assert answered.wait(3)
+    time.sleep(0.05)
+    assert json.loads(validation.result_path(controls).read_text()) == result
     assert isinstance(result.pop("validation_ms"), int)
     assert result == _failed("Smart Router didn't respond in time")
     assert session_routing_enabled(controls) is False

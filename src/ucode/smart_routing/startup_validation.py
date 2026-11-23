@@ -6,6 +6,7 @@ flag-off answer from the endpoint, so it leaves routing on and records nothing.
 
 from __future__ import annotations
 
+import contextvars
 import re
 import threading
 import time
@@ -111,9 +112,6 @@ def _failure_reason(payload: object, reason: str | None) -> str | None:
     return UNEXPECTED_RESPONSE_FAILURE_REASON
 
 
-@metrics.timed(
-    metrics.ROUTE_VALIDATION_DURATION_MS, reason_result=True, continued_with_fallback=True
-)
 def _validate_route_options(
     workspace: str,
     token: str,
@@ -151,6 +149,27 @@ def _probe(
         outcome["response"] = (None, CHECK_FAILED_REASON)
 
 
+@metrics.timed(
+    metrics.ROUTE_VALIDATION_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
+def _check_route_options(
+    workspace: str,
+    token: str,
+    body: dict[str, Any],
+    provider: str | None,
+) -> tuple[object, str | None]:
+    outcome: dict[str, Any] = {}
+    # The probe shares this measurement, so its HTTP status labels it; a late probe only fills `outcome`.
+    probe = threading.Thread(
+        target=contextvars.copy_context().run,
+        args=(_probe, workspace, token, body, provider, outcome),
+        daemon=True,
+    )
+    probe.start()
+    probe.join(VALIDATION_TIMEOUT_SECONDS)
+    return outcome.get("response", (None, ROUTE_VALIDATION_TIMED_OUT))
+
+
 def start(
     workspace: str,
     token: str,
@@ -167,14 +186,7 @@ def start(
 
     def check() -> None:
         started = time.monotonic()
-        outcome: dict[str, Any] = {}
-        probe = threading.Thread(
-            target=_probe, args=(workspace, token, body, provider, outcome), daemon=True
-        )
-        probe.start()
-        # A probe still running after the deadline only fills `outcome`, so it cannot publish late.
-        probe.join(VALIDATION_TIMEOUT_SECONDS)
-        payload, reason = outcome.get("response", (None, ROUTE_VALIDATION_TIMED_OUT))
+        payload, reason = _check_route_options(workspace, token, body, provider)
         if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
             _publish(result_path(session_controls), {"routing_disabled": False})
             return
