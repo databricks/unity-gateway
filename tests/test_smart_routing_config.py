@@ -204,6 +204,7 @@ def test_codex_uses_existing_presets():
         config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
         config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
         config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+        config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
     ],
 )
 def test_claude_only_versions_turn_codex_routing_off(version):
@@ -221,6 +222,23 @@ def test_claude_only_versions_turn_codex_routing_off(version):
         ),
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     }
+
+
+def test_first_prompt_orch_claude_only_routes_claude_first_prompt_with_orchestration():
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
+    }
+
+    assert config.resolve_environment(source, agent=AGENT_CLAUDE) == {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+    }
+    assert v2.first_prompt_routing_enabled(source, agent=AGENT_CLAUDE)
+    assert orchestrator.feature_enabled(source, agent=AGENT_CLAUDE)
+    assert not config.auto_mode_enabled(source)
 
 
 def test_blind_orch_claude_only_claude_matches_blind_preset():
@@ -310,6 +328,10 @@ def test_enabled_version_keeps_a_known_version(agent, version):
             {AGENT_CLAUDE: True, AGENT_CODEX: False},
         ),
         (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (
+            config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+            {AGENT_CLAUDE: True, AGENT_CODEX: False},
+        ),
         *(
             (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
             for version in sorted(
@@ -318,6 +340,7 @@ def test_enabled_version_keeps_a_known_version(agent, version):
                     config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                     config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
                     config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+                    config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 }
             )
         ),
@@ -393,6 +416,7 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
         (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
         (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):

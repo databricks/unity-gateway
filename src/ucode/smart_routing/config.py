@@ -47,6 +47,10 @@ SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY = (
 
 SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
 
+# Route the first prompt and subagents with orchestration for Claude, with all Codex routing
+# flags disabled.
+FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY = "first_prompt_and_subagent_orch_v0_claude_only"
+
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
 
@@ -144,6 +148,15 @@ _VERSIONS = {
             **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
             ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
             ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+        },
+        AGENT_CODEX: _CODEX_ROUTING_OFF,
+    },
+    # Codex opts out of routing and orchestration; Claude turns orchestration on over
+    # first_prompt_and_subagent_no_orch_v0.
+    FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
+        AGENT_CLAUDE: {
+            **_BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         },
         AGENT_CODEX: _CODEX_ROUTING_OFF,
     },

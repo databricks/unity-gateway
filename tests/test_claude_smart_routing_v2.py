@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import sys
 import threading
 from pathlib import Path
@@ -16,7 +17,15 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import (
+    claude_hooks,
+    config,
+    orchestrator,
+    routing,
+    session_env,
+    session_log,
+    v2,
+)
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -885,6 +894,49 @@ class TestFirstPromptHook:
         finally:
             stop.set()
 
+    @requires_pty
+    def test_orchestrator_workflow_reaches_the_replayed_first_prompt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
+        )
+        controls: dict[str, str] = {}
+        session_env.start_session(controls)
+        for key, value in controls.items():
+            monkeypatch.setenv(key, value)
+        socket_path = tmp_path / "first.sock"
+        stop = threading.Event()
+        ready = threading.Event()
+        claude_pty.serve_first_prompt_socket(
+            socket_path,
+            lambda _prompt: claude_pty.FirstPromptRoute(
+                model="sonnet", display_model="sonnet", rationale="Selected for a narrow task."
+            ),
+            lambda _prompt, _model: None,
+            stop,
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt": "fix the parser",
+        }
+        try:
+            assert ready.wait(5)
+            held = claude_pty.request_first_prompt_route(socket_path, payload)
+            held_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+            replay = claude_pty.request_first_prompt_route(socket_path, payload)
+            replay_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+        finally:
+            stop.set()
+
+        assert claude_pty.first_prompt_hook_output(held)["decision"] == "block"
+        assert claude_pty.first_prompt_hook_output(replay) is None
+        # Claude drops the held prompt's context with it, so the re-sent prompt must carry it.
+        assert replay_context == held_context
+        context = replay_context["hookSpecificOutput"]["additionalContext"]
+        assert "Smart Router Orchestrator is on for this session" in context
+        assert orchestrator.CLAUDE_AGENT_DESCRIPTION in context
+
     def test_first_prompt_hook_is_per_launch(self):
         settings = {
             "hooks": {
@@ -1060,6 +1112,68 @@ class TestV2Launch:
             "model": "user-selected",
             "theme": "light",
             "new": True,
+        }
+
+    @requires_pty
+    def test_first_prompt_orch_preset_launches_the_hold_with_the_orchestrator(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["/bin/ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-sonnet-5"], model_id_to_display_name={}
+            ),
+        )
+        captured: dict = {}
+
+        # Only the first-prompt path runs Claude in the PTY wrapper.
+        def fake_run(argv, **_kwargs):
+            captured["argv"] = argv
+            captured["settings"] = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+            plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
+            captured["roles"] = {path.name for path in (plugin_dir / "agents").glob("*.md")}
+            return 0
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda _args: ({}, []),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        settings = captured["settings"]
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
+        assert settings["env"][v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
+        assert {
+            hook["command"]
+            for group in settings["hooks"]["UserPromptSubmit"]
+            for hook in group["hooks"]
+        } == {
+            "/bin/ug claude-router-hook route-first-prompt",
+            shlex.join([sys.executable, "-m", orchestrator.HOOK_MODULE, "--agent", AGENT_CLAUDE]),
+        }
+        options = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        assert options["orchestratorInstructions"] == orchestrator.CLAUDE_AGENT_DESCRIPTION
+        assert captured["argv"][3:5] == ["--system-prompt-snapshot", "off"]
+        assert "--model" not in captured["argv"]
+        assert captured["roles"] == {
+            path.name for path in (orchestrator.skill_directory() / "agents").glob("*.md")
         }
 
     @requires_pty
