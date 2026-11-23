@@ -94,6 +94,11 @@ jobs:
         shell: pwsh
         run: ./tests/mdm/windows-provision.Tests.ps1
 
+      - name: Cowork folder picker readiness
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/cowork-folder-picker.Tests.ps1
+
   claude-mod:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest

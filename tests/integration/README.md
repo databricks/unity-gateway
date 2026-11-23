@@ -1,5 +1,10 @@
 # Integration tests
 
+The standalone `tests/cowork-folder-picker.Tests.ps1` check verifies exact Windows
+folder-address readiness, including stale, similarly named, and uncommitted paths.
+It runs in Windows unit CI; it does not validate native focus or picker rendering.
+The live Cowork file task remains the regression check for those UI transitions.
+
 The Codex footer has offline protocol, process-isolation, and launcher coverage in
 `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
 checks cover green ON/gray OFF badges, nullable snapshots, Python's `-P` provider

@@ -73,6 +73,9 @@ After inference, three fresh Cowork tasks run through the same native UI:
 
 1. Create `Documents/CoworkProbe/input.txt` with a random value absent from the prompt.
    Select that folder through the native picker and choose **Allow** for this task.
+   Windows verifies address-field focus before entering the path, then waits for the
+   picker to display the exact target path before clicking **Select Folder**.
+   Folder navigation snapshots distinguish a picker timeout from a permission timeout.
    Require a successful native `Read` call on that exact file, its contents in the
    matching tool result, and an identical completed assistant answer.
 2. Install a local test skill through native `claude plugin ... --cowork` commands,
