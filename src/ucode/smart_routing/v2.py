@@ -44,7 +44,7 @@ from ucode.constants import (
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     TRUE_ENV_VALUES,
-    UG_STARTUP_ROUTE_VALIDATION_ENV_VAR,
+    UG_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -425,8 +425,7 @@ def _claude_mod_launch_options(
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
         "startupValidation": (
             "1"
-            if source.get(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "").strip().lower()
-            in TRUE_ENV_VALUES
+            if source.get(UG_ROUTE_VALIDATION_ENV_VAR, "").strip().lower() in TRUE_ENV_VALUES
             else ""
         ),
     }
@@ -1038,7 +1037,7 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
                 route_validation.start(
                     workspace,
                     token,
@@ -1059,7 +1058,7 @@ def launch_claude(
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
-            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
                 mod_options["validateCommand"] = routing_hook_argv(
                     routing_state, ROUTE_VALIDATION_MOD_EVENT
                 )

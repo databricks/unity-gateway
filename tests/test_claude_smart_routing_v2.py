@@ -1146,7 +1146,7 @@ class TestV2Launch:
         self, tmp_path, monkeypatch, auto_picker, validation
     ):
         if validation:
-            monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
+            monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1690,7 +1690,7 @@ class TestV2ModelPickerDiscovery:
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
         monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
-        monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
+        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
