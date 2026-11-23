@@ -19,7 +19,7 @@ from pathlib import Path
 
 from ucode import metrics
 from ucode.config_io import ToolSpec, is_dry_run
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT, AGENT_OMNI
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -59,7 +59,7 @@ _MODULES = {
     "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
-    "omni": omni,
+    AGENT_OMNI: omni,
     "antigravity": antigravity,
 }
 
@@ -81,8 +81,8 @@ TOOL_ALIASES = {
     "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
-    "omni": "omni",
-    "omnigent": "omni",
+    AGENT_OMNI: AGENT_OMNI,
+    "omnigent": AGENT_OMNI,
     "antigravity": "antigravity",
     "agy": "antigravity",
     "antigravity-cli": "antigravity",
@@ -137,7 +137,7 @@ def install_databricks_ai_tools_for_agents(
     # self-install AI Tools under one (may become a managed-config option later).
     if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
         return
-    if "omni" in tools:
+    if AGENT_OMNI in tools:
         tools = list(
             dict.fromkeys([*tools, *(t for t in ("claude", "codex") if state.get(f"{t}_models"))])
         )
@@ -614,7 +614,7 @@ def configure_tool(
 ) -> dict:
     metrics.annotate(config_scope=config_scope())
     result: dict | tuple[dict, str]
-    if tool == "omni":
+    if tool == AGENT_OMNI:
         result = omni.write_tool_config(state)
     elif tool == AGENT_CODEX:
         result = codex.write_tool_config(
@@ -708,7 +708,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
         return bool(antigravity.model_catalog(state))
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
-    if tool == "omni":
+    if tool == AGENT_OMNI:
         return bool(state.get("claude_models") or state.get("codex_models"))
     if tool == "pi":
         return (
@@ -727,7 +727,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini",),
     "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
-    "omni": ("claude", "codex"),
+    AGENT_OMNI: ("claude", "codex"),
     "antigravity": ("gemini",),
 }
 
@@ -850,7 +850,7 @@ def _configure_one(
         return configure_tool(
             tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
         )
-    if tool in ("codex", "omni"):
+    if tool in (AGENT_CODEX, AGENT_OMNI):
         return configure_tool(tool, state)
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:

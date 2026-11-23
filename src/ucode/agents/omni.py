@@ -12,6 +12,7 @@ import typer
 import yaml
 
 from ucode.config_io import APP_DIR, ToolSpec, ensure_parent_dir, is_dry_run
+from ucode.constants import AGENT_OMNI
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import load_state, mark_tool_managed, save_state
@@ -30,7 +31,7 @@ def launch_cli(tool_args: list[str]) -> None:
     # Auxiliary commands (especially help and stop) must stay fast and offline.
     if not tool_args or tool_args[0] in {"start", "run", "claude", "codex"}:
         state = load_state()
-        if "omni" in (state.get("available_tools") or []):
+        if AGENT_OMNI in (state.get("available_tools") or []):
             from ucode.skills_download import refresh_downloaded_skills_on_launch
 
             refresh_downloaded_skills_on_launch(state)
@@ -166,7 +167,7 @@ def write_tool_config(state: dict) -> dict:
     if is_dry_run():
         print_note(f"Dry run: would configure {CONFIG_PATH} for {', '.join(native_tools)}.")
         return state
-    install_tool_binary("omni")
+    install_tool_binary(AGENT_OMNI)
     for tool in native_tools:
         install_tool_binary(tool)
     if CONFIG_PATH.exists() and not BACKUP_PATH.exists():
@@ -179,7 +180,7 @@ def write_tool_config(state: dict) -> dict:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(CONFIG_PATH.read_text(encoding="utf-8"))
     _write_config(config)
-    state = mark_tool_managed(state, "omni", [["providers", _PROVIDER_NAME]])
+    state = mark_tool_managed(state, AGENT_OMNI, [["providers", _PROVIDER_NAME]])
     state["mcp_clients"] = sorted(set(state.get("mcp_clients") or []) | set(native_tools))
     save_state(state)
     print_note(

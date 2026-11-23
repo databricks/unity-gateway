@@ -71,6 +71,7 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     AGENT_COPILOT,
+    AGENT_OMNI,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_LAUNCH_MODE_ENV_VAR,
@@ -497,8 +498,8 @@ def _parse_agents_option(agents: str) -> list[str]:
 
 def _parse_mcp_agents(agents: str) -> set[str] | None:
     scope = {a.strip().lower() for a in agents.split(",") if a.strip()}
-    if scope & {"omni", "omnigent"}:
-        scope.difference_update(("omni", "omnigent"))
+    if scope & {AGENT_OMNI, "omnigent"}:
+        scope.difference_update((AGENT_OMNI, "omnigent"))
         scope.update(("claude", "codex"))
     return scope or None
 
@@ -797,7 +798,7 @@ def configure_shared_state(
         or "kilo" in tools
         or "copilot" in tools
         or "pi" in tools
-        or "omni" in tools
+        or AGENT_OMNI in tools
     )
     want_gemini = (
         fetch_all
@@ -814,7 +815,7 @@ def configure_shared_state(
         or "claude" in tools
         or "copilot" in tools
         or "pi" in tools
-        or "omni" in tools
+        or AGENT_OMNI in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
@@ -1224,7 +1225,7 @@ def _setup_single_agent(
     state = _save_headless_model_source(
         state, [tool], model_location=model_location, provider=provider
     )
-    if apply_managed and (tool == "omni" or not managed_enabled_tools(managed or {})):
+    if apply_managed and (tool == AGENT_OMNI or not managed_enabled_tools(managed or {})):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
         from ucode.agents.desktop.setup import configure_claude_desktop
@@ -1479,8 +1480,8 @@ def _configure_workspace_command(
 
     # Omni is an explicitly selected self-managed application, like the optional
     # agents added through `ug agents add`. Its adapter does not install admin policy.
-    if selected_tools == ["omni"]:
-        tool, selected_tools = "omni", None
+    if selected_tools == [AGENT_OMNI]:
+        tool, selected_tools = AGENT_OMNI, None
     if tool is not None:
         _setup_single_agent(
             workspace_entries,
@@ -1615,9 +1616,9 @@ def _configure_workspace_command(
                 _sync_claude_cowork_plugin(
                     state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
                 )
-        if "omni" in (selected_tools or []):
-            persisted = configure_single_tool("omni", persisted)
-            _record_unmanaged_configured_agents(persisted, ["omni"])
+        if AGENT_OMNI in (selected_tools or []):
+            persisted = configure_single_tool(AGENT_OMNI, persisted)
+            _record_unmanaged_configured_agents(persisted, [AGENT_OMNI])
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         _fail_machine_wide_run(failed_tools)
         return 0
@@ -1661,7 +1662,7 @@ def _configure_workspace_command(
     refuse_user_scope_over_managed_files(picked)
 
     for tool_name in picked:
-        if tool_name == "omni" and is_dry_run():
+        if tool_name == AGENT_OMNI and is_dry_run():
             continue
         install_tool_binary(
             tool_name,
@@ -1744,7 +1745,7 @@ def _configure_workspace_command(
     if offer_optional_setup and not is_dry_run():
         _configure_optional_setup(state, picked)
     failed = [tool_name for tool_name in picked if tool_name not in configured_set]
-    if "omni" in failed:
+    if AGENT_OMNI in failed:
         raise RuntimeError("Omnigent configuration failed. Fix the warning above and retry.")
     _fail_machine_wide_run(failed)
     return 0
@@ -2087,7 +2088,7 @@ def revert() -> int:
     for tool, spec in TOOL_SPECS.items():
         if tool == "antigravity":
             results[tool] = antigravity_agent.revert_skills_config()
-        elif tool == "omni":
+        elif tool == AGENT_OMNI:
             results[tool] = (
                 omni.revert_config()
                 if managed_configs.get(tool) or omni.BACKUP_PATH.exists()
@@ -2146,7 +2147,7 @@ _HELP_COMMAND_ORDER = (
     "opencode",
     "kilo",
     "pi",
-    "omni",
+    AGENT_OMNI,
     "antigravity",
     "configure",
     "mcp",
@@ -2409,8 +2410,8 @@ def _configure_agents_for_mcp(
 ) -> set[str]:
     """Select MCP clients for one workspace without changing agent model settings."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
-    if "omni" in scope:
-        scope.remove("omni")
+    if AGENT_OMNI in scope:
+        scope.remove(AGENT_OMNI)
         scope.update(("claude", "codex"))
     installed = available_mcp_clients()
     # A named client whose user MCP config UG writes directly needs no CLI on PATH.
@@ -5043,7 +5044,7 @@ class _OmniCommand(TyperCommand):
 
 
 @app.command(
-    "omni",
+    AGENT_OMNI,
     cls=_OmniCommand,
     context_settings={
         "allow_extra_args": True,
@@ -5060,11 +5061,11 @@ def omni_cmd(ctx: typer.Context) -> None:
     if starts_session and not any(arg in {"--help", "-h", "--version"} for arg in ctx.args):
         try:
             state = load_state()
-            if not state.get("workspace") or "omni" not in (state.get("available_tools") or []):
-                ensure_bootstrap_dependencies("omni")
-                _auto_configure_tool("omni")
-                state = ensure_provider_state("omni")
-            launch_agent("omni", state, list(ctx.args), options=LaunchOptions())
+            if not state.get("workspace") or AGENT_OMNI not in (state.get("available_tools") or []):
+                ensure_bootstrap_dependencies(AGENT_OMNI)
+                _auto_configure_tool(AGENT_OMNI)
+                state = ensure_provider_state(AGENT_OMNI)
+            launch_agent(AGENT_OMNI, state, list(ctx.args), options=LaunchOptions())
         except RuntimeError as exc:
             print_err(str(exc))
             raise typer.Exit(1) from None

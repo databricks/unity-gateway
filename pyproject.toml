@@ -26,6 +26,7 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
   "opentelemetry-sdk>=1.44.0,<2",
   "questionary>=2.0.0",
+  # Read and merge Omnigent's config.yaml on configure/revert, preserving unrelated settings.
   "pyyaml>=6.0.2",
   "tomlkit>=0.13.0",
   "typer>=0.26.0",
