@@ -108,7 +108,7 @@ def test_blank_preview_is_omitted(log_dir, decision, task):
             "inspect \u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069parser",
             "inspect ������������parser",
         ),
-        ("inspect \u200bparser\ufeff", "inspect �parser�"),
+        ("inspect \u200bparser\u2063part\ufeff", "inspect �parser�part�"),
         (
             "inspect \u0645\u06cc\u200c\u0631\u0648\u0645 \U0001f469\u200d\U0001f4bb",
             "inspect \u0645\u06cc\u200c\u0631\u0648\u0645 \U0001f469\u200d\U0001f4bb",

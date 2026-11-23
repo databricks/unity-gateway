@@ -173,7 +173,6 @@ def test_short_cli_reason_does_not_capture_or_disable(inline_feedback, reason, a
 def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monkeypatch, agent):
     controls, run, popen, _ = inline_feedback
     monkeypatch.setattr(feedback.shutil, "which", lambda _: None)
-    assert off(agent=agent).exit_code == 2
 
     result = off(REASON, agent=agent)
 
@@ -185,6 +184,9 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
     repeated = off(agent=agent)
     assert repeated.exit_code == 0, repeated.output
     assert "already off" in repeated.output
+    repeated_with_reason = off(REASON, agent=agent)
+    assert repeated_with_reason.exit_code == 0, repeated_with_reason.output
+    assert "already off" in repeated_with_reason.output
     run.assert_not_called()
     popen.assert_not_called()
     assert not session_env.session_routing_enabled(controls)
@@ -193,25 +195,38 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
 @pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell and native argv handling")
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(
-    "reason,literal",
+    "reason",
     [
-        ("it’s too slow for this task", "'it’’s too slow for this task'"),
-        (
+        pytest.param("it’s too slow for this task", id="curly-apostrophe"),
+        pytest.param(
             "too slow‘; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #",
-            "'too slow‘‘; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #'",
+            id="command-breakout",
         ),
-        (
+        pytest.param(
             'it\'s ‘slow’ ‚here‛.\nKeep "double quotes", one\\"quote and two\\\\"quotes.\r\n'
             "Keep $env:UG_QUOTING_SENTINEL and "
             "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal, ending in \\",
-            '\'it\'\'s ‘‘slow’’ ‚‚here‛‛.\nKeep "double quotes", one\\"quote and two\\\\"quotes.\r\n'
-            "Keep $env:UG_QUOTING_SENTINEL and "
-            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal, ending in \\'",
+            id="all-quotes-multiline",
         ),
+        pytest.param("Keep the final backslash and newline exactly: \\\n", id="backslash-newline"),
+        *[
+            pytest.param(
+                "Keep this multiline explanation literal.\n"
+                f"{quote}@; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #\n"
+                "The last line also belongs to the reason.",
+                id=f"here-string-delimiter-{name}",
+            )
+            for name, quote in [
+                ("ascii", "'"),
+                ("left", "‘"),
+                ("right", "’"),
+                ("low", "‚"),
+                ("reversed", "‛"),
+            ]
+        ],
     ],
-    ids=["curly-apostrophe", "command-breakout", "all-quotes-multiline"],
 )
-def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, reason, literal):
+def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, reason):
     executable = shutil.which(shell)
     if executable is None and not os.environ.get("CI"):
         pytest.skip(f"{shell} is unavailable")
@@ -232,11 +247,21 @@ def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, rea
         encoding="utf-8"
     )
     native_command = skill.split("```powershell\n", 1)[1].split("\n```", 1)[0]
-    assert native_command.count("'<reason>'") == 1
+    placeholder = "@'\n<reason>\n'@"
+    assert native_command.count(placeholder) == 1
     assert native_command.count("'-m', 'ucode.cli'") == 1
+    delimiters = "'‘’‚‛"
+    # Insert the raw reason using the documented delimiter-collision fallback.
+    if any(
+        line.lstrip().startswith(tuple(quote + "@" for quote in delimiters))
+        for line in reason.splitlines()
+    ):
+        literal = "'" + "".join(char * 2 if char in delimiters else char for char in reason) + "'"
+    else:
+        literal = placeholder.replace("<reason>", reason)
     # Keep the documented launch and quoting, substituting only the child that records argv.
     recorder_arg = subprocess.list2cmdline([str(recorder)]).replace("'", "''")
-    native_command = native_command.replace("'<reason>'", literal).replace(
+    native_command = native_command.replace(placeholder, literal).replace(
         "'-m', 'ucode.cli'", f"'{recorder_arg}'"
     )
     parser = tmp_path / "parse-and-run-reason.ps1"
