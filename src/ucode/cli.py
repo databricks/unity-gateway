@@ -3808,14 +3808,22 @@ _SMART_ROUTER_STATE_REPLY = "Smart Router is {state} for this session"
 _SMART_ROUTER_UNCHANGED_REPLY = "Smart Router is already {state} for this session"
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(
+    enabled: bool | None,
+    reason: str | None = None,
+    *,
+    launcher_feedback_collected: bool | None = None,
+) -> bool:
     if enabled is None:
         return False
     try:
         controls = session_env_path()
     except RuntimeError:
         return False
-    from ucode.smart_routing.feedback import smart_router_feedback_required
+    from ucode.smart_routing.feedback import (
+        launcher_collects_smart_router_feedback,
+        smart_router_feedback_required,
+    )
     from ucode.smart_routing.session_env import session_routing_enabled
 
     state = "on" if enabled else "off"
@@ -3826,6 +3834,17 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if unchanged:
         print_success(_SMART_ROUTER_UNCHANGED_REPLY.format(state=state))
         return True
+    # Claude's mod checks this marker itself before it runs a plain off.
+    if (
+        not enabled
+        and launcher_feedback_collected is False
+        and launcher_collects_smart_router_feedback()
+    ):
+        print_err(
+            "Turn Smart Router off with this session's Smart Routing switch, which collects "
+            "feedback first. Smart Router is still on."
+        )
+        raise typer.Exit(2)
     feedback_required = not enabled and smart_router_feedback_required()
     if feedback_required and len((reason or "").strip()) < 16:
         print_err(
@@ -5209,13 +5228,21 @@ def codex_cmd(
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
+    feedback_collected: Annotated[
+        bool,
+        typer.Option("--feedback-collected", hidden=True),
+    ] = False,
 ) -> None:
     """Launch Codex via Databricks."""
     # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag,
+        smart_router_feedback,
+        launcher_feedback_collected=feedback_collected,
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

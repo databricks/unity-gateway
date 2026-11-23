@@ -237,9 +237,10 @@ form. `--feedback-collected` works only after `off` and does nothing when the fe
 is off.
 
 Today `--feedback-collected` is honored only when `ISAAC_LAUNCH_MODE=omni`, where Omnigent's
-Web UI is the caller. Those sessions also skip the CLI's reason rule. To support a caller in
-another launch mode, widen both checks: the one in `isaac-feedback.ts` and the one in
-`_toggle_current_smart_routing_session` in `cli.py`.
+Web UI is the caller. Those sessions also skip the CLI's reason rule. The Codex CLI takes the
+same flag: there, with the feedback rule on, `ucode.cli codex --disable-smart-routing` keeps
+routing on unless the flag is passed. To support a caller in another launch mode, widen the
+launch mode checks in `isaac-feedback.ts` and in `smart_routing/feedback.py`.
 
 In sessions with `ISAAC_SMART_ROUTER_FEEDBACK` enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available
