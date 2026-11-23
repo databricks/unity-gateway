@@ -36,7 +36,7 @@ def _app_home(tmp_path, monkeypatch):
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
     monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lambda *args, **kwargs: False)
     monkeypatch.setattr("ucode.agents.copilot.agent_version", lambda binary: "1.0.91")
-    ug = tmp_path / "opt" / "ug" / "bin" / "ug"
+    ug = tmp_path / "opt" / "ug" / "bin" / ("ug.exe" if os.name == "nt" else "ug")
     ug.parent.mkdir(parents=True)
     ug.write_text("")
     monkeypatch.setattr("ucode.databricks.ug_binary", lambda: str(ug))
@@ -92,7 +92,7 @@ class TestConfigure:
         ]
         assert config["app"]["ownedProviderIds"] == list(copilot_app.OWNED_PROVIDER_IDS)
         assert config["databricksPath"] == "/opt/databricks/bin/databricks"
-        assert config["tokenCommand"][0].endswith("/opt/ug/bin/ug")
+        assert Path(config["tokenCommand"][0]).parent.as_posix().endswith("/opt/ug/bin")
         assert config["tokenCommand"][1] == "auth-token"
         assert "/opt/databricks/bin" in config["pathDirs"]
         out = _out(capsys)
