@@ -1,9 +1,8 @@
 # Unity Gateway (`ug`)
 
 Unity Gateway runs coding agents through your Databricks workspace. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, and Google
-Antigravity CLI, and can
-register Databricks MCP servers for Cursor Agent.
+Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, Google
+Antigravity CLI, and Omnigent. It also registers Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
 package is still named `ucode` for compatibility.
@@ -59,6 +58,7 @@ ug kilo
 ug copilot
 ug pi
 ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
+ug omni         # Omnigent with Claude and Codex
 ug cursor   # Cursor Agent, MCP-only
 ```
 
@@ -93,6 +93,15 @@ one, configure asks which to start on. `--model` picks another at launch. Claude
 tools only for models it recognizes. `ug` installs the CLI with Google's installer when it
 is missing (macOS and Linux). On a workspace with a managed config, which can't enable
 Antigravity yet, run `ug agents add antigravity` to use it self-managed.
+
+`ug omni` launches Omnigent with the workspace's available Claude/Codex families;
+`ug omni claude` and `ug omni codex` select a native client. Select Omnigent in
+`ug configure`, or run `ug configure --agents omni --profile <databricks-profile>`.
+UG installs Omnigent and the needed native CLIs. MCP servers and skills use the
+native Claude/Codex configuration. Arguments are forwarded unchanged.
+Reconfigure after switching workspaces, then restart the Omnigent host once its
+sessions finish. Omni is self-managed; this adapter does not support UG managed
+policy, smart routing, or hosts serving multiple workspaces.
 
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
 Copilot's `/model` picker, by readable names such as "Claude Opus 5.5", and you can
@@ -192,46 +201,6 @@ the desktop app can reuse a remote server with the old list.
 ug removes its shared reference on discovery/validation failure, reconfiguration,
 revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
 discovery or `ug configure` for a managed static list, then restart the app server.
-
-### Omnigent
-
-Select **Omnigent (Claude and Codex)** in `ug configure`, or configure it directly:
-
-```bash
-ug configure --agents omni --profile <databricks-profile>
-ug omni
-ug omni codex
-ug omni claude
-ug omni --help
-```
-
-UG installs `omnigent[databricks]>=0.22.0` through `uv` and installs the native
-Claude/Codex CLIs for the model families available on your workspace. It writes the
-`unity-gateway` provider in `~/.omnigent/config.yaml` (or
-`$OMNIGENT_CONFIG_HOME/config.yaml`), makes it the default for those families, and
-preserves other providers and host settings. Reconfigure after changing your UG
-workspace. Restart the Omnigent host when its sessions are finished to load provider
-changes. A first `ug omni` launch also offers the usual UG workspace setup.
-
-MCP uses the native Claude/Codex user configurations. Managed-only MCP entries
-are subject to Omnigent’s native discovery limitations:
-
-```bash
-ug mcp add --agents omni --location system.ai
-ug configure skills --location <catalog>.<schema>
-```
-
-Downloaded skills live in `.claude/skills` and `.agents/skills`, which Omnigent
-reads. Existing downloads are refreshed on session launch. Invoke a skill with
-`/skill-name` in Claude or `$skill-name` in Codex; reload the web menu after a download
-if it is cached. `/mcp` opens the MCP panel inside an existing web conversation.
-
-All arguments, including `--` separators, are forwarded unchanged. Help and
-management commands do not run UG setup. On managed workspaces, explicit Omni
-selection configures it as a self-managed agent. UG smart routing, managed configuration,
-and hosts serving multiple workspaces are not supported by this adapter. Use the
-native UG harnesses when those features are required. Omni remains a separate
-application with its own host, web UI, and platform prerequisites.
 
 ## Configure
 
@@ -390,7 +359,7 @@ attributes the session from ug's `User-Agent`. To name the coding agent yourself
   date, the launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
+`kilo`, `copilot`, `pi`, `antigravity`, and `omni`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account. `vscode` can be included in `--agents` to
 install ug's extension for Copilot Chat in VS Code; it is configure-only, with no `ug vscode`
 launch command.
@@ -964,6 +933,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
+| Omnigent | `~/.omnigent/config.yaml` (or `$OMNIGENT_CONFIG_HOME/config.yaml`); only the `unity-gateway` provider and its assigned defaults; revert preserves unrelated settings |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents vscode`, uninstalled by `ug revert`; your `settings.json` is never edited |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |

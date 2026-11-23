@@ -894,6 +894,13 @@ revert journey checks the user's own skills.json (including an entry added after
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
 
+Omnigent has manual Ubuntu ARM64 validation with version 0.22.0: installed configure,
+CLI startup, Claude/Codex skill invocation, and completed web-search MCP calls through
+Claude Code 2.1.330 and Codex 0.167.0. The Codex MCP call required approval in Omni's
+web UI; its native tool result and final answer confirmed completion. There is no
+automated live Omnigent lane or managed-policy/smart-routing coverage. Component
+coverage lives in `../test_omni.py`.
+
 VS Code Copilot Chat has four live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
 no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
 PATH. The configure journey runs it twice beside a developer's own `settings.json`, checks VS
@@ -2546,28 +2553,3 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 Configure loading indicators: skill download component coverage verifies the shared spinner
 starts before bundle requests and reports completed/total downloads. MCP and skill
 reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
-
-## Omnigent
-
-`tests/test_omni.py` covers opaque argument forwarding, terminal handoff, missing
-executables, failure/exit propagation, configuration picker and explicit selection,
-repeat provider setup, unrelated settings/default preservation, available native
-families, invalid config and install failures, dry-run isolation, MCP client aliasing,
-downloaded-skill refresh, private backups, and revert preserving later host/provider
-edits. First-launch cases exercise the CLI, configuration writer, and persisted state
-before terminal handoff, including an existing workspace without Omni. Other cases
-cover setup failures preventing launch, offline help/stop without setup, installer
-inheritance of the selected OS/Python TLS trust store, atomic-write failure preserving
-the config and backup, restoration of an existing UG provider,
-user-changed defaults surviving revert, and malformed YAML retaining recovery files.
-Shared component fixtures isolate Omni's native config and backup from developer files.
-These checks control discovery, installation, and process boundaries; they do not run
-an installed Omnigent host.
-
-Manual Ubuntu ARM64 checks with Omnigent 0.22.0 cover installed configure, CLI
-startup, native Claude/Codex skill invocation, and completed web-search MCP calls
-through both clients. The MCP checks used Claude Code 2.1.330 and Codex 0.167.0.
-Codex required a per-call approval, submitted through Omnigent's web UI; its native
-tool response and final answer confirmed execution. A pending approval must not
-be reported as an unsupported MCP server. These checks are not an automated live
-integration lane or managed-policy/smart-routing coverage.
