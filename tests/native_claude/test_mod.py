@@ -71,6 +71,25 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
             assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" not in writes
 
 
+def test_recipe_mod_validation_and_merge(native_binary, tmp_path):
+    from ucode.agents.claude import CLAUDE_ROUTER_MOD_NAME
+
+    plugin = install_header_mod(tmp_path) / CLAUDE_ROUTER_MOD_NAME
+    shutil.copytree(Path(__file__).with_name("recipe_mod_tests"), plugin / "tests")
+    for command in ("validate", "test"):
+        result = subprocess.run(
+            [native_binary, "plugin", command, str(plugin)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        if command == "validate":
+            writes = next(line for line in result.stdout.splitlines() if "env writes:" in line)
+            assert "CLAUDE_CODE_EXTRA_BODY" in writes
+            assert "ANTHROPIC_BASE_URL" not in writes
+
+
 def test_native_options_are_launch_local(native_binary, tmp_path):
     env = {
         "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
@@ -83,6 +102,40 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         assert a.observe()["options"] == {**_claude_mod_launch_options(env), "autoPicker": ""}
         assert b.observe()["options"] == {**_claude_mod_launch_options({}), "autoPicker": ""}
         assert not (a.plugin / "hooks/launch.json").exists()
+
+
+def test_managed_recipe_mod_owns_the_extra_body_write(native_binary, tmp_path):
+    """The managed policy-tier mod carries the recipe; the session mod never touches the body.
+
+    Inference deliberately fails without credentials; this checks the serialized environment
+    the gateway would read, not a model response.
+    """
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "SMART_ROUTER_NAME": "task_v3",
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    try:
+        with Session(native_binary, tmp_path / "routed", env, managed_recipe_mod=True) as session:
+            assert session.observe()["body"] == {
+                "caller_field": "keep",
+                "smart_router_recipe_name": "task_v3",
+            }
+            for action, recipe in (("off", "DISABLED"), ("on", "task_v3")):
+                assert (
+                    f"Smart Router is {action}" in session.send(f"/smart-router {action}")["result"]
+                )
+                # A turn applies the managed mod's write before the next request, as it does
+                # for the header mod's variables.
+                session.send("Reply OK.", expect_error=True)
+                assert session.observe()["body"] == {
+                    "caller_field": "keep",
+                    "smart_router_recipe_name": recipe,
+                }
+    finally:
+        shutil.rmtree(controls.parent)
 
 
 def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path):

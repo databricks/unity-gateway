@@ -152,6 +152,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         **expected,
         "unset": [],
         "recipe": "custom_recipe",
+        "managedRecipeMod": "",
         "routeCommand": [],
         "logsCommand": [],
         "orchestratorInstructions": "",
@@ -177,6 +178,7 @@ def test_launch_options_preserve_empty_and_absent_values():
             if key not in ("ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTER_AUTO_MODE")
         ],
         "recipe": "stable",
+        "managedRecipeMod": "",
         "routeCommand": [],
         "logsCommand": [],
         "orchestratorInstructions": "",
@@ -184,6 +186,11 @@ def test_launch_options_preserve_empty_and_absent_values():
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
         "startupValidation": "",
     }
+
+
+def test_launch_options_name_the_managed_recipe_mod_when_it_owns_the_write():
+    """The session mod leaves the protected extra-body write to ug's managed policy-tier mod."""
+    assert v2._claude_mod_launch_options({}, managed_recipe_mod=True)["managedRecipeMod"] == "1"
 
 
 @pytest.mark.parametrize("version", [None, "", "unknown_v99", *config._VERSIONS])

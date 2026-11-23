@@ -216,14 +216,22 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
-async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
+async function writeEnvironment(
+  $: EngineInterface,
+  env: Environment,
+  options: PluginOptions,
+): Promise<void> {
   // Claude's capability scanner requires literal environment-variable names.
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
   await $.env.set('ENABLE_SMART_ROUTING_SUBAGENT_ONLY', env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY);
   await $.env.set('ENABLE_SMART_ROUTER_ORCHESTRATOR', env.ENABLE_SMART_ROUTER_ORCHESTRATOR);
   await $.env.set('ENABLE_SMART_ROUTER_AUTO_MODE', env.ENABLE_SMART_ROUTER_AUTO_MODE);
   await $.env.set('ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI', env.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI);
-  await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
+  // The guard denies this protected write to the user tier; ug's managed recipe mod, which the
+  // launch names in `managedRecipeMod`, owns it there instead.
+  if (options.managedRecipeMod !== '1') {
+    await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
+  }
 }
 
 // The session-control file stays Python's to write: the CLI validates it and replaces it
@@ -272,7 +280,7 @@ async function setRouting(
     }),
   };
   try {
-    await writeEnvironment($, environment);
+    await writeEnvironment($, environment, options);
     // An explicit toggle must also replace the CLI/skill's saved session overrides,
     // which the routing hooks apply on top of the environment and would otherwise win.
     if (syncSessionControls) {
@@ -281,7 +289,7 @@ async function setRouting(
     $.ui.invalidate('tool.describe');
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
-    await writeEnvironment($, previous);
+    await writeEnvironment($, previous, options);
     throw error;
   }
 }

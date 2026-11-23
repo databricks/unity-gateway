@@ -481,10 +481,13 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
-    # ug lists the built-in guard to keep it when it creates `prependPlugins`, so revert takes it
-    # out with ug's entries. When an admin has since added to the list, put the guard back: a
-    # non-empty list without it turns the guard off.
-    guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
+    # ug lists the built-in guard to keep it when it creates `prependPlugins` or `appendPlugins`,
+    # so revert takes it out with ug's entries. When an admin has since added to the list, put the
+    # guard back: a non-empty list without it turns the guard off.
+    guard_listed = {
+        key: _CLAUDE_GUARD_MOD_ID in _managed_tier_plugins(key)
+        for key in ("prependPlugins", "appendPlugins")
+    }
     removes_parent_settings_merge = _ug_added_parent_settings_merge()
 
     def dump(settings: dict) -> str:
@@ -495,10 +498,11 @@ def revert_managed_settings() -> str:
             == CLAUDE_PARENT_SETTINGS_BEHAVIOR
         ):
             del settings[CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0]]
-        prepend = settings.get("prependPlugins")
-        if guard_listed and isinstance(prepend, list) and prepend:
-            if _CLAUDE_GUARD_MOD_ID not in prepend:
-                settings["prependPlugins"] = [_CLAUDE_GUARD_MOD_ID, *prepend]
+        for key in ("prependPlugins", "appendPlugins"):
+            tier = settings.get(key)
+            if guard_listed[key] and isinstance(tier, list) and tier:
+                if _CLAUDE_GUARD_MOD_ID not in tier:
+                    settings[key] = [_CLAUDE_GUARD_MOD_ID, *tier]
         return _dump_managed_settings(settings)
 
     status = revert_managed_file(
@@ -612,15 +616,15 @@ def _ug_added_parent_settings_merge() -> bool:
     )
 
 
-def _managed_prepend_plugins() -> list:
-    """The managed file's ``prependPlugins`` list, or an empty one."""
+def _managed_tier_plugins(key: str) -> list:
+    """The managed file's ``prependPlugins``/``appendPlugins`` list, or an empty one."""
     path = _managed_settings_path()
     try:
         text = read_managed_file(path) if path is not None else None
-        prepend = _parse_managed_settings(text).get("prependPlugins") if text else None
+        tier = _parse_managed_settings(text).get(key) if text else None
     except RuntimeError:
         return []
-    return prepend if isinstance(prepend, list) else []
+    return tier if isinstance(tier, list) else []
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:
@@ -2345,39 +2349,65 @@ CLAUDE_PARENT_SETTINGS_BEHAVIOR = "merge"
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
 _HEADER_MOD_PREFIX = "ug-headers@"
 CLAUDE_HEADER_MOD_ID = f"{_HEADER_MOD_PREFIX}{CLAUDE_HEADER_MOD_MARKETPLACE}"
+CLAUDE_ROUTER_MOD_NAME = "ug-smart-router-recipe"
+CLAUDE_ROUTER_MOD_ID = f"{CLAUDE_ROUTER_MOD_NAME}@{CLAUDE_HEADER_MOD_MARKETPLACE}"
 _CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
-# The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
-# nothing in ug's own settings file can be overridden by them.
+# The managed mods' file entries. Revert removes them; they never count as conflicts, since nothing
+# in ug's own settings file can be overridden by them.
 CLAUDE_HEADER_MOD_PATHS = [
     ["extraKnownMarketplaces", CLAUDE_HEADER_MOD_MARKETPLACE],
     ["enabledPlugins", CLAUDE_HEADER_MOD_ID],
+    ["enabledPlugins", CLAUDE_ROUTER_MOD_ID],
     ["prependPlugins"],
+    ["appendPlugins"],
 ]
 
 
 def _header_mod_files(root: Path) -> dict[Path, str]:
-    """The marketplace and plugin ug installs at ``root`` for its Claude header mod."""
+    """The marketplace and plugins ug installs at ``root`` for its Claude managed mods."""
     description = "Adds `ug --header` / UG_HEADERS to Claude's gateway requests."
+    recipe_description = "Adds the Unity Gateway smart-router recipe to Claude's requests."
     docs = {
         ".claude-plugin/marketplace.json": {
             "name": CLAUDE_HEADER_MOD_MARKETPLACE,
             "owner": {"name": "Unity Gateway"},
             # A relative source loads in place, which Claude requires of an organization's mod.
             "plugins": [
-                {"name": "ug-headers", "source": "./ug-headers", "description": description}
+                {"name": "ug-headers", "source": "./ug-headers", "description": description},
+                {
+                    "name": CLAUDE_ROUTER_MOD_NAME,
+                    "source": f"./{CLAUDE_ROUTER_MOD_NAME}",
+                    "description": recipe_description,
+                },
             ],
         },
         "ug-headers/.claude-plugin/plugin.json": {"name": "ug-headers", "description": description},
         "ug-headers/hooks/hooks.json": {"modules": ["./register.ts"]},
+        f"{CLAUDE_ROUTER_MOD_NAME}/.claude-plugin/plugin.json": {
+            "name": CLAUDE_ROUTER_MOD_NAME,
+            "description": recipe_description,
+        },
+        f"{CLAUDE_ROUTER_MOD_NAME}/hooks/hooks.json": {"modules": ["./register.ts"]},
     }
     files = {root / name: json.dumps(doc, indent=2) + "\n" for name, doc in docs.items()}
-    mod = Path(__file__).with_name("claude_header_mod") / "register.ts"
-    files[root / "ug-headers/hooks/register.ts"] = mod.read_text(encoding="utf-8")
+    source = Path(__file__).with_name("claude_header_mod") / "register.ts"
+    files[root / "ug-headers/hooks/register.ts"] = source.read_text(encoding="utf-8")
+    # The recipe mod shares the session mod's merge and constants modules, so they stay one
+    # implementation.
+    recipe_mod = Path(__file__).with_name("claude_recipe_mod")
+    mods = Path(__file__).with_name("claude_mods")
+    for name, origin in (
+        ("register.ts", recipe_mod / "register.ts"),
+        ("constants.ts", mods / "constants.ts"),
+        ("extra-body.ts", mods / "extra-body.ts"),
+    ):
+        files[root / CLAUDE_ROUTER_MOD_NAME / "hooks" / name] = origin.read_text(encoding="utf-8")
     return files
 
 
 def _enable_header_mod(settings: dict, root: Path | None) -> dict:
-    """Enable ug's header mod in the managed file and run it ahead of every user's mod."""
+    """Enable ug's managed mods: the header mod ahead of every user's mod, the recipe mod after
+    them (it re-applies the recipe once the session mod has settled the routing flags)."""
     if root is None:
         return settings
     marketplaces = settings.setdefault("extraKnownMarketplaces", {})
@@ -2388,13 +2418,12 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
         "source": {"source": "directory", "path": str(root)}
     }
     plugins[CLAUDE_HEADER_MOD_ID] = True
+    plugins[CLAUDE_ROUTER_MOD_ID] = True
     # An unset list means the built-in guard alone, which a set list has to name to keep it.
-    prepend = settings.get("prependPlugins")
-    prepend = prepend if isinstance(prepend, list) else [_CLAUDE_GUARD_MOD_ID]
-    settings["prependPlugins"] = [
-        CLAUDE_HEADER_MOD_ID,
-        *(entry for entry in prepend if entry != CLAUDE_HEADER_MOD_ID),
-    ]
+    for key, mod_id in (("prependPlugins", CLAUDE_HEADER_MOD_ID), ("appendPlugins", CLAUDE_ROUTER_MOD_ID)):
+        tier = settings.get(key)
+        tier = tier if isinstance(tier, list) else [_CLAUDE_GUARD_MOD_ID]
+        settings[key] = [mod_id, *(entry for entry in tier if entry != mod_id)]
     return settings
 
 
@@ -2412,11 +2441,11 @@ def request_explicit_configure(requested: bool = True) -> None:
 
 
 def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
-    """Install or update the header mod's files, returning whether this run did.
+    """Install or update the managed mods' files, returning whether this run did.
 
-    They are installed only where the managed file can be written, since the mod is enabled in
-    that file. A failure only costs ``ug --header`` for Claude; the caller then doesn't enable
-    the mod."""
+    They are installed only where the managed file can be written, since the mods are enabled in
+    that file. A failure only costs ``ug --header`` and the managed recipe write for Claude; the
+    caller then doesn't enable the mods."""
     if root is None or is_dry_run():
         return False
     if not managed_writes_allowed(repair_existing=managed_file_exists):
@@ -2467,6 +2496,37 @@ def header_mod_active(*, require_current: bool = False) -> bool:
         ):
             return True
         if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
+            return False
+        for file, content in _header_mod_files(root).items():
+            if not file.is_file() or file.read_text(encoding="utf-8") != content:
+                return False
+    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return False
+    return True
+
+
+# The release that seats the built-in guard, whose policy tier is the only one allowed to change
+# the request extra body a managed config can also set.
+SEC_DEFAULT_CLAUDE_VERSION = (2, 1, 331)
+
+
+def recipe_mod_active() -> bool:
+    """Whether ug's managed recipe mod owns the extra-body recipe write for this Claude.
+
+    It must be enabled in the managed file with current files, and the running Claude has to seat
+    the guard: an older one denies no write, so the session mod keeps its direct fallback.
+    """
+    version = _parse_version(agent_version(SPEC["binary"]))
+    if version is None or version < SEC_DEFAULT_CLAUDE_VERSION:
+        return False
+    root = claude_header_mod_root()
+    path = _managed_settings_path()
+    if root is None or path is None:
+        return False
+    try:
+        settings = _parse_managed_settings(read_managed_file(path) or "{}")
+        plugins = settings.get("enabledPlugins")
+        if not isinstance(plugins, dict) or plugins.get(CLAUDE_ROUTER_MOD_ID) is not True:
             return False
         for file, content in _header_mod_files(root).items():
             if not file.is_file() or file.read_text(encoding="utf-8") != content:

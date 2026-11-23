@@ -94,6 +94,19 @@ test('a denied extra-body write restores the environment and reports failure', {
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
 });
 
+test('the managed recipe mod owns the extra-body write when the launch names it', { options: { ...ROUTED, managedRecipeMod: '1' } }, async ($, on) => {
+  const { env, writes } = setup(on);
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+
+  await $.session.start(start);
+
+  // The session mod never touches the protected variable itself; the managed policy-tier
+  // mod reapplies the recipe. The routing flags still move.
+  expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
+  expect(writes).not.toContain('CLAUDE_CODE_EXTRA_BODY');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+});
+
 test('a caller body that is not a JSON object is left alone', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on, { body: 'not json' });
 

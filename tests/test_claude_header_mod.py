@@ -71,9 +71,13 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
     assert doc["extraKnownMarketplaces"]["ucode-managed"] == {
         "source": {"source": "directory", "path": str(root)}
     }
-    assert doc["enabledPlugins"] == {"ug-headers@ucode-managed": True}
-    # The built-in guard is the default list, so naming the mod there must keep it.
+    assert doc["enabledPlugins"] == {
+        "ug-headers@ucode-managed": True,
+        "ug-smart-router-recipe@ucode-managed": True,
+    }
+    # The built-in guard is the default list, so naming the mods there must keep it.
     assert doc["prependPlugins"] == ["ug-headers@ucode-managed", "sec-default@builtin"]
+    assert doc["appendPlugins"] == ["ug-smart-router-recipe@ucode-managed", "sec-default@builtin"]
     assert claude.header_mod_active()
     assert claude.header_mod_active(require_current=True)
 
@@ -139,6 +143,45 @@ def test_admin_prepend_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch
     assert json.loads(managed_path.read_text()) == {"prependPlugins": ["acme-guard@acme"]}
 
 
+def test_admin_append_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch):
+    managed_path, _root, _writes = _managed_env(
+        tmp_path, monkeypatch, {"appendPlugins": ["acme-audit@acme"]}
+    )
+
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    assert json.loads(managed_path.read_text())["appendPlugins"] == [
+        "ug-smart-router-recipe@ucode-managed",
+        "acme-audit@acme",
+    ]
+
+    claude.revert_managed_settings()
+    assert json.loads(managed_path.read_text()) == {"appendPlugins": ["acme-audit@acme"]}
+
+
+def test_recipe_mod_active_needs_the_guard_claude_an_enabled_mod(tmp_path, monkeypatch):
+    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    assert not claude.recipe_mod_active()  # the fixture's Claude predates the guard
+
+    monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.331")
+    assert claude.recipe_mod_active()
+
+    # An older Claude denies no write, so the session mod keeps its direct fallback.
+    monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.330")
+    assert not claude.recipe_mod_active()
+
+    monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.331")
+    doc = json.loads(managed_path.read_text())
+    doc["enabledPlugins"].pop(claude.CLAUDE_ROUTER_MOD_ID)
+    managed_path.write_text(json.dumps(doc))
+    assert not claude.recipe_mod_active()
+
+    # Stale files load an older mod, so the launch falls back to the direct write too.
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    (root / f"{claude.CLAUDE_ROUTER_MOD_NAME}/hooks/register.ts").write_text("// old\n")
+    assert not claude.recipe_mod_active()
+
+
 def test_mod_entries_never_count_as_conflicts():
     existing = {"prependPlugins": ["acme-guard@acme"], "enabledPlugins": {"x@y": True}}
     desired = claude._enable_header_mod(copy.deepcopy(existing), CLAUDE_HEADER_MOD_ROOTS[OS.LINUX])
@@ -190,7 +233,12 @@ def test_failed_install_never_enables_a_missing_plugin(tmp_path, monkeypatch):
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
 
     doc = json.loads(managed_path.read_text())
-    assert not {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"} & set(doc)
+    assert not {
+        "extraKnownMarketplaces",
+        "enabledPlugins",
+        "prependPlugins",
+        "appendPlugins",
+    } & set(doc)
     assert not claude.header_mod_active()
 
 
@@ -198,6 +246,7 @@ def test_revert_removes_the_mod_files_and_folders(tmp_path, monkeypatch):
     _managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert (root / "ug-headers/hooks/register.ts").is_file()
+    assert (root / f"{claude.CLAUDE_ROUTER_MOD_NAME}/hooks/register.ts").is_file()
 
     claude.revert_managed_settings()
 
@@ -209,6 +258,7 @@ def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkey
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     doc = json.loads(managed_path.read_text())
     doc["prependPlugins"].append("acme-guard@acme")
+    doc["appendPlugins"].append("acme-audit@acme")
     managed_path.write_text(json.dumps(doc), encoding="utf-8")
 
     claude.revert_managed_settings()
@@ -217,6 +267,10 @@ def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkey
     assert json.loads(managed_path.read_text())["prependPlugins"] == [
         "sec-default@builtin",
         "acme-guard@acme",
+    ]
+    assert json.loads(managed_path.read_text())["appendPlugins"] == [
+        "sec-default@builtin",
+        "acme-audit@acme",
     ]
 
 
@@ -246,9 +300,12 @@ def test_headless_configure_installs_and_enables_beside_an_existing_managed_file
 
     assert (root / "ug-headers/hooks/register.ts").is_file()
     doc = json.loads(managed_path.read_text())
-    assert doc["enabledPlugins"] == {"ug-headers@ucode-managed": True}
-    # Only the mod's entries: a headless run still leaves the rest of ug's settings out.
-    assert set(doc) == {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"}
+    assert doc["enabledPlugins"] == {
+        "ug-headers@ucode-managed": True,
+        "ug-smart-router-recipe@ucode-managed": True,
+    }
+    # Only the mods' entries: a headless run still leaves the rest of ug's settings out.
+    assert set(doc) == {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins", "appendPlugins"}
     assert claude.header_mod_active()
 
 
