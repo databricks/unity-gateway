@@ -792,8 +792,32 @@ jobs:
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: copilot
-      TEST_MARKER: live and copilot and not anthropic_mps
+      TEST_MARKER: live and copilot and not anthropic_mps and not copilot_seat
       ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
+    steps: *live-steps
+
+  # Non-blocking, like Copilot. Needs a seat-relay Model Provider Service in the test workspace and
+  # a GitHub token with a Copilot seat; both come from repository settings, not the code.
+  copilot-seat:
+    name: Full journeys · Copilot seat relay · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    timeout-minutes: 30
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      UG_INTEGRATION_COPILOT_SEAT_PROVIDER: ${{ vars.UG_INTEGRATION_COPILOT_SEAT_PROVIDER }}
+      COPILOT_SEAT_GITHUB_TOKEN: ${{ secrets.COPILOT_SEAT_GITHUB_TOKEN }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: copilot
+      TEST_MARKER: live and copilot_seat
+      ARTIFACT_NAME: integration-copilot-seat-${{ matrix.os }}
     steps: *live-steps
 
   # Blocking: part of the cujs gate. Linux only: Antigravity CLI's gateway mode supports macOS

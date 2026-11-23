@@ -2550,3 +2550,17 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 Configure loading indicators: skill download component coverage verifies the shared spinner
 starts before bundle requests and reports completed/total downloads. MCP and skill
 reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
+
+GitHub Copilot seat relay journeys carry the `copilot_seat` marker and run in their own
+non-blocking lane. They need a Model Provider Service that relays Copilot seats
+(`UG_INTEGRATION_COPILOT_SEAT_PROVIDER`, a repository variable) and a GitHub token for an account
+with a Copilot seat (`COPILOT_SEAT_GITHUB_TOKEN`, a repository secret that the runner passes to
+Copilot CLI as `GH_TOKEN`). `test_ug_copilot_seat_relay.py` completes a headless task through the
+relay with a plain HTTP proxy named in the environment and shows the proxy receives nothing.
+`test_ug_copilot_vscode_seat_relay.py` configures a stand-in VS Code install and, on Linux, starts
+ug's runtime wrapper the way VS Code would, checking the bundled runtime's environment; the real
+`code.cmd` and `ug.exe` chain on Windows remains a manual check. `test_ug_copilot_plugin_isolation.py`
+(plain `copilot` marker) installs ug's desktop-app plugin into the Copilot home with the app's
+detection answered for it, turns Copilot's experimental features on, and shows a `ug copilot`
+session still completes on its Databricks model while the plugin's extension records that it was
+not under the app. None of these drive the real desktop app, which needs a signed-in GitHub account.

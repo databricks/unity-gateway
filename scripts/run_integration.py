@@ -560,6 +560,11 @@ def arguments(
         help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
     )
     parser.add_argument(
+        "--copilot-seat-provider",
+        default=environment.get("UG_INTEGRATION_COPILOT_SEAT_PROVIDER", ""),
+        help="Existing Model Provider Service that relays GitHub Copilot seats, for the seat CUJs.",
+    )
+    parser.add_argument(
         "--claude-foundry-provider",
         default="main.ucode.ci_foundry_claude_mps",
         help="Existing Microsoft Foundry MPS serving Claude over Anthropic Messages.",
@@ -898,6 +903,7 @@ def main() -> int:
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     codex_access_token = os.environ.get("CODEX_ACCESS_TOKEN", "").strip()
+    copilot_seat_github_token = os.environ.get("COPILOT_SEAT_GITHUB_TOKEN", "").strip()
     client_secrets = (os.environ.get("DATABRICKS_CLIENT_SECRET", ""),)
 
     def redact(value: str) -> str:
@@ -1313,6 +1319,8 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_RELAYED_PROVIDER": args.codex_relayed_provider,
                 "UG_INTEGRATION_CODEX_ACCESS_TOKEN": codex_access_token,
+                "UG_INTEGRATION_COPILOT_SEAT_PROVIDER": args.copilot_seat_provider,
+                "UG_INTEGRATION_COPILOT_SEAT_GITHUB_TOKEN": copilot_seat_github_token,
                 "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER": args.codex_custom_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL": args.codex_custom_provider_model,
