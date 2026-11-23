@@ -26,9 +26,11 @@ import tty
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Literal
 
 from ucode import metrics
+from ucode.config_io import APP_DIR
 
 MAX_MODEL_NAME_LEN = 200
 CONFIRM_TIMEOUT_S = 3.0
@@ -49,7 +51,12 @@ CLEAR_LINE = b"\x15"
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
-_INPUT_ESCAPE_RE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+_INPUT_ESCAPE_RE = re.compile(
+    rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~]|\][^\x07]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)"
+)
+_TERMINAL_REPLY_RE = re.compile(
+    rb"\x1b(?:\[\?[0-9]+u|\[\??[0-9]+;[0-4]\$y|P(?:>\||[01][$+]r)[ -~]*\x1b\\)"
+)
 _MODEL_SWITCH_COMMANDS = ("/model", "/config", "/settings", "/fast", "/auto")
 
 
@@ -175,6 +182,7 @@ class ModelSwitchInput:
     def __init__(self) -> None:
         self._pending = b""
         self._line = b""
+        self._cursor = 0
         self._line_known = True
         self._last_input = 0.0
         self._pasting = False
@@ -182,6 +190,23 @@ class ModelSwitchInput:
     @property
     def pending(self) -> bool:
         return bool(self._pending) or self._pasting
+
+    def _move_cursor(self, direction: bytes, count: int = 1) -> None:
+        if (
+            not self._line_known
+            or not self._line
+            or b"\n" in self._line
+            or not self._line.isascii()
+        ):
+            # Native cursor movement counts graphemes and visual rows.
+            self._line_known = False
+            return
+        if direction == b"D":
+            self._cursor = max(0, self._cursor - count)
+        elif direction == b"C":
+            self._cursor = min(len(self._line), self._cursor + count)
+        else:
+            self._cursor = 0 if direction == b"H" else len(self._line)
 
     def observe(self, data: bytes, now: float) -> ModelSwitchInputResult:
         if data:
@@ -198,6 +223,18 @@ class ModelSwitchInput:
                     if sequence in (b"\x1b[200~", b"\x1b[201~"):
                         self._pasting = sequence == b"\x1b[200~"
                         edited |= self._pasting
+                    elif cursor := re.fullmatch(rb"\x1b(?:\[([0-9]*)|O)([CDHF])", sequence):
+                        count = cursor[1] or b"1"
+                        if len(count) > 4:
+                            self._line_known = False
+                        else:
+                            self._move_cursor(cursor[2], max(1, int(count)))
+                    elif sequence == b"\x1b[3~":
+                        start = self._cursor
+                        self._move_cursor(b"C")
+                        self._line = self._line[:start] + self._line[self._cursor :]
+                        self._cursor = start
+                        edited = True
                     elif (
                         sequence.startswith(b"\x1bO")
                         or sequence in (b"\x1b[1~", b"\x1b[4~")
@@ -206,12 +243,17 @@ class ModelSwitchInput:
                         # History and cursor motion leave the submitted text unknown,
                         # but navigation alone must not interrupt automatic replay.
                         self._line_known = False
-                    elif sequence.startswith(b"\x1b]") or sequence[-1:] in (
-                        b"I",
-                        b"O",
-                        b"c",
-                        b"R",
-                        b"n",
+                    elif (
+                        _TERMINAL_REPLY_RE.fullmatch(sequence)
+                        or sequence.startswith(b"\x1b]")
+                        or sequence[-1:]
+                        in (
+                            b"I",
+                            b"O",
+                            b"c",
+                            b"R",
+                            b"n",
+                        )
                     ):
                         pass  # Focus and terminal replies do not edit the prompt.
                     else:
@@ -221,7 +263,7 @@ class ModelSwitchInput:
                 if (
                     len(self._pending) <= 4096
                     and now - self._last_input < ESC_GAP_S
-                    and (len(self._pending) == 1 or self._pending[1:2] in (b"[", b"O", b"]"))
+                    and (len(self._pending) == 1 or self._pending[1:2] in (b"[", b"O", b"]", b"P"))
                 ):
                     break  # An escape sequence may span several stdin reads.
             char, self._pending = self._pending[:1], self._pending[1:]
@@ -246,17 +288,28 @@ class ModelSwitchInput:
                     ):
                         manual_model = command[1]
                 self._line = b""
+                self._cursor = 0
                 self._line_known = True
             elif self._pasting:
                 self._line_known &= len(self._line) < 4096
-                self._line = (self._line + char)[-4096:]
+                self._line = (self._line[: self._cursor] + char + self._line[self._cursor :])[
+                    -4096:
+                ]
+                self._cursor = min(self._cursor + 1, len(self._line))
             elif char in (b"\x08", b"\x7f"):
-                self._line = self._line[:-1]
+                end = self._cursor
+                self._move_cursor(b"D")
+                self._line = self._line[: self._cursor] + self._line[end:]
             elif char == CLEAR_LINE:
-                self._line = b""
+                self._line = self._line[self._cursor :]
+                self._cursor = 0
+                self._line_known = False  # Native Ctrl-U may stop at a wrapped screen row.
             elif char >= b" ":
                 self._line_known &= len(self._line) < 4096
-                self._line = (self._line + char)[-4096:]
+                self._line = (self._line[: self._cursor] + char + self._line[self._cursor :])[
+                    -4096:
+                ]
+                self._cursor = min(self._cursor + 1, len(self._line))
             else:
                 # Completion, search, and editing bindings can change text without
                 # sending its contents back through stdin.
@@ -310,6 +363,27 @@ def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True, clear: by
 
 def inject_note(out_fd: int, message: str) -> None:
     os.write(out_fd, ("\r\n\x1b[36m" + message + "\x1b[0m\r\n").encode())
+
+
+def prompt_recovery_note(prompt: str) -> str:
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix="claude-prompt-",
+            suffix=".txt",
+            dir=APP_DIR,
+            delete=False,
+        ) as saved:
+            saved.write(prompt)
+            saved.flush()
+            os.fsync(saved.fileno())
+        return f"Your prompt is saved in {saved.name}. Open it to resend when Claude is ready."
+    except OSError:
+        # Escaping control bytes keeps the recovery copy from acting on the terminal.
+        return f"Could not save a recovery file. Your prompt as a JSON string: {json.dumps(prompt)}"
 
 
 def request_first_prompt_route(path: Path, payload: dict, *, timeout: float = 5.0) -> dict | None:
@@ -687,6 +761,9 @@ def run_claude_pty(
 
                 now = time.monotonic()
                 observe_input(b"", now)
+                if phase == "verifying" and submitted_event.is_set():
+                    phase = "done"
+                    log("[DONE] first prompt confirmed submitted")
                 idle = last_output > 0.0 and now - last_output >= READY_QUIET_S
                 if (
                     model_pending
@@ -770,7 +847,7 @@ def run_claude_pty(
                     inject_note(
                         1,
                         "Smart Routing could not confirm Claude was ready. "
-                        "Resend your prompt when Claude is ready.",
+                        + prompt_recovery_note(routed_prompt),
                     )
                     phase = "done"
                     log("[WARN] Claude did not settle after Escape; automatic replay stopped")
@@ -799,10 +876,7 @@ def run_claude_pty(
                     phase = "verifying"
                     log("[SUBMIT] Enter sent; verifying submission")
                 elif phase == "verifying":
-                    if submitted_event.is_set():
-                        phase = "done"
-                        log("[DONE] first prompt confirmed submitted")
-                    elif now >= verify_deadline:
+                    if now >= verify_deadline:
                         if submit_attempts >= MAX_SUBMIT_ATTEMPTS:
                             inject_note(
                                 1,

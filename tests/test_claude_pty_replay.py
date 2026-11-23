@@ -291,6 +291,90 @@ capture_path.write_text(json.dumps({
 
 
 # ---------------------------------------------------------------------------
+class TestUnterminatedPaste:
+    def test_unterminated_paste_does_not_hide_confirmed_submission(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.01)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.01)
+        socket_path = tmp_path / "first.sock"
+        capture = tmp_path / "capture.json"
+        fake_claude = tmp_path / "fc.py"
+        log = tmp_path / "routing.log"
+        ready = tmp_path / "ready"
+        submit = tmp_path / "submit"
+        acknowledged = threading.Event()
+        serve = claude_pty.serve_first_prompt_socket
+        select = claude_pty.select.select
+
+        def observe_submission(*args, **kwargs):
+            callback = kwargs["on_submitted_prompt"]
+
+            def submitted(prompt):
+                callback(prompt)
+                acknowledged.set()
+
+            kwargs["on_submitted_prompt"] = submitted
+            return serve(*args, **kwargs)
+
+        def ready_after_acknowledgement(read, write, error, timeout):
+            readable = select(read, write, error, timeout)
+            if 0 in readable[0] and ready.exists() and not acknowledged.is_set():
+                # Put the real hook acknowledgement and the open paste in the same loop turn.
+                submit.touch()
+                assert acknowledged.wait(3)
+            return readable
+
+        monkeypatch.setattr(claude_pty, "serve_first_prompt_socket", observe_submission)
+        monkeypatch.setattr(claude_pty.select, "select", ready_after_acknowledgement)
+        _write_fake_claude(
+            fake_claude,
+            """\
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+os.write(1, b"Set model to sonnet\\n")
+read_until(b"\\x1b[201~")
+assert os.read(0, 1) == b"\\r"
+(test_dir / "ready").touch()
+deadline = time.monotonic() + 3
+while not (test_dir / "submit").exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.005)
+assert send_hook(socket_path, "hello")["action"] == "allow"
+received = read_until(b"\\x1b[200~")
+deadline = time.monotonic() + 0.3
+while time.monotonic() < deadline:
+    if sel.select([0], [], [], 0.01)[0]:
+        received += os.read(0, 4096)
+capture_path.write_text(json.dumps({"received": received.hex()}))
+""",
+        )
+        with _stdin_after(ready, [b"\x1b[200~"]):
+            result = claude_pty.run_claude_pty(
+                [sys.executable, str(fake_claude), str(socket_path), str(capture)],
+                route_prompt=_route_sonnet,
+                socket_path=socket_path,
+                log_path=log,
+            )
+
+        assert result == 0
+        assert json.loads(capture.read_text())["received"] == b"\x1b[200~".hex()
+        assert "[DONE] first prompt confirmed submitted" in log.read_text()
+        assert "[RETRY]" not in log.read_text()
+
+
+def test_prompt_recovery_escapes_control_bytes_when_the_file_cannot_be_saved(tmp_path, monkeypatch):
+    unavailable = tmp_path / "not-a-directory"
+    unavailable.write_text("occupied")
+    monkeypatch.setattr(claude_pty, "APP_DIR", unavailable)
+    prompt = 'Keep this "quoted" prompt.\n\x1b[2J\x7f'
+
+    note = claude_pty.prompt_recovery_note(prompt)
+
+    assert json.loads(note.split("JSON string: ", 1)[1]) == prompt
+    assert "\x1b" not in note and "\x7f" not in note and "\n" not in note
+
+
 # Test C: Switch-timeout path submits the prompt (fail-open, Bug C)
 # ---------------------------------------------------------------------------
 
@@ -490,6 +574,7 @@ capture_path.write_text(json.dumps({
             ([b"\x1b[", b"Anew input"], False),
             ([b"\x1b["], False),
             ([b"new input"], False),
+            ([b"explain codx\x1b[D\x7fe\x1b[C\r"], False),
             ([b"\x1b[200~", b"user paste\x1b[201~"], False),
         ],
         ids=[
@@ -498,6 +583,7 @@ capture_path.write_text(json.dumps({
             "edited-after-reply",
             "unfinished-reply",
             "user-edit",
+            "cursor-edit",
             "paste",
         ],
     )
@@ -556,7 +642,10 @@ capture_path.write_text(json.dumps({
         )
         assert ("Resend your prompt" in capfd.readouterr().out) == (not replay)
 
-    @pytest.mark.parametrize("command", [b"/help\r", b"/compact\r", b"/clear\r"])
+    @pytest.mark.parametrize(
+        "command",
+        [b"/help\r", b"/compact\r", b"/clear\r", b"explain codx\x1b[D\x7fe\x1b[C\r"],
+    )
     def test_unrelated_command_preserves_another_sessions_recovery(
         self, replay_model_switch, tmp_path, command
     ):
@@ -919,14 +1008,18 @@ capture_path.write_text(json.dumps({
         [("silent", "user-selected"), ("busy", None), ("cancelled", "sonnet")],
     )
     def test_unconfirmed_switch_stops_automatic_input(
-        self, replay_model_switch, tmp_path, output, later_model
+        self, replay_model_switch, tmp_path, capfd, output, later_model
     ):
+        original = (
+            "Explain this code.\n"
+            + "A long prompt with caf\u00e9 and terminal \x1b[2J bytes. " * 50
+        )
         capture, settings, observations = replay_model_switch(
-            f"OUTPUT = {output!r}\nLATER_MODEL = {later_model!r}\n"
+            f"OUTPUT = {output!r}\nLATER_MODEL = {later_model!r}\nORIGINAL = {original!r}\n"
             + """\
 import fcntl
 
-assert send_hook(socket_path, "hello")["action"] == "block"
+assert send_hook(socket_path, ORIGINAL)["action"] == "block"
 print("blocked", flush=True)
 tty.setraw(0)
 read_until(b"\\r")
@@ -981,6 +1074,13 @@ capture_path.write_text(json.dumps({
             }
         )
         assert "automatic replay stopped" in (tmp_path / "routing.log").read_text()
+        copies = list((tmp_path / ".ucode").glob("claude-prompt-*.txt"))
+        assert len(copies) == 1
+        assert copies[0].read_bytes() == original.encode()
+        assert copies[0].stat().st_mode & 0o777 == 0o600
+        terminal = capfd.readouterr().out
+        assert str(copies[0]) in terminal
+        assert "\x1b[2J" not in terminal
 
 
 class TestManualModelConfirmation:
@@ -1022,6 +1122,12 @@ class TestModelSwitchInput:
             b"\x1b[O",
             b"\x1b[?1;2c",
             b"\x1b[12;45R",
+            b"\x1b[?31u",
+            b"\x1b[?2026;1$y",
+            b"\x1b[4;2$y",
+            b"\x1bP>|XTerm(406)\x1b\\",
+            b"\x1bP1$r0m\x1b\\",
+            b"\x1bP1+r544e=787465726d\x1b\\",
         ],
     )
     def test_fragmented_navigation_and_terminal_replies_are_not_edits(self, sequence):
@@ -1042,6 +1148,34 @@ class TestModelSwitchInput:
         assert state.observe(b"", 2.0) == claude_pty.ModelSwitchInputResult(
             edited=True, model_command=False
         )
+
+    @pytest.mark.parametrize(
+        "sequence",
+        [b"\x1b[97u", b"\x1b[97;1u", b"\x1b[97;5u", b"\x1b[13;1:1u", b"\x1bPcustom\x1b\\"],
+    )
+    def test_non_reply_sequences_remain_user_input(self, sequence):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(sequence, 1.0).edited
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            b"explain codx\x1b[D\x7fe\x1b[C\r",
+            b"explain code\x1b[4Dx\r",
+            b"explain code\x1b[Hmore \x1b[F\r",
+            b"explain codx\x1b[D\x1b[3~e\r",
+        ],
+    )
+    def test_cursor_edits_keep_an_ordinary_prompt_known(self, line):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(line, 1.0) == claude_pty.ModelSwitchInputResult(
+            edited=True, model_command=False
+        )
+
+    def test_grapheme_cursor_motion_does_not_guess_a_manual_target(self):
+        state = claude_pty.ModelSwitchInput()
+        result = state.observe("/model opuX\u0301\x1b[D\x1b[3~s\r".encode(), 1.0)
+        assert result.manual_model is None
 
     def test_submitted_slash_command_transfers_default_ownership(self):
         state = claude_pty.ModelSwitchInput()
@@ -1082,7 +1216,8 @@ class TestModelSwitchInput:
             (b"/model haikx\x7fu\r", "haiku"),
             (b"/model\r", None),
             (b"/model haiku extra\r", None),
-            (b"/model haiku\x1b[D\r", None),
+            (b"/model haiku\x1b[D\r", "haiku"),
+            (b"/model haikx\x1b[D\x1b[3~u\r", "haiku"),
             (b"/model haiku\r\x1b[A\r", None),
             (b"x" * 4096 + b"/model haiku\r", None),
         ],

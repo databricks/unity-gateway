@@ -2133,6 +2133,40 @@ class TestSubagentRouting:
 
 
 class TestModelSettingRecovery:
+    @pytest.mark.parametrize("older_completion", ["restore", "confirm_manual_choice"])
+    def test_unregistered_older_choice_cannot_replace_a_newer_choice(
+        self, tmp_path, monkeypatch, older_completion
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        older = v2._ClaudeModelSettingGuard(settings)
+        newer = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        acquire = v2.acquire_exclusive_file_lock
+
+        def busy_lock(_file, *, timeout):
+            raise TimeoutError("another process holds the journal lock")
+
+        try:
+            # Only the older choice's initial registration loses the lock.
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", busy_lock)
+            assert older.abandon("opus") is False
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire)
+            assert newer.abandon("fable") is False
+            settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+            assert newer.confirm_manual_choice()
+            assert getattr(older, older_completion)()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "fable", "theme": "light"}
+        finally:
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire)
+            older.finish(timeout=0)
+            newer.finish(timeout=0)
+            pending.finish(timeout=0)
+
     @pytest.mark.skipif(os.name != "posix", reason="requires a POSIX copier executable")
     def test_exit_bounds_a_stalled_permission_copy(self, tmp_path, monkeypatch, capsys):
         settings = tmp_path / "settings.json"
@@ -2570,22 +2604,30 @@ finally:
         pending("defer")
         assert chooser("abandon", manual_model="opus") is False
         recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
-        snapshot = recovery.read_bytes()
+        snapshot = json.loads(recovery.read_text())
 
         assert pending("finish", timeout=0) is False
 
         output = " ".join(capsys.readouterr().out.split())
         assert "another session's /model choice is unresolved" in output
         assert "Complete that choice or exit that session" in output
-        assert "then send a prompt in a new Smart Routing session" in output
+        assert "to retry recovery" in output
         assert "Set its model back" not in output
-        assert recovery.read_bytes() == snapshot
+        after_exit = json.loads(recovery.read_text())
+        assert after_exit["before"] == snapshot["before"]
+        assert after_exit["manual"] == snapshot["manual"]
+        assert after_exit["pending"].keys() == snapshot["pending"].keys()
+        assert all(entry["finished"] for entry in after_exit["pending"].values())
         pending("crash")
         if confirmed:
             settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
             assert chooser("confirm_manual_choice")
         else:
             assert chooser("cancel_manual_choice")
+        assert json.loads(settings.read_text()) == {
+            "model": "opus" if confirmed else "haiku",
+            "theme": "light",
+        }
         next_session = start()
         assert next_session("begin", routed_model="fable")
         settings.write_text(json.dumps({"model": "fable", "theme": "light"}))

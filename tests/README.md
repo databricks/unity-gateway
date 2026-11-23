@@ -426,9 +426,7 @@ search output. URL matching ignores surrounding Markdown emphasis and inline-cod
 while preserving paths, queries, fragments, and unformatted literal asterisks.
 These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
-the command fails or times out. Capture is scoped to Antigravity-marked journeys. The capture context
-retains a failure from its body when log collection also fails. A capture failure still fails
-a context that otherwise succeeded.
+the command fails or times out.
 
 `test_opencode_family.py` covers the code OpenCode and Kilo share in `agents/opencode_family.py`.
 Kilo's rendered auth plugin must equal OpenCode's V1 plugin for the same state, and OpenCode's V2
@@ -1291,17 +1289,11 @@ do not cover plugin-write/process-start failures, native plugin refresh, or daem
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
-`test_claude_pty_replay.py` uses fake TUIs to check delayed replay, manual cancellation,
-unrelated slash commands and default restoration, including slower polling that still
-recovers late writes. `test_claude_smart_routing_v2.py`
-covers concurrent recovery, file access controls and failures, including exit while another
-session has a pending manual choice, with exit guidance that preserves its recovery state,
-a stalled permission copy that must respect the cleanup retry window, and preparation
-warnings formatted for the active terminal.
-A matching temporary model still requires manual confirmation or cancellation.
-`test_config_io.py` checks preserving writes with an absolute nonstandard `cp` location,
-rejected relative PATH entries, shorter JSON and an explicit mode. These are component checks;
-native picker/history choices and live concurrent recovery remain unverified.
+`test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
+2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
+command, and the replay must arrive unchanged after a confirmed switch or cancellation, or a
+missing quiet window. These are component checks; live first-prompt routing on a pinned Claude Code
+version is not executed here.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
@@ -1543,7 +1535,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure on the managed workspace with the stubbed `managed_workspace_default.json` CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude`, and `ug claude --model`, above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. `ug claude --model <Sonnet id>` (the workspace's only Claude model) displays the same recommendation, selects Sonnet in the native header, and leaves the user and OS-managed settings files byte-identical to configure's (Sonnet `ANTHROPIC_MODEL`); a following plain launch selects Sonnet without rewriting them. A differing Claude budget pick, alone or with smart routing, is unit-covered only. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |
-| `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; the picker waits for its native cache before exit, and both match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
+| `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |

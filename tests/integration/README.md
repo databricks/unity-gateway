@@ -910,9 +910,7 @@ trust screens through visible choices, and reads the answer from a finished agen
 (type 15 on 1.4.9) in Antigravity's SQLite conversation store (`utils/agents/antigravity.py`); the
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
-TUI `/model` switch, and Windows (no Antigravity gateway build). Before cleanup,
-Antigravity-marked sessions save `antigravity-requests.json` from native logs, including after
-assertion failures. Capture errors remain visible in the test report.
+TUI `/model` switch, and Windows (no Antigravity gateway build).
 
 VS Code Copilot Chat has four live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
 no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
@@ -2088,7 +2086,7 @@ source is `main.ucode.dont_delete_ci_company_anthropic_mps` with no static defau
 scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
-Claude's picker waits for its native cache before exit. Both must match those IDs, preserve catalog display names,
+Claude's native cache and replacement picker must match those IDs, preserve catalog display names,
 and show a model in a numbered picker row alongside its admin header.
 Codex's scoped and stable catalogs, ug-launched app server, and fresh bare app server must match
 its independently fetched IDs. The configured Codex journey subsequently runs real `ug revert`,

@@ -789,6 +789,7 @@ class _ClaudeModelSettingGuard:
         self._manual_model: str | None = None
         self._manual_confirmed: bool | None = None
         self._manual_registered = False
+        self._manual_started_at = 0
         self._begin_error_warned = False
         self._token = uuid.uuid4().hex
         settings_key = hashlib.sha256(str(settings_path.resolve()).encode()).hexdigest()[:16]
@@ -834,6 +835,7 @@ class _ClaudeModelSettingGuard:
                 or not isinstance(entry.get("model"), str)
                 or type(entry.get("pid")) is not int
                 or entry["pid"] <= 0
+                or type(entry.get("finished", False)) is not bool
             ):
                 raise ValueError(f"Invalid model recovery entry in {self._recovery_path}")
         manual = recovery.get("manual")
@@ -845,6 +847,8 @@ class _ClaudeModelSettingGuard:
             or manual["pid"] <= 0
         ):
             raise ValueError(f"Invalid manual model recovery in {self._recovery_path}")
+        if type(recovery.get("manual_started_at", 0)) is not int:
+            raise ValueError(f"Invalid manual model order in {self._recovery_path}")
         return recovery
 
     def _manual_choice_pending(self, recovery: dict) -> bool:
@@ -881,6 +885,28 @@ class _ClaudeModelSettingGuard:
             config_io.atomic_write_json(self._recovery_path, recovery)
         else:
             self._recovery_path.unlink(missing_ok=True)
+
+    def _restore_default(
+        self, current: dict, before: dict, *, deadline: float | None = None
+    ) -> None:
+        if "model" in before:
+            current["model"] = before["model"]
+        else:
+            current.pop("model", None)
+        if config_io.is_dry_run():
+            write_json_file(self.settings_path, current)
+        else:
+            target = self.settings_path.resolve()
+            copy_timeout = 5.0
+            if deadline is not None:
+                copy_timeout = min(copy_timeout, max(0.0, deadline - time.monotonic()))
+            config_io.atomic_write_json(
+                target,
+                current,
+                mode=stat.S_IMODE(target.stat().st_mode),
+                preserve_permissions=os.name == "posix",
+                copy_timeout=copy_timeout,
+            )
 
     def _release_settings_lock(self) -> None:
         if self._lock is not None:
@@ -923,6 +949,7 @@ class _ClaudeModelSettingGuard:
         self._manual_model = None
         self._manual_confirmed = None
         self._manual_registered = False
+        self._manual_started_at = 0
         self._release_settings_lock()
         self._release_owner_lock()
 
@@ -1005,6 +1032,7 @@ class _ClaudeModelSettingGuard:
         self._manual_model = manual_model
         self._manual_confirmed = None
         self._manual_registered = False
+        self._manual_started_at = time.time_ns()
         return self._try_abandon()
 
     def _try_abandon(self) -> bool:
@@ -1020,11 +1048,17 @@ class _ClaudeModelSettingGuard:
                 self._recovery_path.unlink(missing_ok=True)
             else:
                 recovery = self._read_recovery()
-                if self._manual_registered and recovery.get("manual_choice") != self._token:
+                if (
+                    recovery.get("manual_started_at", 0) > self._manual_started_at
+                    or self._manual_registered
+                    and recovery.get("manual_choice") != self._token
+                ):
                     self._clear()
                     return True
                 recovery["pending"].pop(self._token, None)
                 recovery["manual_choice"] = self._token
+                # Keep input order when registration has to wait for another writer.
+                recovery["manual_started_at"] = self._manual_started_at
                 if recovery["pending"]:
                     # Keep older writers until confirmation, cancellation or child exit.
                     recovery["manual"] = {
@@ -1041,7 +1075,7 @@ class _ClaudeModelSettingGuard:
         self._clear()
         return True
 
-    def _finish_manual_choice(self, *, confirmed: bool) -> bool:
+    def _finish_manual_choice(self, *, confirmed: bool, deadline: float | None = None) -> bool:
         if confirmed and not self._manual_registered:
             if self._try_abandon():
                 return True
@@ -1058,6 +1092,17 @@ class _ClaudeModelSettingGuard:
                     recovery["before"] = {"model": self._manual_model}
                 del recovery["manual"]
             recovery["pending"].pop(self._token, None)
+            finished = {
+                token: entry
+                for token, entry in recovery["pending"].items()
+                if entry.get("finished")
+            }
+            if finished and "manual" not in recovery:
+                current = self._read_settings()
+                if any(current.get("model") == entry["model"] for entry in finished.values()):
+                    self._restore_default(current, recovery["before"], deadline=deadline)
+                for token in finished:
+                    del recovery["pending"][token]
             self._write_recovery(recovery)
         finally:
             self._release_settings_lock()
@@ -1082,7 +1127,9 @@ class _ClaudeModelSettingGuard:
     def _restore(self, *, deadline: float | None = None) -> bool | Literal["manual_pending"]:
         if self._cancelled:
             if self._manual_confirmed is not None:
-                return self._finish_manual_choice(confirmed=self._manual_confirmed)
+                return self._finish_manual_choice(
+                    confirmed=self._manual_confirmed, deadline=deadline
+                )
             return self._try_abandon()
         if self._before is None:
             return True
@@ -1091,6 +1138,10 @@ class _ClaudeModelSettingGuard:
         try:
             recovery = self._read_recovery()
             if self._manual_choice_pending(recovery):
+                if deadline is not None and self._token in recovery["pending"]:
+                    # finish() runs after the native child exits, so this writer cannot recur.
+                    recovery["pending"][self._token]["finished"] = True
+                    self._write_recovery(recovery)
                 self.defer()
                 return "manual_pending"
             if self._token in recovery["pending"]:
@@ -1098,24 +1149,7 @@ class _ClaudeModelSettingGuard:
                 current = self._read_settings()
                 # A later user choice is not the temporary /model write we own.
                 if current.get("model") == self._routed_model:
-                    if "model" in recovery["before"]:
-                        current["model"] = recovery["before"]["model"]
-                    else:
-                        current.pop("model", None)
-                    if config_io.is_dry_run():
-                        write_json_file(self.settings_path, current)
-                    else:
-                        target = self.settings_path.resolve()
-                        copy_timeout = 5.0
-                        if deadline is not None:
-                            copy_timeout = min(copy_timeout, max(0.0, deadline - time.monotonic()))
-                        config_io.atomic_write_json(
-                            target,
-                            current,
-                            mode=stat.S_IMODE(target.stat().st_mode),
-                            preserve_permissions=os.name == "posix",
-                            copy_timeout=copy_timeout,
-                        )
+                    self._restore_default(current, recovery["before"], deadline=deadline)
                 del recovery["pending"][self._token]
                 self._write_recovery(recovery)
         except BaseException:
@@ -1131,7 +1165,9 @@ class _ClaudeModelSettingGuard:
             while True:
                 try:
                     if self._cancelled and self._manual_model is not None:
-                        if self._finish_manual_choice(confirmed=self._manual_confirmed is True):
+                        if self._finish_manual_choice(
+                            confirmed=self._manual_confirmed is True, deadline=deadline
+                        ):
                             return True
                     else:
                         restored = self._restore(deadline=deadline)
@@ -1142,8 +1178,7 @@ class _ClaudeModelSettingGuard:
                             print_warning(
                                 "Smart Routing left model recovery pending because another "
                                 "session's /model choice is unresolved. Complete that choice "
-                                "or exit that session, then send a prompt in a new "
-                                "Smart Routing session to retry recovery."
+                                "or exit that session to retry recovery."
                             )
                             return False
                 except (OSError, ValueError, RuntimeError):
