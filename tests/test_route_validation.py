@@ -205,16 +205,7 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, monke
     }
 
 
-@pytest.mark.parametrize(
-    "response,expected",
-    [
-        (({"is_supported": True}, None), {"is_supported": True}),
-        (({"is_supported": False}, None), {"is_supported": False}),
-        ((None, "HTTP 503"), None),
-        (RuntimeError("network down"), None),
-    ],
-)
-def test_validate_returns_the_result_or_none_on_failure(response, expected, monkeypatch):
+def _validate(response, monkeypatch):
     monkeypatch.setattr(
         validation,
         "_http_post_json",
@@ -222,11 +213,35 @@ def test_validate_returns_the_result_or_none_on_failure(response, expected, monk
         if isinstance(response, Exception)
         else Mock(return_value=response),
     )
-    result = validation.validate(
+    return validation.validate(
         "https://example.com", "test-token", [("m", "claude")], router_name="stable"
     )
-    if result and result["is_supported"] is False:
-        assert isinstance(result.pop("validation_ms"), int)
-        assert result["router_name"] == "stable"
-        result = {"is_supported": False}
-    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        (({"is_supported": True}, None), {"is_supported": True}),
+        ((None, "HTTP 503"), None),
+        (RuntimeError("network down"), None),
+    ],
+)
+def test_validate_returns_supported_or_none_on_failure(response, expected, monkeypatch):
+    assert _validate(response, monkeypatch) == expected
+
+
+def test_validate_returns_the_unsupported_details(monkeypatch):
+    payload = {
+        "is_supported": False,
+        "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
+    }
+    result = _validate((payload, None), monkeypatch)
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == {
+        "is_supported": False,
+        "router_name": "stable",
+        "routing_unsupported_reason": "insufficient_eligible_options",
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
+    }

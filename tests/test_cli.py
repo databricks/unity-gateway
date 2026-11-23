@@ -2238,7 +2238,7 @@ class TestSubcommandRouting:
             (None, False),
         ],
     )
-    def test_claude_mod_validation_records_unsupported_without_disabling_routing(
+    def test_claude_mod_validation_prints_unsupported_without_recording_it(
         self, tmp_path, monkeypatch, validation, recorded
     ):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
@@ -2262,8 +2262,9 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert validate.call_args.args[2] == [("system.ai.claude-opus-4-8", "claude")]
         records = session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE)
-        assert result.output == (json.dumps(validation) if recorded else "")
-        assert [r["routing_disabled"] for r in records] == ([False] if recorded else [])
+        expected = {**validation, "routing_disabled": False} if recorded else None
+        assert result.output == (json.dumps(expected) if recorded else "")
+        assert records == []
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")

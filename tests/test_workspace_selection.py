@@ -266,7 +266,6 @@ class TestHelperArgv:
             assert argv[argv.index("--workspace-id") + 1] == WSID
             assert argv[argv.index("--provider") + 1] == "new.schema.provider"
             assert argv[argv.index("--model") + 1] == "system.ai.claude-opus-4-8"
-        argv = routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
         assert "--provider" not in routing_hook_argv(state, "session-start")
         del state["_claude_launch_provider"]
         assert "--provider" not in routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)

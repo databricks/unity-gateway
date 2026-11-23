@@ -12,7 +12,6 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -642,14 +641,13 @@ def _route_print_mode_prompt(
 
 
 def validate_claude_model_list(
-    payload: dict,
     *,
     workspace: str,
     token: str,
     available_models: list[str],
     provider: str | None = None,
 ) -> dict | None:
-    """Validate the session's model list and record an unsupported result without disabling routing."""
+    """Return an unsupported result as a route validation record that left routing on."""
     result = route_validation.validate(
         workspace,
         token,
@@ -659,13 +657,7 @@ def validate_claude_model_list(
     )
     if not result or result["is_supported"] is not False:
         return None
-    session_id = payload.get("session_id")
-    if isinstance(session_id, str):
-        with suppress(OSError, ValueError):
-            session_log.append_route_validation(
-                AGENT_CLAUDE, session_id, {**result, "routing_disabled": False}
-            )
-    return result
+    return {**result, "routing_disabled": False}
 
 
 def route_claude_subagent(

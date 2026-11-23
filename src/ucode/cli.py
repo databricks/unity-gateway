@@ -212,8 +212,8 @@ from ucode.smart_routing import config as smart_routing_config
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
+    MOD_EVENTS,
     ROUTE_FIRST_PROMPT_EVENT,
-    ROUTE_SUBAGENT_MOD_EVENT,
     ROUTE_VALIDATION_MOD_EVENT,
 )
 from ucode.smart_routing.session_env import (
@@ -3600,7 +3600,12 @@ def smart_router_logs_cmd(
         raise fail(f"unknown format {output_format!r}; expected json or table")
     if record_route_validation is not None:
         try:
-            result = json.loads(record_route_validation.read_text(encoding="utf-8"))
+            text = (
+                sys.stdin.read()
+                if str(record_route_validation) == "-"
+                else record_route_validation.read_text(encoding="utf-8")
+            )
+            result = json.loads(text)
             if not isinstance(result, dict):
                 raise ValueError("expected a JSON object")
             session_log.append_route_validation(harness, session, result)
@@ -3721,17 +3726,13 @@ def claude_router_hook_cmd(
         # When matched is None the harness didn't report the subagent model —
         # routing already injected the selected model, so emit nothing.
         return
-    if (
-        event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT, ROUTE_VALIDATION_MOD_EVENT}
-        or not host
-    ):
+    if (event != "route-subagent" and event not in MOD_EVENTS) or not host:
         return
     token = _router_hook_token(host, profile, use_pat)
     if not token:
         return
     if event == ROUTE_VALIDATION_MOD_EVENT:
         result = smart_routing_v2.validate_claude_model_list(
-            payload,
             workspace=host,
             token=token,
             available_models=model or [],
