@@ -430,9 +430,8 @@ def restore_full_activation(payload: dict[str, Any], binding: Mapping[str, Any])
             matches.append((part, text, header))
     if not matches:
         return False
-    if len(matches) != 1:
-        raise _UnrecognizedRequest("native request contains duplicate trusted UG activations")
-    part, text, header = matches[0]
+    # Prompt hooks recur across turns; retain earlier history and refresh the latest activation.
+    part, text, header = matches[-1]
     prefix = text[:header]
     contract = bound_owner_contract(binding)
     additions = []
