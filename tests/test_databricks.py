@@ -7415,6 +7415,10 @@ class TestModelServicesNeedSubscriptionRelay:
             "https://ws", "tok", ["main.default.gpt"]
         )
 
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"], provider_type="openai"
+        )
+
     def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):
         service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
         outcomes = iter([(None, "503"), (service, None)])

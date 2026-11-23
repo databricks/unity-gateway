@@ -642,6 +642,26 @@ class _RelayProxyHandler(_ProxyHandler):
         return self.token_header, frozenset(), "relay"
 
 
+class _CodexRelayProxyHandler(_RelayProxyHandler):
+    def _handle(self) -> None:
+        # This proxy can attach workspace Authorization. Keep it on the Codex API surface.
+        if not _is_allowed_gateway_path(self.path, ("/v1/",)):
+            self._safe_send_error(404, "Not found")
+            return
+        super()._handle()
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        model = _request_model(body)
+        if self._is_relay_backed_model_service(model):
+            return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
+        # A direct MPS accepts native Codex IDs such as gpt-5.2 and its model-list GET.
+        if self.headers.get(MODEL_PROVIDER_SERVICE_HEADER) and not (
+            model and (is_uc_model_service(model) or model.startswith(("system.", "databricks-")))
+        ):
+            return self.token_header, frozenset(), "relay"
+        return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP | {"chatgpt-account-id"}, "databricks"
+
+
 # Gateway model routes a gateway-auth proxy session may reach. Everything else
 # (workspace REST APIs included) is refused, so the session secret only buys inference.
 GATEWAY_MODEL_PATH_PREFIXES = (
@@ -942,7 +962,7 @@ def _start_proxy(
 # provider (e.g. Copilot's) adds an entry here.
 _RELAY_ROUTES: dict[str, tuple[str, type[_ProxyHandler]]] = {
     AGENT_CLAUDE: ("ai-gateway/anthropic/", _RelayProxyHandler),
-    # Plain forwarding: the Anthropic hybrid reroute doesn't apply.
+    # Codex Desktop pins one provider. The CLI supplies a lookup for model-service routing.
     AGENT_CODEX: ("ai-gateway/codex/", _ProxyHandler),
 }
 
@@ -958,9 +978,11 @@ def start_relay_proxy(
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``).
 
-    ``routes_to_subscription_relay(model, databricks_token)`` tells Claude's proxy which UC model
-    services keep the relay credentials; without it they all take the gateway-auth path."""
+    ``routes_to_subscription_relay(model, databricks_token)`` tells the proxy which UC model
+    services keep the relay credentials. Codex Desktop omits it for its pinned provider."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
+    if agent == AGENT_CODEX and routes_to_subscription_relay is not None:
+        handler_type = _CodexRelayProxyHandler
     handler_attrs = (
         {"routes_to_subscription_relay": staticmethod(routes_to_subscription_relay)}
         if routes_to_subscription_relay

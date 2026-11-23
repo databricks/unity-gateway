@@ -973,12 +973,29 @@ class TestClaudeRelayProxyWiring:
 
 
 class TestCodexRelayProxy:
-    def test_relays_chatgpt_login_to_codex_upstream(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("model", "pinned", "expected_auth", "swap", "keep_pin"),
+        [
+            ("cat.s.seat", True, "chatgpt-token", True, False),
+            ("cat.s.seat", False, "chatgpt-token", True, False),
+            ("cat.s.foundry", True, "tok1", False, False),
+            ("system.ai.gpt-5.2", False, "tok1", False, False),
+            ("gpt-5.2", True, "chatgpt-token", True, True),
+            ("gpt-5.2", False, "tok1", False, False),
+        ],
+    )
+    def test_relays_chatgpt_login_to_codex_upstream(
+        self, monkeypatch, model, pinned, expected_auth, swap, keep_pin
+    ):
         cache = Mock(token="tok1")
         cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
         server, _cache, upstream = gateway_proxy.start_relay_proxy(
-            "https://w", lambda _f: "t", 0, agent="codex"
+            "https://w",
+            lambda _f: "t",
+            0,
+            agent="codex",
+            routes_to_subscription_relay=lambda m, _: m == "cat.s.seat",
         )
         server.server_close()
         upstream.close()
@@ -990,21 +1007,21 @@ class TestCodexRelayProxy:
         h = object.__new__(server.RequestHandlerClass)
         h.client = client  # the bound class keeps the real cache, token header, and handler
         h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
-        body = b'{"model": "claude-opus-4-1"}'  # not rerouted: no Anthropic hybrid logic
+        body = json.dumps({"model": model}).encode()
         h.headers = {
             "Authorization": "Bearer chatgpt-token",
             "ChatGPT-Account-ID": "acct",
-            "Databricks-Model-Provider-Service": "cat.s.mps",
+            **({"Databricks-Model-Provider-Service": "cat.s.mps"} if pinned else {}),
             "Content-Length": str(len(body)),
         }
         h.rfile = io.BytesIO(body)
         h.path, h.command, h.requestline = "/v1/responses", "POST", "POST /v1/responses HTTP/1.1"
         h._handle()
         sent = client.sent_headers[0]
-        assert sent["Authorization"] == "Bearer chatgpt-token"
-        assert sent["ChatGPT-Account-ID"] == "acct"
-        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
-        assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
+        assert sent["Authorization"] == f"Bearer {expected_auth}"
+        assert sent.get("ChatGPT-Account-ID") == ("acct" if swap else None)
+        assert sent.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER) == ("Bearer tok1" if swap else None)
+        assert sent.get("Databricks-Model-Provider-Service") == ("cat.s.mps" if keep_pin else None)
 
 
 class TestProxyMetrics:

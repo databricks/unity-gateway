@@ -63,14 +63,19 @@ from ucode.custom_oauth import (
     launch_token,
 )
 from ucode.databricks import (
+    OPENAI_PROVIDER_TYPE,
     CodexCatalogSource,
     CodexMpsModelCatalogUnavailable,
+    RelayLookup,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_mcp_proxy_argv,
     build_mcp_service_url,
     build_tool_base_url,
+    custom_model_services,
     get_model_provider_service,
+    model_service_relay_lookup,
+    model_services_need_subscription_relay,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -1920,6 +1925,36 @@ def _has_chatgpt_login(binary: str) -> bool:
     return result.returncode == 0 and "ChatGPT" in f"{result.stdout}{result.stderr}"
 
 
+def use_model_service_relay(state: dict, selected_model: str | None = None) -> bool:
+    """Select per-user relay auth for a static list or an explicitly selected model service."""
+    models = state.get("codex_static_models")
+    candidates = custom_model_services(models if isinstance(models, list) else [])
+    selection = selected_model or state.get("codex_default_model")
+    if isinstance(selection, str) and selection not in candidates:
+        candidates.extend(custom_model_services([selection]))
+    if not candidates or machine_wide_only():
+        return False
+    workspace = state["workspace"]
+    try:
+        token = _launch_token(state, workspace)
+    except RuntimeError:
+        return False
+    if not model_services_need_subscription_relay(
+        workspace, token, candidates, provider_type=OPENAI_PROVIDER_TYPE
+    ):
+        return False
+    if not (os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])):
+        print_note("Sign in with `codex login` to use the ChatGPT subscription model service.")
+        return False
+    path = codex_managed_config_path()
+    if path and not managed_settings_skipped() and _managed_relayed_conflicts(path):
+        print_note(
+            f"Codex managed authentication at {path} takes precedence over your ChatGPT seat."
+        )
+        return False
+    return True
+
+
 def _ensure_chatgpt_login(binary: str) -> None:
     """Run Codex's browser sign-in if it has no ChatGPT login. ug never sees the token."""
     # Codex reads an access token from the environment directly, so no interactive login applies;
@@ -2122,6 +2157,12 @@ def launch(
             lambda force: _launch_token(state, workspace, force_refresh=force),
             0,
             agent=AGENT_CODEX,
+            routes_to_subscription_relay=lambda model, token: (
+                model_service_relay_lookup(
+                    workspace, token, model, provider_type=OPENAI_PROVIDER_TYPE
+                )
+                is RelayLookup.RELAYED
+            ),
         )
         threading.Thread(target=relay[0].serve_forever, daemon=True).start()
         port = relay[0].server_address[1]

@@ -4662,6 +4662,8 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CODEX and not provider and not parent_schema:
+            relayed = codex_agent.use_model_service_relay(state, model or forwarded_model)
         if tool == AGENT_CODEX and managed_smart_routing_applies:
             if relayed:
                 routing_unavailable = (

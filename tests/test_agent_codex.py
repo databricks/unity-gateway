@@ -1853,6 +1853,18 @@ class TestCodexLaunch:
         assert "Authorization" not in otel  # no credential in argv; the proxy injects it
         assert argv[-2:] == ["exec", "hi"]
 
+    @pytest.mark.parametrize("signed_in", [True, False])
+    def test_static_relay_uses_developers_chatgpt_login(self, tmp_path, monkeypatch, signed_in):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: signed_in)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        detect = Mock(return_value=True)
+        monkeypatch.setattr(codex, "model_services_need_subscription_relay", detect)
+        state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
+        assert codex.use_model_service_relay(state) is signed_in
+        detect.assert_called_once_with(WS, "tok", ["cat.s.seat"], provider_type="openai")
+
     def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
         self, tmp_path, monkeypatch
     ):
@@ -1864,10 +1876,15 @@ class TestCodexLaunch:
         popen = Mock(return_value=process)
         started = {}
 
-        def start_relay_proxy(workspace, token_provider, port, *, agent="claude"):
+        def start_relay_proxy(
+            workspace, token_provider, port, *, agent, routes_to_subscription_relay
+        ):
+            assert routes_to_subscription_relay("cat.s.chatgpt", "db-token")
             started.update(workspace=workspace, token=token_provider(False), agent=agent)
             return server, cache, client
 
+        detect = Mock(return_value=codex.RelayLookup.RELAYED)
+        monkeypatch.setattr(codex, "model_service_relay_lookup", detect)
         monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
         login_status = Mock(return_value=True)
@@ -1890,6 +1907,7 @@ class TestCodexLaunch:
             )
 
         login_status.assert_called_once()
+        detect.assert_called_once_with(WS, "db-token", "cat.s.chatgpt", provider_type="openai")
         assert started == {"workspace": WS, "token": "tok", "agent": "codex"}
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]

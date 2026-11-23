@@ -2326,6 +2326,21 @@ class TestManagedConfigLaunchSourceGuard:
         calls["launch"].assert_called_once()
 
 
+def test_codex_launch_uses_chatgpt_relay_for_managed_model_service_list():
+    services = ["main.team.chatgpt", "main.team.foundry"]
+    managed = {"enabled_agents": {"codex": {"model_config": {"model_services": services}}}}
+    with (
+        _launch_policy_patches(managed) as calls,
+        patch("ucode.cli.codex_agent.use_model_service_relay", return_value=True) as detect,
+    ):
+        result = runner.invoke(app, ["codex"])
+
+    assert result.exit_code == 0, result.output
+    assert detect.call_args.args[0]["codex_static_models"] == services
+    assert calls["configure"].call_args.kwargs["relayed"]
+    assert calls["configure"].call_args.kwargs["provider"] is None
+
+
 class TestManagedClaudeModelDiscovery:
     @pytest.mark.parametrize("with_defaults", [False, True])
     def test_managed_static_models_do_not_enable_discovery(self, with_defaults):
