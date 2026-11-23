@@ -20,7 +20,11 @@ from ucode.constants import (
 )
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
-from ucode.smart_routing.session_env import effective_environment, session_env_path
+from ucode.smart_routing.session_env import (
+    effective_environment,
+    routing_never_turned_on,
+    session_env_path,
+)
 
 HOOK_MODULE = "ucode.smart_routing.orchestrator"
 CLAUDE_AGENT_DESCRIPTION = """Launch a subagent to own a complete task under the active Smart Router Orchestrator workflow.
@@ -63,16 +67,16 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
-    if not feature_enabled(source, agent=agent):
-        return False
     try:
         # The marker is created only after UG selects a supported routing launch.
         if not session_env_path(source).is_file():
             return False
     except (RuntimeError, OSError):
         return False
-    return smart_routing_enabled(
-        effective_environment(source, agent=agent), default=False, agent=agent
+    # Session controls can turn on an orchestrator the launch environment has off.
+    effective = effective_environment(source, agent=agent)
+    return feature_enabled(effective, agent=agent) and smart_routing_enabled(
+        effective, default=False, agent=agent
     )
 
 
@@ -112,8 +116,12 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
         event == "SessionStart" and payload.get("source") == "compact"
     ):
         return None
+    active = enabled(agent=agent)
+    # No earlier workflow to supersede before the user first turns Smart Router on.
+    if not active and routing_never_turned_on():
+        return None
     context = DISABLED_CONTEXT
-    if enabled(agent=agent):
+    if active:
         directory = skill_directory()
         try:
             entrypoint = skills.skill_entrypoint(directory, agent)

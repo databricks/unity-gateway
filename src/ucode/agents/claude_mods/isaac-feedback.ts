@@ -69,11 +69,13 @@ async function feedbackEnvironment($: EngineInterface): Promise<Record<string, s
     try {
       const overrides = JSON.parse(await $.fs.read(controls));
       const keys = ['ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY', 'ENABLE_SMART_ROUTER_ORCHESTRATOR'];
+      // Controls also hold the Auto and display flags, which this report leaves out.
+      const controlKeys = [...keys, 'ENABLE_SMART_ROUTER_AUTO_MODE', 'ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI'];
       if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)
-          || Object.entries(overrides).some(([key, value]) => !keys.includes(key) || (value !== '0' && value !== '1'))) {
+          || Object.entries(overrides).some(([key, value]) => !controlKeys.includes(key) || (value !== '0' && value !== '1'))) {
         throw new Error('Invalid routing controls.');
       }
-      Object.assign(env, overrides);
+      for (const key of keys) if (key in overrides) env[key] = overrides[key];
     } catch {
       // Let Isaac report unreadable controls instead of claiming a verified state.
       env.UCODE_SESSION_ENV_FILE = controls;

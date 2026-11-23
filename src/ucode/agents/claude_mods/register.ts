@@ -28,7 +28,7 @@ import {
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
-import { isRoutingEnabled } from './routing-state.ts';
+import { isRoutingEnabled, neverTurnedOn } from './routing-state.ts';
 import {
   LOGS_COMMAND_TIMEOUT_MS,
   ROUTING_LOGS_PANE,
@@ -214,6 +214,16 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
   if (!options.orchestratorInstructions) return false;
   const current = await readSessionEnvironment($);
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
+}
+
+async function routingNeverTurnedOn($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  const file = options.onDemandFile as string;
+  if (!file) return false;
+  try {
+    return neverTurnedOn(await $.fs.read(file));
+  } catch {
+    return false;
+  }
 }
 
 async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
@@ -438,7 +448,8 @@ export function register(on: On, options: PluginOptions): void {
         await customAutoRow($, auto, await mainModel($, auto));
         await syncAutoRouting($, options, auto, routingSync);
       }
-      if (launchedEnabled) {
+      // A session that started off keeps routing off, and sends no recipe, until the user turns it on.
+      if (launchedEnabled && !await routingNeverTurnedOn($, options)) {
         const current = await readEnvironment($);
         await setRouting($, options, isRoutingEnabled(current), false);
       }
@@ -967,7 +978,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
-  registerStatusBand(on, auto);
+  registerStatusBand(on, auto, options.onDemandFile as string);
   registerSubagentRouting(on, options, auto?.models.map(row => row.autoModel));
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', async ($, e, next) => {

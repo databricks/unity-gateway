@@ -869,6 +869,12 @@ no preset is applied, the inherited environment is unchanged, and commands conti
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
 Ordinary launches keep routing and orchestration off unless enabled explicitly or by workspace policy.
+With the temporary `ENABLE_SMART_ROUTER_ON_DEMAND=1` gate, an interactive Claude Code launch that
+would start without smart routing installs it switched off, so `/smart-router on` can turn it on
+mid-session. It turns on what `--enable-smart-routing` would: subagent routing and Smart Router
+Orchestrator. Until then the session shows no Smart Router band or hint, and its prompts carry no
+orchestrator text. `--disable-smart-routing`, a known version, and print mode keep the launch
+unrouted; workspace smart routing only decides whether the session starts on.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.

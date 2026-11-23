@@ -74,8 +74,8 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTER_ON_DEMAND_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
-    SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
@@ -218,7 +218,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
-    set_session_environment,
+    set_session_routing,
 )
 from ucode.state import (
     MANAGED_OVERLAY_KEY,
@@ -3836,7 +3836,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         )
         raise typer.Exit(2)
     try:
-        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
+        set_session_routing(enabled)
     except RuntimeError as exc:
         metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
@@ -4142,6 +4142,31 @@ def _routes_launch(
     )
 
 
+def _smart_routing_on_demand(
+    tool: str,
+    tool_args: list[str],
+    *,
+    explicit_prompt: bool,
+    model: str | None,
+    provider: str | None,
+) -> bool:
+    """Whether a launch without smart routing still installs it, off until the user turns it on."""
+    return (
+        env_bool(ENABLE_SMART_ROUTER_ON_DEMAND_ENV_VAR)
+        and tool == AGENT_CLAUDE
+        # Print mode ends before the user could turn routing on.
+        and not smart_routing_v2.claude_print_mode(tool_args)
+        and _routes_launch(
+            tool,
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=explicit_prompt,
+            model=model,
+            provider=provider,
+        )
+    )
+
+
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -4151,6 +4176,7 @@ def _launch_options(
     user_pinned_model: str | None,
     provider: str | None,
     launch_model: str | None = None,
+    smart_routing_on_demand: bool = False,
 ) -> LaunchOptions:
     return LaunchOptions(
         launch_model=launch_model,
@@ -4164,6 +4190,7 @@ def _launch_options(
             model=user_pinned_model,
             provider=provider,
         ),
+        smart_routing_on_demand=smart_routing_on_demand,
     )
 
 
@@ -4490,6 +4517,22 @@ def _launch_tool(
                 else f"Smart routing on {display} is currently not supported. "
                 "Running without smart routing."
             )
+        # With no explicit choice, a launch that resolves off still installs routing, switched
+        # off, so the user can turn it on mid-session. Admin config only sets the starting state.
+        smart_routing_on_demand = (
+            not smart_routing_enabled
+            and not routing_chosen
+            and not routing_skipped
+            and _smart_routing_on_demand(
+                tool,
+                ctx.args,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=provider,
+            )
+        )
+        # Either way the launch installs routing; only its starting state differs.
+        smart_routing_enabled = smart_routing_enabled or smart_routing_on_demand
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
@@ -4930,9 +4973,12 @@ def _launch_tool(
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
             # session_model is set for claude only.
             launch_model=managed_model if tool == "copilot" else session_model,
+            smart_routing_on_demand=smart_routing_on_demand,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
+        # Both install the routing `--enable-smart-routing` would.
+        uses_enabled_version = managed_smart_routing_applies or smart_routing_on_demand
+        with _smart_routing_v2_flag(True if uses_enabled_version else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         metrics.failure(metrics.COMMAND_OPERATION, exc)

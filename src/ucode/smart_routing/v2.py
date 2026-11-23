@@ -92,7 +92,12 @@ from ucode.smart_routing.config import (
     resolve_environment,
     selected_version,
 )
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    start_on_demand,
+    start_session,
+)
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -127,7 +132,7 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 
 class ClaudeRoutingSetupError(RuntimeError):
-    """Routing files could not be written; the caller can launch Claude normally."""
+    """Routing could not be set up; the caller can launch Claude normally."""
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
@@ -430,6 +435,19 @@ def _claude_mod_launch_options(
     }
 
 
+def _switch_claude_routing_off(
+    session_path: Path, settings_env: dict[str, str], mod_options: dict
+) -> None:
+    """Start an on-demand session off; `on` restores the routing the mod options record."""
+    when_on = {
+        key: mod_options[key] for key in SMART_ROUTING_ENV_KEYS if key not in mod_options["unset"]
+    }
+    mod_options["onDemandFile"] = str(start_on_demand(session_path, when_on))
+    mod_options["startupValidation"] = ""
+    # Claude's children, such as a nested ug launch, inherit routing off too.
+    settings_env.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+
+
 def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     # Replayed prompt snapshots bypass tool.describe, even after cache invalidation.
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
@@ -474,6 +492,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": "",
                     "title": "Startup route validation",
                     "description": "1 when ug runs the startup routes:validate check",
+                },
+                "onDemandFile": {
+                    "type": "string",
+                    "default": "",
+                    "title": "On-demand routing file",
+                    "description": "Set when the session starts with Smart Router off",
                 },
                 "routeCommand": {
                     "type": "string",
@@ -795,8 +819,13 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
     default_model: str | None = None,
+    on_demand: bool = False,
 ) -> NoReturn:
-    """Launch Claude in the first-prompt routing PTY wrapper."""
+    """Launch Claude in the first-prompt routing PTY wrapper.
+
+    An on-demand launch installs routing switched off. If the gateway's models can't be read,
+    it raises ClaudeRoutingSetupError so the caller launches normally.
+    """
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
@@ -804,25 +833,30 @@ def launch_claude(
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
 
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError(
-            "Smart routing needs a configured workspace; run `ucode configure claude` first."
-        )
-    token = launch_token(state, workspace)
-    os.environ[OAUTH_TOKEN_ENV_VAR] = token
-    # if modelPicker is defined, then skip model discovery.
-    picker_catalog = _model_picker_catalog()
-    if picker_catalog is None:
-        os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-        catalog = list_anthropic_model_catalog(workspace, token)
-    else:
-        catalog = picker_catalog
-    if not catalog.model_ids:
-        raise RuntimeError(
-            catalog.error_msg or "Anthropic models endpoint returned no Claude models"
-        )
+    try:
+        workspace = state.get("workspace")
+        if not workspace:
+            raise RuntimeError(
+                "Smart routing needs a configured workspace; run `ucode configure claude` first."
+            )
+        token = launch_token(state, workspace)
+        os.environ[OAUTH_TOKEN_ENV_VAR] = token
+        # if modelPicker is defined, then skip model discovery.
+        picker_catalog = _model_picker_catalog()
+        if picker_catalog is None:
+            os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+            os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+            catalog = list_anthropic_model_catalog(workspace, token)
+        else:
+            catalog = picker_catalog
+        if not catalog.model_ids:
+            raise RuntimeError(
+                catalog.error_msg or "Anthropic models endpoint returned no Claude models"
+            )
+    except RuntimeError as exc:
+        if on_demand:
+            raise ClaudeRoutingSetupError("Could not set up on-demand smart routing") from exc
+        raise
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
@@ -1002,7 +1036,8 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+            # The check turns failed routing off; an on-demand session starts off anyway.
+            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR) and not on_demand:
                 startup_validation.start(
                     workspace,
                     token,
@@ -1034,6 +1069,8 @@ def launch_claude(
                 "options"
             ] = mod_options
             try:
+                if on_demand:
+                    _switch_claude_routing_off(session_path, env, mod_options)
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
