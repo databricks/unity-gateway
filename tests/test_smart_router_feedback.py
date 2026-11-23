@@ -1,6 +1,8 @@
 """Codex off collection with a controlled Isaac subprocess boundary."""
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -186,6 +188,85 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
     run.assert_not_called()
     popen.assert_not_called()
     assert not session_env.session_routing_enabled(controls)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows PowerShell 5.1 and 7 parsers")
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize(
+    "reason,literal",
+    [
+        ("it’s too slow for this task", "'it’’s too slow for this task'"),
+        (
+            "too slow‘; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #",
+            "'too slow‘‘; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #'",
+        ),
+        (
+            "it's ‘slow’ ‚here‛.\nKeep $env:UG_QUOTING_SENTINEL and "
+            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal.",
+            "'it''s ‘‘slow’’ ‚‚here‛‛.\nKeep $env:UG_QUOTING_SENTINEL and "
+            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal.'",
+        ),
+    ],
+    ids=["curly-apostrophe", "command-breakout", "all-quotes-multiline"],
+)
+def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, reason, literal):
+    executable = shutil.which(shell)
+    assert executable is not None, f"Required Windows parser is unavailable: {shell}"
+    sentinel = tmp_path / "embedded-command-executed"
+    parser = tmp_path / "parse-reason.ps1"
+    # ParseInput never invokes the deliberately executable text in these reasons.
+    parser.write_text(
+        """
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$inputCase = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseInput(
+    $inputCase.command, [ref]$tokens, [ref]$parseErrors)
+$commands = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst]
+}, $true))
+$elements = @($commands[0].CommandElements)
+@{
+    errors = @($parseErrors | ForEach-Object { $_.ErrorId })
+    statements = @($ast.EndBlock.Statements).Count
+    commands = $commands.Count
+    elements = $elements.Count
+    feedback_flag = $elements[5].Extent.Text
+    reason_type = $elements[6].GetType().Name
+    quote_type = $elements[6].StringConstantType.ToString()
+    reason = $elements[6].Value
+} | ConvertTo-Json -Compress
+""",
+        encoding="utf-8",
+    )
+    command = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude '
+        f"--disable-smart-routing --smart-router-feedback {literal}"
+    )
+    result = subprocess.run(
+        [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(parser)],
+        input=json.dumps({"command": command}),
+        env={**os.environ, "UG_QUOTING_SENTINEL": str(sentinel)},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not sentinel.exists()
+    assert json.loads(result.stdout) == {
+        "errors": [],
+        "statements": 1,
+        "commands": 1,
+        "elements": 7,
+        "feedback_flag": "--smart-router-feedback",
+        "reason_type": "StringConstantExpressionAst",
+        "quote_type": "SingleQuoted",
+        "reason": reason,
+    }
 
 
 @pytest.mark.parametrize("reenable", ["claude", "codex", "native"])
