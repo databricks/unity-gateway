@@ -4,6 +4,7 @@ import { parseRoutingExplanation, type RoutingExplanation } from './subagent-rou
 export const ROUTING_LOGS_PANE = 'smart-router-logs';
 export const LOGS_COMMAND_TIMEOUT_MS = 10000;
 export const ROUTE_VALIDATION_ROW = 'Failed to enable smart routing. Press enter for details.';
+export const ROUTE_VALIDATION_ON_ROW = 'Warning: unsupported model list. Press enter for details.';
 const ROUTE_VALIDATION_REASONS: Record<string, string> = {
   insufficient_eligible_options: 'At least two supported models are required. Please reach out to your workspace admin',
   missing_required_tier_option: 'Required models are missing from this list',
@@ -32,6 +33,7 @@ type RouteValidation = {
   ineligible_route_options: (RouteOption & { reason: string | null })[];
   available_route_options: RouteOption[];
   validation_ms: number;
+  routing_disabled?: boolean;
 };
 type Decision = {
   decision_id: string;
@@ -481,7 +483,8 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
       if ('validation_id' in row) {
         // Age (8) + "  " + the fixed text fills the row.
         const room = Math.max(1, columns - 10);
-        const text = ROUTE_VALIDATION_ROW.length > room ? ROUTE_VALIDATION_ROW.slice(0, Math.max(0, room - 1)) + '…' : ROUTE_VALIDATION_ROW;
+        const full = row.routing_disabled === false ? ROUTE_VALIDATION_ON_ROW : ROUTE_VALIDATION_ROW;
+        const text = full.length > room ? full.slice(0, Math.max(0, room - 1)) + '…' : full;
         children.push(Button({
           key: row.validation_id, plain: true, label: `${age(row.at).padStart(8)}  ${text}`,
           onPress: () => { detailRequest++; validationDetail = row; $.ui.invalidate('ui.render'); },

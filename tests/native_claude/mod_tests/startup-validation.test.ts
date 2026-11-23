@@ -1,7 +1,7 @@
 import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import {
-  DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
+  DISABLED_RECIPE, LOGS_DETAILS_HINT, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
 } from '../hooks/constants.ts';
 
 const ROUTED = {
@@ -189,6 +189,7 @@ for (const { name, endsBeforeResult, routed } of turnCases) {
     await clock.advance(100);
     expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : WARNING);
     if (!routed) {
+      expect(JSON.stringify(await ui.drawn())).not.toContain(LOGS_DETAILS_HINT);
       await $.prompt.submit({ text: 'next prompt' });
       await $.turn.complete({ answer: 'done' });
       expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
@@ -227,6 +228,52 @@ for (const disabled of [true, false]) {
       '/bin/ug', 'smart-router-logs', '--session', 'session-one',
       '--record-route-validation', '/session/env.validation.json',
     ]] : []);
+    await ui.unmount();
+  });
+}
+
+const VALIDATE_COMMAND = ['/bin/ug', 'validate'];
+const TOGGLE_VALIDATED = { ...ROUTED, validateCommand: VALIDATE_COMMAND, logsCommand: ['/bin/ug', 'smart-router-logs'] };
+const UNSUPPORTED_RESULT = JSON.stringify({ is_supported: false });
+const toggleCases = [
+  { name: 'an unsupported result on toggle on warns with routing on', options: TOGGLE_VALIDATED, stdout: UNSUPPORTED_RESULT, off: false, warned: true, validates: true },
+  { name: 'a supported result on toggle on shows no warning', options: TOGGLE_VALIDATED, stdout: '', off: false, warned: false, validates: true },
+  { name: 'toggling off before the result arrives shows no warning', options: TOGGLE_VALIDATED, stdout: UNSUPPORTED_RESULT, off: true, warned: false, validates: true },
+  { name: 'without the validate option toggle on runs no validation', options: ROUTED, stdout: UNSUPPORTED_RESULT, off: false, warned: false, validates: false },
+];
+
+for (const { name, options, stdout, off, warned, validates } of toggleCases) {
+  test(name, { options }, async ($, on) => {
+    const { env } = engine(on);
+    env.UCODE_SMART_ROUTER_PYTHON = '/bin/python';
+    env.ISAAC_LAUNCH_MODE = 'omni';
+    const logs: string[] = [];
+    const validations: string[][] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    const records: { argv: string[]; stdin?: string }[] = [];
+    on('process.run', async ($, e) => {
+      if (e.argv[1] === 'smart-router-logs') records.push({ argv: e.argv, stdin: e.init?.stdin });
+      if (e.argv[1] !== VALIDATE_COMMAND[1]) return { value: { exitCode: 0, stderr: '', stdout: '' } };
+      validations.push(e.argv);
+      await gate;
+      return { value: { exitCode: 0, stderr: '', stdout } };
+    });
+    const ui = await $.ui.mount(abovePrompt);
+    await $.session.start(start);
+    expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBeTruthy();
+    if (off) await $.command.run({ command: 'smart-router', args: 'off' });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const shown = JSON.stringify(await ui.drawn());
+    expect(validations.length).toBe(validates ? 1 : 0);
+    expect(shown.includes(WARNING)).toBe(warned);
+    expect(shown.includes(LOGS_DETAILS_HINT)).toBe(warned);
+    expect(shown.includes(' ON ')).toBe(!off);
+    expect(logs.includes(UNSUPPORTED_MODEL_LIST_WARNING)).toBe(warned);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(records.map(({ argv, stdin }) => [argv.slice(-2), stdin])).toEqual(warned ? [[['--record-route-validation', '-'], stdout]] : []);
     await ui.unmount();
   });
 }

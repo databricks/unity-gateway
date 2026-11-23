@@ -287,14 +287,36 @@ async function setRouting(
 const VALIDATION_POLL_MS = 100;
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000;
+const VALIDATE_COMMAND_TIMEOUT_MS = 10000;
 
 // Persists the unsupported result as a Smart Router logs row; the warning band is transient.
-async function recordRouteValidation($: EngineInterface, options: PluginOptions, resultPath: string): Promise<void> {
+// A resultPath of '-' reads the result from stdin.
+async function recordRouteValidation($: EngineInterface, options: PluginOptions, resultPath: string, stdin?: string): Promise<void> {
   const result = await $.process.run(
     [...logsReaderCommand(options), '--session', await $.session.id(), '--record-route-validation', resultPath],
-    { timeoutMs: LOGS_COMMAND_TIMEOUT_MS },
+    { timeoutMs: LOGS_COMMAND_TIMEOUT_MS, ...(stdin === undefined ? {} : { stdin }) },
   );
   if (result.exitCode !== 0) $.ui.log(`Smart Router logs: route validation not recorded (exit ${result.exitCode})`, { to: 'debug' });
+}
+
+// Returns the unsupported result to record, or undefined when the list is supported or the check failed.
+async function unsupportedModelList($: EngineInterface, command: string[]): Promise<string | undefined> {
+  const result = await $.process.run(command, {
+    stdin: JSON.stringify({ session_id: await $.session.id() }),
+    timeoutMs: VALIDATE_COMMAND_TIMEOUT_MS,
+  });
+  const stdout = result.stdout.trim();
+  return result.exitCode === 0 && stdout && JSON.parse(stdout).is_supported === false ? stdout : undefined;
+}
+
+// Routing stays on; the warning and its logs row appear only while this toggle is still the latest.
+async function warnIfModelListUnsupported($: EngineInterface, options: PluginOptions, command: string[], isLatest: () => boolean): Promise<void> {
+  const unsupported = await unsupportedModelList($, command);
+  if (!unsupported || !isLatest() || !isRoutingEnabled(await readEnvironment($))) return;
+  warnUnsupportedModelList();
+  $.ui.invalidate('ui.render');
+  void recordRouteValidation($, options, '-', unsupported).catch(() => {});
+  if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) $.ui.log(UNSUPPORTED_MODEL_LIST_WARNING);
 }
 
 async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
@@ -379,6 +401,7 @@ export function register(on: On, options: PluginOptions): void {
   let switchingAuto = false;
   const internalModels: string[] = [];
   let sessionActive = true;
+  let toggleGeneration = 0;
   let manualOffRequest: ManualOffRequest | undefined;
   let autoSave: AutoSaveRequest | undefined;
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
@@ -954,10 +977,13 @@ export function register(on: On, options: PluginOptions): void {
   // External integrations match the "smart-router" command name exactly.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
+    const generation = ++toggleGeneration;
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();
       $.ui.invalidate('ui.render');
+      const validateCommand = options.validateCommand as string[] | undefined;
+      if (action === 'on' && validateCommand?.length) void warnIfModelListUnsupported($, options, validateCommand, () => generation === toggleGeneration).catch(() => {});
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }

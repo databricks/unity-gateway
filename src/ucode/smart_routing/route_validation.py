@@ -85,6 +85,36 @@ def _validate_route_options(
     return payload, reason
 
 
+def validate(
+    workspace: str,
+    token: str,
+    route_options: list[tuple[str, str]],
+    *,
+    router_name: str,
+    provider: str | None = None,
+    available_harness: str = ROUTER_HARNESS_CLAUDE_CODE,
+) -> dict[str, Any] | None:
+    """Return the validation result, or None when the check fails or misses its deadline."""
+    body = {
+        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
+        "route_selector": {"router_name": router_name},
+    }
+    started = time.monotonic()
+    try:
+        payload, reason = _validate_route_options(workspace, token, body, provider)
+    except Exception:
+        return None
+    if reason or not isinstance(payload, dict):
+        return None
+    if payload.get("is_supported") is not False:
+        return {"is_supported": True}
+    return {
+        "is_supported": False,
+        **_unsupported_details(payload, router_name, available_harness),
+        "validation_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
 def start(
     workspace: str,
     token: str,
@@ -95,27 +125,21 @@ def start(
     provider: str | None = None,
     available_harness: str = ROUTER_HARNESS_CLAUDE_CODE,
 ) -> None:
-    body = {
-        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
-        "route_selector": {"router_name": router_name},
-    }
-
     def check() -> None:
-        started = time.monotonic()
-        try:
-            payload, reason = _validate_route_options(workspace, token, body, provider)
-        except Exception as exc:
-            payload, reason = None, str(exc)
-        unsupported = (
-            not reason and isinstance(payload, dict) and payload.get("is_supported") is False
+        validation = validate(
+            workspace,
+            token,
+            route_options,
+            router_name=router_name,
+            provider=provider,
+            available_harness=available_harness,
         )
         result: dict[str, Any] = {ROUTING_DISABLED_KEY: False}
-        if unsupported:
+        if validation and validation["is_supported"] is False:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result[ROUTING_DISABLED_KEY] = True
-                result.update(_unsupported_details(payload, router_name, available_harness))
-                result["validation_ms"] = round((time.monotonic() - started) * 1000)
+                result.update({k: v for k, v in validation.items() if k != "is_supported"})
         with suppress(OSError, RuntimeError):
             atomic_write_json(validation_result_path(session_controls), result)
 

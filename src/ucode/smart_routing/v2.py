@@ -43,7 +43,7 @@ from ucode.constants import (
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     TRUE_ENV_VALUES,
-    UG_STARTUP_ROUTE_VALIDATION_ENV_VAR,
+    UG_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -73,13 +73,14 @@ from ucode.smart_routing import (
     codex_routing,
     codex_statusline,
     orchestrator,
+    route_validation,
     routing,
     session_log,
-    startup_validation,
 )
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
+    ROUTE_VALIDATION_MOD_EVENT,
     routing_hook_argv,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
@@ -424,8 +425,7 @@ def _claude_mod_launch_options(
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
         "startupValidation": (
             "1"
-            if source.get(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "").strip().lower()
-            in TRUE_ENV_VALUES
+            if source.get(UG_ROUTE_VALIDATION_ENV_VAR, "").strip().lower() in TRUE_ENV_VALUES
             else ""
         ),
     }
@@ -475,6 +475,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": "",
                     "title": "Startup route validation",
                     "description": "1 when ug runs the startup routes:validate check",
+                },
+                "validateCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Route validator",
+                    "description": "CLI argument list for the routes:validate check on toggle",
                 },
                 "routeCommand": {
                     "type": "string",
@@ -632,6 +639,26 @@ def _route_print_mode_prompt(
     display = catalog.model_id_to_display_name.get(decision.model, decision.model)
     print_note(format_routing_notice(display, decision.rationale))
     return model_name(_unwrapped_claude_model_id(decision.model))
+
+
+def validate_claude_model_list(
+    *,
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    provider: str | None = None,
+) -> dict | None:
+    """Return an unsupported result as a route validation record that left routing on."""
+    result = route_validation.validate(
+        workspace,
+        token,
+        _claude_route_options(available_models),
+        router_name=routing.configured_router_name(),
+        provider=provider,
+    )
+    if not result or result["is_supported"] is not False:
+        return None
+    return {**result, "routing_disabled": False}
 
 
 def route_claude_subagent(
@@ -1003,8 +1030,8 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
-                startup_validation.start(
+            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+                route_validation.start(
                     workspace,
                     token,
                     _claude_route_options(model_ids),
@@ -1024,6 +1051,10 @@ def launch_claude(
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
+            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+                mod_options["validateCommand"] = routing_hook_argv(
+                    routing_state, ROUTE_VALIDATION_MOD_EVENT
+                )
             if auto_picker:
                 mod_options["autoPicker"] = json.dumps(auto_config)
                 # Settings env is reapplied when /model saves a native selection.
@@ -1252,8 +1283,8 @@ def launch_codex(
             f"Could not enable plaintext Codex task routing: {exc} "
             "Encrypted subagent assignments will keep their requested model."
         )
-    if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
-        startup_validation.start(
+    if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+        route_validation.start(
             workspace,
             os.environ[OAUTH_TOKEN_ENV_VAR],
             codex_routing.codex_route_options(available_models),
