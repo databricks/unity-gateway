@@ -6,6 +6,7 @@ flag-off answer from the endpoint, so it leaves routing on and records nothing.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from contextlib import suppress
@@ -21,10 +22,12 @@ from ucode.constants import (
 )
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
+from ucode.workspace import WorkspaceSelectionReason
 
 # The Claude mod shows routing ON after 5 s without a result, so the check must publish sooner.
 VALIDATION_TIMEOUT_SECONDS = 4
-NOT_FOUND_STATUS = 404
+NOT_FOUND_REASON_PREFIX = "HTTP 404"
+HTTP_STATUS_PATTERN = re.compile(r"HTTP (\d{3})\b")
 ROUTE_VALIDATION_TIMED_OUT = "route validation timed out"
 TIMED_OUT_MARKER = "timed out"
 NETWORK_ERROR_PREFIX = "network error:"
@@ -91,12 +94,14 @@ def _failure_details(failure: str, router_name: str) -> dict[str, Any]:
     }
 
 
-def _failure_reason(payload: object, reason: str | None, status: int | None) -> str | None:
+def _failure_reason(payload: object, reason: str | None) -> str | None:
     if reason is None:
         supported = payload.get("is_supported") if isinstance(payload, dict) else None
         return None if isinstance(supported, bool) else UNEXPECTED_RESPONSE_FAILURE_REASON
-    if status is not None:
-        return HTTP_ERROR_FAILURE_REASON.format(status=status)
+    if isinstance(reason, WorkspaceSelectionReason):
+        return str(reason)
+    if status := HTTP_STATUS_PATTERN.match(reason):
+        return HTTP_ERROR_FAILURE_REASON.format(status=status.group(1))
     if reason == CHECK_FAILED_REASON:
         return CHECK_FAILED_REASON
     if TIMED_OUT_MARKER in reason:
@@ -114,7 +119,6 @@ def _validate_route_options(
     token: str,
     body: dict[str, Any],
     provider: str | None,
-    status_sink: dict,
 ) -> tuple[object, str | None]:
     started = time.monotonic()
     payload, reason = _http_post_json(
@@ -123,7 +127,6 @@ def _validate_route_options(
         body,
         timeout=VALIDATION_TIMEOUT_SECONDS,
         headers={MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else None,
-        status_sink=status_sink,
     )
     if not reason and time.monotonic() - started > VALIDATION_TIMEOUT_SECONDS:
         return None, ROUTE_VALIDATION_TIMED_OUT
@@ -143,7 +146,7 @@ def _probe(
     outcome: dict[str, Any],
 ) -> None:
     try:
-        outcome["response"] = _validate_route_options(workspace, token, body, provider, outcome)
+        outcome["response"] = _validate_route_options(workspace, token, body, provider)
     except Exception:
         outcome["response"] = (None, CHECK_FAILED_REASON)
 
@@ -172,11 +175,10 @@ def start(
         # A probe still running after the deadline only fills `outcome`, so it cannot publish late.
         probe.join(VALIDATION_TIMEOUT_SECONDS)
         payload, reason = outcome.get("response", (None, ROUTE_VALIDATION_TIMED_OUT))
-        status = outcome.get("status")
-        if status == NOT_FOUND_STATUS:
+        if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
             _publish(result_path(session_controls), {"routing_disabled": False})
             return
-        failure = _failure_reason(payload, reason, status)
+        failure = _failure_reason(payload, reason)
         unsupported = _is_unsupported(payload)
         result: dict[str, Any] = {"routing_disabled": False}
         if failure is not None or unsupported:

@@ -92,6 +92,11 @@ def _failed(reason):
             id="http-500",
         ),
         pytest.param(
+            _http_error(500, b'{"error_code": "NOT_FOUND"}'),
+            "Smart Router returned an error (HTTP 500)",
+            id="http-500-not-found-body",
+        ),
+        pytest.param(
             TimeoutError("timed out"), "Smart Router didn't respond in time", id="timeout"
         ),
         pytest.param(

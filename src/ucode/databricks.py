@@ -712,7 +712,6 @@ def _http_send_json(
     timeout: int = 10,
     allow_empty_body: bool = False,
     headers: dict[str, str] | None = None,
-    status_sink: dict | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """Send a request that may carry a JSON body, and decode a JSON response.
 
@@ -721,8 +720,7 @@ def _http_send_json(
     ``(payload, None)`` on success and ``(None, reason)`` on failure, like `_http_get_json`.
 
     ``allow_empty_body`` is for DELETE, whose success response is ``google.protobuf.Empty`` — an
-    empty body there is the expected result, not a decode failure. ``status_sink`` receives the
-    status of an HTTP error response under ``"status"``, whatever the reason was rewritten to.
+    empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
     request_headers = {
@@ -756,8 +754,6 @@ def _http_send_json(
             return None, f"response was not valid JSON ({exc.msg})"
     except urllib_error.HTTPError as exc:
         status = exc.code
-        if status_sink is not None:
-            status_sink["status"] = exc.code
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -799,13 +795,10 @@ def _http_post_json(
     *,
     timeout: int = 10,
     headers: dict[str, str] | None = None,
-    status_sink: dict | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """POST a JSON body to an endpoint. Returns (payload, None) on success,
     (None, reason) on failure. Mirrors `_http_get_json`."""
-    return _http_send_json(
-        "POST", url, token, payload, timeout=timeout, headers=headers, status_sink=status_sink
-    )
+    return _http_send_json("POST", url, token, payload, timeout=timeout, headers=headers)
 
 
 def _http_patch_json(
