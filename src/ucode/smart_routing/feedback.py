@@ -27,13 +27,6 @@ def smart_router_feedback_required() -> bool:
     )
 
 
-def launcher_collects_smart_router_feedback() -> bool:
-    return (
-        env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
-    )
-
-
 def _isaac() -> str:
     executable = shutil.which("isaac")
     if not executable:

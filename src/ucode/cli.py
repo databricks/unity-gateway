@@ -74,6 +74,8 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ISAAC_LAUNCH_MODE_ENV_VAR,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3812,7 +3814,7 @@ def _toggle_current_smart_routing_session(
     enabled: bool | None,
     reason: str | None = None,
     *,
-    launcher_feedback_collected: bool | None = None,
+    feedback_collected: bool | None = None,
 ) -> bool:
     if enabled is None:
         return False
@@ -3820,10 +3822,7 @@ def _toggle_current_smart_routing_session(
         controls = session_env_path()
     except RuntimeError:
         return False
-    from ucode.smart_routing.feedback import (
-        launcher_collects_smart_router_feedback,
-        smart_router_feedback_required,
-    )
+    from ucode.smart_routing.feedback import smart_router_feedback_required
     from ucode.smart_routing.session_env import session_routing_enabled
 
     state = "on" if enabled else "off"
@@ -3837,8 +3836,9 @@ def _toggle_current_smart_routing_session(
     # Claude's mod checks this marker itself before it runs a plain off.
     if (
         not enabled
-        and launcher_feedback_collected is False
-        and launcher_collects_smart_router_feedback()
+        and feedback_collected is False
+        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
     ):
         print_err(
             "Turn Smart Router off with this session's Smart Routing switch, which collects "
@@ -5241,7 +5241,7 @@ def codex_cmd(
     if _toggle_current_smart_routing_session(
         enable_smart_routing_flag,
         smart_router_feedback,
-        launcher_feedback_collected=feedback_collected,
+        feedback_collected=feedback_collected,
     ):
         return
     try:

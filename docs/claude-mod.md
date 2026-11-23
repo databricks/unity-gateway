@@ -240,7 +240,7 @@ Today `--feedback-collected` is honored only when `ISAAC_LAUNCH_MODE=omni`, wher
 Web UI is the caller. Those sessions also skip the CLI's reason rule. The Codex CLI takes the
 same flag: there, with the feedback rule on, `ucode.cli codex --disable-smart-routing` keeps
 routing on unless the flag is passed. To support a caller in another launch mode, widen the
-launch mode checks in `isaac-feedback.ts` and in `smart_routing/feedback.py`.
+launch mode checks in `isaac-feedback.ts` and in `_toggle_current_smart_routing_session` in `cli.py`.
 
 In sessions with `ISAAC_SMART_ROUTER_FEEDBACK` enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available
