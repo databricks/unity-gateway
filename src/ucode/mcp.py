@@ -121,8 +121,9 @@ MCP_CLIENTS = {
     },
     "copilot": {
         "binary": "copilot",
-        # VS Code reads the same user MCP file; `cli_display` names the CLI that `mcp list` probes.
-        "display": "GitHub Copilot (CLI and VS Code)",
+        # VS Code and the desktop app read the same user MCP file; `cli_display` names the CLI
+        # that `mcp list` probes.
+        "display": "GitHub Copilot (CLI, VS Code and app)",
         "cli_display": "GitHub Copilot CLI",
         "list_command": "copilot mcp list --json",
     },
@@ -137,6 +138,7 @@ MCP_CLIENTS = {
         "list_command": "agy mcp list",
     },
 }
+
 # These clients read their user MCP files on every supported OS. UG can write those files
 # directly, including when a desktop app exists without a CLI on PATH.
 CONFIG_WRITABLE_MCP_CLIENTS: dict[str, Callable[[], Path]] = {

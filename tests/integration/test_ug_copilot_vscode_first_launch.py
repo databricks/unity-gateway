@@ -67,9 +67,9 @@ def test_ug_configure_installs_the_extension_build_that_refreshes_its_models(
     output = _flat(result.stdout)
     assert "VS Code extension: installed databricks.unity-gateway" in output, result.stdout
     restart = (
-        "Quit VS Code with Cmd+Q, even if no window is open"
+        "In VS Code: quit VS Code with Cmd+Q, even if no window is open, and open it again, then"
         if sys.platform == "darwin"
-        else "Close every VS Code window and open VS Code again."
+        else "In VS Code: close every VS Code window and open VS Code again, then"
     )
     assert restart in output, result.stdout
     assert "If VS Code is open" not in output, result.stdout

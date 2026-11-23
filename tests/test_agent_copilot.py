@@ -6,6 +6,10 @@ import contextlib
 import json
 import os
 import signal
+import subprocess
+import sys
+import textwrap
+import time
 import uuid
 from pathlib import Path
 
@@ -14,7 +18,11 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import copilot, model_sources
-from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
+from ucode.databricks import (
+    AnthropicModelCatalog,
+    DatabricksLoginRequiredError,
+    ModelServiceEntry,
+)
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -1579,6 +1587,19 @@ class TestProxyHeaders:
             "X-Team": "data",
         }
 
+    def test_leaves_out_ugs_user_agent_but_not_an_admins(self, monkeypatch):
+        def no_version_lookup(binary):
+            raise AssertionError("no User-Agent, so no `--version` run")
+
+        monkeypatch.setattr(copilot, "agent_version", no_version_lookup)
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+
+        assert copilot.proxy_headers({}, user_agent=False) == {
+            "x-databricks-use-coding-agent-mode": "true"
+        }
+        admin = {"copilot_http_headers": {"User-Agent": "admin-agent"}}
+        assert copilot.proxy_headers(admin, user_agent=False)["User-Agent"] == "admin-agent"
+
 
 class TestTokenProvider:
     def test_uses_the_cli_profile(self, monkeypatch):
@@ -2108,6 +2129,18 @@ class TestSubagentHeaders:
         assert one(self.SUBAGENT, body) == one(self.SUBAGENT, body)
         assert one(self.SUBAGENT, body) != other(self.SUBAGENT, body)
 
+    def test_without_a_launch_session_the_id_is_under_the_requests_own_session(self):
+        adder = copilot.subagent_headers()
+        body = json.dumps({"messages": [{"role": "user", "content": "find tests"}]}).encode()
+        other_session = str(uuid.uuid4())
+
+        mine = adder({**self.SUBAGENT, "x-client-session-id": SESSION}, body)["thread-id"]
+        theirs = adder({**self.SUBAGENT, "x-client-session-id": other_session}, body)["thread-id"]
+
+        assert mine.startswith(f"{SESSION}-")
+        assert theirs.startswith(f"{other_session}-")
+        assert adder(self.SUBAGENT, body) == {}
+
 
 class TestWithSessionId:
     def test_adds_the_session_id_unless_an_admin_header_sets_it(self):
@@ -2116,6 +2149,69 @@ class TestWithSessionId:
             "User-Agent": "u",
         }
         assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}
+
+
+VSCODE_RUNTIME_UA = "copilot/1.0.111-0 (linux unknown) term/unknown client/vscode"
+
+
+class TestSeatRuntimeHeaders:
+    @pytest.fixture(autouse=True)
+    def _ug_version(self, monkeypatch):
+        monkeypatch.setattr(copilot, "ug_version", lambda: "0.9.0")
+
+    @pytest.mark.parametrize(
+        ("runtime", "expected"),
+        [
+            (VSCODE_RUNTIME_UA, "copilot/1.0.111-0 term/unknown client/vscode"),
+            ("copilot/1.0.112", "copilot/1.0.112"),
+            (None, "copilot/unknown"),
+            ("", "copilot/unknown"),
+            ("node (linux)", "copilot/unknown"),
+            ("other/1 client/vscode", "copilot/unknown other/1 client/vscode"),
+        ],
+    )
+    def test_user_agent_is_ugs_around_the_runtimes_products(self, runtime, expected):
+        assert copilot.seat_runtime_user_agent(runtime) == (
+            f"ucode/0.9.0 {expected} {client_platform()}"
+        )
+
+    def test_each_call_gets_its_own_chats_session_id(self):
+        adder = copilot.seat_runtime_headers()
+        other_chat = str(uuid.uuid4())
+
+        one = adder({"User-Agent": VSCODE_RUNTIME_UA, "x-client-session-id": SESSION}, b"{}")
+        other = adder({"User-Agent": VSCODE_RUNTIME_UA, "x-client-session-id": other_chat}, b"{}")
+
+        assert one == {
+            "User-Agent": f"ucode/0.9.0 copilot/1.0.111-0 term/unknown client/vscode "
+            f"{client_platform()}",
+            "session-id": SESSION,
+        }
+        assert other["session-id"] == other_chat
+
+    @pytest.mark.parametrize("value", [None, "", "not-a-uuid"])
+    def test_a_call_without_a_session_gets_no_session_id(self, value):
+        headers = {"User-Agent": VSCODE_RUNTIME_UA}
+        if value is not None:
+            headers["x-client-session-id"] = value
+
+        added = copilot.seat_runtime_headers()(headers, b"{}")
+
+        assert "session-id" not in added
+        assert added["User-Agent"].startswith("ucode/0.9.0 copilot/1.0.111-0 ")
+
+    def test_a_subagent_call_gets_an_id_under_its_chat(self):
+        body = json.dumps({"messages": [{"role": "user", "content": "find tests"}]}).encode()
+        headers = {
+            "User-Agent": VSCODE_RUNTIME_UA,
+            "x-client-session-id": SESSION,
+            "x-interaction-type": "conversation-subagent",
+        }
+
+        added = copilot.seat_runtime_headers()(headers, body)
+
+        assert added["session-id"] == SESSION
+        assert added["thread-id"].startswith(f"{SESSION}-")
 
 
 SEAT_MPS = "main.ai.copilot_seats"
@@ -2155,6 +2251,21 @@ class TestSeatRelay:
             assert key not in env
         assert "COPILOT_PROVIDER_API_KEY" not in env
         assert "GITHUB_MCP_URL_OVERRIDE" not in copilot.seat_relay_env("u", mcp_host=None)
+
+    def test_env_keeps_a_proxy_away_from_the_loopback_relay(self, monkeypatch):
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
+        assert env["NO_PROXY"] == env["no_proxy"] == "127.0.0.1,localhost"
+
+        monkeypatch.setenv("NO_PROXY", "internal.example, .corp.example")
+        expected = "internal.example,.corp.example,127.0.0.1,localhost"
+        if os.name != "nt":
+            # Windows has one case-insensitive variable, so this would replace NO_PROXY.
+            monkeypatch.setenv("no_proxy", "localhost")
+            expected = "internal.example,.corp.example,localhost,127.0.0.1"
+        env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
+        assert env["NO_PROXY"] == env["no_proxy"] == expected
 
     def test_a_service_lookup_error_is_raised_not_read_as_no_seat_relay(self, monkeypatch):
         _stub_provider_service(monkeypatch, None)
@@ -2308,6 +2419,86 @@ class TestSeatRelay:
         assert seen["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://127.0.0.1:4318/t"
         assert "COPILOT_PROVIDER_BASE_URL" not in seen["env"]
 
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="only Windows leaves a terminated process's children up"
+    )
+    def test_windows_runtime_stops_when_the_wrapper_is_terminated(self, tmp_path):
+        watching, stopped = tmp_path / "watching", tmp_path / "stopped"
+        ug = textwrap.dedent(
+            f"""
+            import subprocess, sys
+            from ucode.agents import copilot
+            runtime = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            copilot._stop_with_wrapper(runtime)
+            open({str(watching)!r}, "w").close()
+            runtime.wait()
+            open({str(stopped)!r}, "w").close()
+            """
+        )
+        # The `ug.exe` launcher between the wrapper and ug's Python, which outlives the wrapper.
+        launcher = (
+            f"import subprocess, sys; sys.exit(subprocess.call([sys.executable, '-c', {ug!r}]))"
+        )
+        wrapper = textwrap.dedent(
+            f"""
+            import os, subprocess, sys, time
+            env = {{**os.environ, {copilot.RUNTIME_WRAPPER_PID_ENV!r}: str(os.getpid())}}
+            subprocess.Popen([sys.executable, "-c", {launcher!r}], env=env)
+            time.sleep(120)
+            """
+        )
+        process = subprocess.Popen([sys.executable, "-c", wrapper])
+        deadline = time.monotonic() + 60
+        while not watching.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert watching.exists()
+
+        # How VS Code stops the runtime: it terminates the process it started.
+        process.kill()
+        process.wait()
+
+        deadline = time.monotonic() + 30
+        while not stopped.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert stopped.exists()
+
+    def test_a_wrapper_pid_that_isnt_a_number_starts_no_watch(self, monkeypatch):
+        monkeypatch.setattr(copilot.sys, "platform", "win32")
+        monkeypatch.setenv(copilot.RUNTIME_WRAPPER_PID_ENV, "not-a-pid")
+
+        def no_thread(*args, **kwargs):
+            raise AssertionError("started a watch")
+
+        monkeypatch.setattr(copilot.threading, "Thread", no_thread)
+
+        copilot._stop_with_wrapper(object())
+
+    def test_vscode_runtime_relay_labels_each_call_and_lets_admin_headers_win(
+        self, tmp_path, monkeypatch
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+        monkeypatch.setattr(copilot, "ug_version", lambda: "0.9.0")
+        _stub_seat_launch(monkeypatch)
+        started: dict = {}
+        start = copilot.start_seat_relay
+
+        def start_seat_relay(*args, **kwargs):
+            started.update(kwargs)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(copilot, "start_seat_relay", start_seat_relay)
+        state = {**STATE, "copilot_http_headers": {"session-id": "admin-session"}}
+
+        assert copilot.run_seat_runtime(state, SEAT_MPS, "/vscode/copilot-runtime", []) == 0
+
+        assert "user-agent" not in {name.casefold() for name in started["headers"]}
+        assert started["headers"]["session-id"] == "admin-session"
+        added = started["request_headers_adder"](
+            {"User-Agent": VSCODE_RUNTIME_UA, "x-client-session-id": SESSION}, b"{}"
+        )
+        assert added["User-Agent"].startswith("ucode/0.9.0 copilot/1.0.111-0 ")
+
     def test_vscode_runtime_that_cant_start_reports_it_on_stderr(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -2323,3 +2514,33 @@ class TestSeatRelay:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "Couldn't start the Copilot runtime /missing" in captured.err
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            DatabricksLoginRequiredError("no cached credentials for https://ws.example"),
+            FileNotFoundError("databricks"),
+        ],
+        ids=["lapsed-login", "missing-cli"],
+    )
+    def test_vscode_runtime_with_no_databricks_token_prints_the_hint_instead_of_a_traceback(
+        self, tmp_path, monkeypatch, capsys, failure
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+
+        def mint(state, workspace, **_):
+            raise failure
+
+        monkeypatch.setattr(copilot, "launch_token", mint)
+        started = []
+        monkeypatch.setattr(
+            copilot.subprocess_cross_os, "popen", lambda argv, *, env: started.append(argv)
+        )
+
+        assert copilot.run_seat_runtime(dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", []) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Couldn't start the seat relay for VS Code's Copilot" in captured.err
+        assert str(failure) in captured.err
+        assert "Run `ug configure --agents copilot`, then restart VS Code." in captured.err
+        assert started == []

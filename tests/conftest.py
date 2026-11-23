@@ -22,6 +22,17 @@ collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior
 
 
 @pytest.fixture(autouse=True)
+def _isolate_startup_validation(monkeypatch):
+    from ucode.smart_routing import startup_validation
+
+    monkeypatch.setattr(
+        startup_validation,
+        "_http_post_json",
+        lambda *args, **kwargs: ({"is_supported": True}, None),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_selected_workspace(monkeypatch):
     """Start every test with no multi-workspace host selected, as a fresh process would."""
     import ucode.workspace as workspace_mod
@@ -67,6 +78,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import copilot_app as copilot_app_mod
     from ucode.agents.desktop import copilot_app_plugin as copilot_app_plugin_mod
+    from ucode.agents.desktop import copilot_app_tracing as copilot_app_tracing_mod
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
     from ucode.agents.desktop import setup as desktop_setup_mod
@@ -89,10 +101,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
-    monkeypatch.setattr(agents_mod, "_copilot_app_with_copilot", True)
+    # Nor may any test touch the developer's shell profiles.
+    monkeypatch.setattr(copilot_app_tracing_mod, "_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(
+        copilot_app_tracing_mod, "_config_home", lambda: tmp_path / "home" / ".config"
+    )
     # No test may find the developer's GitHub Copilot app, change its settings or providers, or
     # write ug's plugin for it.
-    monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP", raising=False)
     monkeypatch.setattr(desktop_setup_mod, "copilot_app_installed", lambda: False)
     copilot_home = tmp_path / ".copilot"
     monkeypatch.setattr(

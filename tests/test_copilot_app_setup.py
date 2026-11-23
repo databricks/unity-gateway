@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -29,7 +32,6 @@ STATE = {"workspace": WS, "profile": "dev"}
 def _app_home(tmp_path, monkeypatch):
     """The app's settings and ug's plugin live under ``tmp_path``; the conftest already keeps
     every test away from a real app, and nothing here can start one."""
-    monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
     monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: True)
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
     monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lambda *args, **kwargs: False)
@@ -90,7 +92,9 @@ class TestConfigure:
         assert config["tokenCommand"][:2] == ["/opt/ug/bin/ug", "auth-token"]
         assert "/opt/databricks/bin" in config["pathDirs"]
         out = _out(capsys)
-        assert "Open (or restart) the GitHub Copilot app to load the Databricks models." in out
+        assert (
+            "In the GitHub Copilot app: open it (or restart it), then open the model picker" in out
+        )
         assert "Settings -> Model providers" not in out
 
     def test_never_talks_to_the_running_app(self, app):
@@ -215,9 +219,9 @@ class TestManagedDefaultModel:
 
 
 class TestSeatRelayProvider:
-    NOTE = (
-        "copilot-seats uses a seat subscription, which the GitHub Copilot app doesn't support "
-        "yet; use `ug copilot` or VS Code for it."
+    WARNING = (
+        "The GitHub Copilot app isn't set up to route its GitHub Copilot models through "
+        "copilot-seats. Run `ug configure --agents copilot` again."
     )
 
     @pytest.fixture(autouse=True)
@@ -230,25 +234,55 @@ class TestSeatRelayProvider:
 
         monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", uses_seat_relay)
 
-    def test_configure_skips_the_app_with_a_note(self, capsys):
+    def test_configure_routes_the_apps_own_models_through_the_relay(self, capsys):
         desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
 
-        assert not plugin.plugin_root().exists()
-        assert self.NOTE in _out(capsys)
+        assert plugin.status() == "installed"
+        config = _extension_config()
+        assert config["providers"] == []
+        assert config["models"] == []
+        assert config["app"]["providers"] == []
+        relay = config["seatRelay"]
+        assert relay["gatewayBase"] == WS
+        assert relay["providerService"] == "copilot-seats"
+        assert relay["askGitHub"] is True
+        assert relay["headers"]["x-databricks-use-coding-agent-mode"] == "true"
+        assert "User-Agent" not in relay["headers"]
+        assert re.fullmatch(r"ucode/\S+ \(.*\)", relay["userAgent"])
+        assert plugin.seat_relay_provider() == "copilot-seats"
+        out = _out(capsys)
+        assert (
+            "GitHub Copilot app: installed ug's plugin, routing Copilot through copilot-seats"
+            in out
+        )
+        assert "In the GitHub Copilot app: open it (or restart it), then start a chat" in out
         assert self.checked == [("copilot-seats", "vscode")]
 
-    def test_another_provider_service_is_set_up(self, capsys):
+    def test_another_provider_service_gets_rows_and_no_relay(self, capsys):
         desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
 
         assert plugin.status() == "installed"
-        assert "seat subscription" not in _out(capsys)
+        assert _extension_config()["seatRelay"] is None
+        assert plugin.seat_relay_provider() is None
+        assert "seat" not in _out(capsys)
 
-    def test_status_notes_the_seat_subscription(self):
+    def test_status_shows_the_relay(self):
+        desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
+
         result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
 
         assert result is not None
-        assert result.row == "plugin not installed, models skipped (seat subscription)"
-        assert result.warnings == (self.NOTE,)
+        assert result.row == "plugin installed, models through copilot-seats"
+        assert result.warnings == ()
+
+    def test_status_warns_until_the_relay_is_configured(self):
+        desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
+
+        result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
+
+        assert result is not None
+        assert result.row == "plugin installed, models not through the seat relay"
+        assert result.warnings == (self.WARNING,)
 
     def test_a_failed_lookup_reads_as_unknown(self, monkeypatch):
         def lookup_fails(*args, **kwargs):
@@ -268,63 +302,12 @@ class TestConfigureCopilotApp:
 
         assert plugin.status() == "installed"
 
-    def test_opt_out_and_a_missing_app_skip_it(self, monkeypatch):
-        agents_mod.request_copilot_app_with_copilot(False)
-        try:
-            agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-        finally:
-            agents_mod.request_copilot_app_with_copilot(True)
+    def test_a_missing_app_skips_it(self, monkeypatch):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
         agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
 
         assert not plugin.plugin_root().exists()
         assert not _settings_path().exists()
-
-    def test_without_the_experiment_flag_nothing_changes(self, monkeypatch, app):
-        monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP")
-
-        agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-        agents_mod.configure_copilot_app(
-            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
-        )
-
-        assert not plugin.plugin_root().exists()
-        assert app.received == []
-        assert desktop_setup.copilot_app_status(STATE, provider=None, location=None) is None
-
-    def test_managed_off_switch_removes_the_plugin_and_providers(self, app, capsys):
-        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
-        _register(app)
-
-        agents_mod.configure_copilot_app(
-            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
-        )
-
-        assert plugin.status() == "not_installed"
-        assert app.providers == {}
-        assert "turns off the GitHub Copilot app" in _out(capsys)
-
-    def test_managed_off_switch_warns_when_the_removal_fails(self, monkeypatch, capsys):
-        monkeypatch.setattr(desktop_setup, "revert_copilot_app", lambda: "failed: refused")
-
-        agents_mod.configure_copilot_app(
-            {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
-        )
-
-        out = _out(capsys)
-        assert "Could not remove ug's plugin from the GitHub Copilot app: refused" in out
-        assert "was removed" not in out
-
-    def test_managed_off_switch_reads_the_managed_config(self, monkeypatch):
-        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
-        monkeypatch.setattr(
-            "ucode.managed_config.load_managed_state",
-            lambda workspace: {"enabled_agents": {"copilot": {"app_integration_enabled": False}}},
-        )
-
-        agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
-
-        assert plugin.status() == "removal_pending"
 
 
 class TestRemove:
@@ -493,21 +476,6 @@ class TestStatus:
         assert result.row == "plugin installed, models out of date"
         assert "don't match" in result.warnings[0]
 
-    def test_status_prints_no_version_warning(self, app, capsys):
-        app.version = "9.9.9"
-        _register(app)
-        capsys.readouterr()
-
-        self._status()
-
-        assert "hasn't been verified" not in capsys.readouterr().out
-
-    def test_managed_off(self):
-        result = self._status({**STATE, "copilot_app_integration": False})
-
-        assert result is not None
-        assert result.row == "off (workspace-managed)"
-
     def test_not_installed_and_never_set_up(self, monkeypatch):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
 
@@ -542,22 +510,6 @@ def test_a_recorded_databricks_cli_is_found_off_path(tmp_path, monkeypatch):
         databricks.clear_databricks_cli_cache()
 
 
-def test_configure_no_copilot_app_opts_out_for_the_run(monkeypatch):
-    from typer.testing import CliRunner
-
-    from ucode.cli import app
-
-    monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
-    monkeypatch.setattr("ucode.cli.configure_workspace_command", lambda **kwargs: 0)
-
-    result = CliRunner().invoke(
-        app, ["configure", "--agents", "copilot", "--workspace", WS, "--no-copilot-app"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert agents_mod._copilot_app_with_copilot is False
-
-
 def test_a_missing_catalog_names_the_app():
     with pytest.raises(RuntimeError, match="models for the GitHub Copilot app"):
         real_copilot_models({"workspace": WS}, agent="the GitHub Copilot app")
@@ -575,9 +527,6 @@ def test_a_dry_run_changes_nothing(monkeypatch, app, capsys):
         {**STATE, "workspace": "https://other.cloud.databricks.com"},
         provider=None,
         parent_schema=None,
-    )
-    agents_mod.configure_copilot_app(
-        {**STATE, "copilot_app_integration": False}, provider=None, parent_schema=None
     )
     assert desktop_setup.revert_copilot_app() == "unchanged (dry run)"
 
@@ -714,3 +663,191 @@ def test_a_failed_plugin_write_only_warns(monkeypatch, capsys):
     desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
 
     assert "Could not install ug's plugin in the GitHub Copilot app" in _out(capsys)
+
+
+class TestEarlierBuildsTracing:
+    """What an earlier build wrote for the app's own trace export goes on configure and revert."""
+
+    BLOCK = (
+        "# >>> unity-gateway: GitHub Copilot app >>>\n"
+        'if [ -n "${COPILOT_RESOLVING_ENVIRONMENT:-}" ]; then\n'
+        "  export COPILOT_OTEL_ENABLED=true\n"
+        "fi\n"
+        "# <<< unity-gateway: GitHub Copilot app <<<\n"
+    )
+    PROVIDER = {"path": "/opt/ug/bin/ug", "args": ["otel-headers", "--host", WS]}
+
+    @pytest.fixture
+    def home(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        return home
+
+    def _record(self, payload: dict) -> Path:
+        from ucode.agents.desktop import copilot_app_tracing
+
+        path = copilot_app_tracing._record_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
+        return path
+
+    def _leave_old_setup(self, home: Path) -> tuple[Path, Path, Path]:
+        zshenv = home / ".zshenv"
+        zshenv.write_text("export A=1\n\n" + self.BLOCK)
+        custom = home / "zdot" / ".zshenv"
+        custom.parent.mkdir()
+        custom.write_text(self.BLOCK)
+        record = self._record({"profiles": [str(custom)], "created": [str(custom)]})
+        _settings_path().parent.mkdir(parents=True, exist_ok=True)
+        _settings_path().write_text(
+            json.dumps({"telemetry": {"headersProvider": self.PROVIDER}, "theme": "dark"})
+        )
+        return zshenv, custom, record
+
+    def test_configure_removes_it(self, home):
+        zshenv, custom, record = self._leave_old_setup(home)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert zshenv.read_text() == "export A=1\n"
+        assert not custom.exists()
+        assert not record.exists()
+        assert "telemetry" not in _settings()
+        assert _settings()["theme"] == "dark"
+
+    def test_revert_removes_it(self, home, app):
+        zshenv, custom, record = self._leave_old_setup(home)
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+
+        assert zshenv.read_text() == "export A=1\n"
+        assert not custom.exists()
+        assert not record.parent.exists()
+        assert _settings() == {"theme": "dark"}
+
+    def test_unreadable_or_unclosed_profiles_are_left_alone(self, home, monkeypatch):
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
+        (home / ".profile").write_bytes(b"export A=\xff\n")
+        unclosed = "export A=1\n\n" + self.BLOCK.split("# <<<")[0]
+        (home / ".zshenv").write_text(unclosed)
+
+        assert desktop_setup.revert_copilot_app() == "not set up"
+        assert (home / ".profile").read_bytes() == b"export A=\xff\n"
+        assert (home / ".zshenv").read_text() == unclosed
+
+    def test_revert_of_it_alone_reports_it(self, home, monkeypatch):
+        monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
+        (home / ".profile").write_text(self.BLOCK)
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+        assert (home / ".profile").read_text() == ""
+
+    @pytest.mark.parametrize(
+        "args",
+        [[], ["--format", "otel-headers"], ["otel-headers", "--host", WS]],
+        ids=["no-args", "otel-headers-not-a-command", "ugs-arguments-another-executable"],
+    )
+    def test_a_users_own_headers_provider_stays(self, args):
+        own = {"path": "/usr/bin/my-headers", "args": args}
+        _settings_path().parent.mkdir(parents=True, exist_ok=True)
+        _settings_path().write_text(json.dumps({"telemetry": {"headersProvider": own}}))
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert _settings()["telemetry"] == {"headersProvider": own}
+
+    def test_the_saved_windows_opt_in_is_dropped(self):
+        app_state = {**STATE, "copilot_app_windows_tracing": True}
+
+        agents_mod.configure_copilot_app(app_state, provider=None, parent_schema=None)
+
+        assert "copilot_app_windows_tracing" not in app_state
+        assert plugin.status() == "installed"
+
+    def test_revert_removes_ugs_windows_user_variables(self, monkeypatch):
+        from ucode.agents.desktop import copilot_app_tracing
+
+        values = {
+            "PATH": "C:\\bin",
+            "COPILOT_OTEL_ENABLED": "true",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "the user's own",
+        }
+        self._record(
+            {
+                "profiles": [],
+                "windows_env": {
+                    "COPILOT_OTEL_ENABLED": "true",
+                    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": f"{WS}/ai-gateway/otel/v1/traces",
+                },
+            }
+        )
+        broadcasts = []
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(values))
+        monkeypatch.setattr(
+            copilot_app_tracing, "_broadcast_environment_change", lambda: broadcasts.append(1)
+        )
+
+        assert desktop_setup.revert_copilot_app() == "removed"
+
+        assert values == {"PATH": "C:\\bin", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "the user's own"}
+        assert broadcasts == [1]
+
+    def test_a_dry_run_leaves_it(self, home, monkeypatch):
+        zshenv, _custom, record = self._leave_old_setup(home)
+        monkeypatch.setattr("ucode.config_io._dry_run", True)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        desktop_setup.revert_copilot_app()
+
+        assert self.BLOCK in zshenv.read_text()
+        assert record.exists()
+
+    def test_a_removal_failure_only_warns(self, monkeypatch, capsys):
+        from ucode.agents.desktop import copilot_app_tracing
+
+        def fail():
+            raise RuntimeError("Failed to write config file: /home/u/.zshenv")
+
+        monkeypatch.setattr(copilot_app_tracing, "remove_legacy", fail)
+
+        assert desktop_setup.remove_legacy_copilot_app_tracing() is False
+        assert "Could not remove ug's earlier GitHub Copilot app tracing setup" in _out(capsys)
+
+
+class _FakeKey:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class _FakeWinreg(SimpleNamespace):
+    def __init__(self, values: dict):
+        super().__init__(HKEY_CURRENT_USER=1, KEY_QUERY_VALUE=1, KEY_SET_VALUE=2, values=values)
+
+    def OpenKey(self, *args):  # noqa: N802 - winreg's naming
+        return _FakeKey()
+
+    def QueryValueEx(self, key, name):  # noqa: N802
+        if name not in self.values:
+            raise FileNotFoundError(name)
+        return self.values[name], 1
+
+    def DeleteValue(self, key, name):  # noqa: N802
+        del self.values[name]
+
+
+@pytest.mark.parametrize(
+    "flag", ["--copilot-app-windows-tracing", "--no-copilot-app-windows-tracing"]
+)
+def test_the_windows_tracing_flags_are_gone(flag):
+    from typer.testing import CliRunner
+
+    from ucode.cli import app
+
+    result = CliRunner().invoke(app, ["configure", "--agents", "copilot", "--workspace", WS, flag])
+
+    assert result.exit_code == 2
+    assert "No such option" in result.output

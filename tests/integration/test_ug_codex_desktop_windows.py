@@ -44,9 +44,11 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     the answer, and its own Codex Desktop rollout, using ug's Databricks provider, records exactly
     that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
     is skipped through its visible controls with UI Automation and the prompt is typed with real
-    keystrokes followed by Send; nothing is seeded. Each screen gets 60 seconds and the answer four minutes,
-    without retries. GUI rendering of other screens, MCP, tracing and revert while the app runs
-    are not covered.
+    keystrokes followed by Send; nothing is seeded. Windows sandbox setup completes through
+    its visible controls before Send. The sole retry is one visible post-restart readiness
+    recheck; prompts are never resubmitted. Each screen gets 60 seconds, sandbox setup gets
+    180 seconds, and the answer four minutes. GUI rendering of other screens, MCP, tracing
+    and revert while the app runs are not covered.
     """
     session = live_session
     marker = fresh_id()
@@ -60,6 +62,9 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
+        app.wait_for("ControlType.Text", "Finish Windows setup to continue")
+        app.click("ControlType.Button", "Continue")
+        wait_for_windows_sandbox(app)
         # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
         app.click("ControlType.Button", MODEL_PICKER)
         app.type_line("")
@@ -73,6 +78,7 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         prompt = f"Reply with exactly {marker} and nothing else."
         app.type_line(prompt, submit=False)
         app.wait_for("ControlType.Edit", prompt)
+        finish_windows_readiness_check(app)
         app.click("ControlType.Button", "Send")
         try:
             wait_for_submitted_prompt(session, prompt)

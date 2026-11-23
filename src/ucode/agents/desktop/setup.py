@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ucode.agents.copilot import CopilotModel, claude_model_name
-from ucode.agents.desktop import copilot_app, copilot_app_plugin
+from ucode.agents.desktop import copilot_app, copilot_app_plugin, copilot_app_tracing
 from ucode.agents.desktop.claude import (
     can_initialize_claude_desktop_directory,
     claude_desktop_directory,
@@ -28,13 +28,15 @@ from ucode.agents.desktop.claude import (
 )
 from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert_code, revert_cowork
 from ucode.config_io import is_dry_run
-from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
+from ucode.constants import (
+    MODEL_PROVIDER_SERVICE_HEADER,
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+)
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
-from ucode.env import env_bool
 from ucode.managed_files import OS, ManagedFileWriteUnavailable, current_os, machine_wide_only
 from ucode.state import desktop_uses_claude_subscription_relay, get_provider_service
 from ucode.string_utils import model_picker_label
-from ucode.ui import print_note, print_success, print_warning
+from ucode.ui import print_kv, print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
 
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
@@ -291,8 +293,6 @@ def revert_desktop() -> str:
     return "skipped" if "skipped" in results else "unchanged"
 
 
-COPILOT_APP_ENV = "UG_EXPERIMENTAL_COPILOT_APP"
-
 _COPILOT_APP_LINUX_BINARY = Path("/usr/bin/github")
 _COPILOT_APP_WINDOWS_KEY = r"Software\GitHub Inc.\GitHub Copilot"
 # User-level telemetry keys the app's runtime rejects; it then ignores the whole settings file,
@@ -306,10 +306,6 @@ _COPILOT_REJECTED_TELEMETRY_KEYS = (
 )
 _COPILOT_APP_DRY_RUN_NOTE = "Dry run: the GitHub Copilot app isn't changed."
 COPILOT_APP_DRY_RUN = "unchanged (dry run)"
-
-
-def copilot_app_enabled() -> bool:
-    return env_bool(COPILOT_APP_ENV)
 
 
 def _copilot_app_windows_registered() -> bool:
@@ -382,12 +378,14 @@ def _with_expanded_sources(state: dict) -> dict:
 
 
 def copilot_app_plugin_config(
-    state: dict, desired: copilot_app.DesiredProviders
+    state: dict, desired: copilot_app.DesiredProviders, *, seat_relay: str | None = None
 ) -> copilot_app_plugin.PluginConfig:
     """The plugin's config for ``desired``, with the headers ``ug copilot`` sends but its
-    User-Agent."""
+    User-Agent. ``seat_relay`` is the relayed Model Provider Service the app's own GitHub Copilot
+    calls go through."""
     from ucode.agents.copilot import proxy_headers
     from ucode.databricks import databricks_cli_path, ug_binary
+    from ucode.telemetry import ucode_user_agent, ug_version
     from ucode.workspace import selector_headers, workspace_headers
 
     workspace = state["workspace"]
@@ -422,6 +420,8 @@ def copilot_app_plugin_config(
         custom_oauth=custom_oauth if isinstance(custom_oauth, dict) else None,
         app_providers=desired.plugin_app,
         owned_provider_ids=copilot_app.OWNED_PROVIDER_IDS,
+        seat_relay=seat_relay,
+        user_agent=ucode_user_agent(ug_version()) if seat_relay else None,
     )
 
 
@@ -441,16 +441,18 @@ def copilot_settings_ignored_reason(path: Path | None = None) -> str | None:
     return None
 
 
-def copilot_app_seat_relay_note(provider: str) -> str:
+def _seat_relay_warning(provider: str) -> str:
     return (
-        f"{provider} uses a seat subscription, which the GitHub Copilot app doesn't support yet; "
-        "use `ug copilot` or VS Code for it."
+        f"The GitHub Copilot app isn't set up to route its GitHub Copilot models through "
+        f"{provider}. Run `ug configure --agents copilot` again."
     )
 
 
 def _uses_seat_relay(state: dict, provider: str) -> bool:
-    """Whether ``provider`` relays a GitHub Copilot seat. The relay's swap header needs a fresh
-    value per request, and the app's provider headers are fixed."""
+    """Whether ``provider`` relays a GitHub Copilot seat. The app's own GitHub Copilot models then
+    go through ug's relay in the plugin's extension, and the app gets no Databricks rows for it:
+    the relay's swap header needs a fresh value per request, and the app's provider headers are
+    fixed."""
     from ucode.agents.copilot import uses_seat_relay
 
     return uses_seat_relay(state, provider, tool="vscode")
@@ -480,20 +482,28 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return
     _cleanup_copilot_app_leftover()
+    state.pop(_LEGACY_WINDOWS_TRACING_KEY, None)
+    remove_legacy_copilot_app_tracing()
     from ucode.agents.vscode import copilot_models
 
     try:
         state = _with_expanded_sources(copilot_app_state(state))
-        if provider and _uses_seat_relay(state, provider):
-            print_warning(copilot_app_seat_relay_note(provider))
-            return
-        catalog = copilot_models(state, provider, location, agent="the GitHub Copilot app")
+        relayed = bool(provider) and _uses_seat_relay(state, provider)
+        catalog = (
+            []
+            if relayed
+            else copilot_models(state, provider, location, agent="the GitHub Copilot app")
+        )
     except RuntimeError as exc:
         print_warning(f"Skipped the GitHub Copilot app: {exc}")
         return
-    desired = copilot_app.desired_providers(state["workspace"], catalog, provider_service=provider)
+    desired = copilot_app.desired_providers(
+        state["workspace"], catalog, provider_service=None if relayed else provider
+    )
     try:
-        copilot_app_plugin.install(copilot_app_plugin_config(state, desired))
+        copilot_app_plugin.install(
+            copilot_app_plugin_config(state, desired, seat_relay=provider if relayed else None)
+        )
     except copilot_app_plugin.SettingsError as exc:
         print_warning(
             f"Skipped the GitHub Copilot app: {exc}, and ug doesn't rewrite a settings file it "
@@ -517,13 +527,38 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
             f"The GitHub Copilot app ignores its whole settings file while {reason}, so it won't "
             "load ug's plugin. Remove those keys."
         )
-    print_success("GitHub Copilot app: installed ug's plugin with the Databricks models.")
-    print_note("Open (or restart) the GitHub Copilot app to load the Databricks models.")
+    if relayed:
+        print_kv("GitHub Copilot app", f"installed ug's plugin, routing Copilot through {provider}")
+        print_note(
+            "In the GitHub Copilot app: open it (or restart it), then start a chat and pick a "
+            "GitHub Copilot model."
+        )
+        return
+    print_kv("GitHub Copilot app", f"installed ug's plugin with {len(catalog)} Databricks models")
+    print_note(
+        "In the GitHub Copilot app: open it (or restart it), then open the model picker and choose "
+        "a Databricks model."
+    )
     if name := _managed_default_display_name(state, catalog, desired):
         print_note(
             f"To start new chats on {name}, pick it in the GitHub Copilot app; Settings -> "
             "Sessions -> Default model makes it stick."
         )
+
+
+# Saved by earlier builds' `--copilot-app-windows-tracing`.
+_LEGACY_WINDOWS_TRACING_KEY = "copilot_app_windows_tracing"
+
+
+def remove_legacy_copilot_app_tracing() -> bool:
+    """Remove what earlier builds wrote for the app's own trace export. Problems only warn."""
+    if is_dry_run():
+        return False
+    try:
+        return copilot_app_tracing.remove_legacy()
+    except (copilot_app_plugin.SettingsError, OSError, RuntimeError) as exc:
+        print_warning(f"Could not remove ug's earlier GitHub Copilot app tracing setup: {exc}")
+        return False
 
 
 COPILOT_APP_REMOVAL_PENDING = (
@@ -537,6 +572,13 @@ def revert_copilot_app() -> str:
     if is_dry_run():
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
         return COPILOT_APP_DRY_RUN
+    # First, so a settings file ug created is empty once the plugin's keys go too.
+    legacy_removed = remove_legacy_copilot_app_tracing()
+    result = _revert_copilot_app_plugin()
+    return "removed" if legacy_removed and result == "not set up" else result
+
+
+def _revert_copilot_app_plugin() -> str:
     _cleanup_copilot_app_leftover()
     had_plugin = copilot_app_plugin.plugin_root().exists()
     if not had_plugin and not copilot_app_installed():
@@ -615,8 +657,6 @@ _COPILOT_REGISTRATION_LABELS = {
 def copilot_app_unconfigured_status() -> str | None:
     """The app's row in ``ug status`` once Copilot is no longer configured: a revert with the app
     closed is still pending until the plugin's next start."""
-    if not copilot_app_enabled():
-        return None
     _cleanup_copilot_app_leftover()
     if copilot_app_plugin.status() == "removal_pending":
         return COPILOT_APP_REMOVAL_PENDING
@@ -628,10 +668,6 @@ def copilot_app_status(
 ) -> CopilotAppStatus | None:
     """The app's row in ``ug status`` for ``state`` (managed settings already layered on), or None
     when ug doesn't set the app up."""
-    if not copilot_app_enabled():
-        return None
-    if state.get("copilot_app_integration") is False:
-        return CopilotAppStatus("off (workspace-managed)")
     _cleanup_copilot_app_leftover()
     plugin_status = copilot_app_plugin.status()
     if plugin_status == "not_installed" and not copilot_app_installed():
@@ -641,8 +677,11 @@ def copilot_app_status(
     warnings: list[str] = []
     try:
         if provider and _uses_seat_relay(state, provider):
-            registration = "skipped (seat subscription)"
-            warnings.append(copilot_app_seat_relay_note(provider))
+            if copilot_app_plugin.seat_relay_provider() == provider:
+                registration = f"through {provider}"
+            else:
+                registration = "not through the seat relay"
+                warnings.append(_seat_relay_warning(provider))
         else:
             desired = copilot_app.state_providers(
                 _with_expanded_sources(state), provider=provider, location=location

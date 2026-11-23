@@ -1,0 +1,92 @@
+import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+import { copilotHome, readAppPid } from "./app-rows.mjs";
+
+// The Copilot CLI and VS Code's Copilot runtime read the same settings file as the desktop app,
+// so with Copilot's experimental features on they start this extension too. Only the app's own
+// sessions get ug's rows, restart and redirect: in a CLI session they would replace the session's
+// models. The app is the ancestor process whose pid it writes to run/app-owner.pid; the app's
+// runtime also marks its extensions with COPILOT_EXTENSION_SANDBOXED, which covers a sandboxed
+// session whose process tree is hidden.
+export const SANDBOX_MARKER_ENV = "COPILOT_EXTENSION_SANDBOXED";
+export const MAX_ANCESTORS = 12;
+const COMMAND_TIMEOUT_MS = 3_000;
+
+function parentFromProc(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const ppid = Number.parseInt(fields[1], 10);
+    return Number.isInteger(ppid) && ppid > 0 ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout) =>
+      resolve(error ? null : String(stdout)),
+    );
+  });
+}
+
+// `pid ppid` per line, from `ps` or PowerShell.
+export function parsePidTable(output) {
+  const parents = new Map();
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (match) parents.set(Number(match[1]), Number(match[2]));
+  }
+  return parents;
+}
+
+async function parentLookup(platform, run) {
+  if (platform === "linux") return parentFromProc;
+  let output = null;
+  if (platform === "darwin") output = await run("ps", ["-axo", "pid=,ppid="]);
+  if (platform === "win32") {
+    output = await run("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+    ]);
+  }
+  if (output === null) return null;
+  const parents = parsePidTable(output);
+  return (pid) => parents.get(pid) ?? null;
+}
+
+export function ancestorsOf(pid, parentOf, limit = MAX_ANCESTORS) {
+  const ancestors = [];
+  let current = pid;
+  while (ancestors.length < limit && Number.isInteger(current) && current > 1) {
+    ancestors.push(current);
+    const parent = parentOf(current);
+    if (parent === null || parent === current || ancestors.includes(parent)) break;
+    current = parent;
+  }
+  return ancestors;
+}
+
+// `ancestors` null means the process tree couldn't be read.
+export function hostDecision({ appPid, ancestors, env = {} }) {
+  if (appPid && ancestors?.includes(appPid)) return { app: true, via: "ancestry" };
+  if (SANDBOX_MARKER_ENV in env) return { app: true, via: "sandbox marker" };
+  return { app: false, via: ancestors === null ? "no process tree" : "ancestry" };
+}
+
+export async function runningUnderApp({
+  home = copilotHome(),
+  env = process.env,
+  platform = process.platform,
+  pid = process.pid,
+  run = runCommand,
+} = {}) {
+  const appPid = readAppPid(home);
+  const parentOf = await parentLookup(platform, run);
+  const ancestors = parentOf ? ancestorsOf(pid, parentOf) : null;
+  return hostDecision({ appPid, ancestors, env });
+}

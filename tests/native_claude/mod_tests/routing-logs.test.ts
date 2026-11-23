@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing';
+import { ROUTE_VALIDATION_FAILED_REASON, ROUTE_VALIDATION_FAILED_ROW, ROUTE_VALIDATION_ROW, modelReason, routeValidationReason } from '../hooks/routing-logs.ts';
 
 const options = { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', logsCommand: ['/bin/ug', 'smart-router-logs'] };
 const pane = {
@@ -79,6 +80,95 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);
   await ui.unmount();
+});
+
+const validation = {
+  v: 1, type: 'route_validation', validation_id: 'c1', at: now - 120, harness: 'claude', session_id: 'session-one',
+  router_name: 'stable', routing_unsupported_reason: 'insufficient_eligible_options',
+  eligible_route_options: [{ model: 'system.ai.claude-sonnet', harness: 'claude' }],
+  ineligible_route_options: [
+    { model: 'system.ai.claude-haiku-4-5', harness: 'claude', reason: 'model_not_in_recipe' },
+    { model: 'gpt-x', harness: 'codex', reason: 'harness_not_supported' },
+    { model: 'main.custom', harness: 'claude', reason: 'future_reason' },
+  ],
+  available_route_options: [
+    { model: 'system.ai.claude-sonnet', harness: 'claude_code' },
+    { model: 'databricks-glm-5', harness: 'claude_code' },
+  ],
+  validation_ms: 1234,
+};
+
+test('a route validation row opens its detail without another read', { options }, async ($, on) => {
+  const runs: string[][] = [];
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    runs.push(e.argv);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records, route_validations: [validation, { validation_id: 1 }] }) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  let tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(`"key":"c1","label":"  2m ago  ${ROUTE_VALIDATION_ROW}"`);
+  expect(tree.indexOf('"key":"d2"')).toBeLessThan(tree.indexOf('"key":"c1"'));
+  expect(tree.indexOf('"key":"c1"')).toBeLessThan(tree.indexOf('"key":"d1"'));
+  await ui.press({ key: 'c1' });
+  expect(runs).toHaveLength(1);
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('"children":["Reason: "]');
+  expect(tree).toContain('At least two supported models are required. Please reach out to your workspace admin');
+  expect(tree).toContain('"children":["Validation Time: "]');
+  expect(tree).toContain('1.2s');
+  expect(tree).toContain('✓ claude-sonnet');
+  expect(tree).toContain('✗ claude-haiku-4-5  Not available in Smart Router');
+  expect(tree).toContain('"✗ gpt-x"');
+  expect(tree).toContain('✗ main.custom  Not eligible for routing');
+  expect(tree.indexOf('Supported models')).toBeLessThan(tree.indexOf('  glm-5'));
+  await ui.press({ key: 'back' });
+  expect(JSON.stringify(await ui.drawn())).toContain('"key":"c1"');
+  await ui.unmount();
+});
+
+const failedValidation = {
+  v: 1, type: 'route_validation', validation_id: 'c2', at: now - 120, harness: 'claude', session_id: 'session-one',
+  router_name: 'stable', routing_unsupported_reason: null, validation_failed: true,
+  validation_failure_reason: 'Smart Router returned an error (HTTP 500)',
+  eligible_route_options: [], ineligible_route_options: [], available_route_options: [], validation_ms: 1234,
+};
+
+for (const [reason, shown] of [
+  ['Smart Router returned an error (HTTP 500)', 'Smart Router returned an error (HTTP 500)'],
+  [null, ROUTE_VALIDATION_FAILED_REASON],
+] as const) test(`a failed route validation row with reason ${reason} opens a detail with no model lists`, { options }, async ($, on) => {
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  const validation = { ...failedValidation, validation_failure_reason: reason };
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: [], route_validations: [validation] }) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  let tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(`"key":"c2","label":"  2m ago  ${ROUTE_VALIDATION_FAILED_ROW}"`);
+  expect(tree).not.toContain(ROUTE_VALIDATION_ROW);
+  await ui.press({ key: 'c2' });
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(shown);
+  expect(tree).not.toContain('Smart Routing does not support this agent');
+  expect(tree).toContain('"children":["Validation Time: "]');
+  expect(tree).toContain('1.2s');
+  expect(tree).not.toContain('Models');
+  expect(tree).not.toContain('Supported models');
+  await ui.unmount();
+});
+
+test('route validation reasons map codes and pass server sentences through', () => {
+  expect(routeValidationReason('INCOMPLETE_REQUIRED_OPTIONS')).toBe('Required models are missing from this list');
+  expect(routeValidationReason('Smart Routing supports at most 20 distinct model services'))
+    .toBe('Smart Routing supports at most 20 distinct model services');
+  for (const reason of ['some_new_code', 'toString', null]) {
+    expect(routeValidationReason(reason)).toBe("Smart Routing does not support this agent's model list.");
+  }
+  expect(modelReason('excluded_by_policy')).toBe('Excluded by routing policy');
+  expect(modelReason('toString')).toBe('Not eligible for routing');
 });
 
 test('pressing a row fetches the decision and Back returns to the list', { options }, async ($, on) => {

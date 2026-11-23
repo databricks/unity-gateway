@@ -3514,7 +3514,7 @@ class TestStatus:
         output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
         assert "MCP servers: 1" in output
-        assert "GitHub Copilot (CLI and VS Code)" in output
+        assert "GitHub Copilot (CLI, VS Code and app)" in output
         assert "Claude Code" not in output
         assert "Gemini CLI" not in output
         assert "databricks-sql" not in result.output
@@ -3598,24 +3598,6 @@ class TestStatus:
         assert "GitHub Copilot app: plugin disabled, models registered" in output
         assert "their turns fail without it" in output
         assert seen[0]["workspace"] == state["workspace"]
-
-    def test_status_shows_the_copilot_app_turned_off_by_managed_config(self, monkeypatch):
-        monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
-        state = {
-            **MINIMAL_STATE,
-            "available_tools": ["copilot"],
-            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
-        }
-        managed = {"enabled_agents": {"copilot": {"app_integration_enabled": False}}}
-        with (
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.load_managed_state", return_value=managed),
-        ):
-            result = runner.invoke(app, ["status"])
-
-        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert result.exit_code == 0, result.output
-        assert "GitHub Copilot app: off (workspace-managed)" in output
 
     def test_status_shows_a_pending_copilot_app_removal_after_revert(self):
         with (
@@ -10786,6 +10768,29 @@ class TestCopilotSeatRuntime:
         assert pinned == [("https://ws.example", "42")]
         # The runtime owns stdout.
         assert "not for VS Code" not in result.stdout
+
+    def test_looks_the_runtime_up_again_from_the_code_command(self, monkeypatch):
+        from ucode.agents import vscode
+
+        monkeypatch.setattr(vscode, "resolve_runtime", lambda runtime, code: f"{runtime}@{code}")
+        _result, seen, _pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://ws.example"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://ws.example",
+                "--runtime",
+                "/old/copilot-runtime",
+                "--code",
+                "/vscode/bin/code",
+                "--",
+            ],
+        )
+
+        assert seen["runtime"] == "/old/copilot-runtime@/vscode/bin/code"
 
     def test_needs_a_configured_workspace(self, monkeypatch):
         result, seen, _pinned = self._run(

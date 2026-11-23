@@ -1,5 +1,12 @@
 # Integration tests
 
+Startup compatibility validation has component coverage in `../test_startup_validation.py`,
+the smart-routing launch tests, and the native Claude mod suite. They control the validation
+response or transport. CUJ 4 adds one live supported journey: with `UG_STARTUP_ROUTE_VALIDATION=1`
+and the published model list, ug sends one recorded routes:validate request that the Gateway
+answers with HTTP 200 and `is_supported: true`, and the band and hint row show ON without the
+unsupported warning. No live unsupported or classifier journey is claimed.
+
 The Codex footer has offline protocol, process-isolation, and launcher coverage in
 `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
 checks cover green ON/gray OFF badges, nullable snapshots, Python's `-P` provider
@@ -422,6 +429,8 @@ accessibility tree captured before the fatal error in command evidence.
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+The Windows inference-only journey explicitly completes sandbox setup and the same
+post-restart readiness check as the skill journey before sending its first prompt.
 Both inference cases wait for the rendered draft, click Send, and require the user prompt in
 the native rollout before the answer wait. Failed answer waits also retain rollout evidence.
 Each module also runs `test_ug_codex_desktop_*_skill_calls_mcp`. It reuses the same
@@ -918,6 +927,8 @@ and every change of the recognized screen (`<name>-states.json`). Playwright con
 window's DevTools page target exists, and connects again if that connection misses the workbench.
 An answer without the file's value also keeps the tool results and the last response of its turn
 (`missed-answer-<model>.json`).
+On Windows the window runs in a job object, so closing it ends every VS Code process, including
+ones whose parent already exited, before the bearer check reads the home.
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation that asks for approval fails (a finished tool call's collapsed row asks for none). The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window

@@ -40,8 +40,6 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.os_compatibility.system_cross_os import process_running
 from ucode.ui import print_warning
 
-# The app versions whose WebSocket messages ug was checked against; others get a warning.
-VERIFIED_APP_VERSIONS = frozenset({"1.4.2"})
 # The app only lists models for an Anthropic provider that has a key. The plugin's provider
 # replaces it with a bearer token, so it is never sent.
 PLACEHOLDER_KEY = "ug-placeholder-not-a-secret"
@@ -155,10 +153,14 @@ def _own_model_id(model: str) -> str:
     return model if model.count(".") >= 2 else f"databricks.{model}"
 
 
+# The app's picker lists ug's rows next to GitHub's own models, some with the same names.
+APP_LABEL_SUFFIX = " (Databricks)"
+
+
 def _model_rows(
     catalog: Iterable[CopilotModel], wire: str, *, provider_service: str | None
 ) -> list[dict[str, Any]]:
-    """The app's model rows for ``catalog``'s models on ``wire``.
+    """The app's model rows for ``catalog``'s models on ``wire``, labelled as Databricks models.
 
     A Claude row's id is Copilot's catalog id for the model behind it, which is what makes the app
     apply Claude's request settings, and its wire model is the gateway's id. Other rows get an id
@@ -187,7 +189,7 @@ def _model_rows(
         row: dict[str, Any] = {
             "modelId": model_id,
             "wireModel": model.id,
-            "displayName": labels[model],
+            "displayName": labels[model] + APP_LABEL_SUFFIX,
             "supportsVision": wire == WIRE_ANTHROPIC,
         }
         if wire == WIRE_RESPONSES:
@@ -415,12 +417,6 @@ class _AppConnection:
         self._connection.__exit__(None, None, None)
 
 
-def _version(app: _AppConnection) -> str | None:
-    reply = app.request({"type": "get_healthcheck"}, "command_result")
-    version = ((reply.get("data") or {}).get("app") or {}).get("version")
-    return version if isinstance(version, str) else None
-
-
 def _providers(app: _AppConnection) -> dict[str, dict[str, Any]]:
     providers = app.request({"type": "list_model_providers"}, "model_providers_list").get(
         "providers"
@@ -447,24 +443,8 @@ def _models(app: _AppConnection, provider_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _connect(*, warn_version: bool = True, timeout: float = _REQUEST_TIMEOUT_S) -> _AppConnection:
-    app = _AppConnection(copilot_home(), timeout=timeout)
-    if not warn_version:
-        return app
-    try:
-        version = _version(app)
-    except CopilotAppNotRunning:
-        app.close()
-        raise
-    except CopilotAppError:
-        # The version only decides the warning below.
-        version = None
-    if warn_version and version not in VERIFIED_APP_VERSIONS:
-        print_warning(
-            f"GitHub Copilot app {version or '(unknown version)'} hasn't been verified with ug; "
-            "continuing anyway."
-        )
-    return app
+def _connect(*, timeout: float = _REQUEST_TIMEOUT_S) -> _AppConnection:
+    return _AppConnection(copilot_home(), timeout=timeout)
 
 
 def _delete_provider(app: _AppConnection, provider_id: str) -> None:
@@ -506,7 +486,7 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
     :class:`CopilotAppError` when the app refuses."""
     providers = list(providers)
     try:
-        app = _connect(warn_version=False, timeout=_STATUS_TIMEOUT_S)
+        app = _connect(timeout=_STATUS_TIMEOUT_S)
     except CopilotAppNotRunning:
         return "not_running"
     try:

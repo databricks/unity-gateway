@@ -47,7 +47,6 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
-    request_copilot_app_with_copilot,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -1757,8 +1756,8 @@ def _fail_machine_wide_run(failed_tools: list[str]) -> None:
 def _agent_label(tool: str) -> str:
     """An agent's name where developers choose and review agents: the picker, status, list."""
     if tool == AGENT_COPILOT:
-        # Configuring copilot also sets up Copilot Chat in VS Code.
-        return "GitHub Copilot (CLI and VS Code)"
+        # Configuring copilot also sets up Copilot Chat in VS Code and the desktop app.
+        return "GitHub Copilot (CLI, VS Code and app)"
     return str(TOOL_SPECS[tool]["display"])
 
 
@@ -3090,11 +3089,17 @@ def copilot_seat_runtime_cmd(
         str | None, typer.Option("--profile", help="The Databricks CLI profile configure used.")
     ] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+    code: Annotated[
+        str | None,
+        typer.Option("--code", help="VS Code's `code` command, to find its current runtime."),
+    ] = None,
 ) -> None:
     """Run VS Code's Copilot runtime with its Copilot API calls through the seat relay, only while
     ug is still configured for the workspace and profile VS Code was set up with."""
     import sys
     from contextlib import redirect_stdout
+
+    from ucode.agents import vscode as vscode_agent
 
     # The runtime talks to VS Code over this process's stdio.
     with redirect_stdout(sys.stderr):
@@ -3130,7 +3135,9 @@ def copilot_seat_runtime_cmd(
         if managed := load_managed_state(state_workspace_key(state)):
             state = resolve_state(managed, state, "copilot")
         apply_pat_environment(state)
-        returncode = copilot_agent.run_seat_runtime(state, provider, runtime, list(ctx.args))
+        returncode = copilot_agent.run_seat_runtime(
+            state, provider, vscode_agent.resolve_runtime(runtime, code), list(ctx.args)
+        )
     raise typer.Exit(returncode)
 
 
@@ -3570,6 +3577,9 @@ def smart_router_logs_cmd(
     decision: Annotated[str | None, typer.Option("--decision")] = None,
     harness: Annotated[str, typer.Option("--harness")] = AGENT_CLAUDE,
     output_format: Annotated[str, typer.Option("--format")] = "json",
+    record_route_validation: Annotated[
+        Path | None, typer.Option("--record-route-validation")
+    ] = None,
 ) -> None:
     """Print a session's recorded smart-routing decisions as JSON, or a table with --format table."""
     from ucode.smart_routing import session_log
@@ -3587,6 +3597,16 @@ def smart_router_logs_cmd(
         raise fail(f"unknown harness {harness!r}; expected {AGENT_CLAUDE} or {AGENT_CODEX}")
     if output_format not in ("json", "table"):
         raise fail(f"unknown format {output_format!r}; expected json or table")
+    if record_route_validation is not None:
+        try:
+            result = json.loads(record_route_validation.read_text(encoding="utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("expected a JSON object")
+            session_log.append_route_validation(harness, session, result)
+        except (OSError, ValueError) as exc:
+            raise fail(f"cannot record route validation: {exc}") from exc
+        sys.stdout.write(json.dumps({"v": 1}) + "\n")
+        return
     try:
         records = session_log.read_decisions(harness, session)
     except OSError as exc:
@@ -3605,8 +3625,16 @@ def smart_router_logs_cmd(
         sys.stdout.write(session_log.render_table(records) + "\n")
         return
     if decision is None:
+        validations = session_log.read_records(harness, session, session_log.ROUTE_VALIDATION_TYPE)
         sys.stdout.write(
-            json.dumps({"v": 1, "decisions": [session_log.overview(r) for r in records]}) + "\n"
+            json.dumps(
+                {
+                    "v": 1,
+                    "decisions": [session_log.overview(r) for r in records],
+                    "route_validations": validations,
+                }
+            )
+            + "\n"
         )
         return
     record = next((r for r in records if r.get("decision_id") == decision), None)
@@ -5666,7 +5694,7 @@ def configure(
             "--model-location",
             help="Discover models from a Unity Catalog schema (`<catalog>.<schema>`, e.g. "
             "main.default) instead of system.ai. Applies with --agent or --agents for claude, "
-            "codex, or copilot (Copilot CLI and VS Code). Cannot be combined with --provider.",
+            "codex, or copilot (Copilot CLI, VS Code and app). Cannot be combined with --provider.",
         ),
     ] = None,
     no_vscode: Annotated[
@@ -5675,15 +5703,6 @@ def configure(
             "--no-vscode",
             help="Set up only the Copilot CLI. By default, configuring copilot also sets up "
             "Copilot Chat in VS Code.",
-        ),
-    ] = False,
-    no_copilot_app: Annotated[
-        bool,
-        typer.Option(
-            "--no-copilot-app",
-            hidden=True,
-            help="Don't add the Databricks models to the GitHub Copilot desktop app. By default, "
-            "configuring copilot also sets up the app when it is installed.",
         ),
     ] = False,
     mcp: Annotated[
@@ -5807,7 +5826,6 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
-        request_copilot_app_with_copilot(not no_copilot_app)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
