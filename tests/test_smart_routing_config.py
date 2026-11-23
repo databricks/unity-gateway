@@ -7,12 +7,14 @@ import pytest
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR,
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -22,6 +24,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ONLY_V0: {
@@ -29,6 +32,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ONLY_V1: {
@@ -36,6 +40,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V0: {
@@ -43,6 +48,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V1: {
@@ -50,6 +56,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
@@ -57,8 +64,40 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
     },
+}
+# Claude's Auto mapping uses the V0 routing flags and hides model details.
+_EXPECTED_PRESETS[config.SUBAGENT_AUTO_V0_CLAUDE_ONLY] = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "0",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+}
+_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V2] = {
+    **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V1],
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+}
+_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0_CLAUDE_ONLY] = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY] = _EXPECTED_PRESETS[
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL
+]
+_EXPECTED_CODEX_ROUTING_OFF = {
+    **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+}
+_EXPECTED_CODEX_PRESETS = {
+    **_EXPECTED_PRESETS,
+    config.SUBAGENT_ORCH_V2: {
+        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V2],
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
+    },
+    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY: _EXPECTED_CODEX_ROUTING_OFF,
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: _EXPECTED_CODEX_ROUTING_OFF,
+    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: _EXPECTED_CODEX_ROUTING_OFF,
 }
 
 # Versions whose mapping hides subagent model details in the main TUI, per agent.
@@ -77,6 +116,8 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
         "INHERITED_SETTING": "preserved",
     }
     expected = applied.copy()
@@ -90,6 +131,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     assert applied == original
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
@@ -102,10 +144,15 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ONLY_V1,
         config.SUBAGENT_ORCH_V0,
         config.SUBAGENT_ORCH_V1,
+        config.SUBAGENT_ORCH_V2,
+        config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
         config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
+        config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
     ],
 )
 def test_smart_routing_config_cartesian_grid(
+    agent,
     ENABLE_SMART_ROUTING_V2,
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
     ENABLE_SMART_ROUTER_ORCHESTRATOR,
@@ -128,19 +175,50 @@ def test_smart_routing_config_cartesian_grid(
     expected = original.copy()
     expected.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
     if SMART_ROUTER_CONFIG_VERSION is not None:
-        expected.update(_EXPECTED_PRESETS[SMART_ROUTER_CONFIG_VERSION])
+        presets = _EXPECTED_CODEX_PRESETS if agent == AGENT_CODEX else _EXPECTED_PRESETS
+        expected.update(presets[SMART_ROUTER_CONFIG_VERSION])
 
-    resolved = config.resolve_environment(source, agent=AGENT_CLAUDE)
+    resolved = config.resolve_environment(source, agent=agent)
 
     assert resolved == expected
     assert source == original
 
     applied = source.copy()
-    previous = config.apply_config(applied, agent=AGENT_CLAUDE)
+    previous = config.apply_config(applied, agent=agent)
 
     assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
     assert applied == original
+
+
+def test_codex_runtime_flag_overrides_an_inherited_value():
+    # Codex's subagent_orch_v2 runtime "1" wins over an inherited "0".
+    applied = {
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V2,
+    }
+    resolved = config.resolve_environment(applied, agent=AGENT_CODEX)
+    assert resolved[ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR] == "1"
+    assert (
+        config.resolve_environment(applied, agent=AGENT_CLAUDE)[
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
+        ]
+        == "0"
+    )
+    # Claude's V1 mapping keeps the runtime off even when the flag is inherited on.
+    applied[ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR] = "1"
+    assert (
+        config.resolve_environment(applied, agent=AGENT_CLAUDE)[
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
+        ]
+        == "0"
+    )
+    assert (
+        config.resolve_environment(applied, agent=AGENT_CODEX)[
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
+        ]
+        == "1"
+    )
 
 
 @pytest.mark.parametrize(
@@ -172,7 +250,16 @@ def test_legacy_preset_equivalence(version, expected_routing):
 
 
 @pytest.mark.parametrize(
-    "failure", ["missing_agent", "unknown_agent", "missing_flag", "unknown_flag", "invalid_value"]
+    "failure",
+    [
+        "missing_agent",
+        "unknown_agent",
+        "missing_flag",
+        "missing_runtime_flag",
+        "missing_display_flag",
+        "unknown_flag",
+        "invalid_value",
+    ],
 )
 def test_agent_presets_require_complete_valid_configuration(failure):
     agents = {
@@ -184,6 +271,10 @@ def test_agent_presets_require_complete_valid_configuration(failure):
         agents["other"] = agents[AGENT_CODEX].copy()
     elif failure == "missing_flag":
         agents[AGENT_CODEX].pop(ENABLE_SMART_ROUTING_ENV_VAR)
+    elif failure == "missing_runtime_flag":
+        agents[AGENT_CODEX].pop(ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR)
+    elif failure == "missing_display_flag":
+        agents[AGENT_CODEX].pop(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR)
     elif failure == "unknown_flag":
         agents[AGENT_CODEX]["UNKNOWN_FLAG"] = "0"
     else:
@@ -192,8 +283,8 @@ def test_agent_presets_require_complete_valid_configuration(failure):
         config._validate_versions({"invalid_v0": agents})
 
 
-def test_codex_uses_existing_presets():
-    for version, expected in _EXPECTED_PRESETS.items():
+def test_codex_uses_expected_presets():
+    for version, expected in _EXPECTED_CODEX_PRESETS.items():
         source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
@@ -210,15 +301,7 @@ def test_claude_only_versions_turn_codex_routing_off(version):
     source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
 
     assert config.resolve_environment(source, agent=AGENT_CODEX) == {
-        **dict.fromkeys(
-            (
-                ENABLE_SMART_ROUTING_ENV_VAR,
-                ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
-                ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
-            ),
-            "0",
-        ),
+        **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     }
 
@@ -337,6 +420,14 @@ def test_enabled_version_routes(selector, routes):
     assert env == before
 
 
+def test_codex_orchestrator_runtime_flag_alone_does_not_enable_routing():
+    env = {ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1"}
+
+    assert not v2.smart_routing_enabled(env, default=False, agent=AGENT_CODEX)
+    assert not v2.first_prompt_routing_enabled(env, agent=AGENT_CODEX)
+    assert not orchestrator.feature_enabled(env, agent=AGENT_CODEX)
+
+
 @pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
 def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabled, tmp_path):
     monkeypatch.setitem(
@@ -347,7 +438,8 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
             "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
-            "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "1",
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -356,7 +448,8 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
-        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "1",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
@@ -390,9 +483,11 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
         (config.SUBAGENT_ONLY_V1, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V2, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
         (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):

@@ -224,6 +224,7 @@ def _toggle_with_skill(
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
             "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+            "ENABLE_CODEX_ORCHESTRATOR_RUNTIME": "0",
             "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "0",
         }
     )

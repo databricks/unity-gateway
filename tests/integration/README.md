@@ -499,6 +499,8 @@ both Claude and Codex. Two parameterized tests run all six
 context in inference input, and a completed explicitly requested native subagent, and a
 Claude-only one checking the status band and hint row at launch and across off/on toggles.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+The new `subagent_orch_v2` Codex runtime path is not in this live CUJ; its preset and registry
+checks are offline-only, and it has no live run.
 CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
 `additional_tools` input items. Encrypted child messages match the routed task name
 to the recipient. Codex 0.165.0 plaintext child messages match the exact `NEW_TASK`
@@ -515,7 +517,7 @@ header and omit the payload field; disabled Codex presets omit routing metadata 
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
-until managed-default agent selection.
+until managed-default agent selection. They also cover the runtime opt-in's Codex-only value.
 These checks do not establish live agent coverage.
 
 The shared request recorder and native compatibility-retry checks live in
@@ -1451,11 +1453,10 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 189-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and seven selector forms (`None` plus the six
-supported presets, including the internal first-prompt-and-subagent mode and the blind
-subagent-model orch v0 preset). It independently
-hardcodes preset values and asserts exact
+The unit/component `../test_smart_routing_config.py` includes a Cartesian oracle over
+both agents, the three legacy routing flags (`None`, `0`, `1`), all supported presets,
+and an absent selector. Separate no-op cases cover absent, blank, whitespace and
+unknown selectors. The oracle independently hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
 Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
@@ -1828,7 +1829,9 @@ still supports explicitly selecting it once the requested package is available.
 The required **Codex desktop inference · macOS** job installs the ChatGPT desktop app from
 OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml`, and runs the
 `macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
-Accessibility to the runner's shell, so no permission prompt is needed. It uploads
+Accessibility to the runner's shell, so no permission prompt is needed. Isolated sessions set
+`CODEX_SPARKLE_ENABLED=false` so the app's native updater cannot replace the pinned build
+between cases. This does not seed onboarding or change the UI interactions. The job uploads
 `integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journeys against the newest appcast build, so it shows

@@ -4,14 +4,17 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1175,6 +1178,102 @@ def _codex_routing_catalog(
     return str(output)
 
 
+@contextmanager
+def _codex_runtime_proxy(state: dict, overlay: dict) -> Iterator[bool]:
+    if not orchestrator.codex_runtime_enabled():
+        yield False
+        return
+    from ucode import gateway_proxy, skills
+    from ucode.smart_routing.codex_runtime import CodexRuntime
+
+    provider = overlay["model_providers"][overlay["model_provider"]]
+    upstream_url = provider["base_url"]
+    skill = skills.skill_entrypoint(orchestrator.skill_directory(), AGENT_CODEX)
+    launch_env = os.environ.copy()
+    runtime = CodexRuntime(
+        skill.read_text(encoding="utf-8"),
+        enabled=lambda: orchestrator.codex_runtime_enabled(launch_env),
+    )
+    workspace = state["workspace"]
+    session_secret = secrets.token_urlsafe(32)
+    auth_state = dict(state)
+    if not custom_oauth_cli_enabled(auth_state.get("custom_oauth")):
+        auth_state.pop("custom_oauth", None)
+    server = cache = client = None
+    worker = None
+    try:
+        # The relay accepts only this launch's client. Codex reads the secret from
+        # its environment per request; it never appears on the command line or in
+        # the config. Both bindings land inside the try so a proxy start failure
+        # cannot leave them behind.
+        provider["env_http_headers"] = {
+            **provider.get("env_http_headers", {}),
+            gateway_proxy.UG_SESSION_SECRET_HEADER: gateway_proxy.UG_SESSION_SECRET_ENV_VAR,
+        }
+        os.environ[gateway_proxy.UG_SESSION_SECRET_ENV_VAR] = session_secret
+        server, cache, client = gateway_proxy.start_codex_proxy(
+            upstream_url,
+            lambda force: launch_token(auth_state, workspace, force_refresh=force),
+            runtime,
+            workspace=workspace,
+            session_secret=session_secret,
+        )
+        worker = threading.Thread(
+            target=server.serve_forever, name="codex-runtime-proxy", daemon=True
+        )
+        worker.start()
+        provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
+        yield True
+    finally:
+        provider["base_url"] = upstream_url
+        provider["env_http_headers"].pop(gateway_proxy.UG_SESSION_SECRET_HEADER, None)
+        os.environ.pop(gateway_proxy.UG_SESSION_SECRET_ENV_VAR, None)
+        if cache is not None:
+            cache.stop()
+        if worker is not None and worker.ident is not None:
+            server.shutdown()
+            worker.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+        if server is not None:
+            server.server_close()
+        if client is not None:
+            client.close()
+
+
+def _wait_codex_process(argv: list[str]) -> NoReturn:
+    metrics.agent_handoff()
+    proc = subprocess_cross_os.popen(argv)
+    installed = []
+
+    def _forward(signum, _frame):
+        proc.send_signal(signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            installed.append((sig, signal.signal(sig, _forward)))
+        except (ValueError, OSError):
+            # Not the main thread (or unsupported platform): the launcher's own
+            # process-group teardown still reaches the child.
+            pass
+    try:
+        returncode = proc.wait()
+    except KeyboardInterrupt:
+        # POSIX delivers ^C to the whole process group, so the child already has
+        # it; only Windows needs the explicit resend (as in exec_or_spawn).
+        if os.name == "nt":
+            proc.send_signal(signal.SIGINT)
+        returncode = proc.wait()
+    finally:
+        for sig, previous in installed:
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, OSError):
+                pass
+    sys.exit(returncode)
+
+
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -1259,82 +1358,86 @@ def launch_codex(
     ]
     statusline_config = codex_statusline.launch_config(session_env_path)
     config_io.deep_merge_dict(overlay, statusline_config)
-    config_args = codex_config_args(overlay)
-    if app_server_launch:
-        # The caller owns this app-server's address, model and clients, so run its command as is.
-        exec_or_spawn([binary, *config_args, *tool_args])
-    first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
-    app_port = _free_port()
-    app_server_url = _loopback_websocket_url(app_port)
+    with _codex_runtime_proxy(state, overlay) as runtime_active:
+        config_args = codex_config_args(overlay)
+        if app_server_launch:
+            # The caller owns this app-server's address, model and clients, so run its
+            # command as is. The runtime proxy stays alive by waiting on the child.
+            if runtime_active:
+                _wait_codex_process([binary, *config_args, *tool_args])
+            exec_or_spawn([binary, *config_args, *tool_args])
+        first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
+        app_port = _free_port()
+        app_server_url = _loopback_websocket_url(app_port)
 
-    # Codex-only, and pulls in `websockets`; keep it off the Claude launch path.
-    from ucode.smart_routing import codex_interposer
+        # Codex-only, and pulls in `websockets`; keep it off the Claude launch path.
+        from ucode.smart_routing import codex_interposer
 
-    # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
-    # preferences) and layer only ucode's gateway settings at CLI precedence.
-    metrics.agent_handoff()
-    app_server = subprocess_cross_os.popen(
-        [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    stop_interposer = None
-    try:
-        if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
-            raise RuntimeError(
-                "Codex app-server did not become ready for smart routing; check workspace auth."
-            )
-        tui_port, stop_interposer = codex_interposer.start_interposer_thread(
-            LOOPBACK_HOST,
-            app_server_url,
-            available_models=available_models,
-            workspace=workspace if first_prompt else None,
-            token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
-            switch_message_fn=format_routing_notice,
-            log_path=CODEX_INTERPOSER_LOG,
-            session_controls=session_env_path,
-            **(
-                {"provider": state["_codex_launch_provider"]}
-                if state.get("_codex_launch_provider")
-                else {}
-            ),
+        # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
+        # preferences) and layer only ucode's gateway settings at CLI precedence.
+        metrics.agent_handoff()
+        app_server = subprocess_cross_os.popen(
+            [binary, "app-server", *config_args, "--listen", app_server_url],
+            env=os.environ.copy(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        tui_url = _loopback_websocket_url(tui_port)
-        provider_args = []
-        if os.name == "nt":
-            # Windows has no machine-wide Codex config for the remote TUI to inherit.
-            provider_args = codex_config_args(
-                {
-                    key: overlay[key]
-                    for key in ("model_provider", "model_providers")
-                    if key in overlay
-                }
+        stop_interposer = None
+        try:
+            if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
+                raise RuntimeError(
+                    "Codex app-server did not become ready for smart routing; check workspace auth."
+                )
+            tui_port, stop_interposer = codex_interposer.start_interposer_thread(
+                LOOPBACK_HOST,
+                app_server_url,
+                available_models=available_models,
+                workspace=workspace if first_prompt else None,
+                token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
+                switch_message_fn=format_routing_notice,
+                log_path=CODEX_INTERPOSER_LOG,
+                session_controls=session_env_path,
+                **(
+                    {"provider": state["_codex_launch_provider"]}
+                    if state.get("_codex_launch_provider")
+                    else {}
+                ),
             )
-        model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
-        tui = subprocess_cross_os.popen(
-            [
-                binary,
-                *provider_args,
-                *codex_config_args(codex_statusline.tui_config(overlay)),
-                "--remote",
-                tui_url,
-                *model_args,
-                *tool_args,
-            ]
-        )
-        try:
-            returncode = tui.wait()
-        except KeyboardInterrupt:
-            tui.send_signal(signal.SIGINT)
-            returncode = tui.wait()
-    finally:
-        if stop_interposer is not None:
-            stop_interposer()
-        app_server.terminate()
-        try:
-            app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001
-            app_server.kill()
-    sys.exit(returncode)
+            tui_url = _loopback_websocket_url(tui_port)
+            provider_args = []
+            if os.name == "nt":
+                # Windows has no machine-wide Codex config for the remote TUI to inherit.
+                provider_args = codex_config_args(
+                    {
+                        key: overlay[key]
+                        for key in ("model_provider", "model_providers")
+                        if key in overlay
+                    }
+                )
+            model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
+            tui = subprocess_cross_os.popen(
+                [
+                    binary,
+                    *provider_args,
+                    *codex_config_args(codex_statusline.tui_config(overlay)),
+                    "--remote",
+                    tui_url,
+                    *model_args,
+                    *tool_args,
+                ]
+            )
+            try:
+                returncode = tui.wait()
+            except KeyboardInterrupt:
+                tui.send_signal(signal.SIGINT)
+                returncode = tui.wait()
+        finally:
+            if stop_interposer is not None:
+                stop_interposer()
+            app_server.terminate()
+            try:
+                app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001
+                app_server.kill()
+        sys.exit(returncode)

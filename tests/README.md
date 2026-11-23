@@ -29,6 +29,11 @@ starts with code-mode tools disabled in the user's catalog, then verifies the ex
 assignment reaches the router and child, and that same child completes on the routed model.
 Encrypted or missing assignments must never
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
+The remote TUI receives the launch's feature overrides together with the footer selection:
+its thread-start features table must preserve plaintext child tools and routing hooks.
+Native Codex 0.171.0 request capture covers a catalog without a code-mode override:
+the footer-only table exposes encrypted child messages, while the complete feature table
+preserves plaintext assignments. This offline protocol check does not prove live routing.
 Component checks also cover catalog precedence, authenticated model-service metadata,
 and a warning with continued launch if the optional session catalog cannot be built or written.
 Catalog construction preserves native collaboration settings for ordinary launches. Without
@@ -347,6 +352,7 @@ window and an explicit compaction preference.
 including an unreadable settings document. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
+The native mod component test also checks runtime launch capture and restoration on failure.
 Native request-construction checks verify the
 description switches after both native commands and CLI session toggles, including
 native toggles after resuming a saved prompt-snapshot fixture. The description includes
@@ -433,7 +439,8 @@ from the file. They also check malformed config errors and stale client choices.
 They use temporary files; real desktop apps remain untested.
 
 `test_integration_contract.py` checks that isolated test sessions set Antigravity's
-`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
+`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true` and the desktop app's
+`CODEX_SPARKLE_ENABLED` to `false`, overriding inherited values.
 This component check does not run the native updater; the integration runner retains its
 before/after agent-version check.
 
@@ -620,7 +627,20 @@ the early startup draft is insufficient. These offline PTY checks do not run nat
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
 until managed-default agent selection.
-These checks do not establish live agent coverage.
+They also cover the Codex-only `subagent_orch_v2` flag, Claude's preserved V1 mapping,
+unknown-selector no-op behavior, and routing/environment restoration. These checks do not
+establish live agent coverage; runtime activation, child completion, and provider-relay behavior
+have no live run.
+
+The Codex runtime component suites are `test_codex_runtime.py`, plus the runtime cases in
+`test_codex_smart_routing_v2.py` and `test_gateway_proxy.py`. They cover runtime contract
+transformations and eligibility, the scoped Codex version/session launch gate and relay lifetime, and the loopback relay's
+delegated-child contract injection, request/response preservation, stream translation, and
+protocol errors. Multi-turn cases retain raw and restored activations across current and
+resumed runtimes while rejecting ambiguous activation text. The actual bundled skill
+is checked for both contract delivery and the absence of an unsupported capability claim.
+The proxy tests exercise a local relay with a simulated upstream gateway;
+none of these component checks is a live Codex, gateway, or quality run.
 
 The shared request recorder and native compatibility-retry checks live in
 `integration/utils/request_recorder.py`. The CUJ adapter keeps its existing
@@ -1279,7 +1299,9 @@ the smart-routing gate. Plain launches retain their existing version rules.
 `test_smart_router.py` executes Claude's installed skill commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Codex's skill uses
 `ug_smart_router`, a session-bound native tool serviced by the UG app-server interposer.
-It never requests shell approval or falls back to a shell toggle. Launcher lifecycle
+It never requests shell approval or falls back to a shell toggle. Disabling routing
+sets every registered flag, including the Codex orchestration runtime flag, to `0`.
+Launcher lifecycle
 checks isolate the developer machine's optional managed catalog. Existing CLI commands
 remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
 The shared CLI only validates the reason and toggles routing; neither harness's CLI
@@ -1351,13 +1373,14 @@ commands, substitutions, other variables, and different conditions remain reject
 and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
-`test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
-routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
-supported presets, including the customer first-prompt-and-subagent mode. It uses the named
-version constants but independently hardcodes each preset's settings and asserts exact
+`test_smart_routing_config.py` includes a 432-case Cartesian component oracle run for both
+agents: the three legacy routing flags take unset, `0`, and `1`, while the selector takes unset
+or one of the eight supported presets, including the customer first-prompt-and-subagent mode. It uses
+the named version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
-Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
+Absent/unknown selectors are no-ops, and the runtime flag alone does not enable routing (a focused case checks
+Codex `subagent_orch_v2` precedence over an inherited value); CLI checks cover auth, revert, and launch dispatch.
 These component checks do not establish live agent, hook, or gateway behavior.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
 `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`, including first-prompt,
@@ -1847,6 +1870,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys verify that `smart_routing.enabled` alone leaves Claude's first prompt unrouted and turns on Smart Router Orchestrator for Claude, and that Codex's managed default stays unrouted and unorchestrated; the Claude managed-default skill-toggle cases and a Codex launch-only opt-out case cover those paths; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
+| Codex orchestration runtime | Offline preset and environment-registry checks cover `subagent_orch_v2` and the Codex-only runtime flag. No live activation, child-completion, provider-relay, prompt-cache, quality, equivalence, or savings result is established. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; GUI inference, local skill execution and MCP web-search invocation on macOS and Windows by `integration/test_ug_codex_desktop_macos.py` and `integration/test_ug_codex_desktop_windows.py`; UC skill downloads through the desktop, connector browser sign-in, desktop tracing and Linux GUI are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |

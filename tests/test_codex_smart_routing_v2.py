@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import signal as signal_module
+import socket
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
-from ucode import agents, codex_config, custom_oauth, managed_files
+from ucode import agents, codex_config, custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
-from ucode.smart_routing import codex_interposer, codex_routing, v2
+from ucode.smart_routing import codex_interposer, codex_routing, orchestrator, session_env, v2
 
 WS = "https://example.databricks.com"
 
@@ -1612,3 +1615,213 @@ def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
         ("gpt-5.6-sol", "codex"),
         ("system.ai.gpt-5-6-luna", "codex"),
     ]
+
+
+def relay_address(argv):
+    import tomlkit
+
+    provider = next(arg for arg in argv if arg.startswith("model_providers.Databricks="))
+    config = tomlkit.parse("provider=" + provider.split("=", 1)[1])["provider"]
+    url = urlsplit(config["base_url"])
+    return url.hostname, url.port
+
+
+def enable_runtime(monkeypatch):
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+    monkeypatch.setenv("ENABLE_CODEX_ORCHESTRATOR_RUNTIME", "1")
+    monkeypatch.setattr(codex, "agent_version", lambda binary: "0.160.0")
+    monkeypatch.setattr(codex, "ug_version", lambda: "test")
+    monkeypatch.setattr(codex, "_launch_token", lambda state, workspace, **kwargs: "token")
+    monkeypatch.setattr(v2, "launch_token", lambda state, workspace, **kwargs: "token")
+
+
+def test_runtime_launch_keeps_the_relay_alive_until_the_session_exits(monkeypatch):
+    enable_runtime(monkeypatch)
+    monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+    from ucode.smart_routing import codex_interposer
+
+    stopped = []
+    monkeypatch.setattr(
+        codex_interposer,
+        "start_interposer_thread",
+        lambda *args, **kwargs: (7031, lambda: stopped.append(True)),
+    )
+    address = []
+
+    class Child:
+        def __init__(self, argv, **kwargs):
+            self.terminated = False
+            self.app = argv[1] == "app-server"
+            if self.app:
+                address.append(relay_address(argv))
+            # Every owned process starts only while the relay still accepts connections.
+            with socket.create_connection(address[0], timeout=2):
+                pass
+
+        def wait(self, timeout=None):
+            return 7
+
+        def terminate(self):
+            self.terminated = True
+
+    monkeypatch.setattr(v2.subprocess_cross_os, "popen", Child)
+    with pytest.raises(SystemExit) as result:
+        v2.launch_codex(
+            {"workspace": "https://workspace.example", "codex_models": ["test-model"]},
+            [],
+            binary="codex",
+            start_model="test-model",
+            render_overlay=codex.render_overlay,
+        )
+    assert result.value.code == 7
+    assert stopped == [True]
+    with socket.socket() as connection:
+        assert connection.connect_ex(address[0]) != 0
+
+
+def test_runtime_relay_derives_its_upstream_from_the_provider_base_url(monkeypatch):
+    enable_runtime(monkeypatch)
+    session_env.start_session()
+    overlay = codex.render_overlay("https://workspace.example", "test-model")
+    provider_base = overlay["model_providers"]["Databricks"]["base_url"]
+    captured = {}
+    real_start = gateway_proxy.start_codex_proxy
+
+    def spy(upstream_url, token_provider, runtime, **kwargs):
+        captured["upstream"] = upstream_url
+        return real_start(upstream_url, token_provider, runtime, **kwargs)
+
+    monkeypatch.setattr(gateway_proxy, "start_codex_proxy", spy)
+    with v2._codex_runtime_proxy(
+        {"workspace": "https://workspace.example"}, overlay
+    ) as runtime_active:
+        assert runtime_active is True
+        assert captured["upstream"] == provider_base
+        assert gateway_proxy.UG_SESSION_SECRET_ENV_VAR in os.environ
+    assert gateway_proxy.UG_SESSION_SECRET_ENV_VAR not in os.environ
+    assert overlay["model_providers"]["Databricks"]["base_url"] == provider_base
+
+
+def test_wait_codex_process_forwards_termination_signals(monkeypatch):
+    sent = []
+    installed = {}
+
+    class Child:
+        def send_signal(self, sig):
+            sent.append(sig)
+
+        def wait(self):
+            return 5
+
+    monkeypatch.setattr(v2.subprocess_cross_os, "popen", lambda argv: Child())
+    monkeypatch.setattr(
+        v2.signal,
+        "signal",
+        lambda sig, handler: installed.setdefault(sig, handler),
+    )
+    with pytest.raises(SystemExit) as result:
+        v2._wait_codex_process(["codex"])
+    assert result.value.code == 5
+    handler = installed[signal_module.SIGTERM]
+    assert handler is not None and handler != signal_module.SIG_DFL
+    handler(signal_module.SIGTERM, None)
+    assert sent == [signal_module.SIGTERM]
+
+
+def test_runtime_checks_current_session_controls(monkeypatch):
+    enable_runtime(monkeypatch)
+    session_env.start_session()
+    assert orchestrator.codex_runtime_enabled()
+    session_env.set_session_environment({"ENABLE_CODEX_ORCHESTRATOR_RUNTIME": "0"})
+    assert not orchestrator.codex_runtime_enabled()
+    session_env.set_session_environment({})
+    assert orchestrator.codex_runtime_enabled()
+    session_env.set_session_environment(
+        {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0", "ENABLE_SMART_ROUTING_V2": "0"}
+    )
+    assert not orchestrator.codex_runtime_enabled()
+
+
+@pytest.mark.parametrize("ready", [False, True])
+def test_first_prompt_path_cleans_up_relay_and_owned_processes(ready, monkeypatch):
+    enable_runtime(monkeypatch)
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+    monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: ready)
+    from ucode.smart_routing import codex_interposer
+
+    stopped = []
+    monkeypatch.setattr(
+        codex_interposer,
+        "start_interposer_thread",
+        lambda *args, **kwargs: (7031, lambda: stopped.append(True)),
+    )
+    processes = []
+    address = []
+
+    class Child:
+        def __init__(self, argv, **kwargs):
+            self.terminated = False
+            self.app = argv[1] == "app-server"
+            if self.app:
+                address.append(relay_address(argv))
+            processes.append(self)
+            with socket.create_connection(address[0], timeout=2):
+                pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+    monkeypatch.setattr(v2.subprocess_cross_os, "popen", Child)
+    with pytest.raises(SystemExit if ready else RuntimeError):
+        v2.launch_codex(
+            {"workspace": "https://workspace.example", "codex_models": ["test-model"]},
+            [],
+            binary="codex",
+            start_model="test-model",
+            render_overlay=codex.render_overlay,
+        )
+    assert len(processes) == (2 if ready else 1)
+    assert processes[0].terminated
+    assert stopped == ([True] if ready else [])
+    with socket.socket() as connection:
+        assert connection.connect_ex(address[0]) != 0
+
+
+@pytest.mark.parametrize("custom_enabled", [False, True])
+def test_proxy_auth_uses_the_same_custom_oauth_gate_as_the_launch(custom_enabled, monkeypatch):
+    token_fn = codex._launch_token
+    launch_fn = v2.launch_token
+    enable_runtime(monkeypatch)
+    monkeypatch.setattr(codex, "_launch_token", token_fn)
+    monkeypatch.setattr(v2, "launch_token", launch_fn)
+    monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1" if custom_enabled else "0")
+    calls = []
+    monkeypatch.setattr(
+        custom_oauth,
+        "get_custom_client_token",
+        lambda *args, **kwargs: calls.append(("custom", kwargs["force_refresh"])) or "custom-token",
+    )
+    monkeypatch.setattr(
+        custom_oauth,
+        "get_databricks_token",
+        lambda *args, **kwargs: (
+            calls.append(("profile", kwargs["force_refresh"])) or "profile-token"
+        ),
+    )
+    session_env.start_session()
+    state = {
+        "workspace": "https://workspace.example",
+        "custom_oauth": {
+            "client_id": "client",
+            "redirect_url": "http://localhost",
+            "scopes": ["scope"],
+        },
+    }
+    overlay = codex.render_overlay(state["workspace"], "test-model")
+    with v2._codex_runtime_proxy(state, overlay):
+        assert calls == [("custom" if custom_enabled else "profile", True)]
