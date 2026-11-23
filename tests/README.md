@@ -631,7 +631,10 @@ The Codex runtime component suites are `test_codex_runtime.py`, plus the runtime
 `test_codex_smart_routing_v2.py` and `test_gateway_proxy.py`. They cover runtime contract
 transformations and eligibility, the scoped Codex version/session launch gate and relay lifetime, and the loopback relay's
 delegated-child contract injection, request/response preservation, stream translation, and
-protocol errors. The proxy tests exercise a local relay with a simulated upstream gateway;
+protocol errors. Multi-turn cases retain raw and restored activations across current and
+resumed runtimes while rejecting ambiguous activation text. The actual bundled skill
+is checked for both contract delivery and the absence of an unsupported capability claim.
+The proxy tests exercise a local relay with a simulated upstream gateway;
 none of these component checks is a live Codex, gateway, or quality run.
 
 The shared request recorder and native compatibility-retry checks live in

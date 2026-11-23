@@ -831,11 +831,12 @@ eligible `ug codex` session with routing and orchestration active, and Smart Rou
 off/on controls continue to gate it. This path uses the same Codex 0.171.0 minimum
 as other smart-routed terminal launches.
 
-The active Codex runtime path supplies the complete bundled skill, carries the trusted
-child contract into delegated work, waits for completed child evidence on eligible
+The active Codex runtime path supplies the complete bundled skill, waits for completed child evidence on eligible
 controller tasks instead of requesting provider-generated replacement work, and uses
 the shared default prompt-cache key. Its provider relay is loopback-only and configured
-at launch. Offline component coverage is
+at launch. A bundled skill with delegated-owner markers also supplies that contract
+directly to children. Without those markers, the runtime does not advertise or inject
+a child contract; the parent's existing delegation instructions still apply. Offline component coverage is
 available; no live equivalence, quality, or savings claim is established.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)

@@ -22,10 +22,12 @@ Otherwise the feature is off; routing alone installs only `smart-router`.
 The runtime flag is effective only in an eligible `ug codex` session with Smart Router
 routing and orchestration enabled. It does not enable routing by itself, and the
 existing Smart Router off/on controls continue to apply. The active path uses the full
-bundled skill, carries the trusted child contract into delegated work, waits for
+bundled skill, waits for
 completed child evidence on eligible controller tasks instead of requesting provider-generated
 replacement work, and shares the default prompt-cache key. Its provider relay is
-loopback-only and configured at launch.
+loopback-only and configured at launch. Direct child-contract injection requires a
+bundled skill with delegated-owner markers. Without them, the runtime does not
+advertise that capability and the parent's existing delegation instructions apply.
 
 The new config and registry behavior has
 offline component coverage only; no live equivalence, quality, or savings claim is made.

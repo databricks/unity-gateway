@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -244,6 +245,72 @@ def test_new_runtime_recognizes_previously_restored_activation():
         {"thread-id": "child", "x-codex-parent-thread-id": "root"},
     )
     assert "<delegated_owner_contract " in json.loads(child.body)["input"][0]["content"][0]["text"]
+
+
+@pytest.mark.parametrize("restored", [False, True])
+@pytest.mark.parametrize("resumed", [False, True])
+def test_successive_activations_preserve_history_and_runtime(restored, resumed):
+    instance = runtime()
+    original = root_payload(tools=collaboration_tools(), cache_key="root")
+    first = instance.prepare_request(json.dumps(original).encode(), {"thread-id": "root"})
+    history = json.loads(first.body)["input"] if restored else original["input"]
+    payload = root_payload(
+        input_items=[*history, activation()], tools=collaboration_tools(), cache_key="root"
+    )
+    if resumed:
+        instance = runtime()
+
+    prepared = instance.prepare_request(json.dumps(payload).encode(), {"thread-id": "root"})
+    forwarded = json.loads(prepared.body)
+
+    assert prepared.adapt_response
+    assert forwarded["input"][:-1] == history
+    assert SKILL in forwarded["input"][-1]["content"][0]["text"]
+    assert "await_completion" in forwarded["tools"][0]["tools"][0]["parameters"]["properties"]
+    assert forwarded["prompt_cache_key"] == json.loads(first.body)["prompt_cache_key"]
+
+
+def test_ambiguous_activation_within_one_message_forwards_unchanged():
+    item = activation(truncated=False)
+    item["content"][0]["text"] *= 2
+    body = json.dumps(root_payload(input_items=[item], tools=collaboration_tools())).encode()
+
+    prepared = runtime().prepare_request(body, {"thread-id": "root"})
+
+    assert prepared.body == body
+    assert not prepared.adapt_response
+
+
+def test_bundled_skill_advertises_and_delivers_only_its_available_owner_contract():
+    skill = (
+        Path(__file__).parents[1] / "skills/smart-router-orchestrator/SKILL.codex.md"
+    ).read_text()
+    instance = CodexRuntime(skill, lambda: True)
+    item = activation(truncated=False)
+    item["content"][0]["text"] = item["content"][0]["text"].replace(SKILL, skill)
+    root = instance.prepare_request(
+        json.dumps(root_payload(input_items=[item], tools=collaboration_tools())).encode(),
+        {"thread-id": "root"},
+    )
+    body = json.dumps(root_payload(input_items=[])).encode()
+    child = instance.prepare_request(
+        body, {"thread-id": "child", "x-codex-parent-thread-id": "root"}
+    )
+
+    assert root.adapt_response
+    marker = "<!-- DELEGATED_OWNER_CONTRACT_BEGIN -->"
+    if marker in skill:
+        contract = (
+            skill.split(marker, 1)[1].split("<!-- DELEGATED_OWNER_CONTRACT_END -->", 1)[0].strip()
+        )
+        digest = hashlib.sha256(contract.encode()).hexdigest()
+        assert "delegated_owner_contract is delivered directly" in root.body.decode()
+        assert json.loads(child.body)["input"][0]["content"][0]["text"] == (
+            f'<delegated_owner_contract sha256="{digest}">\n{contract}\n</delegated_owner_contract>'
+        )
+    else:
+        assert "delegated_owner_contract is delivered directly" not in root.body.decode()
+        assert child.body == body
 
 
 def test_json_adaptation_enforces_the_response_bound(monkeypatch):
