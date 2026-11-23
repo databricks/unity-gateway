@@ -1394,6 +1394,13 @@ These component checks do not establish live agent, hook, or gateway behavior.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
 `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`, including first-prompt,
 subagent-routing activation, orchestration, and preservation of the chosen router name.
+`first_prompt_and_subagent_orch_v0_claude_only` has its own exact Claude mapping case and
+joins the Claude-only Codex opt-out, describe and enabled-version cases. In
+`test_claude_smart_routing_v2.py`, its launch installs both `UserPromptSubmit` hooks (the
+first-prompt hold and the orchestrator), the orchestrator roles and Agent guidance, and no
+`--model`; a hook case holds then re-sends one prompt and checks that the orchestrator hook
+returns the same workflow both times. These are component checks; no ug test yet runs the
+pair in a live Claude TUI.
 `test_enabled_version_routes` checks which agents the version chosen by
 `--enable-smart-routing` or workspace smart routing routes, and
 `test_warns_once_and_launches_unrouted_when_version_leaves_codex_unrouted` in `test_cli.py`
