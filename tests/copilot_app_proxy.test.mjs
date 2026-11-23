@@ -132,3 +132,30 @@ test("detectLoopbackProxy runs the platform's tool once, bounded, and a failure 
   });
   assert.equal(windows.reason, "a Windows proxy that includes loopback");
 });
+
+test("Windows asks the system resolver about the relay's own URL, and falls back to the registry when it fails", async () => {
+  const reg = async (command, args) => (args.includes("/v") ? CONNECTIONS("05") : REG_PAC);
+  const check = (resolve) => detectLoopbackProxy({ env: {}, platform: "win32", run: reg, port: 4242, resolve });
+
+  // A PAC that leaves loopback alone: the registry alone would have skipped.
+  const bypassed = await check(async (url) => (assert.equal(url, "http://127.0.0.1:4242/"), { proxy: null, bypassed: true }));
+  assert.equal(bypassed.captured, false);
+  assert.deepEqual(bypassed.decision, {
+    registry: { captured: true, reason: "a Windows PAC proxy" },
+    resolver: { proxy: null, bypassed: true },
+  });
+
+  const routed = await check(async () => ({ proxy: "http://proxy.corp:3128", bypassed: false }));
+  assert.equal(routed.captured, true);
+  assert.equal(routed.reason, "the Windows proxy settings route loopback through proxy.corp:3128");
+
+  const failed = await check(async () => ({ proxy: null, bypassed: false, error: "ETIMEDOUT" }));
+  assert.equal(failed.captured, true);
+  assert.equal(failed.reason, "a Windows PAC proxy");
+  assert.equal(failed.decision.resolver.error, "ETIMEDOUT");
+
+  // Without a port there is nothing to ask about, so the registry decides.
+  const noPort = await detectLoopbackProxy({ env: {}, platform: "win32", run: reg, resolve: async () => assert.fail("no port") });
+  assert.equal(noPort.reason, "a Windows PAC proxy");
+  assert.deepEqual(noPort.decision.resolver, null);
+});

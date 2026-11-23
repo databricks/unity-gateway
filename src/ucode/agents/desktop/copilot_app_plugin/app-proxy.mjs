@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 
 import { NO_DEBUG } from "./app-debug.mjs";
+import { createSystemProxyResolver, parseScutil } from "./app-system-proxy.mjs";
 import { windowsTool } from "./app-windows.mjs";
+
+export { parseScutil };
 
 // The relay URL is plain HTTP on 127.0.0.1. A proxy the runtime routes loopback through would get
 // every relay request with the GitHub token in it, so the redirect is skipped when one may.
@@ -27,26 +30,6 @@ function envCapture(env) {
   if (set.length === 0) return null;
   const exceptions = [envValue(env, "NO_PROXY")].filter(Boolean).join(",");
   return coversLoopback(exceptions) ? null : `${set[0]} without a loopback exception in NO_PROXY`;
-}
-
-// `scutil --proxy`: `  Key : value` lines, with ExceptionsList as a nested `<array>` block.
-export function parseScutil(output) {
-  const settings = {};
-  const exceptions = [];
-  let inExceptions = false;
-  for (const raw of String(output ?? "").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (inExceptions) {
-      if (line === "}") inExceptions = false;
-      else exceptions.push(line.replace(/^\d+\s*:\s*/, ""));
-      continue;
-    }
-    const match = /^(\w+)\s*:\s*(.*)$/.exec(line);
-    if (!match) continue;
-    if (match[1] === "ExceptionsList") inExceptions = true;
-    else settings[match[1]] = match[2];
-  }
-  return { settings, exceptions };
 }
 
 // System proxies stay a skip reason even with a loopback exception: whether the runtime bypasses
@@ -108,11 +91,36 @@ function runCommand(command, args) {
 
 // Reads the system proxy settings for this platform, then decides. A failed read counts as no
 // capture, reported in `error`, so a broken tool doesn't turn the relay off.
+// Windows answers for the relay's own loopback URL through the system resolver, which evaluates
+// PAC files and bypass lists the way the OS does; the registry reading is the fallback when that
+// fails. The relay must be listening for its port to be known.
+function windowsHostOf(proxy) {
+  try {
+    return new URL(proxy).host;
+  } catch {
+    return proxy;
+  }
+}
+
+async function windowsDecision({ registry, port, resolve }) {
+  if (!port || !resolve) return { ...registry, decision: { registry, resolver: null } };
+  const resolver = await resolve(`http://127.0.0.1:${port}/`);
+  if (resolver.error) return { ...registry, decision: { registry, resolver } };
+  const captured = Boolean(resolver.proxy) && !resolver.bypassed;
+  return {
+    captured,
+    reason: captured ? `the Windows proxy settings route loopback through ${windowsHostOf(resolver.proxy)}` : null,
+    decision: { registry, resolver },
+  };
+}
+
 export async function detectLoopbackProxy({
   env = process.env,
   platform = process.platform,
   run = runCommand,
   debug = NO_DEBUG,
+  port = null,
+  resolve = platform === "win32" ? createSystemProxyResolver({ platform, debug }) : null,
 } = {}) {
   const started = Date.now();
   const fromEnv = loopbackProxyCapture({ env, platform });
@@ -134,7 +142,8 @@ export async function detectLoopbackProxy({
       const connections = await run(regExe, ["query", `${WININET_KEY}\\Connections`, "/v", "DefaultConnectionSettings"]).catch(
         (error) => (debug("proxy.system.connections", { error: String(error?.code ?? error?.message ?? error) }), ""),
       );
-      const result = loopbackProxyCapture({ env, platform, reg, connections });
+      const registry = loopbackProxyCapture({ env, platform, reg, connections });
+      const result = await windowsDecision({ registry, port, resolve });
       debug("proxy.system", {
         platform,
         regExe,
@@ -142,6 +151,7 @@ export async function detectLoopbackProxy({
         connections,
         settings: parseRegQuery(reg),
         connectionFlags: connectionFlags(parseRegQuery(connections)),
+        port,
         ...result,
         ms: Date.now() - started,
       });

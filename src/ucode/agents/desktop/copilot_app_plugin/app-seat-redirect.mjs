@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import { NO_DEBUG } from "./app-debug.mjs";
 import { detectLoopbackProxy } from "./app-proxy.mjs";
+import { createSystemProxyResolver } from "./app-system-proxy.mjs";
 import { createStateLog } from "./app-state.mjs";
 import {
   copilotHostForStatus,
@@ -114,7 +115,8 @@ export function createSeatRedirect(
     applyTimeoutMs = APPLY_TIMEOUT_MS,
     githubUserUrl,
     debug = NO_DEBUG,
-    proxyCheck = () => detectLoopbackProxy({ env, debug }),
+    systemProxy = createSystemProxyResolver({ debug }),
+    proxyCheck = ({ port } = {}) => detectLoopbackProxy({ env, debug, port, resolve: systemProxy }),
     hostCheck = null,
   } = {},
 ) {
@@ -141,6 +143,8 @@ export function createSeatRedirect(
     userAgent: seatUserAgent(relay.userAgent, "copilot/app"),
     ...(githubUserUrl ? { userUrl: githubUserUrl } : {}),
     fallback: async () => (session ? copilotHostForStatus(await session.rpc.gitHubAuth.getStatus()) : null),
+    debug,
+    agentFor: (url) => server.agentFor(url),
   });
   const subagents = subagentHeaders(sessionId ?? "");
   const server = createSeatRelay({
@@ -157,6 +161,7 @@ export function createSeatRedirect(
     log,
     env,
     debug,
+    systemProxy,
     observe: (event) => {
       noteRequest({ time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...event });
       if (event.route !== "gateway" || !INFERENCE_CALLS.has(`${event.method} ${event.path}`)) return;
@@ -173,6 +178,7 @@ export function createSeatRedirect(
       redirect,
       ...(proxy?.reason ? { reason: proxy.reason } : {}),
       ...(proxy?.error ? { proxyCheck: proxy.error } : {}),
+      ...(proxy?.decision ? { proxyDecision: proxy.decision } : {}),
       ...(hostMs !== null ? { hostMs } : {}),
       ...(proxyMs !== null ? { proxyMs } : {}),
       builtInCalls,
@@ -185,7 +191,7 @@ export function createSeatRedirect(
     if (proxyPending) return proxyPending;
     const started = now();
     proxyPending = Promise.resolve()
-      .then(() => proxyCheck())
+      .then(() => proxyCheck({ port: server.port }))
       .catch((error) => ({ captured: false, reason: null, error: String(error?.message ?? error) }))
       .then((result) => {
         proxyMs = now() - started;
@@ -210,10 +216,11 @@ export function createSeatRedirect(
       return redirect;
     },
     async listen() {
-      checkProxy();
       debug("relay.certificates", { systemStore: loadSystemCertificates() });
       await server.listen();
       debug("relay.listening", { port: server.port });
+      // The proxy check asks about the relay's own URL, so it needs the port.
+      checkProxy();
     },
     async apply(joined) {
       session = joined;

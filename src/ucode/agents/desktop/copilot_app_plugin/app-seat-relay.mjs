@@ -4,6 +4,7 @@ import https from "node:https";
 import tls from "node:tls";
 
 import { NO_DEBUG } from "./app-debug.mjs";
+import { createSystemProxyResolver } from "./app-system-proxy.mjs";
 
 // Loopback relay for the GitHub Copilot app's own Copilot API calls, hosted in ug's extension.
 // The extension points its session's Copilot API base at `http://127.0.0.1:<port>/<secret>`. The
@@ -74,6 +75,8 @@ export const HOST_CACHE_ENTRIES = 64;
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
 const GATEWAY_DENIAL_BODY_LIMIT = 64 * 1024;
 const GENERIC_GATEWAY_DENIAL = "Unity Gateway denied this request. Check your access to the model.";
+const PROXY_AUTH_NEEDED = "the system proxy requires authentication.";
+const PROXY_AUTH_ERROR = /\b407\b/;
 const RELAY = "the Unity Gateway Copilot relay";
 
 // The extension's Node trusts only its bundled CAs; a workstation behind TLS inspection needs the
@@ -89,6 +92,17 @@ export function proxyEnvironment(env = process.env) {
     }
   }
   return picked;
+}
+
+const CREDENTIAL_KINDS = [
+  ["gho_", "oauth"],
+  ["ghu_", "user-to-server"],
+  ["github_pat_", "pat"],
+  ["tid=", "session"],
+];
+
+function credentialKind(credential) {
+  return CREDENTIAL_KINDS.find(([prefix]) => credential.startsWith(prefix))?.[1] ?? "other";
 }
 
 function hostOf(url) {
@@ -359,6 +373,7 @@ export function createCopilotHostResolver({
   timeoutMs = GITHUB_LOOKUP_TIMEOUT_MS,
   maxEntries = HOST_CACHE_ENTRIES,
   debug = NO_DEBUG,
+  agentFor = async () => undefined,
 } = {}) {
   const hosts = new Map();
   const missedAt = new Map();
@@ -377,9 +392,11 @@ export function createCopilotHostResolver({
     if (userAgent) headers["user-agent"] = userAgent;
     let reply;
     try {
-      const { response } = startUpstream(new URL(userUrl), {
+      const target = new URL(userUrl);
+      const { response } = startUpstream(target, {
         method: "GET",
         headers,
+        agent: await agentFor(target),
         connectTimeoutMs: timeoutMs,
         readTimeoutMs: timeoutMs,
       });
@@ -403,28 +420,28 @@ export function createCopilotHostResolver({
 
   return async function copilotHost(authorization) {
     const key = createHash("sha256").update(authorization).digest("hex");
-    const credential = authorization.slice("Bearer ".length, "Bearer ".length + 4);
+    const credential = credentialKind(authorization.slice("Bearer ".length));
     const known = hosts.get(key);
     if (known) {
-      debug("host.resolve", { cache: "hit", host: known, credentialPrefix: credential });
+      debug("host.resolve", { cache: "hit", host: known, credential });
       return known;
     }
     const missed = missedAt.get(key);
     if (missed !== undefined && now() - missed < missTtlMs) {
       const fromFallback = await fallback(authorization);
-      debug("host.resolve", { cache: "recent miss", host: fromFallback, credentialPrefix: credential });
+      debug("host.resolve", { cache: "recent miss", host: fromFallback, credential });
       return fromFallback;
     }
     const host = askGitHub ? await fromGitHub(authorization) : null;
     if (!host) {
       remember(missedAt, key, now());
       const fromFallback = await fallback(authorization);
-      debug("host.resolve", { cache: "miss", askGitHub, host: fromFallback, via: "fallback", credentialPrefix: credential });
+      debug("host.resolve", { cache: "miss", askGitHub, host: fromFallback, via: "fallback", credential });
       return fromFallback;
     }
     remember(hosts, key, host);
     missedAt.delete(key);
-    debug("host.resolve", { cache: "miss", host, via: "github", credentialPrefix: credential });
+    debug("host.resolve", { cache: "miss", host, via: "github", credential });
     return host;
   };
 }
@@ -453,6 +470,7 @@ export function createSeatRelay({
   keepAliveTimeoutMs = KEEP_ALIVE_TIMEOUT_MS,
   env = process.env,
   debug = NO_DEBUG,
+  systemProxy = createSystemProxyResolver({ debug }),
 }) {
   const gateway = new URL(gatewayBase);
   const secret = randomBytes(32).toString("base64url");
@@ -460,20 +478,33 @@ export function createSeatRelay({
   debug.addSecret?.(secret);
   const added = withoutReserved(addedHeaders);
   // Custom agents don't read the proxy variables on their own; `proxyEnv` (Node 24.5+) makes
-  // them, and an older Node ignores it and connects directly as before.
+  // them, and an older Node ignores it and connects directly as before. The variables win; without
+  // them each upstream gets the proxy the system settings name for it, or none.
   const proxyEnv = proxyEnvironment(env);
+  const envProxied = Object.keys(proxyEnv).some((name) => name.toUpperCase() !== "NO_PROXY");
   debug("relay.proxyEnv", {
     variables: Object.keys(proxyEnv),
     hosts: Object.fromEntries(
       Object.entries(proxyEnv).map(([name, value]) => [name, name.toUpperCase() === "NO_PROXY" ? value : hostOf(value)]),
     ),
     gateway: gateway.host,
+    source: envProxied ? "env" : "system",
   });
-  const agents = {
-    "http:": new http.Agent({ keepAlive: true, proxyEnv }),
-    "https:": new https.Agent({ keepAlive: true, proxyEnv }),
-  };
-  const upstreamOptions = (url) => ({ agent: agents[url.protocol], connectTimeoutMs, readTimeoutMs });
+  const pools = new Map();
+  function pool(key, agentProxyEnv) {
+    if (!pools.has(key)) {
+      const options = agentProxyEnv ? { keepAlive: true, proxyEnv: agentProxyEnv } : { keepAlive: true };
+      pools.set(key, { "http:": new http.Agent(options), "https:": new https.Agent(options) });
+    }
+    return pools.get(key);
+  }
+  async function agentFor(url) {
+    if (envProxied) return pool("env", proxyEnv)[url.protocol];
+    const { proxy } = await systemProxy(url.origin);
+    if (!proxy) return pool("direct", null)[url.protocol];
+    return pool(proxy, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy })[url.protocol];
+  }
+  const upstreamOptions = async (url) => ({ agent: await agentFor(url), connectTimeoutMs, readTimeoutMs });
   const server = http.createServer({
     keepAliveTimeout: keepAliveTimeoutMs,
     headersTimeout: keepAliveTimeoutMs + 5_000,
@@ -599,7 +630,7 @@ export function createSeatRelay({
         method: req.method,
         headers: gatewayHeaders(req, authorization, body, host, databricksToken),
         body,
-        ...upstreamOptions(url),
+        ...(await upstreamOptions(url)),
       }).response;
     let databricksToken = await mintToken(res, outcome);
     if (databricksToken === null) {
@@ -609,6 +640,13 @@ export function createSeatRelay({
     try {
       let response = await send(databricksToken);
       let retried = false;
+      if (response.statusCode === 407) {
+        response.resume();
+        observe({ ...outcome, status: 407 });
+        trace({ status: 407, clientStatus: 400 });
+        sendJson(res, 400, `Unity Gateway couldn't be reached: ${PROXY_AUTH_NEEDED}`);
+        return;
+      }
       if (response.statusCode === 401 || response.statusCode === 403) {
         // A stale Databricks swap token and a refused GitHub credential look the same from the
         // status alone. Refresh once and retry; a repeat is relayed.
@@ -639,6 +677,12 @@ export function createSeatRelay({
         trace({ error: String(error?.code ?? error?.message ?? error), aborted: true });
         return;
       }
+      if (PROXY_AUTH_ERROR.test(String(error?.message ?? ""))) {
+        observe({ ...outcome, status: 407 });
+        trace({ status: 407, clientStatus: 400, error: String(error?.message ?? error) });
+        sendJson(res, 400, `Unity Gateway couldn't be reached: ${PROXY_AUTH_NEEDED}`);
+        return;
+      }
       observe({ ...outcome, status: 502, error: error?.code ?? "upstream" });
       trace({ status: 502, error: String(error?.code ?? error?.message ?? error) });
       log(`Databricks seat relay: gateway request failed: ${error?.code ?? error?.name ?? "error"}`);
@@ -664,14 +708,27 @@ export function createSeatRelay({
         method: req.method,
         headers: directHeaders(req, authorization, body),
         body,
-        ...upstreamOptions(url),
+        ...(await upstreamOptions(url)),
       }).response;
+      if (reply.statusCode === 407) {
+        reply.resume();
+        observe({ ...outcome, status: 407 });
+        trace({ status: 407, clientStatus: 400 });
+        sendJson(res, 400, `GitHub Copilot couldn't be reached: ${PROXY_AUTH_NEEDED}`);
+        return;
+      }
       observe({ ...outcome, status: reply.statusCode });
       const bytesOut = await relay(res, reply);
       trace({ status: reply.statusCode, bytesOut });
     } catch (error) {
       if (res.headersSent || res.destroyed) {
         trace({ error: String(error?.code ?? error?.message ?? error), aborted: true });
+        return;
+      }
+      if (PROXY_AUTH_ERROR.test(String(error?.message ?? ""))) {
+        observe({ ...outcome, status: 407 });
+        trace({ status: 407, clientStatus: 400, error: String(error?.message ?? error) });
+        sendJson(res, 400, `GitHub Copilot couldn't be reached: ${PROXY_AUTH_NEEDED}`);
         return;
       }
       observe({ ...outcome, status: 502, error: error?.code ?? "upstream" });
@@ -762,6 +819,7 @@ export function createSeatRelay({
 
   return {
     secret,
+    agentFor,
     get port() {
       return port;
     },
@@ -778,7 +836,7 @@ export function createSeatRelay({
       });
     },
     close() {
-      for (const agent of Object.values(agents)) agent.destroy();
+      for (const agents of pools.values()) for (const agent of Object.values(agents)) agent.destroy();
       return new Promise((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();

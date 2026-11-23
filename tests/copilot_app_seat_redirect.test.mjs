@@ -20,6 +20,7 @@ import {
   redirectSkipReason,
   seatUserAgent,
 } from "../src/ucode/agents/desktop/copilot_app_plugin/app-seat-redirect.mjs";
+import { detectLoopbackProxy } from "../src/ucode/agents/desktop/copilot_app_plugin/app-proxy.mjs";
 
 const GITHUB_AUTH = "Bearer gho_app";
 const gateway = { requests: [], status: 200 };
@@ -379,6 +380,32 @@ test("a proxy check that fails or throws still redirects, and says so", async (t
   thrown.redirect.handle({ type: "session.idle", data: {} });
   assert.equal(thrown.entries[0].proxyCheck, "boom");
   assert.equal(thrown.entries[0].redirect, "applied");
+});
+
+test("on Windows a PAC that leaves loopback alone no longer skips the redirect, and both decisions are recorded", async (t) => {
+  const REG_PAC = ["", "HKEY_CURRENT_USER\\...\\Internet Settings", "    AutoConfigURL    REG_SZ    http://proxy.example/proxy.pac", ""].join("\r\n");
+  let asked = null;
+  const { redirect, entries } = await start(t, {}, {
+    proxyCheck: ({ port }) =>
+      detectLoopbackProxy({
+        env: {},
+        platform: "win32",
+        port,
+        run: async () => REG_PAC,
+        resolve: async (url) => ((asked = url), { proxy: null, bypassed: true }),
+      }),
+  });
+  await redirect.listen();
+  assert.equal(asked, null);
+  assert.equal(await redirect.apply(fakeSession()), true);
+  assert.equal(asked, `http://127.0.0.1:${new URL(redirect.url).port}/`);
+  redirect.handle({ type: "model.call_start", data: { model: "gpt-5" } });
+  redirect.handle({ type: "session.idle", data: {} });
+  assert.equal(entries[0].redirect, "applied");
+  assert.deepEqual(entries[0].proxyDecision, {
+    registry: { captured: true, reason: "a Windows PAC proxy" },
+    resolver: { proxy: null, bypassed: true },
+  });
 });
 
 test("by default the proxy check reads the extension's environment", async (t) => {

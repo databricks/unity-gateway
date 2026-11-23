@@ -230,6 +230,82 @@ test("the relay's own calls follow the proxy variables, in either case, and NO_P
   assert.equal(gateway.requests.length, 4);
 });
 
+// A proxy that answers every request with 407.
+class AuthProxy {
+  constructor() {
+    this.server = http.createServer((req, res) => {
+      res.writeHead(407, { "proxy-authenticate": "Basic realm=corp", "content-length": "0" });
+      res.end();
+    });
+  }
+
+  listen() {
+    return new Promise((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+  }
+
+  get url() {
+    return `http://127.0.0.1:${this.server.address().port}`;
+  }
+
+  close() {
+    this.server.closeAllConnections();
+    return new Promise((resolve) => this.server.close(resolve));
+  }
+}
+
+test("without proxy variables each upstream follows the system proxy the OS names for it", async (t) => {
+  const corporate = new FakeProxy();
+  const other = new FakeProxy();
+  await Promise.all([corporate.listen(), other.listen()]);
+  t.after(() => Promise.all([corporate.close(), other.close()]));
+  const asked = [];
+  const systemProxy = async (origin) => {
+    asked.push(origin);
+    if (origin === new URL(gateway.base).origin) return { proxy: corporate.url, bypassed: false };
+    return { proxy: null, bypassed: true };
+  };
+
+  await start({ env: {}, systemProxy });
+  assert.equal((await call("/chat/completions", { method: "POST", body: "{}" })).status, 200);
+  assert.equal((await call("/agents/swe/internal/memory/v0/enabled")).status, 200);
+  assert.deepEqual(corporate.requests, [`${gateway.base}/ai-gateway/openai/v1/chat/completions`]);
+  assert.equal(copilot.requests.length, 1);
+  assert.equal(gateway.last.headers[AI_GATEWAY_TOKEN_HEADER], "Bearer dbx-1");
+  assert.deepEqual(new Set(asked), new Set([new URL(gateway.base).origin, new URL(copilot.base).origin]));
+
+  // Two different proxies: two agents, one per proxy.
+  await start({
+    env: {},
+    systemProxy: async (origin) => ({ proxy: origin === new URL(gateway.base).origin ? corporate.url : other.url, bypassed: false }),
+  });
+  assert.equal((await call("/meta")).status, 200);
+  assert.equal((await call("/agents/swe/internal/memory/v0/enabled")).status, 200);
+  assert.equal(corporate.requests.length, 2);
+  assert.deepEqual(other.requests, [`${copilot.base}/agents/swe/internal/memory/v0/enabled`]);
+
+  // The variables win over the system settings.
+  await start({ env: { HTTP_PROXY: other.url }, systemProxy: async () => assert.fail("env proxies decide first") });
+  assert.equal((await call("/meta")).status, 200);
+  assert.equal(other.requests.length, 2);
+});
+
+test("a proxy that wants credentials is a 400 that says so, not a retry", async (t) => {
+  const proxy = new AuthProxy();
+  await proxy.listen();
+  t.after(() => proxy.close());
+
+  await start({ env: {}, systemProxy: async () => ({ proxy: proxy.url, bypassed: false }) });
+  const gatewayCall = await call("/chat/completions", { method: "POST", body: "{}" });
+  assert.equal(gatewayCall.status, 400);
+  assert.match((await json(gatewayCall)).error.message, /system proxy requires authentication/);
+  assert.equal(token.invalidated, 0);
+  assert.equal(gateway.requests.length, 0);
+  const direct = await call("/agents/swe/internal/memory/v0/enabled");
+  assert.equal(direct.status, 400);
+  assert.match((await json(direct)).error.message, /GitHub Copilot couldn't be reached: the system proxy requires authentication/);
+  assert.deepEqual(observed.map((event) => event.status), [407, 407]);
+});
+
 test("inference goes to the gateway with the GitHub token, the swap header and the relay headers", async () => {
   const body = JSON.stringify({ model: "gpt-5", input: "hi" });
   const response = await call("/responses", {
