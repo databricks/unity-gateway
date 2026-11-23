@@ -139,8 +139,10 @@ completed child later resumes without another spawn event. A native timer releas
 each exclusion after 60 seconds independently of wall-clock reads. A new confirmed failure
 restarts that model's minute; if the timer cannot run, the exclusion remains. The failed
 child is not retried. Resumes and explicitly disabled routing keep their native behavior.
-Outside cooldown, command failures
-and invalid responses preserve the original call and log a diagnostic.
+An explicit session disable takes effect at tool execution and agent spawn, including
+a decision cached while the reply streamed. It does not erase an active cooldown.
+Outside cooldown, command failures and invalid responses preserve the original call
+and log a diagnostic when the call executes.
 
 ### Routing explanations
 

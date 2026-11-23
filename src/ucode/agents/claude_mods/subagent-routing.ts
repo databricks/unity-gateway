@@ -1,4 +1,4 @@
-import type { On, PluginOptions } from 'claude-code'
+import type { EngineInterface, On, PluginOptions } from 'claude-code'
 import { matchesAutoModel } from './auto-model.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -314,8 +314,11 @@ const pending = new Map<string, number | undefined>()
 // A lone call keeps its decision under its own row.
 const grouped = new Set<string>()
 const records = new Map<string, RoutingRecord>()
-// Calls the router has already been asked about, so a failed answer is not asked for again.
-const attempted = new Set<string>()
+type RoutingOutcome = {
+  routed: boolean; denial?: string; cooldownDenial?: boolean; disabled?: boolean; failed?: boolean
+}
+// Stream-time outcomes must reach tool.call without retrying the router or losing a denial.
+const attempted = new Map<string, RoutingOutcome>()
 // The reply each batch is drawn above.
 const anchors = new Map<string, string[]>()
 // Replies already drawn before a batch was routed are never its anchor.
@@ -370,8 +373,35 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-// Route each call once without altering the input auto mode may have reviewed.
-async function routeCall($: any, e: any): Promise<void> {
+// CLI toggles update the session file without changing this process's environment.
+// Only an explicit OFF overrides a cached decision; unreadable controls preserve it.
+async function routingDisabled($: EngineInterface): Promise<boolean> {
+  try {
+    const current = {
+      ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
+      ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+    }
+    const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE')
+    if (sessionFile) {
+      const overrides = JSON.parse(await $.fs.read(sessionFile))
+      if (!isObject(overrides)) return false
+      for (const key of ['ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY'] as const) {
+        if (key in overrides) {
+          if (typeof overrides[key] !== 'string') return false
+          current[key] = overrides[key]
+        }
+      }
+    }
+    return current.ENABLE_SMART_ROUTING_V2 === '0' && current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '0'
+  } catch {
+    // Unreadable controls cannot confirm a disable or bypass the cooldown guard.
+    return false
+  }
+}
+
+// Routes one Agent call once. The parent's reply is held until its calls are routed so the
+// heading Claude draws names the model; a call that bypassed that path routes here instead.
+async function routeCall($: any, e: any): Promise<RoutingOutcome | undefined> {
   const { options, autoModels } = routing
   const command = options!.routeCommand as readonly string[]
   if (e.tool_use_id && (records.has(e.tool_use_id) || attempted.has(e.tool_use_id))) return
@@ -448,10 +478,6 @@ async function routeCall($: any, e: any): Promise<void> {
     $.ui.invalidate('ui.render')
   }
   outcome.routed = route !== undefined
-  if (outcome.failed && !activeRateLimits().length) {
-    $.ui.log('Smart Router could not route this subagent; using its original settings.')
-    outcome.failureLogged = true
-  }
   return outcome
 }
 
@@ -545,6 +571,7 @@ export const registerSubagentRouting = (
       clock: { now: () => $.clock.now(), every: (ms: number, tick: () => void) => $.clock.every(ms, tick) },
       ui: { invalidate: (name: 'ui.render') => $.ui.invalidate(name), log: (text: string) => $.ui.log(text) },
     }, e)
+    if (outcome && await routingDisabled($)) return next(e)
     const { tool_use_id } = e
     let denial = outcome?.denial
     if (outcome && !outcome.routed && !outcome.disabled && (!denial || outcome.cooldownDenial)) {
@@ -555,7 +582,7 @@ export const registerSubagentRouting = (
         denial ??= 'Smart Router could not select an available model; retry after cooldown.'
       } else {
         denial = undefined
-        if (routingFailed) {
+        if (outcome.failed) {
           $.ui.log('Smart Router could not route this subagent; using its original settings.')
         }
       }
@@ -579,6 +606,7 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume || e.fork ? undefined : records.get(e.tool_use_id)
     const outcome = e.resume || e.fork ? undefined : attempted.get(e.tool_use_id)
+    if ((route || outcome) && await routingDisabled($)) return next(e)
     const checkFallback = outcome && !outcome.disabled
     const excluded = route || checkFallback ? activeRateLimits() : []
     const excludedSelection = route && excluded.includes(rateLimitKey(route.model))
