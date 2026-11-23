@@ -209,7 +209,8 @@ def prices_from_endpoint_rates(rates: Iterable[object]) -> dict[str, ModelPrice]
         for entry in token_costs:
             if not isinstance(entry, Mapping):
                 continue
-            field = _TOKEN_TYPE_FIELDS.get(entry.get("token_type"))
+            token_type = entry.get("token_type")
+            field = _TOKEN_TYPE_FIELDS.get(token_type) if isinstance(token_type, str) else None
             value = _rate(entry.get("cost"))
             if field is not None and value is not None:
                 rate_fields[field] = value

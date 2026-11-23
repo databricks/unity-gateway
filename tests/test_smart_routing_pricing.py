@@ -302,6 +302,22 @@ class TestEndpointRates:
 
         assert pricing.prices_from_endpoint_rates(rates) == {}
 
+    @pytest.mark.parametrize("token_type", [[], {}, None, 1, True, "UNKNOWN"])
+    def test_malformed_token_type_preserves_neighboring_rates(self, token_type):
+        rate = self._rate("system.ai.claude-opus-4-8", usd={"TOKEN_TYPE_INPUT": 5})
+        rate["costs"][0]["token_costs"].extend(
+            [
+                {"token_type": token_type, "cost": 99},
+                {"token_type": "TOKEN_TYPE_OUTPUT", "cost": 25},
+            ]
+        )
+        neighbor = self._rate("system.ai.claude-haiku-4-5", usd={"TOKEN_TYPE_INPUT": 1})
+
+        assert pricing.prices_from_endpoint_rates([rate, neighbor]) == {
+            "system.ai.claude-opus-4-8": ModelPrice(input=Decimal("5"), output=Decimal("25")),
+            "system.ai.claude-haiku-4-5": ModelPrice(input=Decimal("1")),
+        }
+
     def test_endpoint_prices_survive_the_cache(self, tmp_path):
         path = tmp_path / "model-prices.json"
         prices = pricing.prices_from_endpoint_rates(
