@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -94,7 +95,13 @@ from ucode.smart_routing.config import (
     resolve_environment,
     selected_version,
 )
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    VALIDATION_PENDING_KEY,
+    start_session,
+    validation_result_path,
+)
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -1284,6 +1291,11 @@ def launch_codex(
             "Encrypted subagent assignments will keep their requested model."
         )
     if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+        # The footer shows a pending state until the check publishes its result.
+        with suppress(OSError):
+            config_io.atomic_write_json(
+                validation_result_path(session_env_path), {VALIDATION_PENDING_KEY: True}
+            )
         route_validation.start(
             workspace,
             os.environ[OAUTH_TOKEN_ENV_VAR],

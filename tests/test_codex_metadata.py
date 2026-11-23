@@ -986,3 +986,51 @@ def test_native_selector_replies_stay_local_and_cancel_cleanly(
             assert upstream.outgoing.empty()
 
     asyncio.run(run())
+
+
+TOGGLED_WARNING = {"routing_disabled": False, "validation_ms": 120}
+
+
+def _prompt(metadata, turn_id):
+    async def send():
+        await asyncio.wait_for(
+            metadata.before_tui(
+                {"id": turn_id, "method": "turn/start", "params": {"threadId": "root"}}
+            ),
+            2,
+        )
+        metadata.observe(
+            {"method": "turn/started", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+        )
+
+    asyncio.run(send())
+
+
+def _complete(metadata, turn_id):
+    metadata.observe(
+        {"method": "turn/completed", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+    )
+
+
+@pytest.mark.parametrize(
+    ("warning_before_prompt", "hidden_after_first_turn"),
+    [(True, True), (False, False)],
+    ids=["prompt-sent-while-warning-shows", "turn-running-when-warning-arrives"],
+)
+def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(
+    tmp_path, warning_before_prompt, hidden_after_first_turn
+):
+    metadata, _, _ = controller(tmp_path)
+    dismissed = session_env.validation_dismissed_path(metadata.controls)
+    result = session_env.validation_result_path(metadata.controls)
+    if warning_before_prompt:
+        result.write_text(json.dumps(TOGGLED_WARNING))
+    _prompt(metadata, "first")
+    if not warning_before_prompt:
+        result.write_text(json.dumps(TOGGLED_WARNING))
+    _complete(metadata, "first")
+    assert dismissed.exists() is hidden_after_first_turn
+    if not hidden_after_first_turn:
+        _prompt(metadata, "second")
+        _complete(metadata, "second")
+        assert dismissed.exists()

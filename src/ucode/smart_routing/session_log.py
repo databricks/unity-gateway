@@ -18,6 +18,7 @@ from typing import Any
 from ucode.config_io import APP_DIR
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw_box
+from ucode.smart_routing.session_env import ROUTING_DISABLED_KEY, VALIDATION_FAILED_KEY
 
 SCHEMA_VERSION = 1
 DECISION_TYPE = "decision"
@@ -47,6 +48,31 @@ PROMPT_PLACEHOLDER = "(prompt not recorded)"
 MIN_ID_PREFIX_CHARS = 4
 DETAIL_LABEL_WIDTH = 17
 MODEL_PREFIXES = ("system.ai.", "databricks-")
+ROUTE_VALIDATION_ROW = "Failed to enable smart routing."
+ROUTE_VALIDATION_FAILED_ROW = "Failed to validate smart routing."
+ROUTE_VALIDATION_ON_ROW = "Warning: unsupported model list."
+ROUTE_VALIDATION_LOAD_ERROR = "Could not load this route validation."
+VALIDATION_MODEL_CELL = "—"
+# Mirrors the reason texts in agents/claude_mods/routing-logs.ts; keep both in sync.
+ROUTE_VALIDATION_REASONS = {
+    "insufficient_eligible_options": "At least two supported models are required. Please reach out to your workspace admin",
+    "missing_required_tier_option": "Required models are missing from this list",
+    "INCOMPLETE_REQUIRED_OPTIONS": "Required models are missing from this list",
+    "harness_not_supported": "Harness not supported",
+    "mixed_harnesses_not_supported": "Mixed harnesses not supported",
+}
+ROUTE_VALIDATION_GENERIC_REASON = "Smart Routing does not support this agent's model list."
+ROUTE_VALIDATION_FAILED_REASON = "Smart Router couldn't validate this agent's model list."
+MODEL_REASONS = {
+    "model_not_supported": "Model source not supported",
+    "model_not_in_recipe": "Not available in Smart Router",
+    "excluded_by_policy": "Excluded by routing policy",
+    "model_service_unresolved": "Model service unresolved",
+    "model_provider_service_unresolved": "Model provider service unresolved",
+    "harness_not_supported": "",
+}
+MODEL_GENERIC_REASON = "Not eligible for routing"
+REASON_CODE = re.compile(r"[A-Za-z0-9_]+")
 
 
 def session_log_path(harness: str, session_id: object) -> Path | None:
@@ -167,8 +193,16 @@ def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
     return read_records(harness, session_id, DECISION_TYPE)
 
 
-def read_records(harness: str, session_id: str, record_type: str) -> list[dict[str, Any]]:
-    """Return a session's records of one type in chronological file order."""
+def read_history(harness: str, session_id: str) -> list[dict[str, Any]]:
+    """Return a session's decision and route validation records in chronological file order."""
+    return read_records(harness, session_id, (DECISION_TYPE, ROUTE_VALIDATION_TYPE))
+
+
+def read_records(
+    harness: str, session_id: str, record_type: str | tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Return a session's records of the given type or types in chronological file order."""
+    record_types = (record_type,) if isinstance(record_type, str) else record_type
     path = session_log_path(harness, session_id)
     if path is None:
         return []
@@ -190,7 +224,7 @@ def read_records(harness: str, session_id: str, record_type: str) -> list[dict[s
             continue
         if not isinstance(record, dict):
             continue
-        if record.get("v") != SCHEMA_VERSION or record.get("type") != record_type:
+        if record.get("v") != SCHEMA_VERSION or record.get("type") not in record_types:
             continue
         records.append(record)
     return records
@@ -272,6 +306,48 @@ def _is_listed(record: dict[str, Any]) -> bool:
     )
 
 
+def _is_validation(record: dict[str, Any]) -> bool:
+    return record.get("type") == ROUTE_VALIDATION_TYPE
+
+
+def _is_validation_listed(record: dict[str, Any]) -> bool:
+    validation_id = record.get("validation_id")
+    return (
+        isinstance(validation_id, str)
+        and bool(validation_id)
+        and _is_number(record.get("at"))
+        and abs(record["at"]) <= MAX_EPOCH_SECONDS
+        and _is_number(record.get("validation_ms"))
+    )
+
+
+def _validation_task(record: dict[str, Any]) -> str:
+    if record.get(VALIDATION_FAILED_KEY) is True:
+        return ROUTE_VALIDATION_FAILED_ROW
+    if record.get(ROUTING_DISABLED_KEY) is False:
+        return ROUTE_VALIDATION_ON_ROW
+    return ROUTE_VALIDATION_ROW
+
+
+def _table_row(record: dict[str, Any], now: float) -> tuple[str, ...]:
+    if _is_validation(record):
+        return (
+            _short_id(record["validation_id"]),
+            _age(record["at"], now),
+            _validation_task(record),
+            VALIDATION_MODEL_CELL,
+            f"{round(record['validation_ms'])} ms",
+        )
+    summary = overview(record)
+    return (
+        _short_id(summary["decision_id"]),
+        _age(summary["at"], now),
+        _clean(" ".join((summary["preview"] or PROMPT_PLACEHOLDER).split())),
+        _short_model(summary["selected_model"]),
+        f"{round(summary['routing_ms'])} ms",
+    )
+
+
 def _fit_columns(rows: Sequence[tuple[str, ...]], headers: tuple[str, ...]) -> list[int]:
     """Column widths that fit the box: the task column shrinks first, then the model."""
     widths = [max(len(cell) for cell in column) for column in zip(headers, *rows, strict=True)]
@@ -284,23 +360,18 @@ def _fit_columns(rows: Sequence[tuple[str, ...]], headers: tuple[str, ...]) -> l
 
 
 def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> str:
-    """Render the most recent decisions as a boxed table for chat."""
-    records = [record for record in records if _is_listed(record)]
+    """Render the most recent decisions and route validations as a boxed table for chat."""
+    records = [
+        record
+        for record in records
+        if (_is_validation_listed(record) if _is_validation(record) else _is_listed(record))
+    ]
     if not records:
         return draw_box(["No routed subagents recorded this session yet."])
     now = time.time() if now is None else now
     shown = records[-TABLE_MAX_ROWS:]
-    rows = []
-    for summary in map(overview, shown):
-        rows.append(
-            (
-                _short_id(summary["decision_id"]),
-                _age(summary["at"], now),
-                _clean(" ".join((summary["preview"] or PROMPT_PLACEHOLDER).split())),
-                _short_model(summary["selected_model"]),
-                f"{round(summary['routing_ms'])} ms",
-            )
-        )
+    rows = [_table_row(record, now) for record in shown]
+    decisions = sum(1 for record in records if not _is_validation(record))
     headers = ("ID", "WHEN", "TASK", "MODEL", "ROUTING")
     widths = _fit_columns(rows, headers)
     table = [
@@ -311,7 +382,7 @@ def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> 
     ]
     return "\n".join(
         [
-            f"{len(records)} routed subagents this session (showing last {len(shown)})",
+            f"{decisions} routed subagents this session (showing last {len(shown)})",
             "",
             draw_box(table),
             "Show one: $smart-router logs --id <ID>",
@@ -319,18 +390,19 @@ def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> 
     )
 
 
+def _record_id(record: dict[str, Any]) -> str | None:
+    value = record.get("decision_id") or record.get("validation_id")
+    return value if isinstance(value, str) else None
+
+
 def find_decision(records: list[dict[str, Any]], query: str) -> dict[str, Any]:
-    """Resolve an exact decision id, else a unique prefix of at least four characters."""
-    exact = next((r for r in records if r.get("decision_id") == query), None)
+    """Resolve an exact decision or validation id, else a unique prefix of at least four characters."""
+    exact = next((r for r in records if _record_id(r) == query), None)
     if exact is not None:
         return exact
     if len(query) < MIN_ID_PREFIX_CHARS:
         raise LookupError(f"decision id must be at least {MIN_ID_PREFIX_CHARS} characters")
-    matches = [
-        r
-        for r in records
-        if isinstance(r.get("decision_id"), str) and r["decision_id"].startswith(query)
-    ]
+    matches = [r for r in records if (_record_id(r) or "").startswith(query)]
     if not matches:
         raise LookupError("decision not found")
     if len(matches) > 1:
@@ -407,6 +479,68 @@ def render_detail(record: dict[str, Any], *, now: float | None = None) -> str:
             suffix = "  (selected)" if is_selected else ""
             line = f"  {'●' if is_selected else '○'} {_short_model(candidate['model'])}{suffix}"
             lines.append(_truncate(line, ROUTING_BOX_WIDTH))
+    return "\n".join([draw_box(lines), "Back to the list: $smart-router logs"])
+
+
+def _validation_reason(record: dict[str, Any]) -> str:
+    if record.get(VALIDATION_FAILED_KEY) is True:
+        failure = record.get("validation_failure_reason")
+        text = failure.strip() if isinstance(failure, str) else ""
+        return text or ROUTE_VALIDATION_FAILED_REASON
+    reason = record.get("routing_unsupported_reason")
+    if not isinstance(reason, str):
+        return ROUTE_VALIDATION_GENERIC_REASON
+    if reason in ROUTE_VALIDATION_REASONS:
+        return ROUTE_VALIDATION_REASONS[reason]
+    text = reason.strip()
+    return text if text and not REASON_CODE.fullmatch(text) else ROUTE_VALIDATION_GENERIC_REASON
+
+
+def _model_reason(reason: object) -> str:
+    return (
+        MODEL_REASONS[reason]
+        if isinstance(reason, str) and reason in MODEL_REASONS
+        else MODEL_GENERIC_REASON
+    )
+
+
+def _is_option_list(value: object, *, with_reason: bool = False) -> bool:
+    return isinstance(value, list) and all(
+        _is_object(option)
+        and isinstance(option.get("model"), str)
+        and (not with_reason or isinstance(option.get("reason", 0), str | None))
+        for option in value
+    )
+
+
+def render_validation_detail(record: dict[str, Any]) -> str:
+    """Render one route validation like the Claude logs detail view."""
+    if not (
+        _is_number(record.get("validation_ms"))
+        and _is_option_list(record.get("eligible_route_options"))
+        and _is_option_list(record.get("ineligible_route_options"), with_reason=True)
+        and _is_option_list(record.get("available_route_options"))
+    ):
+        raise ValueError(ROUTE_VALIDATION_LOAD_ERROR)
+    lines = [
+        *_labeled("Reason:", _clean(" ".join(_validation_reason(record).split()))),
+        *_labeled("Validation Time:", f"{record['validation_ms'] / 1000:.1f}s"),
+    ]
+    eligible = record["eligible_route_options"]
+    ineligible = record["ineligible_route_options"]
+    if eligible or ineligible:
+        lines += ["", "Models"]
+        lines += [f"✓ {_short_model(option['model'])}" for option in eligible]
+        for option in ineligible:
+            reason = _model_reason(option.get("reason"))
+            suffix = f"  {reason}" if reason else ""
+            lines.append(f"✗ {_short_model(option['model'])}{suffix}")
+    if record["available_route_options"]:
+        lines += ["", "Supported models"]
+        lines += [
+            f"  {_short_model(option['model'])}" for option in record["available_route_options"]
+        ]
+    lines = [_truncate(_clean(line), ROUTING_BOX_WIDTH) for line in lines]
     return "\n".join([draw_box(lines), "Back to the list: $smart-router logs"])
 
 

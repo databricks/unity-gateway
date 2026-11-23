@@ -18,6 +18,8 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    UNSUPPORTED_MODEL_LIST_WARNING,
+    VALIDATION_FAILED_WARNING,
 )
 from ucode.smart_routing.config import resolve_environment
 
@@ -26,7 +28,11 @@ SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 CONTROLS_READ_ATTEMPTS = 10
 CONTROLS_READ_RETRY_SECONDS = 0.1
 VALIDATION_RESULT_SUFFIX = ".validation.json"
+VALIDATION_DISMISSED_SUFFIX = ".validation.dismissed"
 ROUTING_DISABLED_KEY = "routing_disabled"
+VALIDATION_FAILED_KEY = "validation_failed"
+VALIDATION_MS_KEY = "validation_ms"
+VALIDATION_PENDING_KEY = "pending"
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 
@@ -88,14 +94,34 @@ def validation_result_path(session_controls: Path) -> Path:
     return session_controls.with_suffix(VALIDATION_RESULT_SUFFIX)
 
 
-def read_unsupported_validation(session_controls: Path) -> dict[str, Any] | None:
-    """Return the startup validation result when it turned routing off, else None."""
+def validation_dismissed_path(session_controls: Path) -> Path:
+    return session_controls.with_suffix(VALIDATION_DISMISSED_SUFFIX)
+
+
+def read_validation_result(session_controls: Path) -> dict[str, Any] | None:
     try:
         result = json.loads(validation_result_path(session_controls).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
         return None
-    if isinstance(result, dict) and result.get(ROUTING_DISABLED_KEY) is True:
+    return result if isinstance(result, dict) else None
+
+
+def read_unsupported_validation(session_controls: Path) -> dict[str, Any] | None:
+    """Return the startup validation result when it turned routing off, else None."""
+    result = read_validation_result(session_controls)
+    if result is not None and result.get(ROUTING_DISABLED_KEY) is True:
         return result
+    return None
+
+
+def validation_warning(result: dict[str, Any] | None) -> str | None:
+    """Return the footer warning for a check that found a problem, else None."""
+    if result is None:
+        return None
+    if result.get(VALIDATION_FAILED_KEY) is True:
+        return VALIDATION_FAILED_WARNING
+    if VALIDATION_MS_KEY in result:
+        return UNSUPPORTED_MODEL_LIST_WARNING
     return None
 
 

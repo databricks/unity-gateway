@@ -22,8 +22,9 @@ from typing import Any
 from ucode.codex_config import provider_http_headers
 from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CODEX
-from ucode.smart_routing import orchestrator, routing, session_log
+from ucode.smart_routing import orchestrator, route_validation, routing, session_log
 from ucode.smart_routing.routing import RoutingDecision
+from ucode.smart_routing.session_env import ROUTING_DISABLED_KEY
 
 ROUTER_NAME = routing.ROUTER_NAME
 ROUTING_PATH = routing.ROUTING_PATH
@@ -52,6 +53,30 @@ def codex_route_options(available_models: list[str]) -> list[tuple[str, str]]:
     if len(models) > routing.MAX_ROUTE_OPTIONS:
         models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
     return routing.route_options_for(models, "codex")
+
+
+def validate_codex_model_list(
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    *,
+    provider: str | None = None,
+) -> dict[str, Any] | None:
+    """Return an unsupported result that leaves routing on, else None."""
+    result = route_validation.validate(
+        workspace,
+        token,
+        codex_route_options(available_models),
+        router_name=routing.configured_router_name(),
+        provider=provider,
+        available_harness=AGENT_CODEX,
+    )
+    if result is None or result["is_supported"] is not False:
+        return None
+    return {
+        **{key: value for key, value in result.items() if key != "is_supported"},
+        ROUTING_DISABLED_KEY: False,
+    }
 
 
 def request_routing_decision(

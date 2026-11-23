@@ -518,3 +518,103 @@ def test_record_route_validation_reports_an_unreadable_result(log_dir, tmp_path,
     assert result.exit_code == 1
     assert json.loads(result.output)["error"].startswith("cannot record route validation: ")
     assert not log_dir.exists()
+
+
+STARTUP_UNSUPPORTED = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "routing_unsupported_reason": "insufficient_eligible_options",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+    "validation_ms": 120,
+}
+STARTUP_FAILED = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "validation_failed": True,
+    "validation_failure_reason": "Smart Router returned an error (HTTP 500)",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [],
+    "validation_ms": 90,
+}
+TOGGLE_UNSUPPORTED = {**STARTUP_UNSUPPORTED, "routing_disabled": False}
+
+
+@pytest.mark.parametrize(
+    ("check", "task"),
+    [
+        pytest.param(
+            STARTUP_UNSUPPORTED, "Failed to enable smart routing.", id="startup-unsupported"
+        ),
+        pytest.param(STARTUP_FAILED, "Failed to validate smart routing.", id="startup-failed"),
+        pytest.param(
+            TOGGLE_UNSUPPORTED, "Warning: unsupported model list.", id="toggle-unsupported"
+        ),
+    ],
+)
+def test_codex_validation_rows_list_in_the_table(log_dir, check, task):
+    session_log.append_route_validation("codex", "s1", check)
+    result = runner.invoke(
+        cli.app, ["smart-router-logs", "--session", "s1", "--harness", "codex", "--format", "table"]
+    )
+    assert result.exit_code == 0, result.output
+    [row] = [line for line in result.output.splitlines() if task in line]
+    cells = [cell.strip() for cell in row.strip("│").split("  ") if cell.strip()]
+    assert cells[-3:] == [task, "—", f"{check['validation_ms']} ms"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_reason"),
+    [
+        pytest.param(
+            None, "Smart Routing does not support this agent's model list.", id="null-reason"
+        ),
+        pytest.param("harness_not_supported", "Harness not supported", id="reason-code"),
+    ],
+)
+def test_codex_validation_detail_shows_models_and_reason(log_dir, reason, expected_reason):
+    session_log.append_route_validation(
+        "codex",
+        "s1",
+        {
+            **STARTUP_UNSUPPORTED,
+            "routing_unsupported_reason": reason,
+            "eligible_route_options": [{"model": "system.ai.claude-sonnet", "harness": "claude"}],
+            "ineligible_route_options": [
+                {
+                    "model": "system.ai.claude-haiku",
+                    "harness": "claude",
+                    "reason": "model_not_in_recipe",
+                },
+                {"model": "custom", "harness": "claude", "reason": None},
+            ],
+        },
+    )
+    [record] = session_log.read_records("codex", "s1", session_log.ROUTE_VALIDATION_TYPE)
+    result = runner.invoke(
+        cli.app,
+        [
+            "smart-router-logs",
+            "--session",
+            "s1",
+            "--harness",
+            "codex",
+            "--format",
+            "table",
+            "--decision",
+            record["validation_id"][:8],
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert expected_reason in result.output
+    for line in (
+        "Validation Time: 0.1s",
+        "✓ claude-sonnet",
+        "✗ claude-haiku  Not available in Smart Router",
+        "✗ custom  Not eligible for routing",
+        "Supported models",
+        "gpt-5",
+    ):
+        assert line in result.output

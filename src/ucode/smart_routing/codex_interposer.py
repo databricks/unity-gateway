@@ -26,6 +26,7 @@ TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
+ValidateModelFn = Callable[[], dict | None]
 SwitchMessageFn = Callable[[str, str], str]
 TokenProvider = Callable[[], str]
 
@@ -221,6 +222,7 @@ async def _handle_tui(
     uri = upstream_uri.rstrip("/") + path
     log(f"[CONN] TUI connected (path={path}); dialing app-server {uri}")
     route_decision: RouteDecisionFn | None = None
+    validate_model_list: ValidateModelFn | None = None
     if workspace is not None and token_provider is not None:
 
         def route_decision(prompt: str):
@@ -237,6 +239,14 @@ async def _handle_tui(
                 **({"provider": provider} if provider else {}),
             )
 
+        def validate_model_list() -> dict | None:
+            return codex_routing.validate_codex_model_list(
+                workspace,
+                token_provider(),
+                list(available_models or []),
+                provider=provider,
+            )
+
     sess = _Session(
         target_model,
         log,
@@ -249,7 +259,11 @@ async def _handle_tui(
         controller = (
             RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
-        smart_router = CodexSmartRouter(session_controls) if session_controls is not None else None
+        smart_router = (
+            CodexSmartRouter(session_controls, validate_model_list)
+            if session_controls is not None
+            else None
+        )
         feedback_input = CodexFeedbackInput(tui.send)
         tool_tasks: set[asyncio.Task] = set()
         tool_turns: dict[tuple[str, str], asyncio.Event] = {}

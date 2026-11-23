@@ -2089,8 +2089,11 @@ leaves routing on silently. Result-write failures are isolated. The smart-routin
 cover the resolved Claude model/harness list and provider. The Codex launch tests cover the
 resolved model/harness list and show delayed HTTP does not hold Codex startup. An unsupported
 Codex list keeps the Codex harness's options in the result (`test_route_validation.py`), shows
-the footer warning (`test_codex_statusline.py`), and is logged once for the root thread at its
-first prompt (`test_codex_metadata.py`).
+the footer states and the warning hide rule (`test_codex_statusline.py`, `test_codex_metadata.py`),
+and is logged once for the root thread at its first prompt (`test_codex_metadata.py`). `$smart-router on`
+re-runs the check, publishes only an unsupported result, and discards a result superseded by a later
+toggle (`test_smart_router_feedback.py`). The Smart Router logs table and detail list the validation rows
+(`test_smart_router_logs_cli.py`).
 Claude's native mod tests cover the band hold, the result handling, the unsupported and
 validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
 and the two transcript log lines (`Smart Router is off` and the warning) logged only when

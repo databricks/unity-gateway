@@ -13,6 +13,8 @@ AGENT_VSCODE = "vscode"
 ROUTER_HARNESS_CLAUDE_CODE = "claude_code"
 # Mirrors UNSUPPORTED_MODEL_LIST_WARNING in agents/claude_mods/constants.ts; keep both in sync.
 UNSUPPORTED_MODEL_LIST_WARNING = "⚠ This session's model list isn't supported by smart router"
+# Mirrors VALIDATION_FAILED_WARNING in agents/claude_mods/constants.ts; keep both in sync.
+VALIDATION_FAILED_WARNING = "⚠ Smart Router couldn't validate this session's model list"
 
 # `ug configure --mdm` telemetry: the exported variable and its value when the machine is not MDM.
 MDM_OS_ENV = "MDM_OS"

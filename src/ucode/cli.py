@@ -3614,7 +3614,7 @@ def smart_router_logs_cmd(
         sys.stdout.write(json.dumps({"v": 1}) + "\n")
         return
     try:
-        records = session_log.read_decisions(harness, session)
+        records = session_log.read_history(harness, session)
     except OSError as exc:
         raise fail(
             f"cannot read session log at "
@@ -3622,7 +3622,13 @@ def smart_router_logs_cmd(
         ) from exc
     if as_table and decision is not None:
         try:
-            output = session_log.render_detail(session_log.find_decision(records, decision))
+            record = session_log.find_decision(records, decision)
+            render = (
+                session_log.render_validation_detail
+                if record.get("type") == session_log.ROUTE_VALIDATION_TYPE
+                else session_log.render_detail
+            )
+            output = render(record)
         except (LookupError, ValueError) as exc:
             raise fail(str(exc)) from exc
         sys.stdout.write(output + "\n")
@@ -3631,13 +3637,18 @@ def smart_router_logs_cmd(
         sys.stdout.write(session_log.render_table(records) + "\n")
         return
     if decision is None:
-        validations = session_log.read_records(harness, session, session_log.ROUTE_VALIDATION_TYPE)
         sys.stdout.write(
             json.dumps(
                 {
                     "v": 1,
-                    "decisions": [session_log.overview(r) for r in records],
-                    "route_validations": validations,
+                    "decisions": [
+                        session_log.overview(r)
+                        for r in records
+                        if r.get("type") == session_log.DECISION_TYPE
+                    ],
+                    "route_validations": [
+                        r for r in records if r.get("type") == session_log.ROUTE_VALIDATION_TYPE
+                    ],
                 }
             )
             + "\n"

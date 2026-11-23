@@ -16,10 +16,18 @@ or bold black `OFF` on gray. Claude keeps an ON/OFF hint below the prompt after 
 temporary banner disappears; disabling routing does not hide that hint. Codex keeps
 the badge in its persistent footer, since this API only controls the footer.
 
-When the startup model-list check turns routing off, the badge is bold black `OFF` on
-yellow and the footer adds Claude's warning, `⚠ This session's model list isn't supported
-by smart router`, in yellow. The warning clears once routing is turned back on. A missing
-or unreadable check result leaves the plain footer.
+While the startup check runs (up to 5 s), the footer shows `smart router` without a badge.
+When the check turns routing off, the badge is bold black `ERROR` on yellow, followed by
+Claude's unsupported-list warning or, after a failed check, `⚠ Smart Router couldn't validate
+this session's model list`, and then `($smart-router logs for details)`. The warning hides
+once the first prompt sent while it shows completes. The badge and the hint stay until the
+next `$smart-router on` or `off`.
+
+`$smart-router on` re-runs the check, including when routing is already on. An unsupported
+list keeps routing on: the footer shows `ON` with the warning, which hides after the next
+prompt completes, and a logs row is written immediately. A supported or failed check shows
+nothing new. `$smart-router off` discards a check that has not finished. A missing or
+unreadable check result leaves the plain footer.
 
 ## Validation
 
@@ -31,7 +39,9 @@ Run the offline checks:
 
 ```bash
 uv run pytest tests/test_codex_statusline.py tests/test_codex_smart_routing_v2.py \
-  tests/test_codex_metadata.py tests/test_agent_codex.py tests/test_smart_router.py \
+  tests/test_codex_metadata.py tests/test_smart_router_feedback.py \
+  tests/test_smart_router_logs_cli.py tests/test_route_validation.py tests/test_agent_codex.py \
+  tests/test_smart_router.py \
   tests/test_smart_routing_config.py tests/test_integration_contract.py
 just lint
 ```
