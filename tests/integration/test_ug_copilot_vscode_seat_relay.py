@@ -32,7 +32,13 @@ def _runtime_path(app: Path) -> Path:
     system = "win32" if os.name == "nt" else sys.platform
     target = f"{system}-{_NODE_ARCHES[platform.machine().lower()]}"
     name = "copilot-runtime.exe" if os.name == "nt" else "copilot-runtime"
-    return app / "node_modules.asar.unpacked/@github" / f"copilot-sdk-{target}/prebuilds" / target / name
+    return (
+        app
+        / "node_modules.asar.unpacked/@github"
+        / f"copilot-sdk-{target}/prebuilds"
+        / target
+        / name
+    )
 
 
 def _install_fake_vscode(root: Path) -> tuple[Path, Path]:
@@ -58,7 +64,9 @@ def _install_fake_vscode(root: Path) -> tuple[Path, Path]:
         runtime.write_bytes(b"")
         return bin_dir, runtime
     code = bin_dir / "code"
-    code.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{code_script}' \"$@\"\n", encoding="utf-8")
+    code.write_text(
+        f"#!/bin/sh\nexec '{sys.executable}' '{code_script}' \"$@\"\n", encoding="utf-8"
+    )
     code.chmod(0o755)
     runtime = _runtime_path(root / "resources" / "app")
     runtime.parent.mkdir(parents=True)
@@ -132,9 +140,13 @@ def test_ug_configure_routes_vscode_copilot_through_the_seat_relay(
     )
     assert started.returncode == 0, started.stdout + started.stderr
     recorded = json.loads(dump.read_text(encoding="utf-8"))
-    session.record("runtime-start.json", {"argv": recorded["argv"], "env_keys": sorted(recorded["env"])})
+    session.record(
+        "runtime-start.json", {"argv": recorded["argv"], "env_keys": sorted(recorded["env"])}
+    )
     assert recorded["argv"][-2:] == ["--headless", "--stdio"], recorded["argv"]
     runtime_env = recorded["env"]
-    assert runtime_env["COPILOT_API_URL"].startswith("http://127.0.0.1:"), runtime_env["COPILOT_API_URL"]
+    assert runtime_env["COPILOT_API_URL"].startswith("http://127.0.0.1:"), runtime_env[
+        "COPILOT_API_URL"
+    ]
     assert "127.0.0.1" in runtime_env["NO_PROXY"], runtime_env["NO_PROXY"]
     assert runtime_env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] == "true"
