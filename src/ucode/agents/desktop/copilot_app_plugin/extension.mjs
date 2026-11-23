@@ -92,17 +92,22 @@ debug("start", {
   env: startEnvironment(process.env),
 });
 
+const fatalHandlers = {};
 const fatal = (kind) => (error) => {
   debug("fatal", { kind, message: String(error?.message ?? error), code: error?.code ?? null, stack: error?.stack ?? null });
-  // With no other listener the process still ends the way it would have without this one.
+  // With no other listener the process still ends the way it would have without this one. The
+  // handlers go first, or the rethrow lands back here.
   if (process.listenerCount(kind) === 1) {
+    for (const [name, handler] of Object.entries(fatalHandlers)) process.off(name, handler);
     process.nextTick(() => {
       throw error;
     });
   }
 };
-process.on("uncaughtException", fatal("uncaughtException"));
-process.on("unhandledRejection", fatal("unhandledRejection"));
+for (const kind of ["uncaughtException", "unhandledRejection"]) {
+  fatalHandlers[kind] = fatal(kind);
+  process.on(kind, fatalHandlers[kind]);
+}
 process.on("exit", (code) => debug("exit", { code }));
 
 let config;

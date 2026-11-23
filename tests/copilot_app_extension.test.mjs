@@ -140,7 +140,7 @@ function startGateway(t) {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ ...gateway, base: `http://127.0.0.1:${server.address().port}` })));
 }
 
-async function setup(t, { config = {}, env = {}, events = [], mint = false, appPid, slowHostMs, slowProxyMs } = {}) {
+async function setup(t, { config = {}, rawConfig, env = {}, events = [], mint = false, appPid, slowHostMs, slowProxyMs } = {}) {
   const app = new FakeApp();
   await app.listen();
   t.after(() => app.close());
@@ -170,6 +170,7 @@ async function setup(t, { config = {}, env = {}, events = [], mint = false, appP
       ...config,
     }),
   );
+  if (rawConfig !== undefined) writeFileSync(join(dir, "config.json"), rawConfig);
   const log = join(dir, "fake.log");
   writeFileSync(log, "");
   const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !PROXY_ENV.includes(key.toUpperCase())));
@@ -334,6 +335,20 @@ test("outside the app, as in a Copilot CLI session, the extension joins nothing 
   const events = readFileSync(join(run.dir, DEBUG_LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
   const host = events.find((event) => event.event === "host.check");
   assert.equal(host.app, false);
+  assert.equal(events.at(-1).event, "exit");
+});
+
+test("an unreadable config ends the extension once, as an uncaught error would", async (t) => {
+  const run = await setup(t, { rawConfig: "not json" });
+  const { code } = await run.exited;
+
+  assert.equal(code, 1);
+  assert.match(run.stderr(), /SyntaxError/);
+  const events = readFileSync(join(run.dir, DEBUG_LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(
+    events.filter((event) => event.event === "fatal").map((event) => event.kind),
+    ["config", "uncaughtException"],
+  );
   assert.equal(events.at(-1).event, "exit");
 });
 
