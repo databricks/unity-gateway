@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
-import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE } from './constants.ts'
+import { LOGS_DETAILS_HINT, SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
@@ -121,7 +121,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
       : Text({ bold: true, color: 'black', backgroundColor: band.isUnsupported ? 'yellow' : 'gray', children: [' OFF '] })
     const trailer = band.isUnsupported
-      ? Text({ color: 'yellow', children: [UNSUPPORTED_MODEL_LIST_WARNING] })
+      ? Text({ color: 'yellow', children: [enabled ? `${UNSUPPORTED_MODEL_LIST_WARNING} ${LOGS_DETAILS_HINT}` : UNSUPPORTED_MODEL_LIST_WARNING] })
       : enabled
       ? Text({
           dimColor: true,

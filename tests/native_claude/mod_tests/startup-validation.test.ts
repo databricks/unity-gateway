@@ -1,7 +1,7 @@
 import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import {
-  DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
+  DISABLED_RECIPE, LOGS_DETAILS_HINT, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
 } from '../hooks/constants.ts';
 
 const ROUTED = {
@@ -189,6 +189,7 @@ for (const { name, endsBeforeResult, routed } of turnCases) {
     await clock.advance(100);
     expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : WARNING);
     if (!routed) {
+      expect(JSON.stringify(await ui.drawn())).not.toContain(LOGS_DETAILS_HINT);
       await $.prompt.submit({ text: 'next prompt' });
       await $.turn.complete({ answer: 'done' });
       expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
@@ -268,6 +269,7 @@ for (const { name, options, stdout, off, warned, validates } of toggleCases) {
     const shown = JSON.stringify(await ui.drawn());
     expect(validations.length).toBe(validates ? 1 : 0);
     expect(shown.includes(WARNING)).toBe(warned);
+    expect(shown.includes(LOGS_DETAILS_HINT)).toBe(warned);
     expect(shown.includes(' ON ')).toBe(!off);
     expect(logs.includes(UNSUPPORTED_MODEL_LIST_WARNING)).toBe(warned);
     await new Promise((resolve) => setTimeout(resolve, 0));
