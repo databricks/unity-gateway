@@ -432,19 +432,40 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
     assert "\x1b" not in result.output
 
 
-def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
+@pytest.mark.parametrize(
+    "check",
+    [
+        pytest.param(
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "routing_unsupported_reason": "insufficient_eligible_options",
+                "eligible_route_options": [],
+                "ineligible_route_options": [
+                    {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
+                ],
+                "available_route_options": [{"model": "a", "harness": "claude_code"}],
+                "validation_ms": 120,
+            },
+            id="unsupported",
+        ),
+        pytest.param(
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "validation_failed": True,
+                "validation_failure_reason": "Smart Router returned an error (HTTP 500)",
+                "eligible_route_options": [],
+                "ineligible_route_options": [],
+                "available_route_options": [],
+                "validation_ms": 90,
+            },
+            id="failed",
+        ),
+    ],
+)
+def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check):
     write(payload())
-    check = {
-        "routing_disabled": True,
-        "router_name": "stable",
-        "routing_unsupported_reason": "insufficient_eligible_options",
-        "eligible_route_options": [],
-        "ineligible_route_options": [
-            {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
-        ],
-        "available_route_options": [{"model": "a", "harness": "claude_code"}],
-        "validation_ms": 120,
-    }
     result_file = tmp_path / "env.validation.json"
     result_file.write_text(json.dumps(check))
     args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
@@ -456,41 +477,17 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path):
     assert len(document["decisions"]) == 1
     [row] = document["route_validations"]
     assert row.pop("validation_id") and row.pop("at")
-    check.pop("routing_disabled")
+    check = {key: value for key, value in check.items() if key != "routing_disabled"}
     assert row == {
         "v": session_log.SCHEMA_VERSION,
         "type": session_log.ROUTE_VALIDATION_TYPE,
         "harness": "claude",
         "session_id": "s1",
+        "routing_unsupported_reason": None,
         "validation_failed": None,
         "validation_failure_reason": None,
         **check,
     }
-
-
-def test_record_route_validation_lists_a_failed_check(log_dir, tmp_path):
-    write(payload())
-    check = {
-        "routing_disabled": True,
-        "router_name": "stable",
-        "validation_failed": True,
-        "validation_failure_reason": "Smart Router returned an error (HTTP 500)",
-        "eligible_route_options": [],
-        "ineligible_route_options": [],
-        "available_route_options": [],
-        "validation_ms": 90,
-    }
-    result_file = tmp_path / "env.validation.json"
-    result_file.write_text(json.dumps(check))
-    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
-    recorded = runner.invoke(cli.app, args)
-    assert recorded.exit_code == 0, recorded.output
-    listed = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
-    [row] = json.loads(listed.output)["route_validations"]
-    assert row["validation_failed"] is True
-    assert row["validation_failure_reason"] == "Smart Router returned an error (HTTP 500)"
-    assert row["routing_unsupported_reason"] is None
-    assert row["validation_ms"] == 90
 
 
 @pytest.mark.parametrize("content", [None, "not json", "[]"])

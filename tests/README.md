@@ -2083,7 +2083,8 @@ The check runs only with `UG_STARTUP_ROUTE_VALIDATION=1`; launch and mod tests c
 without it (no request, band from the first paint). `test_startup_validation.py` covers the background check with a controlled transport: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
-responses, and exceptions; a result past the 4 s deadline counts as a timeout. Only HTTP 404 (the
+responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
+deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
 flag-off answer) leaves routing on silently. Result-write failures are isolated. The smart-routing
 launch tests cover the resolved Claude model/harness list and provider.
 Claude's native mod tests cover the band hold, the result handling, the unsupported and

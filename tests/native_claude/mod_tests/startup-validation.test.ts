@@ -181,9 +181,10 @@ const turnCases = [
   { name: 'a turn that ends while the check is pending does not hide the band', endsBeforeResult: true, routed: true },
   { name: 'a band that appears mid-turn hides when that turn ends', endsBeforeResult: false, routed: true },
   { name: 'the unsupported warning hides when the next turn ends', endsBeforeResult: true, routed: false },
+  { name: 'the validation-failed warning hides when the next turn ends', endsBeforeResult: true, routed: false, failed: true },
 ];
 
-for (const { name, endsBeforeResult, routed } of turnCases) {
+for (const { name, endsBeforeResult, routed, failed = false } of turnCases) {
   test(name, { options: VALIDATED }, async ($, on) => {
     const { clock, files, hint } = engine(on);
     on('prompt.submit', ($, e) => ({ text: e.text }));
@@ -193,9 +194,9 @@ for (const { name, endsBeforeResult, routed } of turnCases) {
     await $.prompt.submit({ text: 'early prompt' });
     if (endsBeforeResult) await $.turn.complete({ answer: 'done' });
     if (!routed) files['/session/env.json'] = OFF;
-    files['/session/env.validation.json'] = JSON.stringify({ routing_disabled: !routed });
+    files['/session/env.validation.json'] = JSON.stringify(failed ? FAILED : { routing_disabled: !routed });
     await clock.advance(100);
-    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : WARNING);
+    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : failed ? VALIDATION_FAILED_WARNING : WARNING);
     if (!routed) {
       await $.prompt.submit({ text: 'next prompt' });
       await $.turn.complete({ answer: 'done' });
