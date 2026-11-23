@@ -75,6 +75,10 @@ export const HOST_CACHE_ENTRIES = 64;
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
 const GATEWAY_DENIAL_BODY_LIMIT = 64 * 1024;
 const GENERIC_GATEWAY_DENIAL = "Unity Gateway denied this request. Check your access to the model.";
+const GITHUB_DENIAL_HINT = "Check your Copilot CLI policy setting at https://github.com/settings/copilot.";
+const GITHUB_MESSAGE_LIMIT = 300;
+// Databricks error codes of a denial that a fresh token can't change.
+const POLICY_ERROR_CODES = new Set(["PERMISSION_DENIED", "INVALID_PARAMETER_VALUE"]);
 const PROXY_AUTH_NEEDED = "the system proxy requires authentication.";
 const PROXY_AUTH_ERROR = /\b407\b/;
 const RELAY = "the Unity Gateway Copilot relay";
@@ -193,32 +197,51 @@ export function isNormalizedPath(path) {
 }
 
 // Readable as both an OpenAI and an Anthropic error, whichever API Copilot called.
-export function errorBody(message) {
-  return Buffer.from(
-    JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }),
-  );
+export function errorBody(message, source) {
+  const error = { type: "invalid_request_error", message };
+  if (source) error.source = source;
+  return Buffer.from(JSON.stringify({ type: "error", error }));
 }
 
-// The message of a Databricks error body (`error_code` and `message`), or a generic one when the
-// body is missing, has another shape, or is over the limit.
-export function gatewayDenialMessage(body) {
-  if (!body || body.length > GATEWAY_DENIAL_BODY_LIMIT) return GENERIC_GATEWAY_DENIAL;
+function githubDenial(message) {
+  const text = message.split(/\s+/).join(" ").slice(0, GITHUB_MESSAGE_LIMIT).replace(/[ .]+$/, "");
+  return `GitHub Copilot denied this request: ${text}. ${GITHUB_DENIAL_HINT}`;
+}
+
+const UNKNOWN_DENIAL = { source: "unknown", message: GENERIC_GATEWAY_DENIAL, final: false };
+
+// A 403 from a gateway call: the message Copilot shows and where it came from. `gateway` is a
+// Databricks error body (`error_code` and `message`); `github` is GitHub's own body, which the
+// gateway passes through on the catalog routes; `unknown` gets the generic text. `final` denials
+// are policy decisions a fresh Databricks token can't change, so they aren't retried.
+export function classifyDenial(body) {
+  if (!body || body.length === 0 || body.length > GATEWAY_DENIAL_BODY_LIMIT) return UNKNOWN_DENIAL;
+  const text = body.toString("utf8");
   let payload;
   try {
-    payload = JSON.parse(body.toString("utf8"));
+    payload = JSON.parse(text);
   } catch {
-    return GENERIC_GATEWAY_DENIAL;
+    payload = undefined;
   }
-  if (
-    payload &&
-    typeof payload === "object" &&
-    typeof payload.error_code === "string" &&
-    typeof payload.message === "string" &&
-    payload.message
-  ) {
-    return payload.message;
+  if (payload && typeof payload === "object") {
+    const message = typeof payload.message === "string" ? payload.message.trim() : "";
+    if (!message) return UNKNOWN_DENIAL;
+    if ("error_code" in payload) {
+      if (typeof payload.error_code !== "string") return UNKNOWN_DENIAL;
+      return { source: "gateway", message: payload.message, final: POLICY_ERROR_CODES.has(payload.error_code) };
+    }
+    return { source: "github", message: githubDenial(message), final: true };
   }
-  return GENERIC_GATEWAY_DENIAL;
+  const line = text.trim();
+  // The Copilot API answers a policy denial with one line of plain text.
+  if (line && !line.startsWith("<") && !line.includes("\n") && !/[\p{C}]/u.test(line)) {
+    return { source: "github", message: githubDenial(line), final: true };
+  }
+  return UNKNOWN_DENIAL;
+}
+
+export function gatewayDenialMessage(body) {
+  return classifyDenial(body).message;
 }
 
 function messageText(content) {
@@ -511,8 +534,8 @@ export function createSeatRelay({
   });
   let port = 0;
 
-  function sendJson(res, status, message, { close = false } = {}) {
-    const body = errorBody(message);
+  function sendJson(res, status, message, { close = false, source } = {}) {
+    const body = errorBody(message, source);
     const headers = { "content-type": "application/json", "content-length": String(body.length) };
     if (close) headers.connection = "close";
     res.writeHead(status, headers);
@@ -647,26 +670,33 @@ export function createSeatRelay({
         sendJson(res, 400, `Unity Gateway couldn't be reached: ${PROXY_AUTH_NEEDED}`);
         return;
       }
+      let denial = null;
       if (response.statusCode === 401 || response.statusCode === 403) {
-        // A stale Databricks swap token and a refused GitHub credential look the same from the
-        // status alone. Refresh once and retry; a repeat is relayed.
-        debug("relay.retry", { ...outcome, status: response.statusCode });
-        await readBody(response, GATEWAY_DENIAL_BODY_LIMIT).catch(() => response.destroy());
-        token.invalidate();
-        databricksToken = await mintToken(res, outcome);
-        if (databricksToken === null) {
-          trace({ status: 400, error: "token", retried: true });
-          return;
+        const body = await readBody(response, GATEWAY_DENIAL_BODY_LIMIT).catch(() => (response.destroy(), null));
+        denial = response.statusCode === 403 ? classifyDenial(body) : null;
+        if (!denial?.final) {
+          // A stale Databricks swap token and a refused GitHub credential look the same from the
+          // status alone. Refresh once and retry; a repeat is relayed.
+          debug("relay.retry", { ...outcome, status: response.statusCode });
+          token.invalidate(databricksToken);
+          databricksToken = await mintToken(res, outcome);
+          if (databricksToken === null) {
+            trace({ status: 400, error: "token", retried: true });
+            return;
+          }
+          response = await send(databricksToken);
+          retried = true;
+          denial = null;
         }
-        response = await send(databricksToken);
-        retried = true;
       }
       if (response.statusCode === 403) {
-        const denial = await readBody(response, GATEWAY_DENIAL_BODY_LIMIT).catch(() => null);
-        if (denial === null) response.destroy();
-        observe({ ...outcome, status: 403 });
-        trace({ status: 403, retried, clientStatus: 400, responseHeaders: debug.headers?.(response.headers) });
-        sendJson(res, 400, gatewayDenialMessage(denial));
+        if (denial === null) {
+          const body = await readBody(response, GATEWAY_DENIAL_BODY_LIMIT).catch(() => (response.destroy(), null));
+          denial = classifyDenial(body);
+        }
+        observe({ ...outcome, status: 403, denial: denial.source });
+        trace({ status: 403, retried, clientStatus: 400, denial: denial.source, responseHeaders: debug.headers?.(response.headers) });
+        sendJson(res, 400, denial.message, { source: denial.source });
         return;
       }
       observe({ ...outcome, status: response.statusCode });

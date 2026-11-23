@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { after, before, beforeEach, test } from "node:test";
 
 import {
+  classifyDenial,
   AI_GATEWAY_TOKEN_HEADER,
   COPILOT_API_HOST_HEADER,
   GATEWAY_ROUTES,
@@ -463,20 +464,74 @@ test("a gateway 403 becomes a 400 carrying the gateway's message", async () => {
   assert.equal(response.status, 400);
   assert.deepEqual(await json(response), {
     type: "error",
-    error: { type: "invalid_request_error", message: "Model gpt-5 is not allowed." },
+    error: { type: "invalid_request_error", message: "Model gpt-5 is not allowed.", source: "gateway" },
   });
-  assert.equal(gateway.requests.length, 2);
-  assert.deepEqual(observed, [{ route: "gateway", method: "POST", path: "/responses", status: 403 }]);
+  // A policy denial is final: no token refresh and no second gateway call.
+  assert.equal(gateway.requests.length, 1);
+  assert.equal(token.invalidated, 0);
+  assert.deepEqual(observed, [
+    { route: "gateway", method: "POST", path: "/responses", status: 403, denial: "gateway" },
+  ]);
 });
 
-test("a 403 without a Databricks error body gets the generic denial", async () => {
+test("a 403 that may be a stale token is retried once", async () => {
+  gateway.reply = (req, res) => {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error_code: "UNAUTHENTICATED", message: "expired" }));
+  };
+  const response = await call("/responses", { method: "POST", body: "{}" });
+
+  assert.equal(response.status, 400);
+  assert.equal((await json(response)).error.message, "expired");
+  assert.equal(gateway.requests.length, 2);
+  assert.equal(token.invalidated, 1);
+});
+
+for (const [name, body, type] of [
+  ["text", "unauthorized: not authorized to use this Copilot feature\n", "text/plain"],
+  [
+    "json",
+    JSON.stringify({
+      message: "unauthorized: not authorized to use this Copilot feature",
+      documentation_url: "https://docs.github.com/rest",
+    }),
+    "application/json",
+  ],
+]) {
+  test(`a GitHub 403 passed through by the gateway reads as GitHub's (${name})`, async () => {
+    // The catalog routes pass GitHub's 403 through raw; it is GitHub's policy, not ours.
+    gateway.reply = (req, res) => {
+      res.writeHead(403, { "content-type": type });
+      res.end(body);
+    };
+    const response = await call("/models");
+
+    assert.equal(response.status, 400);
+    assert.deepEqual((await json(response)).error, {
+      type: "invalid_request_error",
+      message:
+        "GitHub Copilot denied this request: unauthorized: not authorized to use this Copilot " +
+        "feature. Check your Copilot CLI policy setting at https://github.com/settings/copilot.",
+      source: "github",
+    });
+    assert.equal(gateway.requests.length, 1);
+    assert.equal(token.invalidated, 0);
+    assert.deepEqual(observed, [{ route: "gateway", method: "GET", path: "/models", status: 403, denial: "github" }]);
+  });
+}
+
+test("a 403 without a readable error body gets the generic denial, after one retry", async () => {
   gateway.reply = (req, res) => {
     res.writeHead(403, { "content-type": "text/html" });
     res.end("<h1>forbidden</h1>");
   };
   const response = await call("/meta");
   assert.equal(response.status, 400);
-  assert.match((await json(response)).error.message, /denied this request/);
+  const { error } = await json(response);
+  assert.match(error.message, /denied this request/);
+  assert.equal(error.source, "unknown");
+  assert.equal(gateway.requests.length, 2);
+  assert.equal(token.invalidated, 1);
 });
 
 test("a failed Databricks mint is a 400 with the hint, before anything reaches the gateway", async () => {
@@ -863,11 +918,26 @@ test("isNormalizedPath rejects escapes, fragments, backslashes and dot or empty 
   }
 });
 
+test("classifyDenial tells a Databricks, a GitHub and an unreadable 403 body apart", () => {
+  const dbx = classifyDenial(Buffer.from(JSON.stringify({ error_code: "PERMISSION_DENIED", message: "no" })));
+  assert.deepEqual(dbx, { source: "gateway", message: "no", final: true });
+  assert.equal(classifyDenial(Buffer.from(JSON.stringify({ error_code: "UNAUTHENTICATED", message: "x" }))).final, false);
+  const github = classifyDenial(Buffer.from("unauthorized:  not authorized to use this Copilot feature.\n"));
+  assert.equal(github.source, "github");
+  assert.equal(github.final, true);
+  assert.match(github.message, /^GitHub Copilot denied this request: unauthorized: not authorized to use this Copilot feature\. Check/);
+  assert.equal(classifyDenial(Buffer.from(JSON.stringify({ message: "no code" }))).source, "github");
+  const long = classifyDenial(Buffer.from("x".repeat(400))).message;
+  assert.equal(long.includes("x".repeat(300)) && !long.includes("x".repeat(301)), true);
+  for (const bad of [null, Buffer.alloc(0), Buffer.from("<html>"), Buffer.from("line\ntwo"), Buffer.from(JSON.stringify({ error_code: 7, message: "m" }))]) {
+    assert.deepEqual(classifyDenial(bad), { source: "unknown", message: gatewayDenialMessage(null), final: false }, String(bad));
+  }
+});
+
 test("gatewayDenialMessage reads a Databricks error body and falls back otherwise", () => {
   assert.equal(gatewayDenialMessage(Buffer.from(JSON.stringify({ error_code: "X", message: "no" }))), "no");
   const generic = gatewayDenialMessage(null);
   assert.match(generic, /denied this request/);
-  assert.equal(gatewayDenialMessage(Buffer.from(JSON.stringify({ message: "no code" }))), generic);
   assert.equal(gatewayDenialMessage(Buffer.from(JSON.stringify({ error_code: "X", message: "" }))), generic);
   assert.equal(gatewayDenialMessage(Buffer.from("<html>")), generic);
   assert.equal(gatewayDenialMessage(Buffer.alloc(65 * 1024, 32)), generic);
