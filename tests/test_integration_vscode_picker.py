@@ -81,6 +81,7 @@ def fast_steps(monkeypatch):
     sync_api = SimpleNamespace(TimeoutError=type("TimeoutError", (Exception,), {}))
     monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
     monkeypatch.setattr(vscode_module, "STEP_TIMEOUT_S", 1)
+    monkeypatch.setattr(vscode_module, "TURN_TIMEOUT_S", 1)
     monkeypatch.setattr(vscode_module, "SETTLE_S", 0.05)
     monkeypatch.setattr(vscode_module, "POLL_S", 0.01)
 
@@ -125,3 +126,119 @@ def test_pick_model_closes_a_language_models_editor_that_copilot_chat_opens_as_i
 
     assert window.actions == ["language models editor", "picker closed"]
     assert window.current["state"] == "picked"
+
+
+class FakeLocator:
+    """A Playwright locator stand-in whose click runs ``on_click``."""
+
+    def __init__(self, on_click):
+        self.on_click = on_click
+        self.first = self.last = self
+
+    def get_by_role(self, role, **kwargs):
+        return self
+
+    def locator(self, selector):
+        return self
+
+    def click(self, timeout=None):
+        self.on_click()
+
+
+class ScreenedVSCode(VSCode):
+    """A window that shows ``screens`` in order, advancing on every click or key."""
+
+    def __init__(self, screens: list[dict]):
+        self.actions, self.states, self.started = [], [], time.monotonic()
+        self.screens = list(screens)
+        advance = self._advance
+        self.page = SimpleNamespace(
+            keyboard=SimpleNamespace(press=lambda key: advance()),
+            mouse=SimpleNamespace(move=lambda x, y: None),
+            locator=lambda selector: FakeLocator(advance),
+        )
+        self.code = SimpleNamespace(poll=lambda: None)
+
+    def _advance(self) -> None:
+        if len(self.screens) > 1:
+            self.screens.pop(0)
+
+    def screen(self) -> dict:
+        return {
+            "modelsEditor": False,
+            "dropdown": False,
+            "dialog": None,
+            "confirmation": None,
+            "request": None,
+            "response": None,
+            **self.screens[0],
+        }
+
+    def shot(self, name: str) -> None:
+        pass
+
+
+def test_closing_the_language_models_editor_dismisses_a_dropdown_first():
+    window = ScreenedVSCode(
+        [
+            {"modelsEditor": True, "dropdown": True},
+            {"modelsEditor": True, "dropdown": False},
+            {"modelsEditor": False},
+        ]
+    )
+
+    window._wait(window._close_models_editor(), 1, "the editor to close")
+
+    assert window.actions == [
+        "Language Models editor: Escape",
+        "Language Models editor: Close",
+    ]
+
+
+PROMPT = "Read the local file input.txt in the current directory using a tool."
+READ_CONFIRMATION = 'Read input.txt Input { "path": "/tmp/project/input.txt" } Allow Once Skip'
+
+
+def test_wait_for_answer_allows_a_read_only_tool_once():
+    window = ScreenedVSCode(
+        [
+            {
+                "confirmation": READ_CONFIRMATION,
+                "request": PROMPT,
+                "response": {"busy": True, "text": "1 confirmation pending"},
+            },
+            {"request": PROMPT, "response": {"busy": False, "text": "42"}},
+        ]
+    )
+
+    assert window.wait_for_answer(PROMPT) == "42"
+    assert window.actions == ["tool confirmation: Allow Once"]
+
+
+def test_wait_for_answer_refuses_a_confirmation_that_is_not_read_only():
+    window = ScreenedVSCode(
+        [
+            {
+                "confirmation": 'Run rm -rf build Input { "command": "rm -rf build" } Allow Once Skip',
+                "request": PROMPT,
+                "response": {"busy": True, "text": "1 confirmation pending"},
+            }
+        ]
+    )
+
+    with pytest.raises(vscode_module.UnknownScreen, match="Unexpected tool confirmation"):
+        window.wait_for_answer(PROMPT)
+    assert window.actions == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (READ_CONFIRMATION, True),
+        ("Allow reading file outside of workspace? " + READ_CONFIRMATION, True),
+        ("Read input.txt Input {} Skip", False),
+        ("Edit input.txt Input {} Allow Once Skip", False),
+    ],
+)
+def test_read_only_tool_confirmation(text, expected):
+    assert vscode_module.read_only_tool_confirmation(text) is expected

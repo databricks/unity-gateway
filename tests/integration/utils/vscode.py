@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -25,6 +26,9 @@ CLICK_TIMEOUT_MS = 2000
 POLL_S = 0.25
 # How long a screen gets to react to an action before the same screen is read as new.
 SETTLE_S = 3
+# Tools of the Copilot session that only read; the chat asks before reading outside the workspace.
+READ_ONLY_TOOLS = frozenset({"Read", "View", "List", "Glob", "Grep", "Search"})
+MAX_TOOL_APPROVALS = 4
 
 # ug's extension asks for this on a profile where Copilot Chat never finished its setup. The toast
 # stays up after Copilot Chat is turned on another way, over the chat's model picker.
@@ -505,14 +509,26 @@ class VSCode:
 
         def closed() -> bool:
             nonlocal clicked
-            if not self.screen()["modelsEditor"]:
+            screen = self.screen()
+            if not screen["modelsEditor"]:
                 return True
             if time.monotonic() - clicked >= SETTLE_S:
                 clicked = time.monotonic()
+                if screen["dropdown"]:
+                    # A model picker left open over the editor takes the click meant for Close.
+                    self._act(
+                        "Language Models editor: Escape", lambda: self.page.keyboard.press("Escape")
+                    )
+                    return False
                 try:
                     self._click("Language Models editor: Close", close)
                 except PlaywrightTimeoutError:
-                    self.actions.append("  (the Language Models editor closed before the click)")
+                    note = (
+                        "the Close click timed out with the editor still open"
+                        if self.screen()["modelsEditor"]
+                        else "the Language Models editor closed before the click"
+                    )
+                    self.actions.append(f"  ({note})")
             return False
 
         return closed
@@ -655,9 +671,11 @@ class VSCode:
     def wait_for_answer(self, prompt: str) -> str:
         """Wait until the turn for ``prompt`` finishes and return its response text.
 
-        Any tool confirmation or dialog fails the turn."""
+        A confirmation for a read-only tool is allowed once, as a developer would; any other tool
+        confirmation or dialog fails the turn."""
         deadline = time.monotonic() + TURN_TIMEOUT_S
         idle_since = None
+        approvals = 0
         prompt = " ".join(prompt.split())
         while time.monotonic() < deadline:
             screen = self.screen()
@@ -666,6 +684,12 @@ class VSCode:
             confirmation = screen["confirmation"]
             if confirmation is not None:
                 self.shot("confirmation")
+                if approvals < MAX_TOOL_APPROVALS and read_only_tool_confirmation(confirmation):
+                    self._approve_tool()
+                    approvals += 1
+                    idle_since = None
+                    time.sleep(POLL_S)
+                    continue
                 raise UnknownScreen(f"Unexpected tool confirmation: {confirmation[:500]}")
             response = screen["response"]
             request = screen["request"] or ""
@@ -679,6 +703,24 @@ class VSCode:
                 idle_since = None
             time.sleep(POLL_S)
         raise AssertionError(f"Timed out waiting for the chat turn; last screen {self.screen()}")
+
+    def _approve_tool(self) -> None:
+        widget = self.page.locator(
+            ".chat-confirmation-widget-container:visible, .chat-confirmation-widget:visible"
+        ).last
+        self._click(
+            "tool confirmation: Allow Once",
+            widget.get_by_role("button", name="Allow Once", exact=True).first,
+        )
+
+
+def read_only_tool_confirmation(text: str) -> bool:
+    """Whether a tool confirmation's text asks to allow a tool that only reads.
+
+    The widget reads like ``Read input.txt Input {...} Allow Once Skip``, sometimes under a question
+    such as ``Allow reading file outside of workspace?``."""
+    head = re.sub(r"^Allow [^?]*\?\s*", "", text.split(" Input ", 1)[0]).strip()
+    return "Allow Once" in text and head.split(" ", 1)[0] in READ_ONLY_TOOLS
 
 
 def copilot_chat_version(session) -> str:
