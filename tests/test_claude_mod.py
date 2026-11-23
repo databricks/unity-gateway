@@ -1,6 +1,7 @@
 """Generated plugin contents for the native Claude mod entry point."""
 
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -33,6 +34,8 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     )
     for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
+    setters = set(re.findall(r"\$\.env\.set\('([^']+)'", (mods / "register.ts").read_text()))
+    assert set(SMART_ROUTING_ENV_KEYS) <= setters
     assert {path.name for path in (tmp_path / "hooks").iterdir()} == {*filenames, "hooks.json"}
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings == {
@@ -137,6 +140,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "0",
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
@@ -165,6 +169,7 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "",
         "unset": [
             key
             for key in SMART_ROUTING_ENV_KEYS

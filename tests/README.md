@@ -8,6 +8,11 @@ registration, terminal selection, and preservation of unrelated MCP entries.
 Native UI and credentialed gateway validation are separate, as described in the
 [validation guide](../docs/codex-smart-router-statusline.md).
 
+The remote TUI and app-server receive matching feature overrides so the footer's
+forwarded feature table preserves plaintext subagent routing and collaboration guidance.
+`test_codex_statusline.py` and `test_codex_smart_routing_v2.py` cover this configuration
+boundary; they do not establish a live routed-child pass.
+
 The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
 stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
 `test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade
@@ -635,7 +640,10 @@ They cover Claude/Codex helper dispatch and rejection of routing decisions witho
 the agent-specific prompt-submission evidence.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
-child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
+child task. Every Claude preset also opens `/smart-router logs`, requires a nonzero session
+routing count, and closes the pane before exit. This includes presets that hide inline model
+details; these live log-pane checks have not been run locally.
+`subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
 Enabled Codex presets check `x-codex-turn-metadata` on successful parent and child
 inference: the recipe matches the router selector, `/root` has state `on`, and the
@@ -1886,6 +1894,12 @@ See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when
 adding, modifying, or removing tests. The ordinary suite enforces both the
 no-mocking boundary and the Scenario/Expected docstring format.
+
+Hidden subagent-model display has component coverage for Claude/Codex verification
+notices, restored native labels, missing-model warnings, and parallel streamed calls
+that still route at launch. CUJ4's delegated journeys reject verification notices too;
+its no-delegation status-band matrix omits the two blind presets, whose toggle behavior
+is shared with the existing orchestration preset. These additions have no live run evidence.
 
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,

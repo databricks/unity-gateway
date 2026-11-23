@@ -9,6 +9,10 @@ and ON/OFF text; OFF stays visible, matching Claude's persistent hint. See the
 footer or resource read alone does not establish gateway inference or routed-child
 coverage. Windows native footer rendering remains untested.
 
+Component checks preserve routing feature overrides when the remote TUI forwards
+its footer configuration to the app-server. Live validation must still confirm a
+completed child task with a correlated routing decision, not only the ON badge.
+
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
@@ -1442,9 +1446,10 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the internal first-prompt-and-subagent mode). It independently
+The unit/component `../test_smart_routing_config.py` includes a 189-case Cartesian oracle over all
+three legacy routing flags (`None`, `0`, `1`) and seven selector forms (`None` plus the six
+supported presets, including the internal first-prompt-and-subagent mode and the blind
+subagent-model orch v0 preset). It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -2381,11 +2386,20 @@ including unchanged models, fresh sessions, inactive preference edits, cancellat
 answers, and preserved hook decisions. Native TUI checks use a controlled local response
 fixture to populate token accounting; they do not establish gateway cache hits or cost.
 
+Hidden subagent-model display has component coverage for Claude/Codex verification
+notices, restored native labels, missing-model warnings, and parallel streamed calls
+that still route at launch. CUJ4's delegated journeys reject verification notices too;
+its no-delegation status-band matrix omits the two blind presets, whose toggle behavior
+is shared with the existing orchestration preset. These additions have no live run evidence.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+CUJ 4's delegation journeys open `/smart-router logs` for every Claude preset, require a
+nonzero session routing count, and close the pane before exit. This includes presets that
+hide inline model details; these live log-pane checks have not been run locally.
+Its status-band journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 Its Auto selector journey also covers a non-replacing managed picker without managed

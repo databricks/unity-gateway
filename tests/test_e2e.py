@@ -655,6 +655,8 @@ class TestClaudeLaunch:
             "ANTHROPIC_BASE_URL": base_url,
             "ANTHROPIC_API_KEY": e2e_token,
         }
+        # Keep repository instructions out of the greeting smoke test.
+        monkeypatch.chdir(tmp_path)
         cmd = claude.validate_cmd("claude")
         result = _run_agent(cmd, env=env, timeout=90)
         combined = (result.stdout + result.stderr).strip()
