@@ -90,14 +90,25 @@ def skill_version(*, agent: str) -> str | None:
     if not lines or lines[0].strip() != "---":
         return None
     in_metadata = False
+    metadata_indent: int | None = None
     for line in lines[1:]:
         if line.strip() == "---":
             break
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
         if not line.startswith((" ", "\t")):
             in_metadata = line.rstrip() == "metadata:"
+            metadata_indent = None
+            continue
+        if not in_metadata:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if metadata_indent is None:
+            metadata_indent = indent
+        if indent != metadata_indent:
             continue
         key, separator, value = line.strip().partition(":")
-        if in_metadata and separator and key == "version":
+        if separator and key == "version":
             return value.strip().strip("\"'") or None
     return None
 
