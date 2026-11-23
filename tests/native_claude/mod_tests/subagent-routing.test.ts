@@ -1472,12 +1472,15 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   const choice = (model: string) => ({ model, rationale: 'Selected for the task' });
   let response: object | undefined = choice(blocked);
   let exitCode = 0;
+  let routingOff = false;
   const clock = mock.clock(on);
   let duringRouting: (() => Promise<void>) | undefined;
   const forwarded: any[] = [];
   const requests: any[] = [];
   const spawns: any[] = [];
   on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', (_, e) => ({ value: routingOff
+    && ['ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY'].includes(e.name) ? '0' : undefined }));
   on('fs.write', () => ({ value: undefined }));
   on('process.run', async ($, e) => {
     requests.push(JSON.parse(e.init.stdin));
@@ -1549,7 +1552,9 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   await deniedRow.unmount();
   expect(spawns.length).toBe(spawnCount);
   response = { disabled: true };
+  routingOff = true;
   expect((await launch('routing-off')).context).toEqual(['Existing context']);
+  routingOff = false;
   response = choice(alternative);
   await clock.advance(59_999);
   expect((await launch('before-expiry')).result.resolvedModel).toBe(alternative);
@@ -2445,7 +2450,7 @@ for (const scenario of [
     }
     const result = await $.tool.call({ tool: 'Agent', tool_use_id: 'streamed', ...input });
     expect(requests).toHaveLength(lostClockAfterExpiry ? 3 : 2);
-    if (['failed router', 'new failure', 'stale selection', 'failure before spawn', 'failure before spawn without clock'].includes(scenario)) {
+    if (['failed router', 'new failure', 'stale selection', 'disabled', 'failure before spawn', 'failure before spawn without clock', 'disabled before spawn'].includes(scenario)) {
       expect(typeof result.deny).toBe('string');
       expect(spawns).toHaveLength(1);
       if (scenario === 'stale selection') {
@@ -2463,8 +2468,23 @@ for (const scenario of [
   });
 }
 
-for (const boundary of ['tool execution', 'agent spawn', 'unreadable controls', 'non-object controls', 'unavailable environment'] as const) {
-  test(`streamed routing reads current session controls at ${boundary}`, async ($, on) => {
+for (const [cachedReply, boundary, currentControls] of [
+  ['denied', 'tool execution', 'off'],
+  ['selected', 'agent spawn', 'off'],
+  ['denied', 'tool execution', 'unreadable'],
+  ['denied', 'tool execution', 'non-object'],
+  ['denied', 'tool execution', 'unavailable'],
+  ['disabled', 'tool execution', 'on'],
+  ['disabled', 'agent spawn', 'on'],
+  ['disabled', 'tool execution', 'unreadable'],
+  ['disabled', 'agent spawn', 'unreadable'],
+  ['disabled', 'tool execution', 'non-object'],
+  ['disabled', 'agent spawn', 'non-object'],
+  ['disabled', 'tool execution', 'unavailable'],
+  ['disabled', 'agent spawn', 'unavailable'],
+  ['disabled', 'tool execution', 'off'],
+] as const) {
+  test(`streamed ${cachedReply} routing reads ${currentControls} controls at ${boundary}`, async ($, on) => {
     const blocked = 'system.ai.glm-5-3-flash';
     const fallback = 'system.ai.claude-sonnet-5-5';
     const controlsPath = '/session/controls.json';
@@ -2472,11 +2492,12 @@ for (const boundary of ['tool execution', 'agent spawn', 'unreadable controls', 
       ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     });
     let controls = enabledControls;
-    const inheritsOff = boundary === 'unreadable controls' || boundary === 'non-object controls';
+    const inheritsOff = cachedReply === 'disabled' || currentControls === 'unreadable' || currentControls === 'non-object';
     let unreadable = false;
     let environmentUnavailable = false;
     const requests: any[] = [];
     const spawns: any[] = [];
+    const executed: string[] = [];
     const clock = mock.clock(on);
     let releaseSibling = () => {};
     const siblingGate = new Promise<void>(resolve => { releaseSibling = resolve; });
@@ -2517,10 +2538,11 @@ for (const boundary of ['tool execution', 'agent spawn', 'unreadable controls', 
         firstResponseDelivered = true;
       }
       const selected = request.tool_use_id === 'initial'
-        || (request.tool_use_id === 'cached' && boundary === 'agent spawn');
-      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify(selected
-        ? { model: blocked, rationale: 'Controlled selection' }
-        : { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true }) } };
+        || (request.tool_use_id === 'cached' && cachedReply === 'selected');
+      const response = selected ? { model: blocked, rationale: 'Controlled selection' }
+        : request.tool_use_id === 'cached' && cachedReply === 'disabled' ? { disabled: true }
+        : { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true };
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify(response) } };
     });
     on('agent.spawn', (_, e) => {
       spawns.push(e);
@@ -2529,13 +2551,22 @@ for (const boundary of ['tool execution', 'agent spawn', 'unreadable controls', 
     const disable = () => { controls = JSON.stringify({
       ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0',
     }); };
+    const changeControls = () => {
+      if (currentControls === 'off') disable();
+      if (currentControls === 'on') controls = enabledControls;
+      if (currentControls === 'unreadable') unreadable = true;
+      if (currentControls === 'non-object') controls = '[]';
+      if (currentControls === 'unavailable') environmentUnavailable = true;
+    };
+    const spawn = (id: string, input: any) => $.agent.spawn({
+      tool_use_id: id, prompt: input.prompt, description: input.description,
+      subagentType: 'general-purpose', model: 'sonnet', parentModel: fallback,
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    });
     on('tool.call', async (_, e) => {
-      if (e.tool_use_id === 'cached' && boundary === 'agent spawn') disable();
-      const child = await $.agent.spawn({
-        tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-        subagentType: 'general-purpose', model: 'sonnet', parentModel: fallback,
-        provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-      });
+      executed.push(e.tool_use_id!);
+      if (e.tool_use_id === 'cached' && boundary === 'agent spawn') changeControls();
+      const child = await spawn(e.tool_use_id!, e);
       return child.deny ? { deny: child.deny } : { result: child };
     });
     on('turn.step', async function* (_, e) {
@@ -2548,12 +2579,10 @@ for (const boundary of ['tool execution', 'agent spawn', 'unreadable controls', 
     });
     expect((await $.tool.call({ tool: 'Agent', tool_use_id: 'initial', ...originalInput })).result.model).toBe(blocked);
     await $.prompt.submit(rateLimitNotice('child-initial', blocked));
+    if (cachedReply === 'disabled') disable();
     const pending = collectParentTurn($, 'current-controls', 0);
     await Promise.all([decisionCached, siblingStarted]);
-    if (boundary === 'tool execution') disable();
-    if (boundary === 'unreadable controls') unreadable = true;
-    if (boundary === 'non-object controls') controls = '[]';
-    if (boundary === 'unavailable environment') environmentUnavailable = true;
+    if (boundary === 'tool execution') changeControls();
     releaseSibling();
     const turn = await pending;
     const input = JSON.parse(turn.chunks.find(chunk => chunk.kind === 'input' && chunk.index === 0).json);
@@ -2562,19 +2591,28 @@ for (const boundary of ['tool execution', 'agent spawn', 'unreadable controls', 
     expect(requests.slice(1).map(request => request.excluded_models)).toEqual([
       ['glm-5-3-flash'], ['glm-5-3-flash'],
     ]);
-    if (boundary === 'unreadable controls' || boundary === 'non-object controls' || boundary === 'unavailable environment') {
-      expect(result.deny).toBe('All routing candidates are rate-limited.');
+    if (currentControls !== 'off') {
+      expect(typeof result.deny).toBe('string');
+      if (cachedReply === 'denied') expect(result.deny).toBe('All routing candidates are rate-limited.');
       expect(spawns).toHaveLength(1);
+      expect(executed).toEqual(boundary === 'agent spawn' ? ['initial', 'cached'] : ['initial']);
     } else {
       expect(result.deny).toBeUndefined();
       expect(result.result.model).toBe(fallback);
       expect(spawns.at(-1).model).toBe('sonnet');
       expect(spawns).toHaveLength(2);
     }
-    // Disabling routing does not erase the still-active cooldown.
+    // A cached OFF reply cannot authorize the same call after routing is re-enabled.
     controls = enabledControls;
     unreadable = false;
     environmentUnavailable = false;
+    if (cachedReply === 'disabled') {
+      const previousSpawns = spawns.length;
+      expect(typeof (await $.tool.call({ tool: 'Agent', tool_use_id: 'cached', ...input })).deny).toBe('string');
+      expect(typeof (await spawn('cached', input)).deny).toBe('string');
+      expect(requests).toHaveLength(3);
+      expect(spawns).toHaveLength(previousSpawns);
+    }
     const enabled = await $.tool.call({ tool: 'Agent', tool_use_id: 'enabled-again', ...originalInput });
     expect(enabled.deny).toBe('All routing candidates are rate-limited.');
     expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);

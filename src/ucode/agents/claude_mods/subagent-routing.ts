@@ -574,7 +574,7 @@ export const registerSubagentRouting = (
     if (outcome && await routingDisabled($)) return next(e)
     const { tool_use_id } = e
     let denial = outcome?.denial
-    if (outcome && !outcome.routed && !outcome.disabled && (!denial || outcome.cooldownDenial)) {
+    if (outcome && !outcome.routed && (!denial || outcome.cooldownDenial)) {
       // A streamed decision may wait before execution; recheck expiry and newly arrived notices.
       const coolingDown = activeRateLimits().length > 0
       if (coolingDown) {
@@ -607,10 +607,9 @@ export const registerSubagentRouting = (
     const route = e.resume || e.fork ? undefined : records.get(e.tool_use_id)
     const outcome = e.resume || e.fork ? undefined : attempted.get(e.tool_use_id)
     if ((route || outcome) && await routingDisabled($)) return next(e)
-    const checkFallback = outcome && !outcome.disabled
-    const excluded = route || checkFallback ? activeRateLimits() : []
+    const excluded = route || outcome ? activeRateLimits() : []
     const excludedSelection = route && excluded.includes(rateLimitKey(route.model))
-    const unverifiedFallback = !route && checkFallback && excluded.length > 0
+    const unverifiedFallback = !route && outcome && excluded.length > 0
     if (excludedSelection || unverifiedFallback) {
       // A new failure can invalidate either a selected model or an unverified native fallback.
       records.delete(e.tool_use_id)
