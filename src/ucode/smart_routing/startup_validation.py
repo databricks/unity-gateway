@@ -24,7 +24,6 @@ from ucode.smart_routing import routing
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
 # urllib applies the timeout per socket operation, so a result past this deadline counts as a timeout.
 VALIDATION_TIMEOUT_SECONDS = 4
-IS_SUPPORTED_FIELD = "is_supported"
 
 
 def result_path(session_controls: Path) -> Path:
@@ -107,10 +106,10 @@ def validate(
         return None
     if reason or not isinstance(payload, dict):
         return None
-    if payload.get(IS_SUPPORTED_FIELD) is not False:
-        return {IS_SUPPORTED_FIELD: True}
+    if payload.get("is_supported") is not False:
+        return {"is_supported": True}
     return {
-        IS_SUPPORTED_FIELD: False,
+        "is_supported": False,
         **_unsupported_details(payload, router_name),
         "validation_ms": round((time.monotonic() - started) * 1000),
     }
@@ -130,11 +129,11 @@ def start(
             workspace, token, route_options, router_name=router_name, provider=provider
         )
         result: dict[str, Any] = {"routing_disabled": False}
-        if validation and validation[IS_SUPPORTED_FIELD] is False:
+        if validation and validation["is_supported"] is False:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True
-                result.update({k: v for k, v in validation.items() if k != IS_SUPPORTED_FIELD})
+                result.update({k: v for k, v in validation.items() if k != "is_supported"})
         with suppress(OSError, RuntimeError):
             atomic_write_json(result_path(session_controls), result)
 

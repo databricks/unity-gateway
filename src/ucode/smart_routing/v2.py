@@ -658,13 +658,13 @@ def validate_claude_model_list(
         router_name=routing.configured_router_name(),
         provider=provider,
     )
-    if not result or result[startup_validation.IS_SUPPORTED_FIELD] is not False:
+    if not result or result["is_supported"] is not False:
         return None
     session_id = payload.get("session_id")
     if isinstance(session_id, str):
         with suppress(OSError, ValueError):
             session_log.append_route_validation(
-                AGENT_CLAUDE, session_id, {**result, session_log.ROUTING_DISABLED_FIELD: False}
+                AGENT_CLAUDE, session_id, {**result, "routing_disabled": False}
             )
     return result
 

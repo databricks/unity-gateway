@@ -2263,9 +2263,7 @@ class TestSubcommandRouting:
         assert validate.call_args.args[2] == [("system.ai.claude-opus-4-8", "claude")]
         records = session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE)
         assert result.output == (json.dumps(validation) if recorded else "")
-        assert [r[session_log.ROUTING_DISABLED_FIELD] for r in records] == (
-            [False] if recorded else []
-        )
+        assert [r["routing_disabled"] for r in records] == ([False] if recorded else [])
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")

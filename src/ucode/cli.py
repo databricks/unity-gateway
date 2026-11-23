@@ -3721,9 +3721,10 @@ def claude_router_hook_cmd(
         # When matched is None the harness didn't report the subagent model —
         # routing already injected the selected model, so emit nothing.
         return
-    if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT, ROUTE_VALIDATION_MOD_EVENT}:
-        return
-    if not host:
+    if (
+        event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT, ROUTE_VALIDATION_MOD_EVENT}
+        or not host
+    ):
         return
     token = _router_hook_token(host, profile, use_pat)
     if not token:
