@@ -20,7 +20,7 @@ from tests.endpoint_rates_transport import SYNTHETIC_BEARER, WORKSPACE, Endpoint
 from tests.native_claude.messages_api import messages_api
 from tests.native_claude.session import Session
 from tests.native_claude.test_mod import _recorded_usage
-from ucode.smart_routing import orchestrator, pricing
+from ucode.smart_routing import orchestrator, pricing, savings
 from ucode.workspace import workspace_key
 
 MAIN_MODEL = "system.ai.claude-opus-4-8"
@@ -35,7 +35,7 @@ from ucode.agents import claude
 from ucode.smart_routing import v2
 from ucode.workspace import pin
 
-binary, workspace, workspace_id, model, settings = sys.argv[1:]
+binary, workspace, workspace_id, model, settings, *native_args = sys.argv[1:]
 managed = claude._managed_settings_path()
 assert managed is None or not managed.exists(), 'Native launch test needs an isolated managed-settings directory'
 pin(workspace, workspace_id)
@@ -44,7 +44,7 @@ try:
         {'workspace': workspace, 'workspace_id': workspace_id},
         ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
          '--verbose', '--setting-sources', 'user', '--settings', settings,
-         '--tools', '', '--permission-mode', 'default'],
+         '--tools', '', '--permission-mode', 'default', *native_args],
         binary=binary, user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
         launch_model=model, compose_settings=claude._compose_v2_settings,
         launch_model_args=claude._launch_model_args, model_name=claude._maybe_add_1m_suffix,
@@ -61,7 +61,7 @@ finally:
 class SavingsLaunch(Session):
     """Reuse the native stream driver, with UG constructing all launch options and plugins."""
 
-    def __init__(self, binary, root, transport, api):
+    def __init__(self, binary, root, transport, api, *, resume=None, model=MAIN_MODEL):
         self.root = root
         self.transport = transport
         self.env = {
@@ -77,9 +77,9 @@ class SavingsLaunch(Session):
             "DISABLE_AUTOUPDATER": "1",
             "TMPDIR": str(root / "tmp"),
         }
-        (root / "tmp").mkdir()
+        (root / "tmp").mkdir(exist_ok=True)
         self.user_settings = root / ".claude/settings.json"
-        self.user_settings.parent.mkdir()
+        self.user_settings.parent.mkdir(exist_ok=True)
         self.user_settings.write_text(
             json.dumps(
                 {
@@ -103,8 +103,9 @@ class SavingsLaunch(Session):
                 binary,
                 WORKSPACE,
                 WORKSPACE_ID,
-                MAIN_MODEL,
+                model,
                 str(self.user_settings),
+                *(["--resume", resume] if resume is not None else []),
             ],
             cwd=root,
             env=self.env,
@@ -164,7 +165,10 @@ def _assert_launch_options(session):
         "--price-cache",
         str(_cache_path(session.root)),
     ]
-    assert options["savings_usage"] == str(path.parent / "savings-usage.json")
+    assert options["savings_usage_dir"] == str(
+        savings.usage_directory(session.root / ".ucode", workspace_key(WORKSPACE, WORKSPACE_ID))
+    )
+    assert Path(options["savings_usage_dir"]) != path.parent
     assert options["orchestrator_version"]
     assert options["orchestrator_version"] == orchestrator.skill_version(agent="claude")
     assert settings["env"]["ENABLE_SMART_ROUTING_SAVINGS"] == "1"
@@ -228,7 +232,7 @@ def test_savings_launch_completes_a_turn_before_rates_arrive(native_binary, tmp_
         assert not transport.release.is_set() and not transport.finished.is_set()
         assert not _cache_path(root).exists()
         options = _assert_launch_options(session)
-        usage = Path(options["savings_usage"])
+        usage = Path(options["savings_usage_dir"])
         _recorded_usage(usage, 1, output_tokens=11)
         _assert_rates_request(transport)
 
@@ -287,10 +291,14 @@ def test_savings_launch_survives_failed_rate_refresh(native_binary, tmp_path, di
         assert transport.finished.wait(timeout=10)
         _assert_rates_request(transport)
         options = _assert_launch_options(session)
-        _recorded_usage(Path(options["savings_usage"]), 1, output_tokens=11)
+        recorded = _recorded_usage(Path(options["savings_usage_dir"]), 1, output_tokens=11)
         if not cached:
             result = subprocess.run(
-                [*options["savings_pricer"], "--usage", options["savings_usage"]],
+                [
+                    *options["savings_pricer"],
+                    "--usage",
+                    str(Path(options["savings_usage_dir"]) / f"{recorded['session_id']}.json"),
+                ],
                 input="",
                 capture_output=True,
                 text=True,
@@ -302,3 +310,66 @@ def test_savings_launch_survives_failed_rate_refresh(native_binary, tmp_path, di
             assert json.loads(result.stdout) == {"savings": None}
         assert [request["model"] for request in requests] == [MAIN_MODEL]
     assert (cache.read_bytes() if cache.exists() else None) == before
+
+
+def test_savings_survive_native_exit_and_new_ug_resume_process(native_binary, tmp_path):
+    root = tmp_path / "session"
+    replies = [
+        {
+            "content": [{"type": "text", "text": word}],
+            "usage": {"input_tokens": inputs, "output_tokens": outputs},
+        }
+        for word, inputs, outputs in [("first", 7, 11), ("resumed", 13, 17), ("fresh", 3, 5)]
+    ]
+    # Accounting must survive even when no prices can be shown.
+    with (
+        EndpointRatesTransport(tmp_path / "tls", {"model_service_rates": []}) as transport,
+        messages_api(replies) as (api, requests),
+    ):
+        with SavingsLaunch(native_binary, root, transport, api) as first:
+            result = first.send("Reply with first.")
+            assert result["result"] == "first"
+            session_id = result["session_id"]
+            launch_path, _ = first.settings()
+            options = _assert_launch_options(first)
+            usage = Path(options["savings_usage_dir"]) / f"{session_id}.json"
+        assert not launch_path.parent.exists()
+        assert usage.is_file(), "Native exit removed the session's accounting"
+        initial = _recorded_usage(usage, 1, output_tokens=11)
+        assert initial["session_id"] == session_id
+
+        with SavingsLaunch(
+            native_binary, root, transport, api, resume=session_id, model=ROUTABLE_MODELS[0]
+        ) as resumed:
+            result = resumed.send("Reply with resumed.")
+            assert result["result"] == "resumed"
+            assert result["session_id"] == session_id
+            resumed_usage = (
+                Path(_assert_launch_options(resumed)["savings_usage_dir"]) / f"{session_id}.json"
+            )
+            assert resumed_usage == usage
+        continued = _recorded_usage(usage, 2, output_tokens=28)
+        assert continued["start_model"] == initial["start_model"] == MAIN_MODEL
+        assert continued["first_main_model"] == initial["first_main_model"] == MAIN_MODEL
+        assert continued["first_prompt_seen"] is True
+        assert continued["user_switched"] is True
+        assert sum(entry["usage"]["input_tokens"] for entry in continued["entries"]) == 20
+        assert continued["entries"][0] == initial["entries"][0]
+        before_fresh = usage.read_bytes()
+
+        with SavingsLaunch(native_binary, root, transport, api, model=ROUTABLE_MODELS[0]) as fresh:
+            result = fresh.send("Reply with fresh.")
+            assert result["result"] == "fresh"
+            assert result["session_id"] != session_id
+            fresh_usage = (
+                Path(_assert_launch_options(fresh)["savings_usage_dir"])
+                / f"{result['session_id']}.json"
+            )
+            assert fresh_usage != usage
+        new = _recorded_usage(fresh_usage, 1, output_tokens=5)
+        assert new["start_model"] == ROUTABLE_MODELS[0]
+        assert new["first_main_model"] == ROUTABLE_MODELS[0]
+        assert new["user_switched"] is False
+        assert new["entries"][0]["usage"]["input_tokens"] == 3
+        assert usage.read_bytes() == before_fresh
+    assert [request["model"] for request in requests] == [MAIN_MODEL, *([ROUTABLE_MODELS[0]] * 2)]

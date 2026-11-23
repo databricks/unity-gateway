@@ -12,6 +12,7 @@ it runs this module in a fresh process to price each snapshot.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from decimal import ROUND_HALF_UP, Decimal
@@ -28,11 +29,43 @@ from ucode.smart_routing.pricing import (
 from ucode.smart_routing.session_env import effective_environment
 
 MODULE = "ucode.smart_routing.savings"
-# The file holding the mod's token sums, in the launch directory; the mod reads its path from
-# the plugin options, so only the version is shared with it.
 USAGE_FILENAME = "savings-usage.json"
 _USAGE_VERSION = 1
 _CENT = Decimal("0.01")
+
+
+def usage_directory(app_dir: Path, workspace: str) -> Path:
+    """Durable native-session snapshots for one fully selected workspace."""
+    key = workspace.strip().lower().removeprefix("https://").rstrip("/")
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return app_dir / "claude-savings" / digest
+
+
+def _valid_token_usage(usage: object) -> bool:
+    if not isinstance(usage, dict):
+        return False
+
+    def counts(source: dict, keys: tuple[str, ...]) -> bool:
+        return all(
+            key not in source or (type(source[key]) is int and source[key] >= 0) for key in keys
+        )
+
+    if not counts(
+        usage,
+        (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ),
+    ):
+        return False
+    if "cache_creation" not in usage:
+        return True
+    split = usage["cache_creation"]
+    return isinstance(split, dict) and counts(
+        split, ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+    )
 
 
 def pricer_argv(*, python: str, price_cache: Path, baseline_session_start: bool) -> list[str]:
@@ -95,7 +128,7 @@ def usage_savings(
         agent = entry.get("agent")
         if not isinstance(agent, str) or not agent:
             return None
-        if not isinstance(usage, dict) or not isinstance(served, str) or not served:
+        if not _valid_token_usage(usage) or not isinstance(served, str) or not served:
             return None
         # Unsplit cache writes use the one-hour TTL configured for UG's Claude launches.
         tokens = TokenUsage.from_message_usage(usage, uncovered_writes_1h=True)
@@ -172,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
                 not isinstance(document, dict)
                 or document.get("version") != _USAGE_VERSION
                 or not isinstance(document.get("entries"), list)
+                or any(
+                    not isinstance(entry, dict) or not _valid_token_usage(entry.get("usage"))
+                    for entry in document["entries"]
+                )
             ):
                 raise ValueError("unsupported savings usage snapshot")
             from ucode.config_io import atomic_write_json

@@ -86,10 +86,21 @@ def cost_more(amount: str, percent: str) -> dict:
     return {"saved": False, "amount": amount, "percent": percent}
 
 
+def decoded_savings(line: str | bytes) -> dict | None:
+    output = json.loads(line)
+    if output["savings"] is None:
+        assert output == {"savings": None}
+    else:
+        assert set(output) == {"savings", "valid_for_ms"}
+        assert type(output["valid_for_ms"]) is int
+        assert 0 < output["valid_for_ms"] <= 24 * 60 * 60 * 1000
+    return output["savings"]
+
+
 def priced(usage: Path, price_cache: Path, *, first_prompt: bool = False) -> dict | None:
     line = savings.usage_output(usage, price_cache=price_cache, baseline_session_start=first_prompt)
     assert "\n" not in line
-    return json.loads(line)["savings"]
+    return decoded_savings(line)
 
 
 class TestUsageSavings:
@@ -279,9 +290,11 @@ def test_unrouted_children_add_cost_without_attributed_savings(tmp_path, price_c
         ),
     ]
     usage = write_usage(tmp_path, entries)
-    assert savings.usage_savings(
+    computed = savings.usage_savings(
         usage, price_cache=price_cache, baseline_session_start=first_prompt
-    ) == (Decimal("0.183"), Decimal("0.50205"))
+    )
+    assert computed is not None
+    assert computed[:2] == (Decimal("0.183"), Decimal("0.50205"))
     assert priced(usage, price_cache, first_prompt=first_prompt) == saved("$0.18", "36%")
 
 
@@ -340,6 +353,7 @@ class TestPricerCommand:
         flag: str | None = "1",
         controls: Path | None = None,
         snapshot: bytes | None = None,
+        no_price: bool = False,
     ):
         argv = savings.pricer_argv(
             python=sys.executable, price_cache=price_cache, baseline_session_start=first_prompt
@@ -353,6 +367,8 @@ class TestPricerCommand:
             env["ENABLE_SMART_ROUTING_SAVINGS"] = flag
         if snapshot is not None:
             argv.append("--write-usage")
+        if no_price:
+            argv.append("--no-price")
         # The line must survive an ASCII stdout locale.
         return subprocess.run(
             [*argv, "--usage", str(usage)],
@@ -374,7 +390,7 @@ class TestPricerCommand:
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.count(b"\n") == 1
-        assert json.loads(result.stdout.decode("utf-8")) == {"savings": saved("$0.18", "60%")}
+        assert decoded_savings(result.stdout.decode("utf-8")) == saved("$0.18", "60%")
         if snapshot is not None:
             assert json.loads(usage.read_bytes()) == json.loads(snapshot)
 
@@ -388,6 +404,17 @@ class TestPricerCommand:
         assert result.returncode == 1
         assert json.loads(result.stdout) == {"savings": None}
         assert usage.read_bytes() == previous
+
+    def test_save_only_preserves_usage_without_computing_an_estimate(self, tmp_path, price_cache):
+        usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        snapshot = usage.read_bytes()
+        usage.unlink()
+
+        result = self.run(price_cache, usage, snapshot=snapshot, no_price=True)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"savings": None}
+        assert json.loads(usage.read_bytes()) == json.loads(snapshot)
 
     def test_never_fails_the_mod(self, tmp_path, price_cache):
         result = self.run(price_cache, tmp_path / "missing.json", first_prompt=True)
@@ -414,18 +441,126 @@ class TestPricerCommand:
             ({}, saved("$0.18", "60%")),
         ):
             controls.write_text(json.dumps(overrides))
-            previous = usage.read_bytes()
             result = self.run(price_cache, usage, controls=controls, snapshot=snapshot)
-            assert result.returncode == (1 if persist and expected is None else 0), result.stderr
-            assert json.loads(result.stdout) == {"savings": expected}
+            assert result.returncode == 0, result.stderr
+            assert decoded_savings(result.stdout) == expected
             if snapshot is not None:
-                if expected is None:
-                    assert usage.read_bytes() == previous
-                else:
-                    assert json.loads(usage.read_bytes()) == json.loads(snapshot)
+                assert json.loads(usage.read_bytes()) == json.loads(snapshot)
 
         controls.write_text("invalid JSON")
         fallback = self.run(price_cache, usage, controls=controls)
         assert fallback.returncode == 0, fallback.stderr
-        assert json.loads(fallback.stdout) == {"savings": saved("$0.18", "60%")}
-        assert b"using the inherited environment" in fallback.stderr
+        assert decoded_savings(fallback.stdout) == saved("$0.18", "60%")
+        assert fallback.stderr == b""
+
+
+@pytest.mark.parametrize("earlier_model", [OPUS_ID, SONNET_ID])
+def test_estimate_validity_uses_only_the_models_it_prices(tmp_path, monkeypatch, earlier_model):
+    clock = [100.0]
+    monkeypatch.setattr(pricing.time, "time", lambda: clock[0])
+    cache = tmp_path / "prices.json"
+    pricing.write_price_cache(cache, {"unused-model": PRICES[OPUS_ID]})
+    clock[0] = 200.0
+    pricing.write_price_cache(cache, {earlier_model: PRICES[earlier_model]})
+    clock[0] = 300.0
+    pricing.write_price_cache(
+        cache, {key: value for key, value in PRICES.items() if key != earlier_model}
+    )
+    usage = write_usage(tmp_path, [entry("child", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+    original = usage.read_bytes()
+
+    def output():
+        return json.loads(
+            savings.usage_output(usage, price_cache=cache, baseline_session_start=False)
+        )
+
+    assert output() == {"savings": saved("$0.18", "60%"), "valid_for_ms": 86_300_000}
+    clock[0] = 200.0 + 24 * 60 * 60 - 1
+    assert output() == {"savings": saved("$0.18", "60%"), "valid_for_ms": 1000}
+    clock[0] += 1
+    assert output() == {"savings": None}
+    assert usage.read_bytes() == original
+
+    clock[0] += 1
+    pricing.write_price_cache(cache, {earlier_model: PRICES[earlier_model]})
+    assert output() == {"savings": saved("$0.18", "60%"), "valid_for_ms": 99_000}
+    assert usage.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "ephemeral_5m_input_tokens",
+        "ephemeral_1h_input_tokens",
+    ],
+)
+@pytest.mark.parametrize("bad", [0.5, -1, float("inf"), float("nan"), True, False, None, "1"])
+def test_malformed_saved_counts_hide_the_whole_estimate_and_preserve_snapshots(
+    tmp_path, price_cache, field, bad
+):
+    malformed = {"input_tokens": 7}
+    target = (
+        malformed.setdefault("cache_creation", {}) if field.startswith("ephemeral_") else malformed
+    )
+    target[field] = bad
+    usage = write_usage(
+        tmp_path,
+        [
+            entry("known", OPUS_ID, SONNET_ID, SUBAGENT_USAGE),
+            entry("malformed", OPUS_ID, SONNET_ID, malformed),
+        ],
+    )
+    invalid_bytes = usage.read_bytes()
+    assert priced(usage, price_cache) is None
+    assert usage.read_bytes() == invalid_bytes
+
+    write_usage(tmp_path, [entry("known", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+    valid_bytes = usage.read_bytes()
+    result = TestPricerCommand.run(price_cache, usage, snapshot=invalid_bytes)
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {"savings": None}
+    assert usage.read_bytes() == valid_bytes
+
+
+def test_zero_counts_and_absent_optional_counts_remain_priceable(tmp_path, price_cache):
+    usage = write_usage(
+        tmp_path,
+        [
+            entry("known", OPUS_ID, SONNET_ID, SUBAGENT_USAGE),
+            entry(
+                "zero",
+                "unpriced",
+                "unpriced",
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 0,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
+                },
+            ),
+            entry("empty", "unpriced", "unpriced", {}),
+        ],
+    )
+    snapshot = usage.read_bytes()
+    result = TestPricerCommand.run(price_cache, usage, snapshot=snapshot)
+    assert result.returncode == 0, result.stderr
+    assert decoded_savings(result.stdout) == saved("$0.18", "60%")
+    assert json.loads(usage.read_bytes()) == json.loads(snapshot)
+
+
+def test_native_session_storage_is_durable_and_workspace_scoped(tmp_path):
+    from ucode.workspace import workspace_key
+
+    host = "https://oregon.cloud.databricks.com"
+    first = savings.usage_directory(tmp_path, workspace_key(host, "111"))
+    assert first == savings.usage_directory(tmp_path, workspace_key(host.upper(), "111"))
+    assert first != savings.usage_directory(tmp_path, workspace_key(host, "222"))
+    assert first != savings.usage_directory(tmp_path, "https://other.cloud.databricks.com")
