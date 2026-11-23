@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 
+import { windowsTool } from "./app-windows.mjs";
+
 // The relay URL is plain HTTP on 127.0.0.1. A proxy the runtime routes loopback through would get
 // every relay request with the GitHub token in it, so the redirect is skipped when one may.
 const PROXY_ENV = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"];
@@ -113,8 +115,9 @@ export async function detectLoopbackProxy({ env = process.env, platform = proces
       return loopbackProxyCapture({ env, platform, scutil: await run("scutil", ["--proxy"]) });
     }
     if (platform === "win32") {
-      const reg = await run("reg.exe", ["query", WININET_KEY]);
-      const connections = await run("reg.exe", ["query", `${WININET_KEY}\\Connections`, "/v", "DefaultConnectionSettings"]).catch(
+      const regExe = windowsTool("reg.exe");
+      const reg = await run(regExe, ["query", WININET_KEY]);
+      const connections = await run(regExe, ["query", `${WININET_KEY}\\Connections`, "/v", "DefaultConnectionSettings"]).catch(
         () => "",
       );
       return loopbackProxyCapture({ env, platform, reg, connections });

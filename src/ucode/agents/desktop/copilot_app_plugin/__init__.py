@@ -55,6 +55,7 @@ _SOURCE_FILES = (
     "app-state.mjs",
     "app-host.mjs",
     "app-proxy.mjs",
+    "app-windows.mjs",
     "app-seat-relay.mjs",
     "app-seat-redirect.mjs",
 )

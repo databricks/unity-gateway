@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { copilotHome, readAppPid } from "./app-rows.mjs";
+import { windowsTool } from "./app-windows.mjs";
 
 // The Copilot CLI and VS Code's Copilot runtime read the same settings file as the desktop app,
 // so with Copilot's experimental features on they start this extension too. Only the app's own
@@ -47,7 +48,7 @@ async function parentLookup(platform, run) {
   let output = null;
   if (platform === "darwin") output = await run("ps", ["-axo", "pid=,ppid="]);
   if (platform === "win32") {
-    output = await run("powershell.exe", [
+    output = await run(windowsTool("powershell.exe"), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
