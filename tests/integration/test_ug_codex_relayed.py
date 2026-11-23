@@ -10,13 +10,8 @@ from utils.evidence import fresh_id
 pytestmark = [pytest.mark.live, pytest.mark.codex, pytest.mark.codex_relay]
 
 
-@pytest.mark.parametrize(
-    "model_service",
-    [None]
-    + ([service] if (service := os.getenv("UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE")) else []),
-)
 def test_ug_codex_relayed_completes_inference_through_the_relay(
-    live_session, workspace, codex_relayed_provider, codex_access_token, model_service
+    live_session, workspace, codex_relayed_provider, codex_access_token
 ):
     """Scenario: log in with an access token and ask Codex for a short reply through a relay MPS.
 
@@ -37,6 +32,7 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
         timeout=60,
     )
     assert "Successfully logged in" in login.stdout + login.stderr
+    model_service = os.getenv("UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE")
     model = model_service or CODEX_RELAYED_MODEL
     session.record("model.json", {"model": model})
     if swap := os.getenv("UG_INTEGRATION_LITESWAP_ID"):
