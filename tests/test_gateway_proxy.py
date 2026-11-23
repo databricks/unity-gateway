@@ -973,21 +973,14 @@ class TestClaudeRelayProxyWiring:
 
 
 class TestCodexRelayProxy:
-    @pytest.mark.parametrize(
-        ("model", "seat", "pinned"),
-        [
-            ("cat.s.seat", True, False),
-            ("cat.s.foundry", False, False),
-            ("system.ai.gpt-5.2", False, False),
-            ("gpt-5.2", True, True),
-        ],
-    )
-    def test_codex_proxy_credentials(self, monkeypatch, model, seat, pinned):
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_codex_proxy_credentials(self, monkeypatch, pinned):
         cache = Mock(token="tok1")
         cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
 
-        def lookup(workspace, token, name, *, provider_type):
+        def lookup(workspace, token, name, *, provider_type, include_fallbacks):
+            assert include_fallbacks
             assert (workspace, token, provider_type) == ("https://w", "tok1", "openai")
             return (
                 databricks.RelayLookup.RELAYED
@@ -1012,27 +1005,46 @@ class TestCodexRelayProxy:
         url = upstream.build_request("POST", "v1/responses").url
         assert str(url) == "https://w/ai-gateway/codex/v1/responses"
 
-        client = _FakeClient([_FakeResp(200, b"ok")])
-        h = object.__new__(server.RequestHandlerClass)
-        h.client = client  # the bound class keeps the real cache, token header, and handler
-        h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
-        body = json.dumps({"model": model}).encode()
-        h.headers = {
-            "Authorization": "Bearer chatgpt-token",
-            "ChatGPT-Account-ID": "acct",
-            **({} if pinned else {gateway_proxy.CODEX_SESSION_HEADER: "test-session"}),
-            "Databricks-Model-Provider-Service": "cat.s.mps",
-            "Content-Length": str(len(body)),
-        }
-        h.rfile = io.BytesIO(body)
-        h.path, h.command, h.requestline = "/v1/responses", "POST", "POST /v1/responses HTTP/1.1"
-        h._handle()
-        sent = client.sent_headers[0]
-        assert sent["Authorization"] == ("Bearer chatgpt-token" if seat else "Bearer tok1")
-        assert sent.get("ChatGPT-Account-ID") == ("acct" if seat else None)
-        assert sent.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER) == ("Bearer tok1" if seat else None)
-        assert sent.get("Databricks-Model-Provider-Service") == ("cat.s.mps" if pinned else None)
-        assert gateway_proxy.CODEX_SESSION_HEADER not in sent
+        requests = (
+            [("gpt-5.2", True)]
+            if pinned
+            else [
+                ("cat.s.seat", True),
+                ("cat.s.foundry", False),
+                ("system.ai.gpt-5.2", False),
+                ("cat.s.seat", True),
+            ]
+        )
+        client = _FakeClient([_FakeResp(200, b"ok") for _ in requests])
+        for model, seat in requests:
+            h = object.__new__(server.RequestHandlerClass)
+            h.client = client  # the bound class keeps the real cache, token header, and handler
+            h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
+            body = json.dumps({"model": model}).encode()
+            h.headers = {
+                "Authorization": "Bearer chatgpt-token",
+                "ChatGPT-Account-ID": "acct",
+                **({} if pinned else {gateway_proxy.CODEX_SESSION_HEADER: "test-session"}),
+                "Databricks-Model-Provider-Service": "cat.s.mps",
+                "Content-Length": str(len(body)),
+            }
+            h.rfile = io.BytesIO(body)
+            h.path, h.command, h.requestline = (
+                "/v1/responses",
+                "POST",
+                "POST /v1/responses HTTP/1.1",
+            )
+            h._handle()
+            sent = client.sent_headers[-1]
+            assert sent["Authorization"] == ("Bearer chatgpt-token" if seat else "Bearer tok1")
+            assert sent.get("ChatGPT-Account-ID") == ("acct" if seat else None)
+            assert sent.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER) == (
+                "Bearer tok1" if seat else None
+            )
+            assert sent.get("Databricks-Model-Provider-Service") == (
+                "cat.s.mps" if pinned else None
+            )
+            assert gateway_proxy.CODEX_SESSION_HEADER not in sent
 
     @pytest.mark.parametrize(
         ("path", "secret", "status"),

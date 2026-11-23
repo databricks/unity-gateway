@@ -1,6 +1,7 @@
 """Codex access-token login and a simple inference request through the ChatGPT relay."""
 
 import json
+import os
 
 import pytest
 from utils.constants import CODEX_RELAYED_MODEL
@@ -9,8 +10,13 @@ from utils.evidence import fresh_id
 pytestmark = [pytest.mark.live, pytest.mark.codex, pytest.mark.codex_relay]
 
 
+@pytest.mark.parametrize(
+    "model_service",
+    [None]
+    + ([service] if (service := os.getenv("UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE")) else []),
+)
 def test_ug_codex_relayed_completes_inference_through_the_relay(
-    live_session, workspace, codex_relayed_provider, codex_access_token
+    live_session, workspace, codex_relayed_provider, codex_access_token, model_service
 ):
     """Scenario: log in with an access token and ask Codex for a short reply through a relay MPS.
 
@@ -31,20 +37,22 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
         timeout=60,
     )
     assert "Successfully logged in" in login.stdout + login.stderr
-    session.record("model.json", {"model": CODEX_RELAYED_MODEL})
+    model = model_service or CODEX_RELAYED_MODEL
+    session.record("model.json", {"model": model})
+    if swap := os.getenv("UG_INTEGRATION_LITESWAP_ID"):
+        session.env["UG_HEADERS"] = f"x-databricks-traffic-id: testenv://liteswap/{swap}"
     answer = fresh_id()
     result = session.run(
         "codex",
         "--workspace",
         workspace,
-        "--provider",
-        codex_relayed_provider,
+        *(["--disable-smart-routing"] if model_service else ["--provider", codex_relayed_provider]),
         "--",
         "exec",
         "--skip-git-repo-check",
         "--json",
         "-m",
-        CODEX_RELAYED_MODEL,
+        model,
         f"Reply with exactly {answer} and nothing else. Do not use tools.",
         timeout=180,
     )
@@ -67,7 +75,7 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
         for event in diagnostics
         if event.get("event") == "request_start"
         and event.get("path") == "/v1/responses"
-        and event.get("route") == "forward"
+        and event.get("route") == ("relay-model-service" if model_service else "forward")
     }
     assert any(
         event.get("event") == "response_complete"

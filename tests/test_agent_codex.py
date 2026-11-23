@@ -1864,7 +1864,9 @@ class TestCodexLaunch:
         state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
         assert codex.use_model_service_relay(state) is signed_in
         assert codex.use_model_service_relay(state) is signed_in
-        detect.assert_called_once_with(WS, "tok", "cat.s.seat", provider_type="openai")
+        detect.assert_called_once_with(
+            WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True
+        )
 
     @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
     def test_enforced_auth_keeps_gateway_even_when_writes_are_skipped(
@@ -1884,9 +1886,11 @@ class TestCodexLaunch:
         )
         assert not codex.use_model_service_relay({"workspace": WS}, "cat.s.seat")
 
-    @pytest.mark.parametrize("provider", [None, "cat.s.mps"])
+    @pytest.mark.parametrize(
+        ("provider", "checked"), [(None, True), (None, False), ("cat.s.mps", False)]
+    )
     def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
-        self, tmp_path, monkeypatch, provider
+        self, tmp_path, monkeypatch, provider, checked
     ):
         self._patch(tmp_path, monkeypatch)
         server = Mock(server_address=("127.0.0.1", 54321))
@@ -1915,13 +1919,14 @@ class TestCodexLaunch:
                 {
                     "workspace": WS,
                     "codex_relayed": True,
+                    "_codex_launch_login_checked": checked,
                     "_codex_launch_provider": provider,
                 },
                 ["exec", "hi"],
                 options=LaunchOptions(),
             )
 
-        login_status.assert_called_once()
+        assert login_status.call_count == (0 if checked else 1)
         assert start.call_args.args[0] == WS
         assert start.call_args.args[1](False) == "tok"
         assert "OAUTH_TOKEN" not in os.environ
@@ -3079,6 +3084,22 @@ class TestCodexManagedConfig:
         assert codex.revert_legacy_shared_config() is True
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
+
+    def test_providerless_relay_configure_keeps_desktop_on_workspace_auth(
+        self, tmp_path, monkeypatch
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+        state = {"workspace": WS, "profile": "ws-profile"}
+        codex.write_tool_config(state, relayed=True)
+        app = read_toml_safe(codex._legacy_config_path())
+        provider = app["model_providers"][app["model_provider"]]
+        assert provider["base_url"] == codex.build_tool_base_url("codex", WS)
+        assert "ws-profile" in provider["auth"]["args"]
+        assert "requires_openai_auth" not in provider
+        cli = read_toml_safe(codex.CODEX_CONFIG_PATH)
+        assert cli["model_providers"]["Databricks"]["requires_openai_auth"]
+        assert state["codex_relayed"]
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
     def test_desktop_relay_lifecycle(self, tmp_path, monkeypatch):

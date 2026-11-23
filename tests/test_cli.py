@@ -2327,30 +2327,93 @@ class TestManagedConfigLaunchSourceGuard:
 
 
 @pytest.mark.parametrize(
-    ("args", "relay"),
+    ("args", "services", "old_codex", "relay"),
     [
-        ([], True),
-        (["--enable-smart-routing"], False),
-        (["--enable-smart-routing", "--", "exec", "-m", "main.team.chatgpt", "hi"], True),
+        ([], ["main.team.chatgpt", "main.team.foundry"], False, True),
+        ([], ["main.team.foundry"], False, False),
+        (["--enable-smart-routing"], ["main.team.chatgpt"], False, False),
+        (
+            ["--enable-smart-routing", "--", "exec", "-m", "main.team.chatgpt", "hi"],
+            ["main.team.chatgpt"],
+            False,
+            True,
+        ),
+        ([], ["main.team.chatgpt"], True, True),
     ],
 )
-def test_codex_launch_uses_chatgpt_relay_for_managed_model_service_list(args, relay):
-    services = ["main.team.chatgpt", "main.team.foundry"]
-    managed = {"enabled_agents": {"codex": {"model_config": {"model_services": services}}}}
+def test_codex_managed_model_service_launch(monkeypatch, args, services, old_codex, relay):
+    managed = {
+        "enabled_agents": {
+            "codex": {
+                "smart_routing_enabled": old_codex,
+                "model_config": {"model_services": services},
+            }
+        }
+    }
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+
+    def get_service(name, *_args, **_kwargs):
+        return {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "traffic_percentage": 100,
+                            "external_model_config": {
+                                "model_provider_service": f"model-provider-services/{name}-mps"
+                            },
+                        }
+                    ]
+                }
+            }
+        }, None
+
     with (
         _launch_policy_patches(managed) as calls,
         patch("ucode.cli.redirect_output_to_stderr"),
-        patch("ucode.cli.codex_agent.use_model_service_relay", return_value=True) as detect,
+        patch.object(cli_mod.codex_agent, "_launch_token", return_value="token"),
+        patch.object(cli_mod.codex_agent, "codex_managed_config_path", return_value=None),
+        patch.object(db_mod, "get_model_service", side_effect=get_service) as lookup,
+        patch.object(
+            db_mod,
+            "get_model_provider_service",
+            side_effect=lambda name, *_a, **_kw: (
+                {"provider_type": "openai", "relayed": name == "main.team.chatgpt-mps"},
+                None,
+            ),
+        ),
+        patch.object(
+            cli_mod.codex_agent,
+            "minimum_version_error",
+            return_value="old Codex" if old_codex else None,
+        ),
+        patch("ucode.cli.ensure_minimum_version", side_effect=RuntimeError("upgrade declined")),
     ):
         result = runner.invoke(app, ["codex", *args])
 
     assert result.exit_code == 0, result.output
-    if relay:
-        assert detect.call_args.args[0]["codex_static_models"] == services
-    else:
-        detect.assert_not_called()
     assert calls["configure"].call_args.kwargs["relayed"] is relay
     assert calls["configure"].call_args.kwargs["provider"] is None
+    assert bool(calls["launch"].call_args.args[1].get("_codex_launch_login_checked")) is relay
+    if args == ["--enable-smart-routing"]:
+        lookup.assert_not_called()
+    if old_codex:
+        assert "Running without smart routing." in _strip_ansi(result.output)
+
+
+def test_codex_location_uses_explicitly_selected_seat_service():
+    with (
+        _launch_policy_patches(None) as calls,
+        patch.object(cli_mod.codex_agent, "use_model_service_relay", return_value=True) as detect,
+    ):
+        result = runner.invoke(
+            app, ["codex", "--model-location", "main.team", "--model", "main.team.seat"]
+        )
+    assert result.exit_code == 0, result.output
+    assert detect.call_args.args[1] == "main.team.seat"
+    assert detect.call_args.kwargs["selected_only"]
+    assert calls["configure"].call_args.kwargs["relayed"] is True
 
 
 class TestManagedClaudeModelDiscovery:

@@ -7434,8 +7434,15 @@ class TestModelServicesNeedSubscriptionRelay:
             {"main.default.chatgpt"},
             openai=frozenset({"main.default.chatgpt"}),
         )
-        assert db_mod.model_services_need_subscription_relay(
-            "https://ws", "tok", ["main.default.gpt"], provider_type="openai"
+        assert (
+            db_mod.model_service_relay_lookup(
+                "https://ws",
+                "tok",
+                "main.default.gpt",
+                provider_type="openai",
+                include_fallbacks=True,
+            )
+            is db_mod.RelayLookup.RELAYED
         )
 
     def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):

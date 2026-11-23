@@ -2798,7 +2798,6 @@ def clear_model_services_cache() -> None:
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
     _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
-    _RELAY_LOOKUP_FAILED_AT.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -3811,9 +3810,12 @@ class RelayLookup(Enum):
 _RELAY_LOOKUP_TIMEOUT_S = 5
 _RELAY_LOOKUP_RETRY_AFTER_S = 60
 
-# Per-process memos keyed by (workspace, service, provider type): confirmed answers, and when a lookup last failed.
-_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str, str], bool] = {}
-_RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str, str], float] = {}
+_RELAY_LOOKUP_TTL = {
+    RelayLookup.RELAYED: 24 * 60 * 60,
+    RelayLookup.NOT_RELAYED: 5 * 60,
+    RelayLookup.UNKNOWN: _RELAY_LOOKUP_RETRY_AFTER_S,
+}
+_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str, str, bool], tuple[RelayLookup, float]] = {}
 
 
 def custom_model_services(models: list[str]) -> list[str]:
@@ -3829,88 +3831,86 @@ def custom_model_services(models: list[str]) -> list[str]:
     return candidates
 
 
-_RELAY_DETECTION_REUSE_S = 24 * 60 * 60
-
-
-def _saved_relay_backed_services(saved: object, candidates: list[str]) -> list[str] | None:
-    if not isinstance(saved, dict) or saved.get("models") != candidates:
-        return None
-    checked_at = saved.get("checked_at")
-    relay_backed = saved.get("relay_backed")
-    if not isinstance(checked_at, (int, float)) or not isinstance(relay_backed, list):
-        return None
-    if not 0 <= time.time() - checked_at <= _RELAY_DETECTION_REUSE_S:
-        return None
-    return relay_backed
-
-
 def relay_backed_model_services(
     state: dict,
     candidates: list[str],
     *,
     agent: str,
+    provider_type: str,
+    include_fallbacks: bool = False,
     configuring: bool,
     token_provider: Callable[[], str],
 ) -> list[str]:
-    """Reuse confirmed service lists for a day between launches of the same agent and workspace."""
+    """Reuse fresh per-service results across launches in this workspace."""
     key = f"{agent}_relay_detection"
-    if not candidates:
-        state.pop(key, None)
-        return []
-    if not configuring:
-        saved = _saved_relay_backed_services(state.get(key), candidates)
-        if saved is not None:
-            return saved
-    try:
-        token = token_provider()
-    except RuntimeError:
-        return []
-    provider_type = {AGENT_CLAUDE: ANTHROPIC_PROVIDER_TYPE, AGENT_CODEX: OPENAI_PROVIDER_TYPE}[
-        agent
-    ]
-    lookups = {
-        model: model_service_relay_lookup(
-            state["workspace"], token, model, provider_type=provider_type
-        )
-        for model in candidates
+    saved = state.get(key)
+    now = time.time()
+    entries = {
+        name: entry
+        for name, entry in (saved.items() if isinstance(saved, dict) else ())
+        if isinstance(entry, dict)
+        and isinstance(entry.get("relayed"), bool)
+        and isinstance(entry.get("expires_at"), (float, int))
+        and now < entry["expires_at"] <= now + _RELAY_LOOKUP_TTL[RelayLookup.RELAYED]
     }
-    relayed = [model for model, result in lookups.items() if result is RelayLookup.RELAYED]
-    unknown = [model for model, result in lookups.items() if result is RelayLookup.UNKNOWN]
-    if unknown:
-        print_warning(
-            f"Couldn't check whether {', '.join(unknown)} need your subscription, so they "
-            f"use Databricks authentication this time. Run `ug {agent}` again to retry."
-        )
-        state.pop(key, None)
+    pending = [name for name in dict.fromkeys(candidates) if configuring or name not in entries]
+    if pending:
+        try:
+            token = token_provider()
+        except RuntimeError:
+            token = None
+        unknown = []
+        for name in pending:
+            entries.pop(name, None)
+            if token is None:
+                continue
+            result = model_service_relay_lookup(
+                state["workspace"],
+                token,
+                name,
+                provider_type=provider_type,
+                include_fallbacks=include_fallbacks,
+            )
+            if result is RelayLookup.UNKNOWN:
+                unknown.append(name)
+            else:
+                entries[name] = {
+                    "relayed": result is RelayLookup.RELAYED,
+                    "expires_at": now + _RELAY_LOOKUP_TTL[result],
+                }
+        if unknown:
+            print_warning(
+                f"Couldn't check whether {', '.join(unknown)} need your subscription, so they "
+                f"use Databricks authentication this time. Run `ug {agent}` again to retry."
+            )
+    if entries:
+        state[key] = entries
     else:
-        state[key] = {"models": candidates, "relay_backed": relayed, "checked_at": time.time()}
-    return relayed
+        state.pop(key, None)
+    return [name for name in candidates if entries.get(name, {}).get("relayed")]
 
 
 def model_service_relay_lookup(
-    workspace: str, token: str, model: str, *, provider_type: str = ANTHROPIC_PROVIDER_TYPE
+    workspace: str,
+    token: str,
+    model: str,
+    *,
+    provider_type: str = ANTHROPIC_PROVIDER_TYPE,
+    include_fallbacks: bool = False,
 ) -> RelayLookup:
-    """Check for a subscription provider among eligible destinations, including Codex fallbacks."""
+    """Check the eligible destinations for the selected subscription provider."""
     if not custom_model_services([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
-    key = (workspace, name, provider_type)
-    if key in _RELAY_BACKED_MODEL_SERVICES_CACHE:
-        return (
-            RelayLookup.RELAYED
-            if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]
-            else RelayLookup.NOT_RELAYED
-        )
-    failed_at = _RELAY_LOOKUP_FAILED_AT.get(key)
-    if failed_at is not None and time.monotonic() - failed_at < _RELAY_LOOKUP_RETRY_AFTER_S:
-        return RelayLookup.UNKNOWN
-    lookup = _fetch_model_service_relay_lookup(name, workspace, token, provider_type)
-    if lookup is RelayLookup.UNKNOWN:
-        _RELAY_LOOKUP_FAILED_AT[key] = time.monotonic()
-    else:
-        _RELAY_LOOKUP_FAILED_AT.pop(key, None)
-        _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = lookup is RelayLookup.RELAYED
-    return lookup
+    key = (workspace, name, provider_type, include_fallbacks)
+    cached = _RELAY_BACKED_MODEL_SERVICES_CACHE.get(key)
+    if cached and time.monotonic() < cached[1]:
+        return cached[0]
+    result = _fetch_model_service_relay_lookup(
+        name, workspace, token, provider_type, include_fallbacks
+    )
+    _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = (result, time.monotonic() + _RELAY_LOOKUP_TTL[result])
+    return result
 
 
 def model_services_need_subscription_relay(
@@ -3926,16 +3926,14 @@ def model_services_need_subscription_relay(
 
 
 def _fetch_model_service_relay_lookup(
-    name: str, workspace: str, token: str, provider_type: str
+    name: str, workspace: str, token: str, provider_type: str, include_fallbacks: bool
 ) -> RelayLookup:
     service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
     if service is None:
         _debug("relay detection", f"{name}: {reason}")
         return RelayLookup.UNKNOWN
     lookup = RelayLookup.NOT_RELAYED
-    for provider in model_service_providers(
-        service, include_fallbacks=provider_type == OPENAI_PROVIDER_TYPE
-    ):
+    for provider in model_service_providers(service, include_fallbacks=include_fallbacks):
         entry, reason = get_model_provider_service(
             provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
         )

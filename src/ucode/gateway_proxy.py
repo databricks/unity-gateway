@@ -624,8 +624,7 @@ _MODEL_SERVICE_ROUTE_STRIP = frozenset({MODEL_PROVIDER_SERVICE_HEADER.lower()})
 
 class _RelayProxyHandler(_ProxyHandler):
     # Set by the server factory: ``(model, databricks_token)`` -> True when the UC model service
-    # routes to a subscription-relay MPS. The gateway rejects relayed requests to any other MPS,
-    # so only those services may keep the relay credentials.
+    # includes a subscription-relay destination for this agent.
     routes_to_subscription_relay: Callable[[str, str], bool] | None = None
 
     def _is_relay_backed_model_service(self, model: str | None) -> bool:
@@ -1022,7 +1021,9 @@ def start_codex_model_service_proxy(
 
     def relayed(model: str, token: str) -> bool:
         return (
-            model_service_relay_lookup(workspace, token, model, provider_type=OPENAI_PROVIDER_TYPE)
+            model_service_relay_lookup(
+                workspace, token, model, provider_type=OPENAI_PROVIDER_TYPE, include_fallbacks=True
+            )
             is RelayLookup.RELAYED
         )
 

@@ -52,6 +52,7 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
+    ANTHROPIC_PROVIDER_TYPE,
     AnthropicModelCatalog,
     _debug,
     build_auth_shell_command,
@@ -1701,8 +1702,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
 
     The list is shared by every user of the config, so a user who isn't signed in, or whose
     managed settings already pin other auth, keeps gateway auth (and the rest of the list) rather
-    than being sent to a browser login or blocked. Configure looks the services up and saves the
-    result; a launch reuses it for a day while the list is unchanged.
+    than being sent to a browser login or blocked. Configure looks the services up and saves each result for subsequent launches.
     """
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
@@ -1712,6 +1712,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
         state,
         candidates,
         agent=AGENT_CLAUDE,
+        provider_type=ANTHROPIC_PROVIDER_TYPE,
         configuring=configuring,
         token_provider=lambda: get_databricks_token(state["workspace"], state.get("profile")),
     )

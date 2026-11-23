@@ -4662,18 +4662,6 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
-        if tool == AGENT_CODEX and not provider and not parent_schema:
-            routed = _routes_launch(
-                tool,
-                ctx.args,
-                smart_routing_enabled=smart_routing_enabled,
-                explicit_prompt=explicit_prompt,
-                model=model or forwarded_model,
-                provider=provider,
-            )
-            relayed = not routed and codex_agent.use_model_service_relay(
-                state, model or forwarded_model
-            )
         if tool == AGENT_CODEX and managed_smart_routing_applies:
             if relayed:
                 routing_unavailable = (
@@ -4697,6 +4685,26 @@ def _launch_tool(
                 smart_routing_enabled = False
                 managed_smart_routing_applies = False
                 previous = {**smart_routing_v2.disable_smart_routing(), **previous}
+        selected_service = model or forwarded_model
+        if (
+            tool == AGENT_CODEX
+            and not provider
+            and (
+                not parent_schema
+                or (selected_service and selected_service.startswith(f"{parent_schema}."))
+            )
+        ):
+            routed = _routes_launch(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=None,
+            )
+            relayed = not routed and codex_agent.use_model_service_relay(
+                state, selected_service, selected_only=bool(parent_schema)
+            )
         if tool == AGENT_CLAUDE and not provider and not parent_schema:
             # A static model list (no provider) can still name a model service that routes to a
             # subscription relay; that launch must swap credentials like a relayed provider.
@@ -4925,6 +4933,8 @@ def _launch_tool(
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
+            if relayed and not provider:
+                state = {**state, "_codex_launch_login_checked": True}
         elif tool == AGENT_COPILOT:
             if provider:
                 state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
