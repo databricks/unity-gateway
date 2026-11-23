@@ -8,6 +8,11 @@ registration, terminal selection, and preservation of unrelated MCP entries.
 Native UI and credentialed gateway validation are separate, as described in the
 [validation guide](../docs/codex-smart-router-statusline.md).
 
+The remote TUI and app-server receive matching feature overrides so the footer's
+forwarded feature table preserves plaintext subagent routing and collaboration guidance.
+`test_codex_statusline.py` and `test_codex_smart_routing_v2.py` cover this configuration
+boundary; they do not establish a live routed-child pass.
+
 The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
 stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
 `test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade

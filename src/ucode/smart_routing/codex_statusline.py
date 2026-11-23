@@ -43,10 +43,11 @@ def launch_config(controls: Path) -> dict:
 
 
 def tui_config(config: dict) -> dict:
+    # The remote TUI forwards its whole features table, replacing the app-server's overrides.
     return {
-        key: config[key]
-        for key in ("features.tui_extensions_statusline", "tui.status_line_provider")
-        if key in config
+        key: value
+        for key, value in config.items()
+        if key in ("features", "tui.status_line_provider") or key.startswith("features.")
     }
 
 

@@ -9,6 +9,10 @@ and ON/OFF text; OFF stays visible, matching Claude's persistent hint. See the
 footer or resource read alone does not establish gateway inference or routed-child
 coverage. Windows native footer rendering remains untested.
 
+Component checks preserve routing feature overrides when the remote TUI forwards
+its footer configuration to the app-server. Live validation must still confirm a
+completed child task with a correlated routing decision, not only the ON badge.
+
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
