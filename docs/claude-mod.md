@@ -100,6 +100,16 @@ only when the turn is aborted. Nothing is drawn above the prompt and nothing is 
 Decisions are kept for the session; a plugin reload clears them from the screen. The
 `/smart-router logs` pane opens a recorded decision and shows its validated explanation
 and offered-model comparisons when task-text logging permits those details to be saved.
+`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides these selections, reasons,
+timers and parallel cards. The in-progress "Selecting a model…" spinner line and the
+turn spinner still say routing is under way; they name no model. The flag preserves
+native rows, animal names and routing behavior.
+Claude Auto's and the blind orch v0 config versions set it to `0`; other mappings set it
+to `1`.
+Without a version selector, an unset flag preserves the visible routing details.
+The same flag suppresses Codex's routed-subagent model card and post-launch model
+verification message, without changing the model injected into the spawn request.
+
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 

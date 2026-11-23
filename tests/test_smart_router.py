@@ -13,7 +13,6 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
-from ucode.constants import ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR
 from ucode.skills import SMART_ROUTER_SKILL
 from ucode.smart_routing import session_env, v2
 
@@ -121,17 +120,7 @@ def test_claude_skill_toggles_with_launch_installation_despite_shadowed_path(tmp
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert f"Smart Router is {'off' if action == 'disable' else 'on'}" in result.stdout
-        expected = (
-            {
-                v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-                v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-                v2.ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
-                ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
-            }
-            if action == "disable"
-            else {}
-        )
+        expected = dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if action == "disable" else {}
         assert json.loads(session_path.read_text()) == expected
 
 

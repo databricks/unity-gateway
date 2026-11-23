@@ -1440,10 +1440,10 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 432-case Cartesian oracle over
-both agents, the three legacy routing flags (`None`, `0`, `1`), and nine selector forms
-(`None` and all seven presets, including the customer first-prompt-and-subagent mode). It independently
-hardcodes preset values and asserts exact
+The unit/component `../test_smart_routing_config.py` includes a Cartesian oracle over
+both agents, the three legacy routing flags (`None`, `0`, `1`), all supported presets,
+and an absent selector. Separate no-op cases cover absent, blank, whitespace and
+unknown selectors. The oracle independently hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
 Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
@@ -2379,11 +2379,20 @@ including unchanged models, fresh sessions, inactive preference edits, cancellat
 answers, and preserved hook decisions. Native TUI checks use a controlled local response
 fixture to populate token accounting; they do not establish gateway cache hits or cost.
 
+Hidden subagent-model display has component coverage for Claude/Codex verification
+notices, restored native labels, missing-model warnings, and parallel streamed calls
+that still route at launch. CUJ4's delegated journeys reject verification notices too;
+its no-delegation status-band matrix omits the two blind presets, whose toggle behavior
+is shared with the existing orchestration preset. These additions have no live run evidence.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+CUJ 4's delegation journeys open `/smart-router logs` for every Claude preset, require a
+nonzero session routing count, and close the pane before exit. This includes presets that
+hide inline model details; these live log-pane checks have not been run locally.
+Its status-band journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 Its Auto selector journey also covers a non-replacing managed picker without managed

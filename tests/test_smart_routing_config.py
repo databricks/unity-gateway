@@ -11,8 +11,10 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -23,6 +25,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
@@ -30,6 +33,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -37,6 +41,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
@@ -44,6 +49,7 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -51,42 +57,54 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
-    # Claude's Auto mapping: the V0 flags with the Auto picker on.
-    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
-        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
     },
+}
+# Claude's Auto mapping uses the V0 routing flags and hides model details.
+_EXPECTED_PRESETS[config.SUBAGENT_AUTO_V0_CLAUDE_ONLY] = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "0",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
 }
 _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V2] = {
     **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V1],
     ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
 }
 _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0_CLAUDE_ONLY] = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY] = _EXPECTED_PRESETS[
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL
+]
+_EXPECTED_CODEX_ROUTING_OFF = {
+    **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+}
 _EXPECTED_CODEX_PRESETS = {
     **_EXPECTED_PRESETS,
     config.SUBAGENT_ORCH_V2: {
         **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V2],
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
     },
-    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
-        ENABLE_SMART_ROUTING_ENV_VAR: "0",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
-        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
-    },
-    # The Auto preset keeps every Codex flag off, like the other Claude-only versions.
-    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
-        ENABLE_SMART_ROUTING_ENV_VAR: "0",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
-        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
-    },
+    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY: _EXPECTED_CODEX_ROUTING_OFF,
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: _EXPECTED_CODEX_ROUTING_OFF,
+    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: _EXPECTED_CODEX_ROUTING_OFF,
+}
+
+# Versions whose mapping hides subagent model details in the main TUI, per agent.
+_HIDDEN_MODEL_DETAIL_AGENTS = {
+    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {AGENT_CLAUDE},
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {AGENT_CLAUDE, AGENT_CODEX},
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {AGENT_CLAUDE},
 }
 
 
@@ -99,6 +117,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
         "INHERITED_SETTING": "preserved",
     }
     expected = applied.copy()
@@ -128,6 +147,8 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ORCH_V2,
         config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
         config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+        config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
+        config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
     ],
 )
 def test_smart_routing_config_cartesian_grid(
@@ -235,6 +256,7 @@ def test_legacy_preset_equivalence(version, expected_routing):
         "unknown_agent",
         "missing_flag",
         "missing_runtime_flag",
+        "missing_display_flag",
         "unknown_flag",
         "invalid_value",
     ],
@@ -251,6 +273,8 @@ def test_agent_presets_require_complete_valid_configuration(failure):
         agents[AGENT_CODEX].pop(ENABLE_SMART_ROUTING_ENV_VAR)
     elif failure == "missing_runtime_flag":
         agents[AGENT_CODEX].pop(ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR)
+    elif failure == "missing_display_flag":
+        agents[AGENT_CODEX].pop(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR)
     elif failure == "unknown_flag":
         agents[AGENT_CODEX]["UNKNOWN_FLAG"] = "0"
     else:
@@ -263,6 +287,39 @@ def test_codex_uses_expected_presets():
     for version, expected in _EXPECTED_CODEX_PRESETS.items():
         source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
+        config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+    ],
+)
+def test_claude_only_versions_turn_codex_routing_off(version):
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
+
+    assert config.resolve_environment(source, agent=AGENT_CODEX) == {
+        **dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+    }
+
+
+def test_blind_orch_claude_only_claude_matches_blind_preset():
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY
+    }
+    assert (
+        config.resolve_environment(source, agent=AGENT_CLAUDE)
+        == _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL]
+    )
+
+
+@pytest.mark.parametrize("hidden", ["0", "1", None])
+def test_subagent_model_visible_only_when_not_zero(hidden):
+    env = {} if hidden is None else {ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: hidden}
+    assert config.subagent_model_visible(env) is (hidden != "0")
 
 
 @pytest.mark.parametrize(
@@ -331,12 +388,20 @@ def test_enabled_version_keeps_a_known_version(agent, version):
         (None, {AGENT_CLAUDE: True, AGENT_CODEX: True}),
         ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: True}),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (
+            config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
+            {AGENT_CLAUDE: True, AGENT_CODEX: False},
+        ),
         (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         *(
             (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
             for version in sorted(
                 set(config._VERSIONS)
-                - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY}
+                - {
+                    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
+                    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+                }
             )
         ),
     ],
@@ -374,6 +439,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
             "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
             ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -383,6 +449,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
@@ -416,7 +483,11 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
         (config.SUBAGENT_ONLY_V1, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V2, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):
@@ -467,6 +538,37 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 def test_auto_flag_alone_does_not_enable_routing():
     assert not v2.smart_routing_enabled(
         {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
+    )
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("version", [None, "unknown_v99", *config._VERSIONS])
+@pytest.mark.parametrize("inherited", [None, "0", "1"])
+def test_subagent_model_display_version_precedence_and_restoration(agent, version, inherited):
+    source = {}
+    if version is not None:
+        source[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = version
+    if inherited is not None:
+        source[ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR] = inherited
+    original = source.copy()
+    expected = inherited
+    if version in config._VERSIONS:
+        expected = "0" if agent in _HIDDEN_MODEL_DETAIL_AGENTS.get(version, set()) else "1"
+    assert (
+        config.resolve_environment(source, agent=agent).get(
+            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR
+        )
+        == expected
+    )
+    previous = config.apply_config(source, agent=agent)
+    assert source.get(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR) == expected
+    v2.restore_smart_routing_env(previous, source)
+    assert source == original
+
+
+def test_subagent_model_display_alone_does_not_enable_routing():
+    assert not v2.smart_routing_enabled(
+        {ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
     )
 
 

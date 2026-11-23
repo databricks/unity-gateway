@@ -14,6 +14,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
@@ -37,8 +38,16 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Add the Codex orchestration runtime while retaining Claude's V1 behavior.
 SUBAGENT_ORCH_V2 = "subagent_orch_v2"
 
-# Preserve subagent_orch_v0 for Claude, with all Codex routing and orchestration flags disabled.
+# Route only subagents with orchestration, hiding subagent model details in the main TUI.
+SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL = "subagent_orch_v0_blind_subagent_model"
+
+# Preserve subagent_orch_v0 for Claude, with Codex routing and orchestration disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
+
+# Preserve subagent_orch_v0_blind_subagent_model for Claude, with all Codex routing flags disabled.
+SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY = (
+    "subagent_orch_v0_blind_subagent_model_claude_only"
+)
 
 SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
 
@@ -54,6 +63,7 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
@@ -61,6 +71,7 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -68,6 +79,7 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
@@ -75,6 +87,7 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -82,6 +95,7 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V2: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -89,7 +103,22 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
+}
+_BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL] = {
+    **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+}
+
+# Codex opts out of routing and orchestration in the claude_only versions.
+_CODEX_ROUTING_OFF = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "0",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
 }
 
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
@@ -118,29 +147,27 @@ _VERSIONS = {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V2],
     },
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+    },
     # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
-        AGENT_CODEX: {
-            ENABLE_SMART_ROUTING_ENV_VAR: "0",
-            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
-            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
-        },
+        AGENT_CODEX: _CODEX_ROUTING_OFF,
+    },
+    # Codex opts out of routing and orchestration; Claude keeps the blind orch v0 preset.
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+        AGENT_CODEX: _CODEX_ROUTING_OFF,
     },
     SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: {
             **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
             ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
         },
-        AGENT_CODEX: {
-            ENABLE_SMART_ROUTING_ENV_VAR: "0",
-            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
-            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
-        },
+        AGENT_CODEX: _CODEX_ROUTING_OFF,
     },
 }
 
@@ -198,6 +225,11 @@ def version_scope() -> Iterator[None]:
 def auto_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
     """Whether this launch selected Claude Auto's configuration version."""
     return selected_version(env) == SUBAGENT_AUTO_V0_CLAUDE_ONLY
+
+
+def subagent_model_visible(env: Mapping[str, str]) -> bool:
+    """Whether a resolved environment shows subagent model details in the main TUI."""
+    return env.get(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR) != "0"
 
 
 def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
