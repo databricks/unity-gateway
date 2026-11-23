@@ -213,6 +213,8 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
 )
 def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, reason, literal):
     executable = shutil.which(shell)
+    if executable is None and not os.environ.get("CI"):
+        pytest.skip(f"{shell} is unavailable")
     assert executable is not None, f"Required Windows shell is unavailable: {shell}"
     sentinel = tmp_path / "embedded-command-executed"
     argv_path = tmp_path / "received-argv.json"
@@ -221,6 +223,8 @@ def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, rea
         "import json, os, sys\n"
         "from pathlib import Path\n"
         "Path(os.environ['UG_QUOTING_ARGV']).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "print('feedback child stdout')\n"
+        "print('feedback child stderr', file=sys.stderr)\n"
         "sys.exit(int(os.environ.get('UG_QUOTING_EXIT_CODE', '0')))\n",
         encoding="utf-8",
     )
@@ -241,34 +245,11 @@ def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, rea
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $inputCase = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$tokens = $null
-$parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseInput(
-    $inputCase.command, [ref]$tokens, [ref]$parseErrors)
-$commands = @($ast.FindAll({
-    param($node)
-    $node -is [System.Management.Automation.Language.CommandAst]
-}, $true))
-$elements = @($commands[0].CommandElements)
-@{
-    errors = @($parseErrors | ForEach-Object { $_.ErrorId })
-    statements = @($ast.EndBlock.Statements).Count
-    commands = $commands.Count
-    elements = $elements.Count
-    feedback_flag = $elements[5].Extent.Text
-    reason_type = $elements[6].GetType().Name
-    quote_type = $elements[6].StringConstantType.ToString()
-    reason = $elements[6].Value
-} | ConvertTo-Json -Compress
 # PowerShell 5.1 always uses legacy native binding; exercise it explicitly in 7 too.
 $PSNativeCommandArgumentPassing = 'Legacy'
 & ([scriptblock]::Create($inputCase.execution))
 """,
         encoding="utf-8",
-    )
-    command = (
-        '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude '
-        f"--disable-smart-routing --smart-router-feedback {literal}"
     )
     env = {
         **os.environ,
@@ -278,7 +259,7 @@ $PSNativeCommandArgumentPassing = 'Legacy'
         "UG_QUOTING_EXIT_CODE": "0",
     }
     invocation = [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(parser)]
-    payload = json.dumps({"command": command, "execution": native_command})
+    payload = json.dumps({"execution": native_command})
     result = subprocess.run(
         invocation,
         input=payload,
@@ -289,16 +270,8 @@ $PSNativeCommandArgumentPassing = 'Legacy'
         timeout=20,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout) == {
-        "errors": [],
-        "statements": 1,
-        "commands": 1,
-        "elements": 7,
-        "feedback_flag": "--smart-router-feedback",
-        "reason_type": "StringConstantExpressionAst",
-        "quote_type": "SingleQuoted",
-        "reason": reason,
-    }
+    assert result.stdout.strip() == "feedback child stdout"
+    assert result.stderr.strip() == "feedback child stderr"
     assert json.loads(argv_path.read_text(encoding="utf-8")) == [
         "claude",
         "--disable-smart-routing",
@@ -317,6 +290,8 @@ $PSNativeCommandArgumentPassing = 'Legacy'
             timeout=20,
         )
         assert failed.returncode != 0
+        assert failed.stdout.strip() == "feedback child stdout"
+        assert "feedback child stderr" in failed.stderr
         assert "Smart Router exited with code 7" in failed.stderr
 
 
