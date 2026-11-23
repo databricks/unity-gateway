@@ -25,6 +25,8 @@ ROUTE_VALIDATION_TYPE = "route_validation"
 ROUTE_VALIDATION_FIELDS = (
     "router_name",
     "routing_unsupported_reason",
+    "validation_failed",
+    "validation_failure_reason",
     "eligible_route_options",
     "ineligible_route_options",
     "available_route_options",
@@ -142,7 +144,7 @@ def _append(path: Path, record: dict[str, Any]) -> None:
 
 
 def append_route_validation(harness: str, session_id: str, result: dict[str, Any]) -> None:
-    """Record an unsupported route validation; filesystem errors propagate to the caller."""
+    """Record an unsupported or failed route validation; filesystem errors propagate to the caller."""
     path = session_log_path(harness, session_id)
     if path is None:
         raise ValueError("session id is required")

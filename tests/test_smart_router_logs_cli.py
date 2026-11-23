@@ -433,19 +433,40 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
 
 
 @pytest.mark.parametrize("from_stdin", [False, True])
-def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, from_stdin):
+@pytest.mark.parametrize(
+    "check",
+    [
+        pytest.param(
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "routing_unsupported_reason": "insufficient_eligible_options",
+                "eligible_route_options": [],
+                "ineligible_route_options": [
+                    {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
+                ],
+                "available_route_options": [{"model": "a", "harness": "claude_code"}],
+                "validation_ms": 120,
+            },
+            id="unsupported",
+        ),
+        pytest.param(
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "validation_failed": True,
+                "validation_failure_reason": "Smart Router returned an error (HTTP 500)",
+                "eligible_route_options": [],
+                "ineligible_route_options": [],
+                "available_route_options": [],
+                "validation_ms": 90,
+            },
+            id="failed",
+        ),
+    ],
+)
+def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check, from_stdin):
     write(payload())
-    check = {
-        "routing_disabled": True,
-        "router_name": "stable",
-        "routing_unsupported_reason": "insufficient_eligible_options",
-        "eligible_route_options": [],
-        "ineligible_route_options": [
-            {"model": "m", "harness": "claude", "reason": "model_not_in_recipe"}
-        ],
-        "available_route_options": [{"model": "a", "harness": "claude_code"}],
-        "validation_ms": 120,
-    }
     result_file = tmp_path / "env.validation.json"
     result_file.write_text(json.dumps(check))
     source = "-" if from_stdin else str(result_file)
@@ -463,6 +484,9 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, fr
         "type": session_log.ROUTE_VALIDATION_TYPE,
         "harness": "claude",
         "session_id": "s1",
+        "routing_unsupported_reason": None,
+        "validation_failed": None,
+        "validation_failure_reason": None,
         **check,
     }
 

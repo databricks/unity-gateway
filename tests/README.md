@@ -2081,13 +2081,18 @@ and `ug upgrade` is not run against one.
 
 The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the default
 without it (no request, band from the first paint). `test_route_validation.py` covers the background check with a controlled transport: an
-unsupported model list turns routing off for the session; HTTP errors, malformed responses,
-exceptions and a result past the 4 s deadline leave routing on; result-write failures are
-isolated. The smart-routing launch
-tests cover the resolved Claude model/harness list and provider. The Codex launch tests cover the
+unsupported model list turns routing off for the session. Every other failure turns it off with a
+recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
+responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
+deadline, and a late transport result cannot overwrite it. Only HTTP 404 (the flag-off answer)
+leaves routing on silently. Result-write failures are isolated. The smart-routing launch tests
+cover the resolved Claude model/harness list and provider. The Codex launch tests cover the
 resolved model/harness list and show delayed HTTP does not hold Codex startup. An unsupported
-Codex list keeps the Codex harness's options in the result (`test_startup_validation.py`), shows
+Codex list keeps the Codex harness's options in the result (`test_route_validation.py`), shows
 the footer warning (`test_codex_statusline.py`), and is logged once for the root thread at its
 first prompt (`test_codex_metadata.py`).
-Claude's native mod tests cover the band hold, the result handling, the unsupported warning and its one-turn hide, the 5 s fallback, and the two transcript log lines (`Smart Router is off` and the warning) logged only when `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
+Claude's native mod tests cover the band hold, the result handling, the unsupported and
+validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
+and the two transcript log lines (`Smart Router is off` and the warning) logged only when
+`ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
 These component tests do not establish live Gateway or classifier compatibility.
