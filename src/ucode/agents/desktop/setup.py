@@ -384,7 +384,7 @@ def copilot_app_plugin_config(
     User-Agent. ``seat_relay`` is the relayed Model Provider Service the app's own GitHub Copilot
     calls go through."""
     from ucode.agents.copilot import proxy_headers
-    from ucode.databricks import databricks_cli_path, ug_binary
+    from ucode.databricks import databricks_cli_path, running_launcher, ug_binary, windows_ug_exe
     from ucode.telemetry import ucode_user_agent, ug_version
     from ucode.workspace import selector_headers, workspace_headers
 
@@ -401,6 +401,16 @@ def copilot_app_plugin_config(
     workspace_id = state.get("workspace_id")
     headers.update(selector_headers(workspace_id if isinstance(workspace_id, str) else None))
     ug_path = ug_binary()
+    if current_os() is OS.WINDOWS:
+        # The extension spawns ug without a shell, as the VS Code wrapper does.
+        exe = windows_ug_exe(ug_path, running_launcher())
+        if exe is None:
+            raise RuntimeError(
+                "ug's `ug.exe` wasn't found, and the GitHub Copilot app's plugin can only start "
+                "an `.exe` without a shell. Reinstall ug, then rerun `ug configure --agents "
+                "copilot`."
+            )
+        ug_path = exe
     cli = databricks_cli_path()
     path_dirs: list[str] = []
     for executable in (ug_path, cli):
@@ -501,9 +511,14 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
         state["workspace"], catalog, provider_service=None if relayed else provider
     )
     try:
-        copilot_app_plugin.install(
-            copilot_app_plugin_config(state, desired, seat_relay=provider if relayed else None)
+        plugin_config = copilot_app_plugin_config(
+            state, desired, seat_relay=provider if relayed else None
         )
+    except RuntimeError as exc:
+        print_warning(f"Skipped the GitHub Copilot app: {exc}")
+        return
+    try:
+        copilot_app_plugin.install(plugin_config)
     except copilot_app_plugin.SettingsError as exc:
         print_warning(
             f"Skipped the GitHub Copilot app: {exc}, and ug doesn't rewrite a settings file it "
@@ -692,6 +707,11 @@ def copilot_app_status(
     except RuntimeError:
         registration = "unknown (no models to compare)"
     plugin_label = _COPILOT_PLUGIN_LABELS[plugin_status]
+    if plugin_status == "installed" and (moved := copilot_app_plugin.missing_ug_path()):
+        warnings.append(
+            f"ug's plugin for the GitHub Copilot app runs ug from {moved}, which no longer exists, "
+            "so its turns fail. Run `ug configure --agents copilot` again."
+        )
     ignored = copilot_settings_ignored_reason() if plugin_status != "invalid_settings" else None
     if ignored:
         plugin_label += ", ignored"

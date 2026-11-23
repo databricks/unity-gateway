@@ -52,7 +52,7 @@ from ucode.agents.copilot import (
 )
 from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
-from ucode.databricks import build_auth_shell_command, running_launcher, ug_binary
+from ucode.databricks import build_auth_shell_command, running_launcher, ug_binary, windows_ug_exe
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
@@ -447,7 +447,7 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
     settings = user_dir(insiders) / "settings.json"
     command = seat_relay_command(state, provider)
     if current_os() is OS.WINDOWS:
-        if (ug := _windows_ug_exe(command[0])) is None:
+        if (ug := windows_ug_exe(command[0], running_launcher())) is None:
             return (
                 "ug's `ug.exe` wasn't found, and VS Code can only start an `.exe` without a "
                 "shell. Reinstall ug, then rerun `ug configure --agents copilot`."
@@ -477,15 +477,6 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
     for stale in _runtime_wrappers(insiders=insiders):
         if stale != wrapper:
             stale.unlink(missing_ok=True)
-    return None
-
-
-def _windows_ug_exe(ug: str) -> str | None:
-    """``ug`` if it's an `.exe`, else the running `ug.exe`: Node can't start a `.cmd`, `.bat` or
-    bare name without a shell."""
-    for candidate in (ug, running_launcher()):
-        if candidate and candidate.lower().endswith(".exe"):
-            return candidate
     return None
 
 

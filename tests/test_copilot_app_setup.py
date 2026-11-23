@@ -36,7 +36,10 @@ def _app_home(tmp_path, monkeypatch):
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
     monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lambda *args, **kwargs: False)
     monkeypatch.setattr("ucode.agents.copilot.agent_version", lambda binary: "1.0.91")
-    monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug/bin/ug")
+    ug = tmp_path / "opt" / "ug" / "bin" / "ug"
+    ug.parent.mkdir(parents=True)
+    ug.write_text("")
+    monkeypatch.setattr("ucode.databricks.ug_binary", lambda: str(ug))
     monkeypatch.setattr(
         "ucode.databricks.databricks_cli_path", lambda: "/opt/databricks/bin/databricks"
     )
@@ -89,7 +92,8 @@ class TestConfigure:
         ]
         assert config["app"]["ownedProviderIds"] == list(copilot_app.OWNED_PROVIDER_IDS)
         assert config["databricksPath"] == "/opt/databricks/bin/databricks"
-        assert config["tokenCommand"][:2] == ["/opt/ug/bin/ug", "auth-token"]
+        assert config["tokenCommand"][0].endswith("/opt/ug/bin/ug")
+        assert config["tokenCommand"][1] == "auth-token"
         assert "/opt/databricks/bin" in config["pathDirs"]
         out = _out(capsys)
         assert (
@@ -310,6 +314,41 @@ class TestConfigureCopilotApp:
         assert not _settings_path().exists()
 
 
+class TestWindowsUgExe:
+    EXE = r"C:\uv\bin\ug.exe"
+
+    def _windows(self, monkeypatch, found, launcher):
+        monkeypatch.setattr(desktop_setup, "current_os", lambda: desktop_setup.OS.WINDOWS)
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: found)
+        monkeypatch.setattr("ucode.databricks.running_launcher", lambda: launcher)
+
+    @pytest.mark.parametrize("found", [r"C:\tools\ug.cmd", "ug"])
+    def test_the_plugin_runs_the_exe_launcher_over_a_shim_node_cant_start(self, monkeypatch, found):
+        self._windows(monkeypatch, found, self.EXE)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        config = _extension_config()
+        assert config["ugPath"] == self.EXE
+        assert config["tokenCommand"][0] == self.EXE
+
+    def test_an_exe_on_the_path_is_kept(self, monkeypatch):
+        self._windows(monkeypatch, r"C:\tools\UG.EXE", None)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert _extension_config()["ugPath"] == r"C:\tools\UG.EXE"
+
+    def test_without_an_exe_the_app_is_skipped(self, monkeypatch, capsys):
+        self._windows(monkeypatch, "ug", None)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert not plugin.plugin_root().exists()
+        assert not _settings_path().exists()
+        assert "Skipped the GitHub Copilot app: ug's `ug.exe` wasn't found" in _out(capsys)
+
+
 class TestRemove:
     def test_unregisters_the_running_app_and_removes_the_plugin(self, app):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
@@ -409,6 +448,18 @@ class TestRemove:
 class TestStatus:
     def _status(self, app_state=STATE):
         return desktop_setup.copilot_app_status(app_state, provider=None, location=None)
+
+    def test_a_moved_ug_warns(self, app):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        _register(app)
+        Path(_extension_config()["ugPath"]).unlink()
+
+        result = self._status()
+
+        assert result.row == "plugin installed, models registered"
+        assert len(result.warnings) == 1
+        assert "which no longer exists" in result.warnings[0]
+        assert "`ug configure --agents copilot`" in result.warnings[0]
 
     def test_installed_and_registered(self, app):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)

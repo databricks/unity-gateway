@@ -472,6 +472,15 @@ def _has_ug_keys(settings: dict, root: Path) -> bool:
     return bool(_ug_entries(settings, root))
 
 
+def missing_ug_path(root: Path | None = None) -> str | None:
+    """The absolute ``ug`` path the installed extension runs, when it no longer exists there."""
+    config = _read_extension_config(root or plugin_root())
+    path = config.get("ugPath") if config is not None else None
+    if isinstance(path, str) and os.path.isabs(path) and not os.path.isfile(path):
+        return path
+    return None
+
+
 def _read_extension_config(root: Path, plugin: str = PLUGIN) -> dict | None:
     try:
         path = _extension_dir(root, plugin) / "config.json"
