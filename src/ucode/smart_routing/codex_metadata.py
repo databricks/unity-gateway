@@ -8,7 +8,11 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode.smart_routing.session_env import session_routing_enabled
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    routing_never_turned_on,
+    session_routing_enabled,
+)
 
 ROUTING_STATE_KEY = "smart_router_state"
 TASK_STATE_SUFFIX = re.compile(r"(?:__sr_(?:on|off))+$")
@@ -48,6 +52,10 @@ class RoutingMetadata:
             )
             return None
 
+    async def never_turned_on(self) -> bool:
+        controls = {SESSION_ENV_VAR: str(self.controls)}
+        return await asyncio.to_thread(routing_never_turned_on, controls)
+
     async def before_tui(self, message: dict) -> dict:
         method = message.get("method")
         params = message.get("params")
@@ -63,6 +71,9 @@ class RoutingMetadata:
             if patch is None or isinstance(patch, dict):
                 enabled = await self.enabled()
                 if enabled is None:
+                    return message
+                # A session that started off sends no state until the user turns it on.
+                if not enabled and await self.never_turned_on():
                     return message
                 params["responsesapiClientMetadataPatch"] = {
                     **(patch or {}),

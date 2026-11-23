@@ -12,7 +12,8 @@ import pytest
 
 from ucode import agents, codex_config, custom_oauth, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
-from ucode.smart_routing import codex_interposer, codex_routing, v2
+from ucode.smart_routing import codex_interposer, codex_routing, session_env, v2
+from ucode.smart_routing import config as smart_routing_config
 
 WS = "https://example.databricks.com"
 
@@ -283,6 +284,7 @@ class TestLaunchCodex:
                     "binary": "codex",
                     "start_model": "gpt-start",
                     "render_overlay": codex._render_launch_overlay,
+                    "on_demand": False,
                 },
             )
         ]
@@ -429,6 +431,67 @@ class TestLaunchCodex:
             if content is not None:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
+
+    def test_on_demand_launch_installs_routing_switched_off(self, tmp_path, monkeypatch):
+        # The routing an explicit `--enable-smart-routing` launch materializes for Codex.
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "")
+        enabled = v2.resolve_environment(
+            {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.DEFAULT_ENABLED_VERSION},
+            agent="codex",
+        )
+        for key in v2.SMART_ROUTING_ENV_KEYS:
+            monkeypatch.setenv(key, enabled[key])
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.171.0")
+        monkeypatch.setattr(v2, "custom_catalog_path", lambda: None)
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(
+            codex_interposer, "start_interposer_thread", lambda *_a, **_kw: (41002, lambda: None)
+        )
+        processes = []
+
+        class FakeProcess:
+            def __init__(self, argv, **kwargs):
+                processes.append((argv, kwargs))
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                [],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+                on_demand=True,
+            )
+
+        app_server_argv, app_server = processes[0]
+        config = tomllib.loads("\n".join(app_server_argv[3:-2:2]))
+        # Routing and the orchestrator are installed, but Codex attributes no recipe.
+        assert "codex-router-hook route-subagent" in json.dumps(config["hooks"])
+        assert "UserPromptSubmit" in config["hooks"]
+        assert "responses_api_metadata" not in config
+        assert "Databricks-Smart-Router-Recipe" not in json.dumps(config["model_providers"])
+        # Codex and its hooks start with routing off; only the session controls turn it on.
+        routing = (v2.ENABLE_SMART_ROUTING_ENV_VAR, v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
+        assert {key: app_server["env"][key] for key in routing} == dict.fromkeys(routing, "0")
+        controls = Path(app_server["env"][v2.SESSION_ENV_VAR])
+        assert json.loads(controls.read_text()) == dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+        when_on = {key: enabled[key] for key in v2.SMART_ROUTING_ENV_KEYS}
+        assert json.loads(session_env.on_demand_path(controls).read_text()) == {
+            "when_on": when_on,
+            "ever_on": False,
+        }
 
     @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize("first_prompt", [False, True])

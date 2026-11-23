@@ -1182,7 +1182,11 @@ flags, known versions, print mode and native subcommands opt out), `test_smart_r
 checks that `on` applies the recorded `when_on` routing and that the orchestrator hook stays
 silent until the first `on`, `test_claude_smart_routing_v2.py` checks the switched-off launch
 files and the fallback when models can't be read, and `register.test.ts` checks that the mod
-shows no band, hint, or recipe until `/smart-router on`.
+shows no band, hint, or recipe until `/smart-router on`. For Codex, `test_cli.py` also checks
+the version, tracing, relay and app-server exclusions, `test_codex_smart_routing_v2.py` checks
+the switched-off app-server launch, and `test_codex_metadata.py`, `test_codex_statusline.py`
+and `test_smart_router_feedback.py` check that turn metadata, spawn stamps and the footer stay
+silent until the native tool turns routing on.
 `test_codex_config.py` distinguishes native options and their
 values from positional prompts and utility subcommands. It reuses UG's model/config
 syntax instead of mirroring all native options. Other options with separate values

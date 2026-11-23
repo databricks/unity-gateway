@@ -954,3 +954,60 @@ def test_native_selector_replies_stay_local_and_cancel_cleanly(
             assert upstream.outgoing.empty()
 
     asyncio.run(run())
+
+
+def test_an_on_demand_session_sends_no_routing_state_until_it_is_turned_on(tmp_path, monkeypatch):
+    controls = tmp_path / "env.json"
+    session_env.start_on_demand(
+        controls,
+        {
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+        },
+    )
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+    metadata = RoutingMetadata(controls, lambda _: None)
+    message = {"id": "start", "method": "turn/start", "params": {"threadId": "main", "input": []}}
+
+    async def main_turn_state() -> str | None:
+        forwarded = await metadata.before_tui(copy.deepcopy(message))
+        return (forwarded["params"].get("responsesapiClientMetadataPatch") or {}).get(
+            ROUTING_STATE_KEY
+        )
+
+    assert asyncio.run(main_turn_state()) is None
+    session_env.set_session_routing(True)
+    assert asyncio.run(main_turn_state()) == "on"
+    session_env.set_session_routing(False)
+    assert asyncio.run(main_turn_state()) == "off"
+
+
+def test_an_on_demand_session_leaves_spawns_alone_until_it_is_turned_on(tmp_path, monkeypatch):
+    controls = tmp_path / "env.json"
+    session_env.start_on_demand(
+        controls,
+        {
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+        },
+    )
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+    monkeypatch.setattr(cli, "_router_hook_token", Mock(return_value=None))
+    spawn = {"tool_name": "collaboration.spawn_agent", "tool_input": {"task_name": "nested"}}
+
+    def spawn_hook_output() -> str:
+        result = CliRunner().invoke(
+            cli.app,
+            ["codex-router-hook", "route-subagent", "--host", "https://example.com"],
+            input=json.dumps(spawn),
+        )
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    assert spawn_hook_output() == ""
+    session_env.set_session_routing(True)
+    session_env.set_session_routing(False)
+    updated = json.loads(spawn_hook_output())["hookSpecificOutput"]["updatedInput"]
+    assert updated == {"task_name": "nested__sr_off"}

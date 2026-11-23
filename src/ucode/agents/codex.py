@@ -199,6 +199,19 @@ def _smart_routing_version_supported(version: str) -> bool:
     )
 
 
+def supports_on_demand_routing(state: dict, *, relayed: bool) -> bool:
+    """Whether a launch can install smart routing switched off with nothing else changing.
+
+    The routed launch can't use a ChatGPT subscription relay or the tracing proxy, and on an
+    older Codex it would ask to upgrade.
+    """
+    return (
+        not (relayed or state.get("codex_relayed"))
+        and not state.get("codex_otel_tracing")
+        and _smart_routing_version_supported(agent_version(SPEC["binary"]))
+    )
+
+
 def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
@@ -2014,7 +2027,7 @@ def launch(
         None if parent_schema else get_provider_service(state, "codex")
     )
     if options.launch_smart_routing and not (provider or parent_schema):
-        _launch_smart_routing(state, tool_args)
+        _launch_smart_routing(state, tool_args, on_demand=options.smart_routing_on_demand)
         return
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
@@ -2108,7 +2121,11 @@ def launch(
     if options.launch_smart_routing:
         routing_state = {**state, "_codex_launch_provider": provider}
         _launch_smart_routing(
-            routing_state, tool_args, launch_config=profile_doc, available_models=source_models
+            routing_state,
+            tool_args,
+            launch_config=profile_doc,
+            available_models=source_models,
+            on_demand=options.smart_routing_on_demand,
         )
         return
     relay = None
@@ -2144,6 +2161,7 @@ def _launch_smart_routing(
     *,
     launch_config: dict | None = None,
     available_models: list[str] | None = None,
+    on_demand: bool = False,
 ) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
@@ -2169,6 +2187,7 @@ def _launch_smart_routing(
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
+        on_demand=on_demand,
         **(
             {"launch_config": launch_config, "available_models": models}
             if launch_config is not None

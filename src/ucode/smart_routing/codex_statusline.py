@@ -8,7 +8,11 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, session_routing_enabled
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    routing_never_turned_on,
+    session_routing_enabled,
+)
 
 SERVER_NAME = "ug-smart-router-statusline"
 TOOL_NAME = "statusline"
@@ -95,7 +99,9 @@ def render(state: dict[str, Any]) -> dict:
     model_name = model.get("display_name") or model.get("id") or "Codex"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
-    children = [_router_indicator(label), _text(model_name, "status-model")]
+    # A session that started off shows no indicator until the user turns it on.
+    children = [] if routing_never_turned_on() else [_router_indicator(label)]
+    children.append(_text(model_name, "status-model"))
     cwd = _object(thread.get("workspace")).get("cwd")
     if cwd:
         path = PureWindowsPath(cwd) if "\\" in cwd else PurePosixPath(cwd)

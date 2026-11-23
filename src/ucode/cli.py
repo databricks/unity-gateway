@@ -217,6 +217,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.session_env import (
     effective_environment,
+    routing_never_turned_on,
     session_env_path,
     set_session_routing,
 )
@@ -3509,7 +3510,8 @@ def codex_router_hook_cmd(
         return
     if not isinstance(payload, dict):
         return
-    if not enabled and event != "route-subagent":
+    # An off session still stamps its spawns, unless it has never been turned on.
+    if not enabled and (event != "route-subagent" or routing_never_turned_on(environment)):
         return
     if event == "session-start":
         record_session_start(payload)
@@ -4151,11 +4153,15 @@ def _smart_routing_on_demand(
     provider: str | None,
 ) -> bool:
     """Whether a launch without smart routing still installs it, off until the user turns it on."""
+    if tool == AGENT_CLAUDE:
+        # Print mode ends before the user could turn routing on.
+        user_can_toggle = not smart_routing_v2.claude_print_mode(tool_args)
+    else:
+        # A caller-owned app-server has no interposer to serve the toggle.
+        user_can_toggle = tool == AGENT_CODEX and not is_codex_app_server_launch(tool_args)
     return (
         env_bool(ENABLE_SMART_ROUTER_ON_DEMAND_ENV_VAR)
-        and tool == AGENT_CLAUDE
-        # Print mode ends before the user could turn routing on.
-        and not smart_routing_v2.claude_print_mode(tool_args)
+        and user_can_toggle
         and _routes_launch(
             tool,
             tool_args,
@@ -4728,6 +4734,12 @@ def _launch_tool(
                 smart_routing_enabled = False
                 managed_smart_routing_applies = False
                 previous = {**smart_routing_v2.disable_smart_routing(), **previous}
+        if (
+            tool == AGENT_CODEX
+            and smart_routing_on_demand
+            and not codex_agent.supports_on_demand_routing(state, relayed=relayed)
+        ):
+            smart_routing_on_demand = smart_routing_enabled = False
         if tool == AGENT_CLAUDE and not provider and not parent_schema:
             # A static model list (no provider) can still name a model service that routes to a
             # subscription relay; that launch must swap credentials like a relayed provider.
