@@ -27,7 +27,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
    mix up. Do not demand comments for self-explanatory code.
    Reuse constants for shared metric names, operation names, and version pins when they already
-   exist. Flag new duplicated contract strings that can drift, not every one-off literal.
+   exist, including `AGENT_*` identifiers when dispatching or registering an agent. Flag new
+   duplicated contract strings that can drift, not every one-off literal.
+   Keep imports at module scope and combine imports from the same module, unless a concrete
+   startup-cost, optional-dependency, or import-cycle constraint requires a local import.
+   Keep import-placement suggestions nonblocking and skip issues already caught by lint.
 3. **Require realistic, valuable evidence.** Ask whether every test adds distinct value and
    suggest removing redundant or low-signal cases. Check that
    externally observable configure, launch, authentication, command-forwarding, recovery, and
@@ -46,6 +50,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    recognizer: cover the enabled, disabled, and failed-lookup outcomes with the existing harness.
    Demo links must remain usable after squash merge; branch-only commit links are not durable
    evidence. Keep recordings and review receipts in PR attachments rather than source files.
+   For demo/evidence generators, reject output paths inside the checkout, including paths that
+   resolve there through symlinks, before creating output or installing tools. Check rejection
+   leaves no artifacts or other side effects; a warning followed by a write is insufficient.
    Keep focused component tests for distinct failures and boundary cases; request consolidation
    only when the same behavior is already protected, and name both overlapping tests.
 4. **Preserve compatibility and avoid hard-blocking users.** Look for removed CLI options,
@@ -69,6 +76,8 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
+   Keep shared recording/export logic in the existing `src/ucode/metrics/` package; call sites
+   should use its helpers rather than grow a second implementation.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
    edits for every instrumented call site.
