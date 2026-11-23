@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing';
+import { recordSubagentRateLimit, routedModels } from '../hooks/subagent-routing.ts';
 
 
 // Native terminal notice; fixtures control only the failure input, not routing behavior.
@@ -1539,6 +1540,7 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   expect(retry.context?.[0]).toBe('Existing context');
   expect(retry.context?.[1]).toContain(`"launched_model":"${alternative}"`);
   expect((await $.agent.spawn({ ...spawns[0], resume: { agentId: 'child-first' } })).model).toBe(blocked);
+  expect((await $.agent.spawn({ ...spawns[0], fork: true })).model).toBe(blocked);
   const spawnCount = spawns.length;
   response = choice(blocked);
   expect((await launch('stale-selection')).deny).toContain('selected model is now rate-limited');
@@ -1583,35 +1585,25 @@ for (const [label, response, exitCode] of [
   ['route selection failed', { deny: 'No available model during cooldown.', rate_limit_cooldown: true }, 0],
   ['other denial', { deny: 'Policy disallows this task.' }, 0],
 ] as const) {
-  for (const [timing, delay, clockAvailableAfter] of [
-    ['before expiry', 9_999, true],
-    ['at expiry', 10_000, true],
-    ['after expiry', 20_000, true],
-    ['clock unavailable', 20_000, false],
+  for (const [timing, delay] of [
+    ['before expiry', 9_999],
+    ['at expiry', 10_000],
   ] as const) {
     if (label === 'other denial' && timing !== 'at expiry') continue;
     test('cooldown is checked after routing: ' + label + ', ' + timing, async ($, on) => {
-      const clock = timerClock(on);
+      const clock = mock.clock(on);
       const blocked = 'system.ai.glm-5-3-flash';
       const parent = 'system.ai.claude-sonnet-5-5';
-      let timestamp = 10_000;
-      let clockAvailable = true;
       let waiting = false;
       const requests: any[] = [];
       const spawns: any[] = [];
-      on('clock.now', () => {
-        if (!clockAvailable) throw new Error('Clock unavailable');
-        return { value: timestamp };
-      });
       on('session.id', () => ({ value: 'session-1' }));
       on('fs.write', () => ({ value: undefined }));
       on('process.run', async ($, e) => {
         requests.push(JSON.parse(e.init.stdin));
         if (!waiting) return { value: { exitCode: 0, stderr: '',
           stdout: JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
-        timestamp += delay;
         await clock.advance(delay);
-        clockAvailable = clockAvailableAfter;
         return { value: { exitCode, stderr: '',
           stdout: typeof response === 'string' ? response : response ? JSON.stringify(response) : '' } };
       });
@@ -1632,7 +1624,6 @@ for (const [label, response, exitCode] of [
       const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
       expect((await launch('initial')).result.resolvedModel).toBe(blocked);
       await $.prompt.submit(rateLimitNotice('child-initial', blocked));
-      timestamp += 50_000;
       await clock.advance(50_000);
       waiting = true;
       const answer = await launch('waiting');
@@ -1802,6 +1793,38 @@ for (const scenario of ['repeated failure', 'refused first timer'] as const) {
   });
 }
 
+test('a failed timer cancellation cannot expire a newer cooldown', async () => {
+  const model = 'system.ai.timer-cancellation-test';
+  const agentId = 'timer-cancellation-child';
+  const timers: { delay: number; expire: () => void }[] = [];
+  const cancelled: number[] = [];
+  routedModels.started({ name: 'Otter', task: 'Inspect parser', title: 'Inspect parser',
+    model, rationale: '', spawned: { agentId, model, background: true } });
+  const fail = () => recordSubagentRateLimit(rateLimitNotice(agentId, model).text, (delay, expire) => {
+    const index = timers.length;
+    timers.push({ delay, expire });
+    return { cancel: () => { cancelled.push(index); throw new Error('Cancellation unavailable'); } };
+  });
+  try {
+    await fail();
+    await fail();
+    expect(cancelled).toEqual([0]);
+    timers[0].expire();
+    await fail();
+    expect(cancelled).toEqual([0, 1]);
+    timers[1].expire();
+    await fail();
+    expect(cancelled).toEqual([0, 1, 2]);
+    timers[3].expire();
+    await fail();
+    expect(cancelled).toEqual([0, 1, 2]);
+    expect(timers.map(timer => timer.delay)).toEqual([60_000, 60_000, 60_000, 60_000, 60_000]);
+  } finally {
+    for (const timer of timers) timer.expire();
+    routedModels.reset();
+  }
+});
+
 test('wall-clock recovery neither shortens nor restarts a background cooldown', async ($, on) => {
   const clock = timerClock(on);
   const blocked = 'system.ai.glm-5-3-flash';
@@ -1867,7 +1890,7 @@ test('wall-clock recovery neither shortens nor restarts a background cooldown', 
   expect(requests.at(-1).excluded_models).toBeUndefined();
 });
 
-for (const phase of ['before routing', 'before spawn', 'after an in-flight notice'] as const) {
+for (const phase of ['before spawn', 'after an in-flight notice'] as const) {
   test(`known cooldown survives clock loss ${phase}`, async ($, on) => {
     const blocked = 'system.ai.glm-5-3-flash';
     const clock = timerClock(on);
@@ -1886,7 +1909,7 @@ for (const phase of ['before routing', 'before spawn', 'after an in-flight notic
     on('process.run', async (_, e) => {
       requests.push(JSON.parse(e.init.stdin));
       if (waiting && phase === 'after an in-flight notice') await $.prompt.submit(notice);
-      if (waiting && phase !== 'before routing') clockAvailable = false;
+      if (waiting) clockAvailable = false;
       return { value: { exitCode: 0, stderr: '',
         stdout: waiting && phase === 'after an in-flight notice' ? ''
           : JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
@@ -1907,7 +1930,6 @@ for (const phase of ['before routing', 'before spawn', 'after an in-flight notic
     expect((await launch('initial')).result.model).toBe(blocked);
     if (phase !== 'after an in-flight notice') await $.prompt.submit(notice);
     waiting = true;
-    if (phase === 'before routing') clockAvailable = false;
     const denied = await launch('clock-lost');
     expect(typeof denied.deny).toBe('string');
     expect(spawns).toHaveLength(1);
@@ -2442,3 +2464,98 @@ for (const scenario of [
     }
   });
 }
+
+
+// Native lifecycle notices are controlled inputs; routing uses the real mod.
+function backgroundLifecycleFixture($: any, on: Parameters<typeof mock.clock>[0]) {
+  const blocked = 'system.ai.glm-5-3-flash';
+  const state = { selected: blocked };
+  const requests: any[] = [];
+  const clock = mock.clock(on);
+  on('session.id', () => ({ value: 'lifecycle-session' }));
+  on('session.end', () => ({ sessionId: 'cleared-lifecycle-session' }));
+  on('fs.write', () => ({ value: undefined }));
+  on('ui.log', () => ({ value: undefined }));
+  on('prompt.submit', (_, e) => ({ text: e.text }));
+  on('agent.list', () => ({ value: [] }));
+  on('process.run', (_, e) => {
+    requests.push(JSON.parse(e.init.stdin));
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: state.selected, rationale: '' }) } };
+  });
+  on('agent.spawn', (_, e) => ({ agentId: 'child-' + e.tool_use_id, model: e.model! }));
+  on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
+    tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+    subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
+    provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+  }) }));
+  return {
+    state, requests, clock, blocked,
+    launch: (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput }),
+    terminal: (id = 'child-initial', status = 'completed') => ({
+      text: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n`
+        + '<summary>Agent "Inspect parser" finished.</summary>\n</task-notification>',
+      wait: false, origin: { kind: 'task-notification' as const },
+    }),
+  };
+}
+
+for (const status of ['completed', 'failed', 'killed'] as const) {
+  test(`a known background child can fail after ${status}, duplicate notice and clear`, async ($, on) => {
+    const f = backgroundLifecycleFixture($, on);
+    expect((await f.launch('initial')).result.model).toBe(f.blocked);
+    const terminal = f.terminal('child-initial', status);
+    expect((await $.prompt.submit(terminal)).text).toBe(terminal.text);
+    await $.prompt.submit(terminal);
+    await $.session.end({ reason: 'clear' });
+    // Claude 2.1.290 resumes a task without raising agent.spawn again.
+    const notice = rateLimitNotice('child-initial', f.blocked, 'initial');
+    expect((await $.prompt.submit(notice)).text).toBe(notice.text);
+    f.state.selected = 'system.ai.claude-haiku-5-5';
+    expect((await f.launch('replacement')).result.model).toBe(f.state.selected);
+    expect(f.requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+    await f.clock.advance(59_999);
+    await f.launch('before-expiry');
+    expect(f.requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+    await f.clock.advance(1);
+    f.state.selected = f.blocked;
+    expect((await f.launch('at-expiry')).result.model).toBe(f.blocked);
+    expect(f.requests.at(-1).excluded_models).toBeUndefined();
+  });
+}
+
+test('one terminal task does not erase another in-flight child receipt', async ($, on) => {
+  const f = backgroundLifecycleFixture($, on);
+  await f.launch('initial');
+  f.state.selected = 'system.ai.claude-haiku-5-5';
+  await f.launch('in-flight');
+  await $.prompt.submit(f.terminal());
+  await $.prompt.submit(f.terminal());
+  await $.session.end({ reason: 'clear' });
+  await $.prompt.submit(rateLimitNotice('unknown-child', f.blocked, 'initial'));
+  await $.prompt.submit(rateLimitNotice('child-in-flight', f.blocked, 'in-flight'));
+  await $.prompt.submit(rateLimitNotice('child-in-flight', f.state.selected));
+  f.state.selected = 'system.ai.claude-sonnet-5-5';
+  expect((await f.launch('replacement')).result.model).toBe(f.state.selected);
+  expect(f.requests.at(-1).excluded_models).toEqual(['claude-haiku-5-5']);
+});
+
+test('a repeated background failure after clear keeps a full renewed cooldown', async ($, on) => {
+  const f = backgroundLifecycleFixture($, on);
+  await f.launch('initial');
+  await $.session.end({ reason: 'clear' });
+  const notice = rateLimitNotice('child-initial', f.blocked);
+  await $.prompt.submit(notice);
+  await f.clock.advance(30_000);
+  await $.prompt.submit(notice);
+  f.state.selected = 'system.ai.claude-haiku-5-5';
+  await f.clock.advance(30_000);
+  expect((await f.launch('old-deadline')).result.model).toBe(f.state.selected);
+  expect(f.requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  await f.clock.advance(29_999);
+  await f.launch('before-expiry');
+  expect(f.requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  await f.clock.advance(1);
+  f.state.selected = f.blocked;
+  expect((await f.launch('at-expiry')).result.model).toBe(f.blocked);
+  expect(f.requests.at(-1).excluded_models).toBeUndefined();
+});

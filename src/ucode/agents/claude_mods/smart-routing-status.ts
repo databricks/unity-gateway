@@ -96,7 +96,7 @@ function routingWarning(): string | undefined {
 export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
-  on('prompt.submit', async ($, e, next) => {
+  on('prompt.submit', ($, e, next) => {
     // The native client permits one unmatched prompt handler, shared with routing recovery.
     if (e.origin?.kind === 'task-notification') {
       recordSubagentRateLimit(e.text, (delay, expire) => $.clock.after(delay, expire))

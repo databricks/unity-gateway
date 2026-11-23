@@ -1965,15 +1965,28 @@ class TestSubagentRouting:
         assert record["router_name"] == body["route_selector"]["router_name"]
         assert record["router_name"] == routing.ROUTER_NAME
 
+    @pytest.mark.parametrize("excluded_models", ["claude-opus-4-8", [None]])
+    def test_malformed_exclusions_do_not_request_a_route(self, monkeypatch, excluded_models):
+        # A transport guard proves validation rejects the input before any request.
+        def unexpected_request(*args, **kwargs):
+            pytest.fail("Malformed exclusions reached the routing service")
+
+        monkeypatch.setattr(routing.urllib.request, "urlopen", unexpected_request)
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"prompt": "Inspect the parser"},
+                "excluded_models": excluded_models,
+            },
+            workspace="https://example.com",
+            token="fixture-token",
+            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+        )
+        assert output == {"deny": "Invalid rate-limit exclusions; no subagent was started."}
+
     @pytest.mark.parametrize(
         ("excluded_models", "expected_output", "requested_models"),
         [
-            (
-                "claude-opus-4-8",
-                {"deny": "Invalid rate-limit exclusions; no subagent was started."},
-                [],
-            ),
-            ([None], {"deny": "Invalid rate-limit exclusions; no subagent was started."}, []),
             ([], None, [["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]]),
             (
                 ["system.ai.claude-opus-4-8"],
@@ -1985,7 +1998,7 @@ class TestSubagentRouting:
             ),
         ],
     )
-    def test_missing_route_and_malformed_exclusions(
+    def test_missing_route_respects_exclusions(
         self, excluded_models, expected_output, requested_models
     ):
         # An empty local response exercises the real router client's no-selection path.

@@ -135,21 +135,20 @@ export function parseRoutingExplanation(
   return { selectedModel, summary, taskUnderstanding: taskUnderstanding as string[], models, formula }
 }
 
+const childModel = (child?: RoutingRecord): string | undefined => {
+  const resolved = child?.spawned?.model
+  return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
+    ? resolved : child?.model
+}
+
 const children = new Map<string, RoutingRecord>()
-// Background failures can arrive after /clear resets session identity.
-const backgroundModels = new Map<string, string>()
 type CooldownTimer = { cancel: () => void }
 type RateLimitCooldown = { timer?: CooldownTimer }
 const rateLimits = new Map<string, RateLimitCooldown>()
 export const routedModels = {
   started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
   record(agentId?: string) { return agentId ? children.get(agentId) : undefined },
-  model(agentId?: string) {
-    const child = agentId ? children.get(agentId) : undefined
-    const resolved = child?.spawned?.model
-    return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
-      ? resolved : child?.model
-  },
+  model(agentId?: string) { return childModel(agentId ? children.get(agentId) : undefined) },
   reset() { children.clear() },
 }
 
@@ -327,16 +326,29 @@ const seen = new Set<string>()
 // register module's one turn.complete handler can drop them.
 const cards = { unplaced: [] as string[] }
 
+// Reuse the launch receipts retained for routing cards across /clear. Native resumes
+// can keep a task ID without raising agent.spawn again.
+function recordedBackgroundModel(agentId: string, toolUseId?: string): string | undefined {
+  const matches = (record?: RoutingRecord) => record?.spawned?.background
+    && record.spawned.agentId === agentId
+  const indexed = toolUseId ? records.get(toolUseId) : undefined
+  if (matches(indexed)) return childModel(indexed)
+  for (const record of records.values()) {
+    if (matches(record)) return childModel(record)
+  }
+}
+
 // Background API errors arrive as native task notifications, after the client's retries.
 // Keep the cooldown local to this launch's workspace and confirm the failed child's model.
 export function recordSubagentRateLimit(
   text: string, schedule: (delay: number, expire: () => void) => CooldownTimer,
 ): void {
   for (const [, notification] of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
-    const task = notification.match(/^\s*<task-id>([^<\s]+)<\/task-id>/)
+    const task = notification.match(/^\s*<task-id>([^<\s]+)<\/task-id>\s*(?:<tool-use-id>([^<\s]+)<\/tool-use-id>)?/)
     const failure = notification.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
-    const model = task ? routedModels.model(task[1]) ?? backgroundModels.get(task[1]) : undefined
-    if (model && failure && rateLimitKey(model) === rateLimitKey(failure[1])) {
+    if (!task || !failure) continue
+    const model = routedModels.model(task[1]) ?? recordedBackgroundModel(task[1], task[2])
+    if (model && rateLimitKey(model) === rateLimitKey(failure[1])) {
       const key = rateLimitKey(model)
       const previous = rateLimits.get(key)
       const cooldown: RateLimitCooldown = {}
@@ -511,7 +523,6 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
-  backgroundModels.clear()
   for (const cooldown of rateLimits.values()) {
     try { cooldown.timer?.cancel() } catch {}
   }
@@ -570,7 +581,9 @@ export const registerSubagentRouting = (
     const outcome = e.resume || e.fork ? undefined : attempted.get(e.tool_use_id)
     const checkFallback = outcome && !outcome.disabled
     const excluded = route || checkFallback ? activeRateLimits() : []
-    if (route ? excluded.includes(rateLimitKey(route.model)) : checkFallback && excluded.length > 0) {
+    const excludedSelection = route && excluded.includes(rateLimitKey(route.model))
+    const unverifiedFallback = !route && checkFallback && excluded.length > 0
+    if (excludedSelection || unverifiedFallback) {
       // A new failure can invalidate either a selected model or an unverified native fallback.
       records.delete(e.tool_use_id)
       $.ui.invalidate('ui.render')
