@@ -793,6 +793,7 @@ def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: s
     from ucode.agents.desktop import setup as desktop_setup
 
     if not desktop_setup.copilot_app_installed():
+        print_note("GitHub Copilot app: not found, skipped.")
         return
     desktop_setup.configure_copilot_app(state, provider=provider, location=parent_schema)
 

@@ -293,7 +293,9 @@ def revert_desktop() -> str:
     return "skipped" if "skipped" in results else "unchanged"
 
 
-_COPILOT_APP_LINUX_BINARY = Path("/usr/bin/github")
+_COPILOT_APP_LINUX_BINARIES = (Path("/usr/bin/github"), Path("/opt/GitHub Copilot/github"))
+# The app writes this desktop entry at its first run; a user's own launcher entry names the app.
+_COPILOT_APP_LINUX_DESKTOP_FILE = "com.github.githubapp.desktop"
 _COPILOT_APP_WINDOWS_KEY = r"Software\GitHub Inc.\GitHub Copilot"
 # User-level telemetry keys the app's runtime rejects; it then ignores the whole settings file,
 # ug's plugin included.
@@ -322,19 +324,73 @@ def _copilot_app_windows_registered() -> bool:
     return False
 
 
-def copilot_app_installed() -> bool:
-    """Whether the GitHub Copilot desktop app is installed for this user."""
+def _linux_desktop_entry_dirs() -> tuple[Path, ...]:
+    return (Path("/usr/share/applications"), Path.home() / ".local" / "share" / "applications")
+
+
+def _linux_appimage_dirs() -> tuple[Path, ...]:
+    return (Path.home() / "Applications", Path.home() / ".local" / "bin")
+
+
+def _copilot_app_desktop_entry(path: Path) -> bool:
+    """Whether a `.desktop` entry launches the GitHub Copilot app: the app's own file, or an entry
+    named after the app whose command is its `github` binary."""
+    if path.name == _COPILOT_APP_LINUX_DESKTOP_FILE:
+        return True
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    name = re.search(r"^Name=(.*)$", text, re.MULTILINE)
+    command = re.search(r"^Exec=(.*)$", text, re.MULTILINE)
+    if name is None or command is None or "github copilot" not in name.group(1).lower():
+        return False
+    return any(
+        token.strip("\"'") == "github" or token.strip("\"'").endswith("/github")
+        for token in command.group(1).split()
+    )
+
+
+def _copilot_app_linux_location() -> Path | None:
+    for binary in _COPILOT_APP_LINUX_BINARIES:
+        if binary.is_file():
+            return binary
+    for directory in _linux_desktop_entry_dirs():
+        for entry in sorted(directory.glob("*.desktop")):
+            if _copilot_app_desktop_entry(entry):
+                return entry
+    for directory in _linux_appimage_dirs():
+        for image in sorted(directory.glob("*")):
+            lowered = image.name.lower()
+            if lowered.endswith(".appimage") and "github" in lowered and "copilot" in lowered:
+                return image
+    return None
+
+
+def copilot_app_location() -> Path | None:
+    """Where the GitHub Copilot desktop app was found for this user, or None: its install
+    location for this OS, or its run directory while it is open somewhere else."""
     system = current_os()
     if system == OS.MACOS:
-        return any(
-            (root / "GitHub Copilot.app").is_dir()
-            for root in (Path("/Applications"), Path.home() / "Applications")
-        )
-    if system == OS.WINDOWS:
-        return _copilot_app_windows_registered()
-    if system == OS.LINUX:
-        return _COPILOT_APP_LINUX_BINARY.is_file()
-    return False
+        for root in (Path("/Applications"), Path.home() / "Applications"):
+            if (root / "GitHub Copilot.app").is_dir():
+                return root / "GitHub Copilot.app"
+    elif system == OS.WINDOWS:
+        if _copilot_app_windows_registered():
+            return Path(_COPILOT_APP_WINDOWS_KEY)
+    elif system == OS.LINUX:
+        if (found := _copilot_app_linux_location()) is not None:
+            return found
+    else:
+        return None
+    if copilot_app.app_running():
+        return copilot_app.copilot_home() / "run"
+    return None
+
+
+def copilot_app_installed() -> bool:
+    """Whether the GitHub Copilot desktop app is installed for this user."""
+    return copilot_app_location() is not None
 
 
 def copilot_app_state(state: dict) -> dict:
