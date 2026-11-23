@@ -1946,11 +1946,13 @@ def use_model_service_relay(
         print_note("Sign in with `codex login` to use the ChatGPT subscription model service.")
         return False
     path = codex_managed_config_path()
-    if path and not managed_settings_skipped() and _managed_relayed_conflicts(path):
-        print_note(
-            f"Codex managed authentication at {path} takes precedence over your ChatGPT seat."
-        )
-        return False
+    if path:
+        for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
+            if _managed_relayed_conflicts(policy):
+                print_note(
+                    f"Codex managed authentication at {policy} takes precedence over your ChatGPT seat."
+                )
+                return False
     return True
 
 

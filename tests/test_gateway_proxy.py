@@ -974,10 +974,15 @@ class TestClaudeRelayProxyWiring:
 
 class TestCodexRelayProxy:
     @pytest.mark.parametrize(
-        ("model", "seat"),
-        [("cat.s.seat", True), ("cat.s.foundry", False), ("system.ai.gpt-5.2", False)],
+        ("model", "seat", "pinned"),
+        [
+            ("cat.s.seat", True, False),
+            ("cat.s.foundry", False, False),
+            ("system.ai.gpt-5.2", False, False),
+            ("gpt-5.2", True, True),
+        ],
     )
-    def test_model_service_credentials(self, monkeypatch, model, seat):
+    def test_codex_proxy_credentials(self, monkeypatch, model, seat, pinned):
         cache = Mock(token="tok1")
         cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
@@ -991,11 +996,16 @@ class TestCodexRelayProxy:
             )
 
         monkeypatch.setattr(databricks, "model_service_relay_lookup", lookup)
-        server, _cache, upstream = gateway_proxy.start_codex_model_service_proxy(
-            "https://w",
-            lambda _f: "t",
-            session_secret="test-session",
-        )
+        if pinned:
+            server, _cache, upstream = gateway_proxy.start_relay_proxy(
+                "https://w", lambda _: "t", 0, agent="codex"
+            )
+        else:
+            server, _cache, upstream = gateway_proxy.start_codex_model_service_proxy(
+                "https://w",
+                lambda _f: "t",
+                session_secret="test-session",
+            )
         server.server_close()
         upstream.close()
         # The handler requests the client's path minus its leading slash.
@@ -1010,7 +1020,7 @@ class TestCodexRelayProxy:
         h.headers = {
             "Authorization": "Bearer chatgpt-token",
             "ChatGPT-Account-ID": "acct",
-            gateway_proxy.CODEX_SESSION_HEADER: "test-session",
+            **({} if pinned else {gateway_proxy.CODEX_SESSION_HEADER: "test-session"}),
             "Databricks-Model-Provider-Service": "cat.s.mps",
             "Content-Length": str(len(body)),
         }
@@ -1021,7 +1031,7 @@ class TestCodexRelayProxy:
         assert sent["Authorization"] == ("Bearer chatgpt-token" if seat else "Bearer tok1")
         assert sent.get("ChatGPT-Account-ID") == ("acct" if seat else None)
         assert sent.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER) == ("Bearer tok1" if seat else None)
-        assert "Databricks-Model-Provider-Service" not in sent
+        assert sent.get("Databricks-Model-Provider-Service") == ("cat.s.mps" if pinned else None)
         assert gateway_proxy.CODEX_SESSION_HEADER not in sent
 
     @pytest.mark.parametrize(

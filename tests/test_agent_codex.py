@@ -1866,6 +1866,24 @@ class TestCodexLaunch:
         assert codex.use_model_service_relay(state) is signed_in
         detect.assert_called_once_with(WS, "tok", "cat.s.seat", provider_type="openai")
 
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_enforced_auth_keeps_gateway_even_when_writes_are_skipped(
+        self, tmp_path, monkeypatch, filename
+    ):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+        monkeypatch.setattr(codex, "managed_settings_skipped", lambda: True)
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: tmp_path / "managed_config.toml"
+        )
+        (tmp_path / filename).write_text('model_provider = "Databricks"')
+        monkeypatch.setattr(
+            databricks,
+            "model_service_relay_lookup",
+            lambda *args, **kwargs: databricks.RelayLookup.RELAYED,
+        )
+        assert not codex.use_model_service_relay({"workspace": WS}, "cat.s.seat")
+
     @pytest.mark.parametrize("provider", [None, "cat.s.mps"])
     def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
         self, tmp_path, monkeypatch, provider
