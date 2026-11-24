@@ -24,6 +24,13 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
+    config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+    },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
@@ -98,6 +105,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     [
         None,
         config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+        config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0,
         config.SUBAGENT_ONLY_V0,
         config.SUBAGENT_ONLY_V1,
         config.SUBAGENT_ORCH_V0,
@@ -149,6 +157,7 @@ def test_smart_routing_config_cartesian_grid(
         (config.SUBAGENT_ONLY_V1, (True, False, False)),
         (config.SUBAGENT_ORCH_V1, (True, False, True)),
         (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, (True, True, False)),
+        (config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0, (True, True, True)),
     ],
 )
 def test_legacy_preset_equivalence(version, expected_routing):
@@ -224,20 +233,23 @@ def test_claude_only_versions_turn_codex_routing_off(version):
     }
 
 
-def test_first_prompt_orch_claude_only_routes_claude_first_prompt_with_orchestration():
-    source = {
-        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
-    }
+@pytest.mark.parametrize(
+    ("version", "agent"),
+    [
+        (config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0, AGENT_CLAUDE),
+        (config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0, AGENT_CODEX),
+        (config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY, AGENT_CLAUDE),
+    ],
+)
+def test_first_prompt_orch_routes_the_first_prompt_with_orchestration(version, agent):
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
 
-    assert config.resolve_environment(source, agent=AGENT_CLAUDE) == {
-        ENABLE_SMART_ROUTING_ENV_VAR: "1",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
-        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
-        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
-    }
-    assert v2.first_prompt_routing_enabled(source, agent=AGENT_CLAUDE)
-    assert orchestrator.feature_enabled(source, agent=AGENT_CLAUDE)
+    assert (
+        config.resolve_environment(source, agent=agent)
+        == _EXPECTED_PRESETS[config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0]
+    )
+    assert v2.first_prompt_routing_enabled(source, agent=agent)
+    assert orchestrator.feature_enabled(source, agent=agent)
     assert not config.auto_mode_enabled(source)
 
 
@@ -409,6 +421,7 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
     ("version", "harnesses"),
     [
         (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ONLY_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ONLY_V1, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),

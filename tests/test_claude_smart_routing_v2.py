@@ -1115,12 +1115,17 @@ class TestV2Launch:
         }
 
     @requires_pty
+    @pytest.mark.parametrize(
+        "version",
+        [
+            config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0,
+            config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        ],
+    )
     def test_first_prompt_orch_preset_launches_the_hold_with_the_orchestrator(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, version
     ):
-        monkeypatch.setenv(
-            "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
-        )
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
