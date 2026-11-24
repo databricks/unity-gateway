@@ -1,5 +1,7 @@
 export const RECIPE_FIELD = 'smart_router_recipe_name';
 export const DISABLED_RECIPE = 'DISABLED';
+// Matches `routing.ROUTER_NAME` in Python: the recipe when a launch carried none of its own.
+export const DEFAULT_RECIPE = 'stable';
 export const CLI_MODULE = 'ucode.cli';
 export const CLI_AGENT = 'claude';
 export const ENABLE_ROUTING_FLAG = '--enable-smart-routing';

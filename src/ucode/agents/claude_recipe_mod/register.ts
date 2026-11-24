@@ -1,6 +1,7 @@
 import type { EngineInterface, On } from 'claude-code';
-import { DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts';
+import { DEFAULT_RECIPE, DISABLED_RECIPE, RECIPE_FIELD } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
+import { isRoutingEnabled } from './routing-state.ts';
 
 // Writes the launch's smart-router recipe into `CLAUDE_CODE_EXTRA_BODY`, which Claude's security
 // default reserves to policy-tier mods and denies to the user-tier session mod. ug installs it
@@ -8,14 +9,11 @@ import { mergeExtraBody } from './extra-body.ts';
 // after the session mod's own environment writes. Only the recipe field is managed: every other
 // request field is preserved, and a session ug did not route is left untouched.
 
-// Matches `routing.ROUTER_NAME`: the fallback when a launch carried no recipe of its own.
-const DEFAULT_RECIPE = 'stable';
-
 async function routingEnabled($: EngineInterface): Promise<boolean> {
   // Claude's capability scanner requires literal environment-variable names.
   const environment: Record<string, unknown> = {
-    [SMART_ROUTING_KEY]: await $.env.get('ENABLE_SMART_ROUTING_V2'),
-    [SUBAGENT_ONLY_KEY]: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+    ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
+    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
   };
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (sessionFile) {
@@ -28,7 +26,7 @@ async function routingEnabled($: EngineInterface): Promise<boolean> {
       // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
   }
-  return environment[SMART_ROUTING_KEY] === '1' || environment[SUBAGENT_ONLY_KEY] === '1';
+  return isRoutingEnabled(environment);
 }
 
 async function apply($: EngineInterface): Promise<void> {

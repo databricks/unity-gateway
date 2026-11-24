@@ -481,13 +481,11 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
-    # ug lists the built-in guard to keep it when it creates `prependPlugins` or `appendPlugins`,
-    # so revert takes it out with ug's entries. When an admin has since added to the list, put the
-    # guard back: a non-empty list without it turns the guard off.
-    guard_listed = {
-        key: _CLAUDE_GUARD_MOD_ID in _managed_tier_plugins(key)
-        for key in ("prependPlugins", "appendPlugins")
-    }
+    # ug lists the built-in guard to keep it when it creates `prependPlugins`, so revert takes it
+    # out with ug's entries. When an admin has since added to the list, put the guard back: a
+    # non-empty list without it turns the guard off. `appendPlugins` replaces no default, so an
+    # unset one never held the guard and revert never re-adds it there.
+    guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
     removes_parent_settings_merge = _ug_added_parent_settings_merge()
 
     def dump(settings: dict) -> str:
@@ -498,11 +496,10 @@ def revert_managed_settings() -> str:
             == CLAUDE_PARENT_SETTINGS_BEHAVIOR
         ):
             del settings[CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0]]
-        for key in ("prependPlugins", "appendPlugins"):
-            tier = settings.get(key)
-            if guard_listed[key] and isinstance(tier, list) and tier:
-                if _CLAUDE_GUARD_MOD_ID not in tier:
-                    settings[key] = [_CLAUDE_GUARD_MOD_ID, *tier]
+        prepend = settings.get("prependPlugins")
+        if guard_listed and isinstance(prepend, list) and prepend:
+            if _CLAUDE_GUARD_MOD_ID not in prepend:
+                settings["prependPlugins"] = [_CLAUDE_GUARD_MOD_ID, *prepend]
         return _dump_managed_settings(settings)
 
     status = revert_managed_file(
@@ -616,15 +613,15 @@ def _ug_added_parent_settings_merge() -> bool:
     )
 
 
-def _managed_tier_plugins(key: str) -> list:
-    """The managed file's ``prependPlugins``/``appendPlugins`` list, or an empty one."""
+def _managed_prepend_plugins() -> list:
+    """The managed file's ``prependPlugins`` list, or an empty one."""
     path = _managed_settings_path()
     try:
         text = read_managed_file(path) if path is not None else None
-        tier = _parse_managed_settings(text).get(key) if text else None
+        prepend = _parse_managed_settings(text).get("prependPlugins") if text else None
     except RuntimeError:
         return []
-    return tier if isinstance(tier, list) else []
+    return prepend if isinstance(prepend, list) else []
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:
@@ -2392,23 +2389,27 @@ def _header_mod_files(root: Path) -> dict[Path, str]:
     files = {root / name: json.dumps(doc, indent=2) + "\n" for name, doc in docs.items()}
     source = Path(__file__).with_name("claude_header_mod") / "register.ts"
     files[root / "ug-headers/hooks/register.ts"] = source.read_text(encoding="utf-8")
-    # The recipe mod shares the session mod's merge and constants modules, so they stay one
-    # implementation.
+    # The recipe mod shares the session mod's modules, so they stay one implementation.
     recipe_mod = Path(__file__).with_name("claude_recipe_mod")
     mods = Path(__file__).with_name("claude_mods")
     for name, origin in (
         ("register.ts", recipe_mod / "register.ts"),
         ("constants.ts", mods / "constants.ts"),
         ("extra-body.ts", mods / "extra-body.ts"),
+        ("routing-state.ts", mods / "routing-state.ts"),
     ):
         files[root / CLAUDE_ROUTER_MOD_NAME / "hooks" / name] = origin.read_text(encoding="utf-8")
     return files
 
 
-def _enable_header_mod(settings: dict, root: Path | None) -> dict:
-    """Enable ug's managed mods: the header mod ahead of every user's mod, the recipe mod after
-    them (it re-applies the recipe once the session mod has settled the routing flags)."""
-    if root is None:
+def _enable_managed_mods(settings: dict, root: Path | None, tier_mods: dict[str, str]) -> dict:
+    """Enable ug's managed mods in the managed file.
+
+    ``tier_mods`` maps each tier list (``prependPlugins``/``appendPlugins``) to the mod that owns
+    it. An unset ``prependPlugins`` list means the built-in guard alone, which a set list has to
+    name to keep it; ``appendPlugins`` replaces no default, so an unset one holds nothing.
+    """
+    if root is None or not tier_mods:
         return settings
     marketplaces = settings.setdefault("extraKnownMarketplaces", {})
     plugins = settings.setdefault("enabledPlugins", {})
@@ -2417,14 +2418,23 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     marketplaces[CLAUDE_HEADER_MOD_MARKETPLACE] = {
         "source": {"source": "directory", "path": str(root)}
     }
-    plugins[CLAUDE_HEADER_MOD_ID] = True
-    plugins[CLAUDE_ROUTER_MOD_ID] = True
-    # An unset list means the built-in guard alone, which a set list has to name to keep it.
-    for key, mod_id in (("prependPlugins", CLAUDE_HEADER_MOD_ID), ("appendPlugins", CLAUDE_ROUTER_MOD_ID)):
+    for key, mod_id in tier_mods.items():
+        plugins[mod_id] = True
         tier = settings.get(key)
-        tier = tier if isinstance(tier, list) else [_CLAUDE_GUARD_MOD_ID]
+        default = [_CLAUDE_GUARD_MOD_ID] if key == "prependPlugins" else []
+        tier = tier if isinstance(tier, list) else default
         settings[key] = [mod_id, *(entry for entry in tier if entry != mod_id)]
     return settings
+
+
+def _enable_header_mod(settings: dict, root: Path | None) -> dict:
+    """Enable ug's managed mods: the header mod ahead of every user's mod, the recipe mod after
+    them (it re-applies the recipe once the session mod has settled the routing flags)."""
+    return _enable_managed_mods(
+        settings,
+        root,
+        {"prependPlugins": CLAUDE_HEADER_MOD_ID, "appendPlugins": CLAUDE_ROUTER_MOD_ID},
+    )
 
 
 _explicit_configure = False
@@ -2495,44 +2505,21 @@ def header_mod_active(*, require_current: bool = False) -> bool:
             for key, value in plugins.items()
         ):
             return True
-        if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
-            return False
-        for file, content in _header_mod_files(root).items():
-            if not file.is_file() or file.read_text(encoding="utf-8") != content:
-                return False
+        return _managed_mod_current(settings, root, CLAUDE_HEADER_MOD_ID)
     except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
-    return True
 
 
-# The release that seats the built-in guard, whose policy tier is the only one allowed to change
-# the request extra body a managed config can also set.
-SEC_DEFAULT_CLAUDE_VERSION = (2, 1, 331)
-
-
-def recipe_mod_active() -> bool:
-    """Whether ug's managed recipe mod owns the extra-body recipe write for this Claude.
-
-    It must be enabled in the managed file with current files, and the running Claude has to seat
-    the guard: an older one denies no write, so the session mod keeps its direct fallback.
-    """
-    version = _parse_version(agent_version(SPEC["binary"]))
-    if version is None or version < SEC_DEFAULT_CLAUDE_VERSION:
+def _managed_mod_current(settings: dict, root: Path | None, mod_id: str) -> bool:
+    """Whether ``mod_id`` is enabled in the managed file with ug's current files at ``root``."""
+    plugins = settings.get("enabledPlugins")
+    if not isinstance(plugins, dict) or plugins.get(mod_id) is not True:
         return False
-    root = claude_header_mod_root()
-    path = _managed_settings_path()
-    if root is None or path is None:
+    if root is None:
         return False
-    try:
-        settings = _parse_managed_settings(read_managed_file(path) or "{}")
-        plugins = settings.get("enabledPlugins")
-        if not isinstance(plugins, dict) or plugins.get(CLAUDE_ROUTER_MOD_ID) is not True:
+    for file, content in _header_mod_files(root).items():
+        if not file.is_file() or file.read_text(encoding="utf-8") != content:
             return False
-        for file, content in _header_mod_files(root).items():
-            if not file.is_file() or file.read_text(encoding="utf-8") != content:
-                return False
-    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
-        return False
     return True
 
 

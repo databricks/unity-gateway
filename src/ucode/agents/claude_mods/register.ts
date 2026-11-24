@@ -16,17 +16,14 @@ import {
   MODEL_KEPT_PREFIX,
   CLI_MODULE,
   DISABLE_ROUTING_FLAG,
-  DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   envBool,
-  RECIPE_FIELD,
   SMART_ROUTER_OFF_REPLY,
   SMART_ROUTER_ON_REPLY,
   OMNI_LAUNCH_MODE,
   UNSUPPORTED_MODEL_LIST_WARNING,
   VALIDATION_FAILED_WARNING,
 } from './constants.ts';
-import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 import {
@@ -153,7 +150,6 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
     ENABLE_SMART_ROUTER_AUTO_MODE: await $.env.get('ENABLE_SMART_ROUTER_AUTO_MODE'),
     ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: await $.env.get('ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI'),
-    CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
 }
 
@@ -216,22 +212,15 @@ async function readOrchestratorState($: EngineInterface, options: PluginOptions)
   return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
-async function writeEnvironment(
-  $: EngineInterface,
-  env: Environment,
-  options: PluginOptions,
-): Promise<void> {
+async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
   // Claude's capability scanner requires literal environment-variable names.
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
   await $.env.set('ENABLE_SMART_ROUTING_SUBAGENT_ONLY', env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY);
   await $.env.set('ENABLE_SMART_ROUTER_ORCHESTRATOR', env.ENABLE_SMART_ROUTER_ORCHESTRATOR);
   await $.env.set('ENABLE_SMART_ROUTER_AUTO_MODE', env.ENABLE_SMART_ROUTER_AUTO_MODE);
   await $.env.set('ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI', env.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI);
-  // The guard denies this protected write to the user tier; ug's managed recipe mod, which the
-  // launch names in `managedRecipeMod`, owns it there instead.
-  if (options.managedRecipeMod !== '1') {
-    await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
-  }
+  // `CLAUDE_CODE_EXTRA_BODY` is never written here: the guard denies that variable to the user
+  // tier, and ug's managed recipe mod owns it at the policy tier instead.
 }
 
 // The session-control file stays Python's to write: the CLI validates it and replaces it
@@ -265,22 +254,15 @@ async function setRouting(
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
-  const recipe = enabled ? options.recipe : DISABLED_RECIPE;
-  if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
-    throw new Error('Smart Router recipe must be a single-line string.');
-  }
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
     ENABLE_SMART_ROUTER_AUTO_MODE: original('ENABLE_SMART_ROUTER_AUTO_MODE'),
     ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: enabled ? original('ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI') : '0',
-    CLAUDE_CODE_EXTRA_BODY: mergeExtraBody(previous.CLAUDE_CODE_EXTRA_BODY, {
-      [RECIPE_FIELD]: recipe,
-    }),
   };
   try {
-    await writeEnvironment($, environment, options);
+    await writeEnvironment($, environment);
     // An explicit toggle must also replace the CLI/skill's saved session overrides,
     // which the routing hooks apply on top of the environment and would otherwise win.
     if (syncSessionControls) {
@@ -289,7 +271,7 @@ async function setRouting(
     $.ui.invalidate('tool.describe');
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
-    await writeEnvironment($, previous, options);
+    await writeEnvironment($, previous);
     throw error;
   }
 }
@@ -971,7 +953,7 @@ export function register(on: On, options: PluginOptions): void {
       showStatusBand();
       $.ui.invalidate('ui.render');
     } catch {
-      return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
+      return {text: 'Could not update Smart Router. Check the environment permissions; retry or restart through UG.'};
     }
     return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });

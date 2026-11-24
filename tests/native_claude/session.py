@@ -39,7 +39,6 @@ class Session:
         auto_picker=None,
         user_settings=None,
         launch_settings=None,
-        managed_recipe_mod=False,
         model="claude-sonnet-4-6",
     ):
         assert not {"env", "pluginConfigs"}.intersection(launch_settings or {}), (
@@ -67,8 +66,6 @@ class Session:
         options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
         if auto_picker is not None:
             options["autoPicker"] = json.dumps(auto_picker)
-        if managed_recipe_mod:
-            options["managedRecipeMod"] = "1"
         settings = {
             **(launch_settings or {}),
             "env": {

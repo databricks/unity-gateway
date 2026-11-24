@@ -118,7 +118,7 @@ def test_managed_recipe_mod_owns_the_extra_body_write(native_binary, tmp_path):
     }
     controls = session_env.start_session(env)
     try:
-        with Session(native_binary, tmp_path / "routed", env, managed_recipe_mod=True) as session:
+        with Session(native_binary, tmp_path / "routed", env) as session:
             assert session.observe()["body"] == {
                 "caller_field": "keep",
                 "smart_router_recipe_name": "task_v3",

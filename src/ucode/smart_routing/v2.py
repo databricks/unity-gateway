@@ -399,10 +399,7 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
 
 
 def _claude_mod_launch_options(
-    env: Mapping[str, str] | None = None,
-    *,
-    config_version: str | None = None,
-    managed_recipe_mod: bool = False,
+    env: Mapping[str, str] | None = None, *, config_version: str | None = None
 ) -> dict:
     source = resolve_environment(env, agent=AGENT_CLAUDE)
     version = selected_version(env) if config_version is None else config_version
@@ -414,10 +411,6 @@ def _claude_mod_launch_options(
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
-        "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
-        # 1 when ug's managed recipe mod owns the extra-body recipe write; then the session mod
-        # leaves that protected variable to it (its own write would be denied by the guard).
-        "managedRecipeMod": "1" if managed_recipe_mod else "",
         "routeCommand": [],
         "logsCommand": [],
         "orchestratorInstructions": (
@@ -505,18 +498,6 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": [],
                     "title": "Absent flags",
                     "description": "Flags absent at launch",
-                },
-                "recipe": {
-                    "type": "string",
-                    "default": routing.ROUTER_NAME,
-                    "title": "Recipe",
-                    "description": "Original routing recipe",
-                },
-                "managedRecipeMod": {
-                    "type": "string",
-                    "default": "",
-                    "title": "Managed recipe mod",
-                    "description": "1 when ug's managed mod owns the extra-body recipe write",
                 },
             },
         },
@@ -1027,20 +1008,17 @@ def launch_claude(
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
-            from ucode.agents.claude import recipe_mod_active
-
+            launch_source = {**resolve_environment(agent=AGENT_CLAUDE), **env}
             mod_options = {
-                **_claude_mod_launch_options(
-                    {**resolve_environment(agent=AGENT_CLAUDE), **env},
-                    config_version=selected_version(),
-                    managed_recipe_mod=recipe_mod_active(),
-                ),
+                **_claude_mod_launch_options(launch_source, config_version=selected_version()),
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
-            # The managed recipe mod reads its recipe here, not from pluginConfigs: those are the
-            # user tier's options and need not reach a policy-tier mod.
-            env[routing.ROUTER_NAME_ENV_VAR] = mod_options["recipe"]
+            # The managed recipe mod, which alone writes the extra body, reads its recipe here:
+            # pluginConfigs are the user tier's options and need not reach a policy-tier mod.
+            env[routing.ROUTER_NAME_ENV_VAR] = (
+                launch_source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME
+            )
             if auto_picker:
                 mod_options["autoPicker"] = json.dumps(auto_config)
                 # Settings env is reapplied when /model saves a native selection.
