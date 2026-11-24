@@ -1,7 +1,8 @@
-"""Smart Router model-list check; an unsupported model list or a failed check turns routing off.
+"""Smart Router model-list check at startup and on `/smart-router on`, shared by both harnesses.
 
-Nothing is shown to the user by the check itself. HTTP 404 is the flag-off answer from the endpoint,
-so it leaves routing on and records nothing.
+At startup, an unsupported model list or a failed check turns routing off for the session. HTTP 404
+is the flag-off answer from the endpoint, so it leaves routing on and records nothing. On
+`/smart-router on`, the caller reads the verdict before turning routing on.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ucode import metrics
 from ucode.config_io import atomic_write_json
@@ -23,7 +24,11 @@ from ucode.constants import (
 )
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
-from ucode.smart_routing.session_env import ROUTING_DISABLED_KEY, validation_result_path
+from ucode.smart_routing.session_env import (
+    ROUTING_DISABLED_KEY,
+    VALIDATION_FAILED_KEY,
+    validation_result_path,
+)
 from ucode.workspace import WorkspaceSelectionReason
 
 # The Claude mod shows routing ON after 5 s without a result, so the check must publish sooner.
@@ -86,7 +91,7 @@ def _unsupported_details(
 def _failure_details(failure: str, router_name: str) -> dict[str, Any]:
     return {
         "router_name": router_name,
-        "validation_failed": True,
+        VALIDATION_FAILED_KEY: True,
         "validation_failure_reason": failure,
         "eligible_route_options": [],
         "ineligible_route_options": [],
@@ -130,6 +135,11 @@ def _validate_route_options(
     return payload, reason
 
 
+def _publish(path: Path, result: dict[str, Any]) -> None:
+    with suppress(OSError, RuntimeError):
+        atomic_write_json(path, result)
+
+
 def _probe(
     workspace: str,
     token: str,
@@ -171,6 +181,35 @@ def _request_body(route_options: list[tuple[str, str]], router_name: str) -> dic
     }
 
 
+def _verdict(
+    payload: object,
+    reason: str | None,
+    router_name: str,
+    started: float,
+    available_harness: str,
+) -> dict[str, Any]:
+    if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
+        return {ROUTING_DISABLED_KEY: False}
+    failure = _failure_reason(payload, reason)
+    if failure is None and not _is_unsupported(payload):
+        return {ROUTING_DISABLED_KEY: False}
+    details = (
+        _failure_details(failure, router_name)
+        if failure is not None
+        else _unsupported_details(cast(dict, payload), router_name, available_harness)
+    )
+    return {
+        ROUTING_DISABLED_KEY: True,
+        **details,
+        "validation_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
+def check_failed(router_name: str) -> dict[str, Any]:
+    """Return the verdict for a check that could not run."""
+    return {ROUTING_DISABLED_KEY: True, **_failure_details(CHECK_FAILED_REASON, router_name)}
+
+
 def validate(
     workspace: str,
     token: str,
@@ -179,29 +218,16 @@ def validate(
     router_name: str,
     provider: str | None = None,
     available_harness: str = ROUTER_HARNESS_CLAUDE_CODE,
-) -> dict[str, Any] | None:
-    """Return the validation result, or None when the check fails or misses its deadline."""
+) -> dict[str, Any]:
+    """Return the verdict; an unsupported list or a failed check disables routing."""
     started = time.monotonic()
     try:
         payload, reason = _check_route_options(
             workspace, token, _request_body(route_options, router_name), provider
         )
     except Exception:
-        return None
-    if _failure_reason(payload, reason) is not None:
-        return None
-    if not _is_unsupported(payload):
-        return {"is_supported": True}
-    return {
-        "is_supported": False,
-        **_unsupported_details(payload, router_name, available_harness),
-        "validation_ms": round((time.monotonic() - started) * 1000),
-    }
-
-
-def _publish(path: Path, result: dict[str, Any]) -> None:
-    with suppress(OSError, RuntimeError):
-        atomic_write_json(path, result)
+        payload, reason = None, CHECK_FAILED_REASON
+    return _verdict(payload, reason, router_name, started, available_harness)
 
 
 def start(
@@ -219,24 +245,12 @@ def start(
     def check() -> None:
         started = time.monotonic()
         payload, reason = _check_route_options(workspace, token, body, provider)
-        if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
-            _publish(validation_result_path(session_controls), {ROUTING_DISABLED_KEY: False})
-            return
-        failure = _failure_reason(payload, reason)
-        unsupported = _is_unsupported(payload)
-        result: dict[str, Any] = {ROUTING_DISABLED_KEY: False}
-        if failure is not None or unsupported:
-            with suppress(OSError, RuntimeError):
+        result = _verdict(payload, reason, router_name, started, available_harness)
+        if result[ROUTING_DISABLED_KEY]:
+            try:
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-                result = (
-                    {ROUTING_DISABLED_KEY: True, **_failure_details(failure, router_name)}
-                    if failure is not None
-                    else {
-                        ROUTING_DISABLED_KEY: True,
-                        **_unsupported_details(payload, router_name, available_harness),
-                    }
-                )
-                result["validation_ms"] = round((time.monotonic() - started) * 1000)
+            except (OSError, RuntimeError):
+                result = {ROUTING_DISABLED_KEY: False}
         _publish(validation_result_path(session_controls), result)
 
     with suppress(Exception):

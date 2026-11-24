@@ -23,11 +23,12 @@ this session's model list`, and then `($smart-router logs for details)`. The war
 once the first prompt sent while it shows completes. The badge and the hint stay until the
 next `$smart-router on` or `off`.
 
-`$smart-router on` re-runs the check, including when routing is already on. An unsupported
-list keeps routing on: the footer shows `ON` with the warning, which hides after the next
-prompt completes, and a logs row is written immediately. A supported or failed check shows
-nothing new. `$smart-router off` discards a check that has not finished. A missing or
-unreadable check result leaves the plain footer.
+`$smart-router on` runs the check before it turns routing on, including when routing is
+already on. A supported list or an HTTP 404 turns routing on with no warning. An unsupported
+list or a failed check keeps routing off, shows the `ERROR` badge with its warning and the
+logs hint, writes a logs row immediately, and the command reply says routing is off.
+`$smart-router off` clears any warning. A missing or unreadable check result leaves the
+plain footer.
 
 ## Validation
 

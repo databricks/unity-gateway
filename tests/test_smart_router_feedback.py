@@ -3,8 +3,6 @@
 import json
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 from unittest.mock import Mock
 from uuid import uuid4
@@ -14,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import feedback, session_env, session_log, v2
+from ucode.smart_routing import feedback, route_validation, session_env, session_log, v2
 from ucode.smart_routing.codex_feedback import (
     TOOL_NAME,
     TOOL_SPEC,
@@ -925,13 +923,28 @@ def test_native_off_waits_for_correlated_turn_start_reply(
 
 
 UNSUPPORTED_CHECK = {
-    "routing_disabled": False,
+    "routing_disabled": True,
     "router_name": "stable",
     "routing_unsupported_reason": "insufficient_eligible_options",
     "eligible_route_options": [],
     "ineligible_route_options": [],
     "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
     "validation_ms": 120,
+}
+FAILED_CHECK = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "validation_failed": True,
+    "validation_failure_reason": "Smart Router didn't respond in time",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [],
+}
+SUPPORTED_CHECK = {"routing_disabled": False}
+CHECK_RAISES = RuntimeError("token unavailable")
+UNEXPECTED_FAILURE_CHECK = {
+    **FAILED_CHECK,
+    "validation_failure_reason": route_validation.CHECK_FAILED_REASON,
 }
 
 
@@ -948,82 +961,102 @@ def toggle_router(controls, validate):
     return router
 
 
-def wait_for_result(path):
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        if path.exists():
-            return json.loads(path.read_text())
-        time.sleep(0.01)
-    pytest.fail("the toggle check did not publish a result")
-
-
 @pytest.mark.parametrize(
-    ("initially_on", "check", "published"),
+    ("initially_on", "outcome", "enabled", "message", "published"),
     [
-        pytest.param(False, UNSUPPORTED_CHECK, True, id="turn-on-unsupported"),
-        pytest.param(True, UNSUPPORTED_CHECK, True, id="already-on-unsupported"),
-        pytest.param(True, None, False, id="already-on-supported-or-failed"),
+        pytest.param(
+            False,
+            SUPPORTED_CHECK,
+            True,
+            "Smart Router is on for this session.",
+            None,
+            id="turn-on-supported",
+        ),
+        pytest.param(
+            True,
+            SUPPORTED_CHECK,
+            True,
+            "Smart Router is already on for this session.",
+            None,
+            id="already-on-supported",
+        ),
+        pytest.param(
+            False,
+            UNSUPPORTED_CHECK,
+            False,
+            "Smart Router is off for this session.",
+            UNSUPPORTED_CHECK,
+            id="turn-on-unsupported",
+        ),
+        pytest.param(
+            True,
+            UNSUPPORTED_CHECK,
+            False,
+            "Smart Router is off for this session.",
+            UNSUPPORTED_CHECK,
+            id="already-on-unsupported",
+        ),
+        pytest.param(
+            False,
+            FAILED_CHECK,
+            False,
+            "Smart Router is off for this session.",
+            FAILED_CHECK,
+            id="turn-on-failed-check",
+        ),
+        pytest.param(
+            False,
+            CHECK_RAISES,
+            False,
+            "Smart Router is off for this session.",
+            UNEXPECTED_FAILURE_CHECK,
+            id="turn-on-check-raises",
+        ),
     ],
 )
-def test_on_runs_the_check_and_keeps_only_an_unsupported_result(
-    inline_feedback, session_logs, initially_on, check, published
+def test_on_checks_the_model_list_before_turning_routing_on(
+    inline_feedback, session_logs, initially_on, outcome, enabled, message, published
 ):
     controls, *_ = inline_feedback
     if not initially_on:
         controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
-    called = threading.Event()
 
     def validate():
-        called.set()
-        return check
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
     router = toggle_router(controls, validate)
-    native_call(router, "on")
-    assert session_env.session_routing_enabled(controls)
-    assert called.wait(3)
+    assert native_call(router, "on") == {"message": message}
+    assert session_env.session_routing_enabled(controls) is enabled
     result_path = session_env.validation_result_path(controls)
-    if not published:
-        time.sleep(0.05)
+    records = session_log.read_records("codex", SESSION_ID, session_log.ROUTE_VALIDATION_TYPE)
+    if published is None:
         assert not result_path.exists()
+        assert records == []
         return
-    assert wait_for_result(result_path) == {**check, "routing_disabled": False}
-    [row] = session_log.read_records("codex", SESSION_ID, session_log.ROUTE_VALIDATION_TYPE)
-    assert row["routing_unsupported_reason"] == "insufficient_eligible_options"
+    assert json.loads(result_path.read_text()) == published
+    [row] = records
+    assert {key: row[key] for key in published} == published
 
 
-def test_off_before_the_check_publishes_discards_its_result(inline_feedback, session_logs):
+def test_toggling_clears_the_previous_warning(inline_feedback, session_logs):
     controls, *_ = inline_feedback
-    controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
-    called, release = threading.Event(), threading.Event()
-
-    def validate():
-        called.set()
-        release.wait(3)
-        return UNSUPPORTED_CHECK
-
-    router = toggle_router(controls, validate)
-    router.feedback_required = False
-    native_call(router, "on")
-    assert called.wait(3)
-    native_call(router, "off")
-    release.set()
-    time.sleep(0.05)
-    assert not session_env.validation_result_path(controls).exists()
-    assert session_log.read_records("codex", SESSION_ID, session_log.ROUTE_VALIDATION_TYPE) == []
-
-
-@pytest.mark.parametrize(
-    ("action", "initial"),
-    [("on", "{}"), ("off", json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))],
-    ids=["on-while-on", "off-while-off"],
-)
-def test_toggling_clears_the_previous_warning(inline_feedback, session_logs, action, initial):
-    controls, *_ = inline_feedback
-    controls.write_text(initial)
+    controls.write_text("{}")
     result_path = session_env.validation_result_path(controls)
     result_path.write_text(json.dumps(UNSUPPORTED_CHECK))
     session_env.validation_dismissed_path(controls).touch()
-    router = toggle_router(controls, lambda: None)
-    native_call(router, action)
+    router = toggle_router(controls, lambda: SUPPORTED_CHECK)
+    native_call(router, "on")
     assert not result_path.exists()
     assert not session_env.validation_dismissed_path(controls).exists()
+
+
+def test_off_clears_the_previous_warning_while_already_off(inline_feedback, session_logs):
+    controls, *_ = inline_feedback
+    controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+    result_path = session_env.validation_result_path(controls)
+    result_path.write_text(json.dumps(UNSUPPORTED_CHECK))
+    router = toggle_router(controls, lambda: SUPPORTED_CHECK)
+    native_call(router, "off")
+    assert not result_path.exists()

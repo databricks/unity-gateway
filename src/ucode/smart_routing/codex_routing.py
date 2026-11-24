@@ -24,7 +24,6 @@ from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CODEX
 from ucode.smart_routing import orchestrator, route_validation, routing, session_log
 from ucode.smart_routing.routing import RoutingDecision
-from ucode.smart_routing.session_env import ROUTING_DISABLED_KEY
 
 ROUTER_NAME = routing.ROUTER_NAME
 ROUTING_PATH = routing.ROUTING_PATH
@@ -61,9 +60,9 @@ def validate_codex_model_list(
     available_models: list[str],
     *,
     provider: str | None = None,
-) -> dict[str, Any] | None:
-    """Return an unsupported result that leaves routing on, else None."""
-    result = route_validation.validate(
+) -> dict[str, Any]:
+    """Return the shared route validation verdict for the Codex model list."""
+    return route_validation.validate(
         workspace,
         token,
         codex_route_options(available_models),
@@ -71,12 +70,6 @@ def validate_codex_model_list(
         provider=provider,
         available_harness=AGENT_CODEX,
     )
-    if result is None or result["is_supported"] is not False:
-        return None
-    return {
-        **{key: value for key, value in result.items() if key != "is_supported"},
-        ROUTING_DISABLED_KEY: False,
-    }
 
 
 def request_routing_decision(

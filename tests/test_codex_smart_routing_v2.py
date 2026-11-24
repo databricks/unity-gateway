@@ -676,6 +676,9 @@ class TestLaunchCodex:
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == ("0" if first_prompt else "1")
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
+        assert interposer_args["kwargs"]["validate_model_list"]() == {"routing_disabled": False}
+        assert len(validation_requests) == 2
+        assert token_calls[-1] == (WS, "myprof")
         assert stopped == [True]
         assert processes[0].terminated is True
 

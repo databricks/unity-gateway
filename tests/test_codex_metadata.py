@@ -988,7 +988,7 @@ def test_native_selector_replies_stay_local_and_cancel_cleanly(
     asyncio.run(run())
 
 
-TOGGLED_WARNING = {"routing_disabled": False, "validation_ms": 120}
+UNSUPPORTED_WARNING = {"routing_disabled": True, "validation_ms": 120}
 
 
 def _prompt(metadata, turn_id):
@@ -1024,10 +1024,10 @@ def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(
     dismissed = session_env.validation_dismissed_path(metadata.controls)
     result = session_env.validation_result_path(metadata.controls)
     if warning_before_prompt:
-        result.write_text(json.dumps(TOGGLED_WARNING))
+        result.write_text(json.dumps(UNSUPPORTED_WARNING))
     _prompt(metadata, "first")
     if not warning_before_prompt:
-        result.write_text(json.dumps(TOGGLED_WARNING))
+        result.write_text(json.dumps(UNSUPPORTED_WARNING))
     _complete(metadata, "first")
     assert dismissed.exists() is hidden_after_first_turn
     if not hidden_after_first_turn:

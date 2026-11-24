@@ -19,6 +19,7 @@ until the next `/smart-router on|off`, followed by
 A failed startup check (any failure except HTTP 404) shows the same OFF band and ERROR hint, with the
 trailer `⚠ Smart Router couldn't validate this session's model list`. `/smart-router logs` lists it as
 `Failed to validate smart routing. Press enter for details.`, and its detail gives the reason.
+`/smart-router on` runs the same check first. An unsupported list or a failed check leaves routing off with the same warning and logs row.
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
 prompt hint for the main model. Native displays `Auto mode: Subagents smart routed.`

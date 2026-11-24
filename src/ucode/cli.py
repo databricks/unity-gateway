@@ -3678,7 +3678,10 @@ def claude_router_hook_cmd(
     import sys
 
     environment = effective_environment(agent=AGENT_CLAUDE)
-    if not smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CLAUDE):
+    # The toggle validates while the session controls still keep routing off.
+    if event != ROUTE_VALIDATION_MOD_EVENT and not smart_routing_v2.smart_routing_enabled(
+        environment, default=False, agent=AGENT_CLAUDE
+    ):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -3749,8 +3752,7 @@ def claude_router_hook_cmd(
             available_models=model or [],
             provider=provider,
         )
-        if result is not None:
-            sys.stdout.write(json.dumps(result))
+        sys.stdout.write(json.dumps(result))
         return
     output = smart_routing_v2.route_claude_subagent(
         payload,

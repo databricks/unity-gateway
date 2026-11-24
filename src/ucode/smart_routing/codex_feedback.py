@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import json
 import os
-import threading
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from pathlib import Path
@@ -17,8 +16,9 @@ from websockets.exceptions import ConnectionClosed
 
 from ucode.config_io import atomic_write_json
 from ucode.constants import AGENT_CODEX, SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import feedback, session_log
+from ucode.smart_routing import feedback, route_validation, routing, session_log
 from ucode.smart_routing.session_env import (
+    ROUTING_DISABLED_KEY,
     SESSION_ENV_VAR,
     session_routing_enabled,
     set_session_environment,
@@ -39,7 +39,7 @@ CANCEL = "Cancel"
 FEEDBACK_QUESTION_ID = "smart_router_feedback"
 FEEDBACK_DISCLOSURE = "Your reason and session details will be sent to the Isaac team."
 AskFeedback = Callable[[dict], Awaitable[list[str] | None]]
-ValidateModelList = Callable[[], dict[str, Any] | None]
+ValidateModelList = Callable[[], dict[str, Any]]
 TOOL_SPEC = {
     "type": "function",
     "name": TOOL_NAME,
@@ -183,8 +183,6 @@ class CodexSmartRouter:
     def __init__(self, controls: Path, validate: ValidateModelList | None = None):
         self.controls = controls
         self.validate = validate
-        self.toggle_lock = threading.Lock()
-        self.toggle_generation = 0
         self.environment = {**os.environ, SESSION_ENV_VAR: str(controls)}
         self.feedback_required = feedback.smart_router_feedback_required()
         self.pending_feedback: dict[str, str | None] = {}
@@ -400,8 +398,13 @@ class CodexSmartRouter:
             self.pending_feedback.pop(thread_id, None)
             return {"message": f"Canceled. Smart Router remains {'on' if enabled else 'off'}."}
         requested = action == "on"
+        if requested:
+            verdict = self._check_model_list(thread_id)
+            if verdict[ROUTING_DISABLED_KEY]:
+                set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), env=env)
+                return {"message": "Smart Router is off for this session."}
         if enabled == requested:
-            self._settle_validation(thread_id, requested)
+            self._clear_validation()
             return {
                 "message": f"Smart Router is already {'on' if enabled else 'off'} for this session."
             }
@@ -452,45 +455,39 @@ class CodexSmartRouter:
             )
             return result
         self.pending_feedback.pop(thread_id, None)
-        self._settle_validation(thread_id, requested)
+        self._clear_validation()
         message = f"Smart Router is {'on' if requested else 'off'} for this session."
         return {**result, "message": message + (" " + result["message"] if result else "")}
 
-    def _reset_validation(self) -> int:
-        with self.toggle_lock:
-            self.toggle_generation += 1
-            for path in (
-                validation_result_path(self.controls),
-                validation_dismissed_path(self.controls),
-            ):
-                with contextlib.suppress(OSError):
-                    path.unlink(missing_ok=True)
-            return self.toggle_generation
+    def _check_model_list(self, thread_id: str) -> dict[str, Any]:
+        verdict = self._model_list_verdict()
+        if verdict[ROUTING_DISABLED_KEY]:
+            self._publish_verdict(thread_id, verdict)
+        return verdict
 
-    def _settle_validation(self, thread_id: str, requested: bool) -> None:
-        generation = self._reset_validation()
-        if requested and self.validate is not None:
-            threading.Thread(
-                target=self._publish_validation,
-                args=(self.validate, thread_id, generation),
-                daemon=True,
-            ).start()
-
-    def _publish_validation(
-        self, validate: ValidateModelList, thread_id: str, generation: int
-    ) -> None:
+    def _model_list_verdict(self) -> dict[str, Any]:
+        if self.validate is None:
+            return {ROUTING_DISABLED_KEY: False}
         try:
-            result = validate()
-        except (OSError, RuntimeError, ValueError):
-            return
-        if result is None:
-            return
-        with self.toggle_lock:
-            if generation != self.toggle_generation:
-                return
-            with contextlib.suppress(OSError, ValueError):
-                atomic_write_json(validation_result_path(self.controls), result)
-                session_log.append_route_validation(AGENT_CODEX, thread_id, result)
+            return self.validate()
+        except Exception:
+            return route_validation.check_failed(routing.configured_router_name())
+
+    def _publish_verdict(self, thread_id: str, verdict: dict[str, Any]) -> None:
+        with contextlib.suppress(OSError):
+            validation_dismissed_path(self.controls).unlink(missing_ok=True)
+        with contextlib.suppress(OSError, RuntimeError):
+            atomic_write_json(validation_result_path(self.controls), verdict)
+        with contextlib.suppress(OSError, ValueError):
+            session_log.append_route_validation(AGENT_CODEX, thread_id, verdict)
+
+    def _clear_validation(self) -> None:
+        for path in (
+            validation_result_path(self.controls),
+            validation_dismissed_path(self.controls),
+        ):
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
 
     @staticmethod
     def sending(report_id: str) -> dict:

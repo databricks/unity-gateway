@@ -1,5 +1,7 @@
 import { expect, test } from 'claude-code/testing';
-import { ROUTE_VALIDATION_FAILED_REASON, ROUTE_VALIDATION_FAILED_ROW, ROUTE_VALIDATION_ON_ROW, ROUTE_VALIDATION_ROW, modelReason, routeValidationReason } from '../hooks/routing-logs.ts';
+import {
+  ROUTE_VALIDATION_FAILED_REASON, ROUTE_VALIDATION_FAILED_ROW, ROUTE_VALIDATION_ON_ROW, ROUTE_VALIDATION_ROW, modelReason, routeValidationReason,
+} from '../hooks/routing-logs.ts';
 
 const options = { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', logsCommand: ['/bin/ug', 'smart-router-logs'] };
 const pane = {

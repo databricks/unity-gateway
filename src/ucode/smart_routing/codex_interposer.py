@@ -26,7 +26,7 @@ TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
-ValidateModelFn = Callable[[], dict | None]
+ValidateModelFn = Callable[[], dict]
 SwitchMessageFn = Callable[[str, str], str]
 TokenProvider = Callable[[], str]
 
@@ -217,12 +217,12 @@ async def _handle_tui(
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
     provider: str | None = None,
+    validate_model_list: ValidateModelFn | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
     log(f"[CONN] TUI connected (path={path}); dialing app-server {uri}")
     route_decision: RouteDecisionFn | None = None
-    validate_model_list: ValidateModelFn | None = None
     if workspace is not None and token_provider is not None:
 
         def route_decision(prompt: str):
@@ -237,14 +237,6 @@ async def _handle_tui(
                 list(available_models or []),
                 log=log,
                 **({"provider": provider} if provider else {}),
-            )
-
-        def validate_model_list() -> dict | None:
-            return codex_routing.validate_codex_model_list(
-                workspace,
-                token_provider(),
-                list(available_models or []),
-                provider=provider,
             )
 
     sess = _Session(
@@ -467,6 +459,7 @@ async def _serve(
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
     provider: str | None = None,
+    validate_model_list: ValidateModelFn | None = None,
 ):
     async def handler(tui):
         try:
@@ -482,6 +475,7 @@ async def _serve(
                 switch_message_fn,
                 session_controls,
                 provider,
+                validate_model_list,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -506,6 +500,7 @@ def start_interposer_thread(
     ready_timeout: float = 10.0,
     session_controls: Path | None = None,
     provider: str | None = None,
+    validate_model_list: ValidateModelFn | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:
@@ -538,6 +533,7 @@ def start_interposer_thread(
                     switch_message_fn,
                     session_controls,
                     provider,
+                    validate_model_list,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]
