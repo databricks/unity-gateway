@@ -55,6 +55,9 @@ _SOURCE_FILES = (
     "app-state.mjs",
     "app-host.mjs",
     "app-proxy.mjs",
+    "app-windows.mjs",
+    "app-debug.mjs",
+    "app-system-proxy.mjs",
     "app-seat-relay.mjs",
     "app-seat-redirect.mjs",
 )
@@ -264,6 +267,8 @@ _EXTENSION_STATE_FILES = (
     "app-restart.log",
     "seat-relay-sessions.json",
     "seat-relay-requests.json",
+    "seat-relay-debug.log",
+    "seat-relay-debug.log.1",
 )
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
@@ -469,6 +474,21 @@ def _drop_entries(settings: dict, entries: list[tuple[str, str]]) -> None:
 
 def _has_ug_keys(settings: dict, root: Path) -> bool:
     return bool(_ug_entries(settings, root))
+
+
+def debug_log_path(root: Path | None = None) -> Path | None:
+    """The installed extension's diagnostics log, when it has written one."""
+    path = _extension_dir(root or plugin_root()) / "seat-relay-debug.log"
+    return path if path.is_file() else None
+
+
+def missing_ug_path(root: Path | None = None) -> str | None:
+    """The absolute ``ug`` path the installed extension runs, when it no longer exists there."""
+    config = _read_extension_config(root or plugin_root())
+    path = config.get("ugPath") if config is not None else None
+    if isinstance(path, str) and os.path.isabs(path) and not os.path.isfile(path):
+        return path
+    return None
 
 
 def _read_extension_config(root: Path, plugin: str = PLUGIN) -> dict | None:

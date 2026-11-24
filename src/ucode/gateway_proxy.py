@@ -368,6 +368,11 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     **self._metric_labels,
                 )
 
+    def _auth_rejection_is_final(self, resp: httpx.Response) -> bool:
+        """Whether a 401/403 (body already read) is a denial a fresh Databricks token can't fix, so
+        it is relayed without the refresh and retry. Subclasses decide from the body."""
+        return False
+
     def _metric_headers(self, status: int, attempt: int, started: float) -> None:
         self._metric_labels["http_status_code"] = status
         metrics.record(
@@ -461,6 +466,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # Auth rejected. Drain the (small) error body so the pooled
                 # connection can be reused, then fall through to one retry.
                 resp.read()
+                if self._auth_rejection_is_final(resp):
+                    self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
+                    return
             # A relayed 401/403 may be a stale Databricks swap token rather than a
             # bad Anthropic OAuth — the two are indistinguishable from the status
             # alone. Force-refresh the Databricks token and retry once. If it was the

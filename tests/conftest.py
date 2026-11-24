@@ -22,11 +22,11 @@ collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior
 
 
 @pytest.fixture(autouse=True)
-def _isolate_startup_validation(monkeypatch):
-    from ucode.smart_routing import startup_validation
+def _isolate_route_validation(monkeypatch):
+    from ucode.smart_routing import route_validation
 
     monkeypatch.setattr(
-        startup_validation,
+        route_validation,
         "_http_post_json",
         lambda *args, **kwargs: ({"is_supported": True}, None),
     )
@@ -125,6 +125,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     )
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
+    monkeypatch.setattr(vscode_mod, "find_install", lambda prefer_runtime=False: None)
+    monkeypatch.setattr(vscode_mod, "first_code_on_path", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
     monkeypatch.setattr(
         vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"

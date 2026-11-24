@@ -16,7 +16,7 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
-from ucode.constants import UG_STARTUP_ROUTE_VALIDATION_ENV_VAR
+from ucode.constants import UG_ROUTE_VALIDATION_ENV_VAR
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
@@ -859,7 +859,7 @@ class TestCujSmartRouting(BaseCujTest):
         unsupported warning while the prompt hint row keeps smart router ON.
         """
         with smart_router_preset(cuj, SUBAGENT_ORCH_V0_CLAUDE_ONLY) as (session, _, recorder, _):
-            session.env[UG_STARTUP_ROUTE_VALIDATION_ENV_VAR] = "1"
+            session.env[UG_ROUTE_VALIDATION_ENV_VAR] = "1"
             try:
                 checkpoint = recorder.checkpoint()
                 recorder.prepare_launch()
@@ -875,7 +875,7 @@ class TestCujSmartRouting(BaseCujTest):
                     assert not any("isn't supported" in line for line in tui.screen.display)
                     tui.exit_normally()
             finally:
-                session.env.pop(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, None)
+                session.env.pop(UG_ROUTE_VALIDATION_ENV_VAR, None)
             [request] = [
                 r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
             ]

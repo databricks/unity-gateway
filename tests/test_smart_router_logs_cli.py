@@ -422,6 +422,7 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
     assert "\x1b" not in result.output
 
 
+@pytest.mark.parametrize("from_stdin", [False, True])
 @pytest.mark.parametrize(
     "check",
     [
@@ -454,12 +455,13 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
         ),
     ],
 )
-def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check):
+def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check, from_stdin):
     write(payload())
     result_file = tmp_path / "env.validation.json"
     result_file.write_text(json.dumps(check))
-    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
-    recorded = runner.invoke(cli.app, args)
+    source = "-" if from_stdin else str(result_file)
+    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", source]
+    recorded = runner.invoke(cli.app, args, input=json.dumps(check) if from_stdin else None)
     assert recorded.exit_code == 0, recorded.output
     assert json.loads(recorded.output) == {"v": 1}
     listed = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
@@ -467,7 +469,6 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, ch
     assert len(document["decisions"]) == 1
     [row] = document["route_validations"]
     assert row.pop("validation_id") and row.pop("at")
-    check = {key: value for key, value in check.items() if key != "routing_disabled"}
     assert row == {
         "v": session_log.SCHEMA_VERSION,
         "type": session_log.ROUTE_VALIDATION_TYPE,

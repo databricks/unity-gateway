@@ -250,6 +250,9 @@ async function runExtension(t, options, { joinFails = false, config = {}, appPid
     "app-state.mjs",
     "app-host.mjs",
     "app-proxy.mjs",
+    "app-windows.mjs",
+    "app-debug.mjs",
+    "app-system-proxy.mjs",
     "app-seat-relay.mjs",
     "app-seat-redirect.mjs",
   ]) {

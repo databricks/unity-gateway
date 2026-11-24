@@ -85,12 +85,12 @@ test("macOS: a manual proxy without a loopback exception, PAC and auto-discovery
   assert.equal(loopbackProxyCapture({ env: {}, platform: "linux", scutil: SCUTIL_PAC }).captured, false);
 });
 
-test("Windows: only <-loopback>, a PAC URL or auto-detect capture; a plain manual proxy leaves loopback alone", () => {
+test("Windows: only <-loopback> or a PAC captures; a plain manual proxy and the default auto-detect leave loopback alone", () => {
   const windows = (reg, connections = null) => loopbackProxyCapture({ env: {}, platform: "win32", reg, connections });
   assert.equal(windows(REG_MANUAL).captured, false);
   assert.equal(windows(REG_LOOPBACK).reason, "a Windows proxy that includes loopback");
   assert.equal(windows(REG_PAC).reason, "a Windows PAC proxy");
-  assert.equal(windows(REG_OFF, CONNECTIONS("09")).reason, "Windows proxy auto-detection");
+  assert.equal(windows(REG_OFF, CONNECTIONS("09")).captured, false);
   assert.equal(windows(REG_OFF, CONNECTIONS("05")).reason, "a Windows PAC proxy");
   assert.equal(windows(REG_OFF, CONNECTIONS("01")).captured, false);
   assert.equal(windows(null).captured, false);
@@ -131,4 +131,53 @@ test("detectLoopbackProxy runs the platform's tool once, bounded, and a failure 
     run: async (command, args) => (args.includes("/v") ? CONNECTIONS("01") : REG_LOOPBACK),
   });
   assert.equal(windows.reason, "a Windows proxy that includes loopback");
+});
+
+test("Windows asks the system resolver about the relay's own URL, and falls back to the registry when it fails", async () => {
+  const reg = async (command, args) => (args.includes("/v") ? CONNECTIONS("05") : REG_PAC);
+  const check = (resolve) => detectLoopbackProxy({ env: {}, platform: "win32", run: reg, port: 4242, resolve });
+
+  // A PAC that leaves loopback alone: the registry alone would have skipped.
+  const bypassed = await check(async (url) => (assert.equal(url, "http://127.0.0.1:4242/"), { proxy: null, bypassed: true }));
+  assert.equal(bypassed.captured, false);
+  assert.deepEqual(bypassed.decision, {
+    registry: { captured: true, reason: "a Windows PAC proxy" },
+    resolver: { proxy: null, bypassed: true },
+  });
+
+  const routed = await check(async () => ({ proxy: "http://proxy.corp:3128", bypassed: false }));
+  assert.equal(routed.captured, true);
+  assert.equal(routed.reason, "the Windows proxy settings route loopback through proxy.corp:3128");
+
+  const failed = await check(async () => ({ proxy: null, bypassed: false, error: "ETIMEDOUT" }));
+  assert.equal(failed.captured, true);
+  assert.equal(failed.reason, "a Windows PAC proxy");
+  assert.equal(failed.decision.resolver.error, "ETIMEDOUT");
+
+  // An explicit <-loopback> stands: the resolver always bypasses loopback, whatever the settings say.
+  const loopback = await detectLoopbackProxy({
+    env: {},
+    platform: "win32",
+    run: async (command, args) => (args.includes("/v") ? CONNECTIONS("01") : REG_LOOPBACK),
+    port: 4242,
+    resolve: async () => assert.fail("not asked"),
+  });
+  assert.equal(loopback.reason, "a Windows proxy that includes loopback");
+
+  // An unreadable registry still asks the resolver.
+  const noRegistry = await detectLoopbackProxy({
+    env: {},
+    platform: "win32",
+    run: async () => {
+      throw Object.assign(new Error("spawn reg.exe ENOENT"), { code: "ENOENT" });
+    },
+    port: 4242,
+    resolve: async () => ({ proxy: "http://proxy.corp:3128", bypassed: false }),
+  });
+  assert.equal(noRegistry.reason, "the Windows proxy settings route loopback through proxy.corp:3128");
+
+  // Without a port there is nothing to ask about, so the registry decides.
+  const noPort = await detectLoopbackProxy({ env: {}, platform: "win32", run: reg, resolve: async () => assert.fail("no port") });
+  assert.equal(noPort.reason, "a Windows PAC proxy");
+  assert.deepEqual(noPort.decision.resolver, null);
 });

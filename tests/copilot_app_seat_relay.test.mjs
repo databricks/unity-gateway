@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { after, before, beforeEach, test } from "node:test";
 
 import {
+  classifyDenial,
   AI_GATEWAY_TOKEN_HEADER,
   COPILOT_API_HOST_HEADER,
   GATEWAY_ROUTES,
@@ -230,6 +231,82 @@ test("the relay's own calls follow the proxy variables, in either case, and NO_P
   assert.equal(gateway.requests.length, 4);
 });
 
+// A proxy that answers every request with 407.
+class AuthProxy {
+  constructor() {
+    this.server = http.createServer((req, res) => {
+      res.writeHead(407, { "proxy-authenticate": "Basic realm=corp", "content-length": "0" });
+      res.end();
+    });
+  }
+
+  listen() {
+    return new Promise((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+  }
+
+  get url() {
+    return `http://127.0.0.1:${this.server.address().port}`;
+  }
+
+  close() {
+    this.server.closeAllConnections();
+    return new Promise((resolve) => this.server.close(resolve));
+  }
+}
+
+test("without proxy variables each upstream follows the system proxy the OS names for it", async (t) => {
+  const corporate = new FakeProxy();
+  const other = new FakeProxy();
+  await Promise.all([corporate.listen(), other.listen()]);
+  t.after(() => Promise.all([corporate.close(), other.close()]));
+  const asked = [];
+  const systemProxy = async (origin) => {
+    asked.push(origin);
+    if (origin === new URL(gateway.base).origin) return { proxy: corporate.url, bypassed: false };
+    return { proxy: null, bypassed: true };
+  };
+
+  await start({ env: {}, systemProxy });
+  assert.equal((await call("/chat/completions", { method: "POST", body: "{}" })).status, 200);
+  assert.equal((await call("/agents/swe/internal/memory/v0/enabled")).status, 200);
+  assert.deepEqual(corporate.requests, [`${gateway.base}/ai-gateway/openai/v1/chat/completions`]);
+  assert.equal(copilot.requests.length, 1);
+  assert.equal(gateway.last.headers[AI_GATEWAY_TOKEN_HEADER], "Bearer dbx-1");
+  assert.deepEqual(new Set(asked), new Set([new URL(gateway.base).origin, new URL(copilot.base).origin]));
+
+  // Two different proxies: two agents, one per proxy.
+  await start({
+    env: {},
+    systemProxy: async (origin) => ({ proxy: origin === new URL(gateway.base).origin ? corporate.url : other.url, bypassed: false }),
+  });
+  assert.equal((await call("/meta")).status, 200);
+  assert.equal((await call("/agents/swe/internal/memory/v0/enabled")).status, 200);
+  assert.equal(corporate.requests.length, 2);
+  assert.deepEqual(other.requests, [`${copilot.base}/agents/swe/internal/memory/v0/enabled`]);
+
+  // The variables win over the system settings.
+  await start({ env: { HTTP_PROXY: other.url }, systemProxy: async () => assert.fail("env proxies decide first") });
+  assert.equal((await call("/meta")).status, 200);
+  assert.equal(other.requests.length, 2);
+});
+
+test("a proxy that wants credentials is a 400 that says so, not a retry", async (t) => {
+  const proxy = new AuthProxy();
+  await proxy.listen();
+  t.after(() => proxy.close());
+
+  await start({ env: {}, systemProxy: async () => ({ proxy: proxy.url, bypassed: false }) });
+  const gatewayCall = await call("/chat/completions", { method: "POST", body: "{}" });
+  assert.equal(gatewayCall.status, 400);
+  assert.match((await json(gatewayCall)).error.message, /system proxy requires authentication/);
+  assert.equal(token.invalidated, 0);
+  assert.equal(gateway.requests.length, 0);
+  const direct = await call("/agents/swe/internal/memory/v0/enabled");
+  assert.equal(direct.status, 400);
+  assert.match((await json(direct)).error.message, /GitHub Copilot couldn't be reached: the system proxy requires authentication/);
+  assert.deepEqual(observed.map((event) => event.status), [407, 407]);
+});
+
 test("inference goes to the gateway with the GitHub token, the swap header and the relay headers", async () => {
   const body = JSON.stringify({ model: "gpt-5", input: "hi" });
   const response = await call("/responses", {
@@ -387,20 +464,74 @@ test("a gateway 403 becomes a 400 carrying the gateway's message", async () => {
   assert.equal(response.status, 400);
   assert.deepEqual(await json(response), {
     type: "error",
-    error: { type: "invalid_request_error", message: "Model gpt-5 is not allowed." },
+    error: { type: "invalid_request_error", message: "Model gpt-5 is not allowed.", source: "gateway" },
   });
-  assert.equal(gateway.requests.length, 2);
-  assert.deepEqual(observed, [{ route: "gateway", method: "POST", path: "/responses", status: 403 }]);
+  // A policy denial is final: no token refresh and no second gateway call.
+  assert.equal(gateway.requests.length, 1);
+  assert.equal(token.invalidated, 0);
+  assert.deepEqual(observed, [
+    { route: "gateway", method: "POST", path: "/responses", status: 403, denial: "gateway" },
+  ]);
 });
 
-test("a 403 without a Databricks error body gets the generic denial", async () => {
+test("a 403 that may be a stale token is retried once", async () => {
+  gateway.reply = (req, res) => {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error_code: "UNAUTHENTICATED", message: "expired" }));
+  };
+  const response = await call("/responses", { method: "POST", body: "{}" });
+
+  assert.equal(response.status, 400);
+  assert.equal((await json(response)).error.message, "expired");
+  assert.equal(gateway.requests.length, 2);
+  assert.equal(token.invalidated, 1);
+});
+
+for (const [name, body, type] of [
+  ["text", "unauthorized: not authorized to use this Copilot feature\n", "text/plain"],
+  [
+    "json",
+    JSON.stringify({
+      message: "unauthorized: not authorized to use this Copilot feature",
+      documentation_url: "https://docs.github.com/rest",
+    }),
+    "application/json",
+  ],
+]) {
+  test(`a GitHub 403 passed through by the gateway reads as GitHub's (${name})`, async () => {
+    // The catalog routes pass GitHub's 403 through raw; it is GitHub's policy, not ours.
+    gateway.reply = (req, res) => {
+      res.writeHead(403, { "content-type": type });
+      res.end(body);
+    };
+    const response = await call("/models");
+
+    assert.equal(response.status, 400);
+    assert.deepEqual((await json(response)).error, {
+      type: "invalid_request_error",
+      message:
+        "GitHub Copilot denied this request: unauthorized: not authorized to use this Copilot " +
+        "feature. Check your Copilot CLI policy setting at https://github.com/settings/copilot.",
+      source: "github",
+    });
+    assert.equal(gateway.requests.length, 1);
+    assert.equal(token.invalidated, 0);
+    assert.deepEqual(observed, [{ route: "gateway", method: "GET", path: "/models", status: 403, denial: "github" }]);
+  });
+}
+
+test("a 403 without a readable error body gets the generic denial, after one retry", async () => {
   gateway.reply = (req, res) => {
     res.writeHead(403, { "content-type": "text/html" });
     res.end("<h1>forbidden</h1>");
   };
   const response = await call("/meta");
   assert.equal(response.status, 400);
-  assert.match((await json(response)).error.message, /denied this request/);
+  const { error } = await json(response);
+  assert.match(error.message, /denied this request/);
+  assert.equal(error.source, "unknown");
+  assert.equal(gateway.requests.length, 2);
+  assert.equal(token.invalidated, 1);
 });
 
 test("a failed Databricks mint is a 400 with the hint, before anything reaches the gateway", async () => {
@@ -787,11 +918,26 @@ test("isNormalizedPath rejects escapes, fragments, backslashes and dot or empty 
   }
 });
 
+test("classifyDenial tells a Databricks, a GitHub and an unreadable 403 body apart", () => {
+  const dbx = classifyDenial(Buffer.from(JSON.stringify({ error_code: "PERMISSION_DENIED", message: "no" })));
+  assert.deepEqual(dbx, { source: "gateway", message: "no", final: true });
+  assert.equal(classifyDenial(Buffer.from(JSON.stringify({ error_code: "UNAUTHENTICATED", message: "x" }))).final, false);
+  const github = classifyDenial(Buffer.from("unauthorized:  not authorized to use this Copilot feature.\n"));
+  assert.equal(github.source, "github");
+  assert.equal(github.final, true);
+  assert.match(github.message, /^GitHub Copilot denied this request: unauthorized: not authorized to use this Copilot feature\. Check/);
+  assert.equal(classifyDenial(Buffer.from(JSON.stringify({ message: "no code" }))).source, "github");
+  const long = classifyDenial(Buffer.from("x".repeat(400))).message;
+  assert.equal(long.includes("x".repeat(300)) && !long.includes("x".repeat(301)), true);
+  for (const bad of [null, Buffer.alloc(0), Buffer.from("<html>"), Buffer.from("line\ntwo"), Buffer.from(JSON.stringify({ error_code: 7, message: "m" }))]) {
+    assert.deepEqual(classifyDenial(bad), { source: "unknown", message: gatewayDenialMessage(null), final: false }, String(bad));
+  }
+});
+
 test("gatewayDenialMessage reads a Databricks error body and falls back otherwise", () => {
   assert.equal(gatewayDenialMessage(Buffer.from(JSON.stringify({ error_code: "X", message: "no" }))), "no");
   const generic = gatewayDenialMessage(null);
   assert.match(generic, /denied this request/);
-  assert.equal(gatewayDenialMessage(Buffer.from(JSON.stringify({ message: "no code" }))), generic);
   assert.equal(gatewayDenialMessage(Buffer.from(JSON.stringify({ error_code: "X", message: "" }))), generic);
   assert.equal(gatewayDenialMessage(Buffer.from("<html>")), generic);
   assert.equal(gatewayDenialMessage(Buffer.alloc(65 * 1024, 32)), generic);
