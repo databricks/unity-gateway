@@ -705,16 +705,18 @@ class AgentTerminal(TerminalProcess):
                 # that real permission dialog, but never approve a broader or
                 # mutating command just because a model requested it.
                 project_root = re.escape(str(self.session.cwd.parent))
-                filename = re.escape(task.filename)
-                safe_find = re.search(
-                    rf'(?m)^\s*find {project_root} -name ["\']{filename}["\'] 2>/dev/null\s*$',
+                # SubagentCalculation tasks carry no fixture file, only a marker.
+                filename = getattr(task, "filename", None)
+                safe_find = filename is not None and re.search(
+                    rf'(?m)^\s*find {project_root} -name ["\']{re.escape(filename)}["\']'
+                    r' 2>/dev/null\s*$',
                     screen,
                 )
                 first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes\s*$", screen)
                 assert self.agent == "claude" and safe_find and first_yes, (
                     "Agent requested an unrecognized tool permission:\n" + screen
                 )
-                self.send("\r", f"allow read-only search for {task.filename}")
+                self.send("\r", f"allow read-only search for {filename}")
                 permission_in_progress = True
                 return False
             if self.approve_windows_command(screen):

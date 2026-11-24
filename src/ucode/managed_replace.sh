@@ -41,6 +41,12 @@ target_is_allowed() {
         "linux:/etc/claude-code/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/register.ts"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-smart-router-recipe/.claude-plugin/plugin.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-smart-router-recipe/hooks/hooks.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-smart-router-recipe/hooks/register.ts"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-smart-router-recipe/hooks/constants.ts"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-smart-router-recipe/hooks/extra-body.ts"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-smart-router-recipe/hooks/routing-state.ts"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
         "macos:/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"|\
         "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
@@ -54,7 +60,13 @@ target_is_allowed() {
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/hooks.json"|\
-        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/register.ts") return 0 ;;
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/register.ts"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-smart-router-recipe/.claude-plugin/plugin.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-smart-router-recipe/hooks/hooks.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-smart-router-recipe/hooks/register.ts"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-smart-router-recipe/hooks/constants.ts"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-smart-router-recipe/hooks/extra-body.ts"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-smart-router-recipe/hooks/routing-state.ts") return 0 ;;
         *) return 1 ;;
     esac
 }
