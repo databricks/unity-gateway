@@ -355,6 +355,15 @@ class TestCujAutoModelPicker(BaseCujTest):
             alternate = next(
                 model for model in configs[CODEX]["models"]["model_services"] if model != default
             )
+            catalog = session.app_server_handshake(
+                ["app-server", "--listen", "stdio://"],
+                request=("model/list", {"cursor": None, "limit": 1000, "includeHidden": False}),
+                name="codex-auto-model-labels",
+            )["result"]["data"]
+            alternate_label = next(
+                row["displayName"] for row in catalog if row["model"] == alternate
+            )
+            assert alternate_label != alternate
             evidence = SessionEvidence(session.home, CODEX)
             recorder.prepare_launch()
             with Terminal(session, "codex-auto-picker", [CODEX]) as tui:
@@ -377,7 +386,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                     "Auto above all regular models in Codex's picker",
                 )
                 tui.choose("Select", "Auto")
-                tui.choose("Main model", alternate)
+                tui.choose("Main model", alternate_label)
                 tui.wait_for(
                     lambda screen: (
                         f"Auto ({alternate})" in screen and "smart router on" in screen.lower()

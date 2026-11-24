@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
@@ -292,6 +293,15 @@ class CodexAutoPicker:
             model = selection
             if selection == AUTO_MODEL:
                 ordered = sorted(self.models, key=lambda name: name != self.main_model)
+                names = {}
+                for name in ordered:
+                    display = self.models[name].get("displayName")
+                    names[name] = display if isinstance(display, str) and display else name
+                counts = Counter(names.values())
+                labels = {
+                    f"{display} ({name})" if counts[display] > 1 else display: name
+                    for name, display in names.items()
+                }
                 answer = await self.ask(
                     {
                         "id": "auto_main_model",
@@ -300,15 +310,18 @@ class CodexAutoPicker:
                         "isOther": False,
                         "isSecret": False,
                         "options": [
-                            {"label": name, "description": self.models[name].get("description", "")}
-                            for name in ordered
+                            {
+                                "label": label,
+                                "description": self.models[name].get("description", ""),
+                            }
+                            for label, name in labels.items()
                         ],
                     }
                 )
                 if not answer:
                     return
-                model = answer[0]
-                if len(answer) != 1 or model not in self.models:
+                model = labels.get(answer[0]) if len(answer) == 1 else None
+                if model is None:
                     raise ValueError("Select a model from the offered Auto catalog.")
                 if self.turn_id and model != self.main_model:
                     answer = await self.ask(
@@ -321,7 +334,7 @@ class CodexAutoPicker:
                             "options": [
                                 {
                                     "label": "Switch model",
-                                    "description": f"Use {model} for the main agent.",
+                                    "description": f"Use {answer[0]} for the main agent.",
                                 },
                                 {
                                     "label": "Cancel",
