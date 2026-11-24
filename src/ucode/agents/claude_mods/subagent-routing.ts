@@ -13,7 +13,7 @@ export type RoutingExplanation = {
   formula?: string
 }
 type RoutingRecord = {
-  name: string; task: string; title: string; model: string; rationale: string; seconds?: number
+  name: string; title: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
 }
 
@@ -255,7 +255,9 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
   return lines
 }
 
-// A grouped call's decision: its task, then the selection.
+// A grouped call's decision: its task, then the selection. The task is the neutral title, not
+// the model-written description, which can name the model the parent asked for even though
+// routing overrode it.
 const card = ($: any, e: any, record: RoutingRecord) => {
   const { Box, Text } = $.ui.resolve(e)
   return Box({
@@ -264,7 +266,7 @@ const card = ($: any, e: any, record: RoutingRecord) => {
     marginBottom: 1,
     children: [
       Text({ bold: true, children: [taskLabel(record)] }),
-      Text({ dimColor: true, children: ['Task request: ', record.task] }),
+      Text({ dimColor: true, children: ['Task request: ', record.title] }),
       ...selection($, e, record, '↳ ', 2),
     ],
   })
@@ -365,7 +367,6 @@ async function routeCall($: any, e: any): Promise<void> {
     if (route) {
       records.set(tool_use_id, {
         name: names.get(tool_use_id)!,
-        task: input.description || input.subagent_type || tool,
         title: taskTitle(input),
         model: route.model,
         rationale: route.rationale,
@@ -449,15 +450,18 @@ export const registerSubagentRouting = (
     return result
   })
 
-  // A launch that differs from the selection is called out in the native notice.
+  // The native notice quotes the recorded description, which can name the model the parent
+  // asked for; the receipt's label replaces it at render time, and a differing launch is flagged.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
-    if (!saved || !differs(saved.selected, saved.launched)) return next(e)
-    return next({ ...e, props: { ...e.props,
-      text: `${e.props.text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}`,
-    } })
+    if (!saved || typeof e.props.text !== 'string') return next(e)
+    const text = e.props.text.includes(saved.description)
+      ? e.props.text.replaceAll(saved.description, receiptLabel(saved)) : e.props.text
+    const flagged = differs(saved.selected, saved.launched)
+      ? `${text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}` : text
+    return flagged === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text: flagged } })
   })
 
   // The agent list reads the launch receipt rather than the prediction.
@@ -504,7 +508,7 @@ export const registerSubagentRouting = (
     }
     if (grouped.has(e.requestId)) return original
     return Box({ flexDirection: 'column', children: [original,
-      Text({ dimColor: true, children: ['  Task request: ', record.task] }),
+      Text({ dimColor: true, children: ['  Task request: ', record.title] }),
       ...selection($, e, record, '  ↳ ', 4),
     ] })
   })

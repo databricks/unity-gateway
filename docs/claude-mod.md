@@ -47,14 +47,16 @@ passes the stream and the `tool.call` input unchanged, including when
 is applied at `agent.spawn`. Parallel Agent calls route as the host dispatches their
 `tool.call` events, which it runs concurrently for calls written in one reply. A lone tool
 row displays `<animal> · <model> · <task>` through `ui.render`, without changing the call.
-The task title comes from the first sentence of the prompt.
+The task title comes from the first sentence of the prompt. A model-written description can
+name the model the parent asked for even though routing overrode it, so no mod surface
+prints it: routing cards and rows quote the neutral title, and the completed-task notice is
+rewritten at render time to quote the routed label.
 The selected model is a prediction until the child starts. Routing cards, the agent list and
 completed-task notices use the spawn receipt and flag a mismatch with `⚠ selected <model>`.
-Claude's collapsed parallel-agent header is not exposed to that hook, and the recorded call
-keeps the description Claude wrote, so that header, the transcript after a resume, a
-completed-task notice whose launch matches the selection, and other views of the recorded
-description (task-list entries read it the same way) show Claude's own text; only the lone
-row and a model mismatch carry the routed label. This gives up the
+Claude's collapsed parallel-agent header is not exposed to any hook, and the recorded call
+keeps the description Claude wrote, so those rows and the transcript after a resume —
+including views that read recorded descriptions, such as task-list entries — show Claude's
+own text, which may name the requested model. This gives up the
 `<animal> · <model> · <task>` headings #1784 wrote into the recorded call in exchange for
 never changing an Agent call after auto mode has reviewed it.
 A host that reports no launch model is logged and its labels are not saved. Session-scoped

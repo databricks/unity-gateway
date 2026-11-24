@@ -331,7 +331,9 @@ test('a lone call ignores extra updatedInput and keeps its decision under its ow
   for (const [id, model] of [['call-a', 'claude-sonnet-5'], ['call-b', 'claude-opus-4-8']]) {
     const done = await $.ui.mount(row(id));
     expect(await done.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
-    expect(await done.find({ type: 'Text', text: `  Task request: ${originalInput.description}` })).toBeDefined();
+    // The task line quotes the neutral title, never the description's requested model.
+    expect(await done.find({ type: 'Text', text: `  Task request: ${originalInput.prompt}` })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: originalInput.description })).toBeUndefined();
     expect(await done.find({ type: 'Text', text: '  ↳ Selected Model: ' })).toBeDefined();
     expect(await done.find({ type: 'Text', text: model })).toBeDefined();
     expect(await done.find({ type: 'Text', text: new RegExp(`Selected for ${id}`) })).toBeDefined();
@@ -899,7 +901,9 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   expect(await cards.findAll({ type: 'Text', text: '↳ Selected Model: ' })).toHaveLength(3);
   expect(await cards.findAll({ type: 'Text', text: / — routed-model \(selected, launch pending\)$/ })).toHaveLength(3);
   for (const call of calls) {
-    expect(await cards.find({ type: 'Text', text: `Task request: ${call.description}` })).toBeDefined();
+    // The card names the neutral task, never the model the description asked for.
+    expect(await cards.find({ type: 'Text', text: `Task request: inspect the parser` })).toBeDefined();
+    expect(await cards.find({ type: 'Text', text: call.description })).toBeUndefined();
     const event = row(call.tool_use_id);
     const pendingRow = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
     expect(displayed.get(call.tool_use_id).input).toEqual({ ...call,
@@ -924,6 +928,15 @@ test('routed joke titles use the selected model without rewriting reviewed argum
     await ui.unmount();
   }
   expect(spawned.map(s => s.description)).toEqual(calls.map(call => call.description));
+  // The completed notice quotes the routed label, not the model-written description.
+  const notice = { ...panel, component: 'UserMessage' as const, requestId: 'notice-child-joke-0',
+    props: { text: `Agent "Joke from Sonnet" finished`, origin: { kind: 'task-notification' as const },
+      task: { id: 'child-joke-0', status: 'completed', toolUseId: 'joke-0', durationMs: 1 }, isExpanded: false } };
+  const reported = await $.ui.mount(notice);
+  expect(displayed.get('notice-child-joke-0').text)
+    .toMatch(/^Agent "[A-Z][a-z]+(?: 2)? · routed-model · inspect the parser" finished$/);
+  expect(displayed.get('notice-child-joke-0').text).not.toContain('Joke from');
+  await reported.unmount();
   for (const input of [undefined, null, false, 42, 'native input', []]) {
     const event = row(calls[0].tool_use_id);
     const ui = await $.ui.mount({ ...event, props: { ...event.props, input } });
@@ -1016,10 +1029,16 @@ test('completed notification labels restore per child and render without storage
   };
   const { plugin: _plugin, ...expected } = notice;
   const counts = [idReads, fileReads, environmentReads];
+  // The notice quotes the routed label; the description's requested model is not printed.
+  const flagged = /^Agent "[A-Z][a-z]+(?: 2)? · launched-model · inspect the parser ⚠ selected selected-model" finished\n⚠ Launched on launched-model, not the selected selected-model$/;
+  let quoted = '';
   for (let index = 0; index < 3; index++) {
     const ui = await $.ui.mount(notice);
-    expect(await ui.find({ type: 'Text', text: `${notice.props.text}\n⚠ Launched on launched-model, not the selected selected-model` })).toBeDefined();
-    expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props, text: `${notice.props.text}\n⚠ Launched on launched-model, not the selected selected-model` } });
+    const text = renders[renders.length - 1].props.text;
+    expect(text).toMatch(flagged);
+    expect(await ui.find({ type: 'Text', text })).toBeDefined();
+    quoted ||= text;
+    expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props, text: quoted } });
     await ui.unmount();
   }
   expect([idReads, fileReads, environmentReads]).toEqual(counts);
@@ -1084,7 +1103,7 @@ test('completed notification labels restore per child and render without storage
   const failed = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear', status: 'failed' },
   } });
-  expect(renders[renders.length - 1].props.text).toBe(`${notice.props.text}\n⚠ Launched on launched-model, not the selected selected-model`);
+  expect(renders[renders.length - 1].props.text).toMatch(/^Agent "[A-Z][a-z]+(?: 2)? · launched-model · inspect the parser ⚠ selected selected-model" finished\n⚠ Launched on launched-model, not the selected selected-model$/);
   await failed.unmount();
   await $.session.end({ reason: 'resume' });
   const retained = await $.ui.mount({ ...notice, props: { ...notice.props,

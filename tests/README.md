@@ -198,8 +198,11 @@ description unchanged when routing is off.
 Native routing components check that the streamed parent reply preserves all Agent and
 non-Agent arguments and chunk boundaries, whether the server-review environment variable is
 unset or set. Each Agent call is routed at tool execution without rewriting its input. Lone
-rows show the model through rendering only; Claude's collapsed parallel header keeps its native
-description. Cards, the agent list and completed-task notices show the launched model and flag
+rows show the model through rendering only; cards and rows quote the neutral task title and
+the completed-task notice quotes the routed label, so a description that names the requested
+model is never printed — Claude's collapsed parallel header, which keeps its native
+description, is the exception. Cards, the agent list and completed-task notices show the
+launched model and flag
 a mismatch, a missing launch model is not persisted, and saved receipts are restored per child
 on resume. The agent-list assertions run only where Claude has that row (2.1.328 and later).
 Native auto-mode cases retain their approval/denial and zero fallback-classification assertions.
