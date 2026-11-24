@@ -286,9 +286,13 @@ def test_footer_names_auto_main_model_only_for_auto_session(tmp_path, monkeypatc
     controls.write_text("{}")
     controls.with_suffix(".auto.json").write_text('{"model":"gpt-two"}')
     monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
-    state = {"thread": {"model": {"id": "gpt-two"}}}
-    assert "Auto (gpt-two)" in _labels(statusline.render(state))
+    state = {"thread": {"model": {"id": "gpt-one"}}}
+    assert "Auto (gpt-one)" in _labels(statusline.render(state))
+    controls.with_suffix(".auto.json").unlink()
+    assert "Auto" not in _labels(statusline.render(state))
+    controls.with_suffix(".auto.json").write_text("{")
+    assert "Auto" not in _labels(statusline.render(state))
     set_session_environment(
         {ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"}
     )
-    assert "Auto (gpt-two)" not in _labels(statusline.render(state))
+    assert "Auto" not in _labels(statusline.render(state))

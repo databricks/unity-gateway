@@ -51,10 +51,6 @@ class CodexAutoPicker:
         self.saved_model: str | None = None
         self.upload_tasks: set[asyncio.Task] = set()
 
-    @property
-    def enabled(self) -> bool:
-        return session_routing_enabled(self.router.controls)
-
     async def ui_enabled(self) -> bool:
         try:
             return await asyncio.to_thread(session_routing_enabled, self.router.controls)
@@ -267,7 +263,7 @@ class CodexAutoPicker:
     async def ask(self, question: dict) -> list[str] | None:
         assert self.thread_id is not None
         # Picker prompts are independent of inference turns and must also work before the first prompt.
-        return await self.inputs.ask(self.thread_id, "", question)
+        return await self.inputs.ask(self.thread_id, f"ug-auto-{uuid4().hex}", question)
 
     async def route(self, action: str, reason: str | None = None) -> dict:
         arguments = {"action": action}
@@ -374,7 +370,7 @@ class CodexAutoPicker:
                 result = await self.route("off", reason)
                 if result.get("validation_error"):
                     raise ValueError(result["message"])
-            if self.enabled != (selection == AUTO_MODEL):
+            if await self.ui_enabled() != (selection == AUTO_MODEL):
                 raise ValueError(result.get("message", "Could not change Smart Router state."))
             if result.get("delivery") == "pending":
                 task = asyncio.create_task(self.report_delivery(result["feedback_id"]))
@@ -433,11 +429,8 @@ class CodexAutoPicker:
         finally:
             self.busy = False
             settings = self.settings.copy()
-            try:
-                if self.enabled:
-                    settings["model"] = AUTO_MODEL
-            except (OSError, ValueError):
-                pass
+            if await self.ui_enabled():
+                settings["model"] = AUTO_MODEL
             if {
                 "approvalPolicy",
                 "approvalsReviewer",

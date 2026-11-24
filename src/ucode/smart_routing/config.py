@@ -104,6 +104,12 @@ _ROUTING_OFF = {
     ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
 }
 
+_AUTO_V0 = {
+    **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+}
+
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
 _VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
@@ -141,23 +147,11 @@ _VERSIONS = {
         AGENT_CODEX: _ROUTING_OFF,
     },
     SUBAGENT_AUTO_V0: {
-        AGENT_CLAUDE: {
-            **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
-            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
-            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
-        },
-        AGENT_CODEX: {
-            **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
-            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
-            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
-        },
+        AGENT_CLAUDE: _AUTO_V0,
+        AGENT_CODEX: _AUTO_V0,
     },
     SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
-        AGENT_CLAUDE: {
-            **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
-            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
-            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
-        },
+        AGENT_CLAUDE: _AUTO_V0,
         AGENT_CODEX: _ROUTING_OFF,
     },
 }

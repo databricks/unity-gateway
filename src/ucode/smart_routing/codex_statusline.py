@@ -99,13 +99,11 @@ def render(state: dict[str, Any]) -> dict:
     model_name = model.get("display_name") or model.get("id") or "Codex"
     if controls and label == "ON":
         try:
-            state = json.loads(auto_state_path(Path(controls)).read_text())
-            main = state.get("model") if isinstance(state, dict) else None
-            model_name = f"Auto ({main})" if isinstance(main, str) and main else "Auto"
-        except FileNotFoundError:
-            pass
+            auto_state = json.loads(auto_state_path(Path(controls)).read_text())
+            if isinstance(auto_state, dict):
+                model_name = f"Auto ({model.get('id') or model_name})"
         except (OSError, ValueError):
-            model_name = "Auto"
+            pass
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
     children = [_router_indicator(label), _text(model_name, "status-model")]
