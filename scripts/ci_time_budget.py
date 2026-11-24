@@ -17,9 +17,11 @@ def main() -> int:
     parser.add_argument("--changed-files", default="")
     args = parser.parse_args()
 
-    budget = json.loads(args.budgets.read_text(encoding="utf-8"))[args.workflow][args.job][
-        args.name
-    ]
+    budgets = json.loads(args.budgets.read_text(encoding="utf-8"))
+    budget = budgets.get(args.workflow, {}).get(args.job, {}).get(args.name)
+    if budget is None:
+        print(f"::error::No time budget for {args.workflow}/{args.job}/{args.name}")
+        return 1
     times = {
         "setup": args.run_started - args.started,
         "run": args.ended - args.run_started,

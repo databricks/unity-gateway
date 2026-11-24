@@ -123,7 +123,6 @@ def test_dependency_changes_make_overruns_a_notice(tmp_path):
     (repo / "pyproject.toml").write_text("version = '1'\n")
     subprocess.run(["git", "-C", str(repo), "add", "pyproject.toml"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
-    base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     (repo / "pyproject.toml").write_text("version = '2'\n")
     subprocess.run(["git", "-C", str(repo), "commit", "-qam", "change dependencies"], check=True)
     changed = subprocess.check_output(
@@ -133,7 +132,7 @@ def test_dependency_changes_make_overruns_a_notice(tmp_path):
             str(repo),
             "diff",
             "--name-only",
-            base,
+            "HEAD^1",
             "HEAD",
             "--",
             "uv.lock",
@@ -187,7 +186,7 @@ def test_blocking_jobs_do_not_suppress_budget_failures():
         assert "if: ${{ github.event_name == 'pull_request' && !cancelled() }}" in check
         assert "continue-on-error:" not in check
         if workflow != "user-journey-test-required":
-            assert 'git diff --name-only "$BUDGET_BASE" HEAD -- uv.lock pyproject.toml' in check
+            assert "git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml" in check
             assert '--changed-files "$changed"' in check
         jobs = dict(
             re.findall(
@@ -278,7 +277,7 @@ def test_every_dynamic_ci_shard_has_a_budget():
 def test_budget_steps_do_not_run_in_merge_queue():
     for workflow in ("ci", "security-gate", "publish-skills-test", "zizmor"):
         current = (WORKFLOWS / f"{workflow}.yml").read_text(encoding="utf-8")
-        _merge_queue_shape(current)
+        assert _merge_queue_shape(current), workflow
 
 
 def _merge_queue_shape(source):
@@ -414,6 +413,11 @@ def test_budget_steps_do_not_inherit_job_level_secrets():
         check = source.split("name: Check this job's time budget\n", 1)[1].split("\n      - ", 1)[0]
         cleared_at_start = set(re.findall(r"(?m)^          ([A-Z_]+): ''$", secret_free))
         cleared_at_check = set(re.findall(r"(?m)^          ([A-Z_]+): ''$", check))
+        if workflow == "integration":
+            configure = (ROOT / "scripts/cowork-inference/configure.ps1").read_text()
+            exported = set(re.findall(r'"([A-Z_]*PAT)=\$pat"', configure))
+            assert exported == {"UG_COWORK_PAT"}
+            assert exported <= cleared_at_check
         jobs = dict(
             re.findall(
                 r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
@@ -497,3 +501,118 @@ def test_over_budget_with_changed_dependency_files_is_a_notice(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "::notice::" in result.stdout
+
+
+def test_budget_diff_uses_merge_parent_when_recorded_base_moved(tmp_path):
+    import shlex
+
+    repo = tmp_path / "source"
+    subprocess.run(["git", "init", "-q", "-b", "ci-base", str(repo)], check=True)
+    for key, value in (("user.name", "CI Test"), ("user.email", "ci-test@example.invalid")):
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+    (repo / "pyproject.toml").write_text("version = '1'\n")
+    (repo / "note.txt").write_text("before\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+    recorded_base = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "feature"], check=True)
+    (repo / "pyproject.toml").write_text("version = '2'\n")
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "dependency change"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "checkout", "-qb", "moved-main", recorded_base], check=True
+    )
+    (repo / "note.txt").write_text("after\n")
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "advance main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "-q", "--no-ff", "feature", "-m", "merge"], check=True
+    )
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth=2", "--branch=moved-main", repo.as_uri(), str(shallow)],
+        check=True,
+    )
+    missing = subprocess.run(
+        ["git", "-C", str(shallow), "cat-file", "-e", recorded_base], capture_output=True
+    )
+    assert missing.returncode != 0
+    for workflow in ("ci", "integration", "publish-skills-test", "zizmor"):
+        source = (WORKFLOWS / f"{workflow}.yml").read_text(encoding="utf-8")
+        command = re.search(r"changed=\$\((git diff [^)]+)\)", source).group(1)
+        args = [recorded_base if item == "$BUDGET_BASE" else item for item in shlex.split(command)]
+        result = subprocess.run(
+            [args[0], "-C", str(shallow), *args[1:]], text=True, capture_output=True
+        )
+        assert result.returncode == 0, (workflow, result.stderr)
+        assert result.stdout.splitlines() == ["pyproject.toml"]
+
+
+def test_missing_budget_reports_an_actionable_error(tmp_path):
+    budgets = tmp_path / "budgets.json"
+    budgets.write_text("{}")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--budgets",
+            str(budgets),
+            "--workflow",
+            "ci",
+            "--job",
+            "sample",
+            "--name",
+            "new variant",
+            "--started",
+            "100",
+            "--run-started",
+            "110",
+            "--ended",
+            "130",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "::error::" in result.stdout
+    assert "ci/sample/new variant" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_trusted_user_journey_reports_missing_budget(tmp_path):
+    import os
+    import textwrap
+
+    source = (WORKFLOWS / "user-journey-test-required.yml").read_text(encoding="utf-8")
+    check = source.split("      - name: Check this job's time budget\n", 1)[1]
+    python = check.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    budget_dir = tmp_path / "budget-source" / ".github"
+    budget_dir.mkdir(parents=True)
+    (budget_dir / "ci-time-budgets.json").write_text("{}", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(python)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "BUDGET_JOB_STARTED": "100",
+            "BUDGET_RUN_STARTED": "110",
+            "BUDGET_ENDED": "130",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "::error::No time budget for user-journey-test-required" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_trusted_gate_accounts_for_budget_checkout_in_setup():
+    workflow = (WORKFLOWS / "user-journey-test-required.yml").read_text(encoding="utf-8")
+    assert workflow.index("name: Read the PR's time budget") < workflow.index(
+        "name: Mark setup done"
+    )
+    assert workflow.index("name: Mark setup done") < workflow.index(
+        "name: Require meaningful user-journey coverage"
+    )

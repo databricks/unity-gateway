@@ -132,9 +132,8 @@ jobs:
           UG_BUDGET_CUJ_SP_CLIENT_ID: ''
           UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
           DATABRICKS_BEARER_COMMAND: ''
-          BUDGET_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          changed=$(git diff --name-only "$BUDGET_BASE" HEAD -- uv.lock pyproject.toml)
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
           python=python3
           if [ "$RUNNER_OS" = Windows ]; then python=python; fi
           "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \
@@ -436,13 +435,13 @@ jobs:
           uv lock
           uv tool install .
           uv sync
+      - *budget-setup-done
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
       # net for any code path we may have missed.
       # Rerun a case once only for live-service timeouts and transient upstream errors;
       # every other failure fails on the first attempt. `-rfER` lists reruns in the summary.
-      - *budget-setup-done
       - run: |
           uv run --no-sync pytest tests/test_e2e.py -v -rfER -k "$TEST_KEYWORD" \
             --reruns 1 --reruns-delay 5 \

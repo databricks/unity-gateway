@@ -979,7 +979,7 @@ def _run_security_gate(
     api_error=None,
 ):
     body = _workflow("security-gate.yml").split("        run: |\n", 1)[1].split("\n      - ", 1)[0]
-    script = textwrap.dedent(body).removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
+    script = textwrap.dedent(body).removeprefix("python3 - <<'PY'\n").removesuffix("PY")
     for key, value in {
         "REPO": "databricks/unity-gateway",
         "PR_NUMBER": pr,

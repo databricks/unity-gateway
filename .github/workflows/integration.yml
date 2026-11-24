@@ -110,6 +110,7 @@ jobs:
           UG_BUDGET_CUJ_SP_CLIENT_ID: ''
           UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
           DATABRICKS_BEARER_COMMAND: ''
+          UG_COWORK_PAT: ''
         run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -170,9 +171,9 @@ jobs:
           UG_BUDGET_CUJ_SP_CLIENT_ID: ''
           UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
           DATABRICKS_BEARER_COMMAND: ''
-          BUDGET_BASE: ${{ github.event.pull_request.base.sha }}
+          UG_COWORK_PAT: ''
         run: |
-          changed=$(git diff --name-only "$BUDGET_BASE" HEAD -- uv.lock pyproject.toml)
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
           python=python3
           if [ "$RUNNER_OS" = Windows ]; then python=python; fi
           "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \

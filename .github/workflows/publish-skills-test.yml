@@ -96,9 +96,8 @@ jobs:
           UG_BUDGET_CUJ_SP_CLIENT_ID: ''
           UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
           DATABRICKS_BEARER_COMMAND: ''
-          BUDGET_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          changed=$(git diff --name-only "$BUDGET_BASE" HEAD -- uv.lock pyproject.toml)
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
           python=python3
           if [ "$RUNNER_OS" = Windows ]; then python=python; fi
           "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \

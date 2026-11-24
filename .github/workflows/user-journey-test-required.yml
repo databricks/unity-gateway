@@ -53,9 +53,6 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Mark setup done
-        if: ${{ github.event_name == 'pull_request' }}
-        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       # The PR checkout supplies only budget data; the gate continues to execute trusted code.
       - name: Read the PR's time budget
         if: ${{ github.event_name == 'pull_request' }}
@@ -66,6 +63,9 @@ jobs:
           sparse-checkout: .github/ci-time-budgets.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
+      - name: Mark setup done
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Require meaningful user-journey coverage
         id: gate
@@ -120,8 +120,10 @@ jobs:
           path = Path('budget-source/.github/ci-time-budgets.json')
           if path.is_symlink() or path.parent.is_symlink():
               raise SystemExit('::error::The budget file must not be a symlink')
-          budget = json.loads(path.read_text(encoding='utf-8'))[
-              'user-journey-test-required']['require-user-journey-test']['User Journey Test Required']
+          budgets = json.loads(path.read_text(encoding='utf-8'))
+          budget = budgets.get('user-journey-test-required', {}).get('require-user-journey-test', {}).get('User Journey Test Required')
+          if budget is None:
+              raise SystemExit('::error::No time budget for user-journey-test-required/require-user-journey-test/User Journey Test Required')
           start, run, end = (int(os.environ[name]) for name in
                              ('BUDGET_JOB_STARTED', 'BUDGET_RUN_STARTED', 'BUDGET_ENDED'))
           times = {'setup': run - start, 'run': end - run, 'total': end - start}
