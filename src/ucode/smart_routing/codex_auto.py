@@ -42,7 +42,8 @@ class CodexAutoPicker:
         self.models: dict[str, dict] = {}
         self.requests: dict[str | int, str] = {}
         self.pending: dict[str, asyncio.Future] = {}
-        self.selections: dict[str | int, str] = {}
+        self.selections: dict[str | int, tuple[str, str | None]] = {}
+        self.default_selection: str | None = None
         self.settings: dict = {}
         self.thread_id: str | None = None
         self.turn_id = ""
@@ -108,7 +109,7 @@ class CodexAutoPicker:
             if isinstance(model, str) and self.main_model and not self.busy:
                 if model == AUTO_MODEL or model in self.models:
                     self.busy = True
-                    self.selections[request_id] = model
+                    self.selections[request_id] = (model, params.get("effort"))
                     # Accept the native menu action before opening a prompt: the TUI awaits this RPC.
                     params["model"] = self.main_model
                     params.pop("effort", None)
@@ -149,7 +150,10 @@ class CodexAutoPicker:
                     and self.main_model
                 ):
                     self.busy = True
-                    self.selections[request_id] = AUTO_MODEL
+                    self.selections[request_id] = (AUTO_MODEL, self.settings.get("effort"))
+                if edit.get("keyPath") == "model_reasoning_effort" and self.default_selection:
+                    self.selections[request_id] = (self.default_selection, edit.get("value"))
+                    self.default_selection = None
                 if edit.get("keyPath") == "model" and (
                     edit.get("value") == AUTO_MODEL or self.busy
                 ):
@@ -158,7 +162,7 @@ class CodexAutoPicker:
                     edit["value"] = self.settings.get("effort")
         return False
 
-    async def observe(self, message: dict) -> tuple[bool, str | None]:
+    async def observe(self, message: dict) -> tuple[bool, tuple[str, str | None] | None]:
         """Consume private replies; otherwise annotate native models/settings in place."""
         request_id = message.get("id")
         is_reply = message.get("method") is None
@@ -249,11 +253,16 @@ class CodexAutoPicker:
                 logging.getLogger(__name__).warning(
                     "Could not update Codex Auto model state: %s", exc
                 )
-        selection = self.selections.pop(request_id, None) if is_reply else None
-        if selection and "error" in message:
+        choice = self.selections.pop(request_id, None) if is_reply else None
+        if choice and "error" in message:
             self.busy = False
-            selection = None
-        return False, selection
+            self.default_selection = None
+            choice = None
+        if choice and choice[1] is None and method is None and self.busy:
+            # Enter saves its effort in a later batch write; the session shortcut sends it here.
+            self.default_selection = choice[0]
+            choice = None
+        return False, choice
 
     async def ask(self, question: dict) -> list[str] | None:
         assert self.thread_id is not None
@@ -290,7 +299,8 @@ class CodexAutoPicker:
         except (OSError, RuntimeError, ConnectionClosed):
             pass
 
-    async def choose(self, selection: str) -> None:
+    async def choose(self, choice: tuple[str, str | None]) -> None:
+        selection, requested_effort = choice
         old_settings = self.settings.copy()
         old_controls = None
         try:
@@ -370,7 +380,7 @@ class CodexAutoPicker:
                 task = asyncio.create_task(self.report_delivery(result["feedback_id"]))
                 self.upload_tasks.add(task)
                 task.add_done_callback(self.upload_tasks.discard)
-            effort = old_settings.get("effort")
+            effort = requested_effort or old_settings.get("effort")
             if effort not in {
                 option["reasoningEffort"] for option in row.get("supportedReasoningEfforts", [])
             }:
