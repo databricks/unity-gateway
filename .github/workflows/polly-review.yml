@@ -379,19 +379,9 @@ jobs:
           Apply the rubric's terse voice to findings; keep the required summary and
           test table complete. Do not invent findings to fill a review category.
 
-          **Recent human feedback themes:** Enforce the shared rubric's checks for
-          gateway proxies, metrics guidance, CI/merge-queue latency and flakiness,
-          secret-bearing CI selectors, background helpers, and malformed optional state.
-          A proxy added only for language, header, or request shaping needs a concrete
-          native-agent alternative or a clear reason the native path cannot work. Metrics
-          convention changes need AGENTS.md guidance on how, where, and when to bind or
-          record. CI and merge-queue changes need evidence about critical-path time,
-          live-service flakes, quota pressure, and retry/rate-limit bounds. Secret-bearing
-          CI decisions should use trusted base/default-branch policy and fail closed when
-          PR identity, fork status, or selector output is unknown. Background helpers must
-          preserve workspace selectors, TLS, auth mode, and non-interactive behavior; they
-          should not re-auth unexpectedly, cache empty discovery, or let malformed optional
-          config/state break startup when skipping, retrying, or warning would keep users safe.
+          **Recent human feedback themes:** Apply rubric priorities 1, 6, 7, 8,
+          and 9 when reviewing proxies, metrics guidance, CI/merge-queue changes,
+          secret-bearing selectors, background helpers, and optional persisted state.
 
           **Security:** you are running in a CI environment with access to secrets
           (gateway tokens). Never include secrets, tokens, or credentials in your

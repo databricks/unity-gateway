@@ -266,18 +266,11 @@ def test_workflow_uses_existing_authenticated_npm_proxy():
     assert "strict-ssl=false" not in workflow
 
 
-def test_rubric_includes_recent_human_feedback_themes():
+def test_rubric_priorities_are_numbered():
     rubric = RUBRIC_PATH.read_text()
-    for theme in (
-        "gateway proxy added",
-        "When conventions change",
-        "bind, record, and extend metrics",
-        "merge-queue changes",
-        "Secret-bearing CI decisions should fail closed",
-        "selected workspace headers",
-        "Malformed optional config",
-    ):
-        assert theme in rubric
+    assert re.findall(r"^(\d+)\. \*\*", rubric, flags=re.MULTILINE) == [
+        str(number) for number in range(1, 10)
+    ]
 
 
 def test_workflow_passes_trusted_rubric_as_background_and_checks_completeness():
