@@ -17,13 +17,14 @@ def _job(name):
     )[0]
 
 
-def _condition(name, event, draft, gate="success"):
+def _condition(name, event, draft, gate="success", *, cancelled=False):
     expression = re.search(r"(?m)^    if: \$\{\{ (.+) }}$", _job(name)).group(1)
     for key, value in {
         "github.event_name": event,
         "github.event.pull_request.draft": draft,
         "needs.security-gate.result": gate,
-        "cancelled()": False,
+        "cancelled()": cancelled,
+        "always()": True,
     }.items():
         expression = expression.replace(key, repr(value))
     expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -91,6 +92,30 @@ def test_live_jobs_remain_behind_security_gate():
     assert "needs: security-gate" in _job("e2e-shards")
     assert "needs: security-gate" in _job("integration")
     assert not _condition("integration", "pull_request", False, "failure")
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_merge_group_rollup_keeps_mains_cancellation_condition(cancelled):
+    assert _condition("required-e2e", "merge_group", False, cancelled=cancelled) == (not cancelled)
+
+
+def test_pr_rollup_evaluates_even_when_upstream_work_is_cancelled():
+    assert _condition("required-e2e", "pull_request", False, cancelled=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="required-e2e runs on Linux")
+@pytest.mark.parametrize("shards", ["success", "failure", "skipped", "cancelled"])
+def test_agent_rollup_requires_every_shard(shards):
+    agent = _job("e2e")
+    assert "needs: e2e-shards" in agent
+    result = subprocess.run(
+        ["/bin/bash", "-c", agent.split("        run: ", 1)[1].strip()],
+        env={**os.environ, "RESULT": shards},
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (shards == "success")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="required-e2e runs on Linux")
