@@ -214,32 +214,21 @@ class TestClaudeFile:
         assert doc["otelHeadersHelper"] == "/opt/mine.sh"
         assert doc["env"]["ANTHROPIC_MODEL"] == "pinned"
 
-    def test_smart_routing_managed_config_writes_the_recipe_mod_in_the_same_operation(self):
-        """A managed run that enables smart routing names the recipe mod and installs its files
-        in the same write: the guard denies the session mod's own recipe write, and this run is
-        the only writer a shared installation has."""
-        manifest = _manifest(_raw_config(claude_config={"smart_routing": {"enabled": True}}))
-        doc = machine.build_claude(manifest, WS).doc
+    @pytest.mark.parametrize("routing", [False, True], ids=["routing-off", "routing-on"])
+    def test_managed_recipe_mod_install_and_revert_order(self, routing):
+        manifest = _manifest(_raw_config(claude_config={"smart_routing": {"enabled": routing}}))
+        [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
         root = claude.claude_header_mod_root()
+        settings = claude.managed_settings_path()
+        doc = json.loads(plan.files[settings])
         assert doc["extraKnownMarketplaces"]["ucode-managed"] == {
             "source": {"source": "directory", "path": str(root)}
         }
         assert doc["enabledPlugins"][claude.CLAUDE_ROUTER_MOD_ID] is True
-        # The recipe mod rides `prependPlugins`, ahead of the built-in guard it keeps; the
-        # header mod stays out: a managed run doesn't support per-launch headers.
         assert doc["prependPlugins"] == [claude.CLAUDE_ROUTER_MOD_ID, "sec-default@builtin"]
         assert claude.CLAUDE_HEADER_MOD_ID not in doc["enabledPlugins"]
-        [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
-        assert set(claude._header_mod_files(root)).issubset(plan.files)
-
-    def test_revert_removes_the_settings_before_the_mod_files_they_name(self):
-        """The mods install before the settings that reference them, but revert removes the
-        settings first: a removal that fails partway never leaves settings naming missing
-        plugins."""
-        manifest = _manifest(_raw_config(claude_config={"smart_routing": {"enabled": True}}))
-        [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
-        settings = claude.managed_settings_path()
-        mod_files = list(claude._header_mod_files(claude.claude_header_mod_root()))
+        mod_files = list(claude._header_mod_files(root))
+        assert set(mod_files).issubset(plan.files)
         assert list(plan.files).index(mod_files[0]) < list(plan.files).index(settings)
         recorded = machine._written_paths(plan)
         assert recorded.index(settings) < min(recorded.index(path) for path in mod_files)

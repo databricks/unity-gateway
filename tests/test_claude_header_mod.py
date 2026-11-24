@@ -59,8 +59,11 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     return managed_path, root, writes
 
 
-def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch):
+@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch, routing):
     managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", routing)
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
     state = {"workspace": WS, "codex_models": []}
 
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -87,25 +90,6 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
     count = len(writes)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
     assert len(writes) == count  # unchanged files are never rewritten through sudo
-
-
-def test_smart_routing_configure_writes_the_recipe_mod_in_the_same_operation(tmp_path, monkeypatch):
-    """A configure that offers smart routing names the recipe mod and installs its files in the
-    same write, so the recipe always has its policy-tier writer."""
-    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
-    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-
-    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
-
-    doc = json.loads(managed_path.read_text())
-    assert doc["enabledPlugins"][claude.CLAUDE_ROUTER_MOD_ID] is True
-    assert doc["prependPlugins"] == [
-        claude.CLAUDE_HEADER_MOD_ID,
-        claude.CLAUDE_ROUTER_MOD_ID,
-        "sec-default@builtin",
-    ]
-    for path, content in claude._header_mod_files(root).items():
-        assert path.read_text(encoding="utf-8") == content
 
 
 def test_launch_never_installs_or_enables_the_mod(tmp_path, monkeypatch):
