@@ -397,10 +397,58 @@ class TestGatewayDenials:
         assert resp.status_code == 400
         assert resp.json() == {
             "type": "error",
-            "error": {"type": "invalid_request_error", "message": DENIAL},
+            "error": {"type": "invalid_request_error", "message": DENIAL, "source": "gateway"},
         }
-        # The rewrite answers the retry with a refreshed token, not the first 403.
+        # A policy denial is final: no token refresh and no second gateway call.
+        assert len(gateway.requests) == 1
+        assert github.requests == []
+
+    def test_a_403_that_may_be_a_stale_token_is_retried_once(self, gateway, github):
+        gateway._status = 403
+        gateway._body = json.dumps({"error_code": "UNAUTHENTICATED", "message": "expired"}).encode()
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert resp.json()["error"] == {
+            "type": "invalid_request_error",
+            "message": "expired",
+            "source": "gateway",
+        }
         assert len(gateway.requests) == 2
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b"unauthorized: not authorized to use this Copilot feature\n", id="text"),
+            pytest.param(
+                b'{"message": "unauthorized: not authorized to use this Copilot feature", '
+                b'"documentation_url": "https://docs.github.com/rest"}',
+                id="json",
+            ),
+        ],
+    )
+    def test_a_github_403_passed_through_by_the_gateway_reads_as_githubs(
+        self, gateway, github, body
+    ):
+        # The catalog routes pass GitHub's 403 through raw; it is GitHub's policy, not ours.
+        gateway._status = 403
+        gateway._body = body
+        gateway._headers = {"Content-Type": "text/plain"}
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.get(f"/{SECRET}/models", headers=_auth())
+
+        assert resp.status_code == 400
+        assert resp.json()["error"] == {
+            "type": "invalid_request_error",
+            "message": (
+                "GitHub Copilot denied this request: unauthorized: not authorized to use this "
+                "Copilot feature. Check your Copilot CLI policy setting at "
+                "https://github.com/settings/copilot."
+            ),
+            "source": "github",
+        }
+        assert len(gateway.requests) == 1
         assert github.requests == []
 
     @pytest.mark.parametrize(
@@ -408,7 +456,6 @@ class TestGatewayDenials:
         [
             pytest.param(b"<html>denied</html>", id="html"),
             pytest.param(b"", id="empty"),
-            pytest.param(b'{"message": "no error code"}', id="no-error-code"),
             pytest.param(b'{"error_code": 7, "message": "bad code"}', id="code-not-a-string"),
             pytest.param(b'{"error_code": "PERMISSION_DENIED", "message": ""}', id="empty-message"),
             pytest.param(
@@ -427,6 +474,9 @@ class TestGatewayDenials:
 
         assert resp.status_code == 400
         assert resp.json()["error"]["message"] == copilot_relay._GENERIC_GATEWAY_DENIAL
+        assert resp.json()["error"]["source"] == "unknown"
+        # An unreadable denial may still be a stale token, so the retry stays.
+        assert len(gateway.requests) == 2
 
     @pytest.mark.parametrize("status", [404, 429])
     def test_other_gateway_errors_are_relayed_unchanged(self, gateway, github, status):

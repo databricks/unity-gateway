@@ -6304,6 +6304,18 @@ class TestConfigureAgentsSelection:
         assert "Coding Agents:" in out and "Claude Code" in out
         assert "Failed to configure:" in out and "Codex" in out
 
+    def test_managed_summary_names_everything_copilot_sets_up(self, capsys, monkeypatch):
+        import ucode.cli as cli_mod
+
+        managed = {"enabled_agents": {"copilot": {}}}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
+        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
+        cli_mod._summarize_managed_config(managed, ["copilot"], [])
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "GitHub Copilot (CLI, VS Code and app)" in out
+        assert "GitHub Copilot CLI" not in out
+
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
         [

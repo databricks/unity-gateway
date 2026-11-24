@@ -8036,3 +8036,11 @@ class TestPooledRedirectPolicies:
             assert response.read() == b"{}"
 
         assert sent == ["https://example.test/start", "https://example.test/final"]
+
+
+class TestWindowsUgExe:
+    def test_prefers_an_exe_then_the_exe_launcher_and_refuses_shims(self):
+        assert db_mod.windows_ug_exe(r"C:\uv\bin\ug.exe", None) == r"C:\uv\bin\ug.exe"
+        assert db_mod.windows_ug_exe(r"C:\tools\ug.cmd", r"C:\uv\bin\UG.EXE") == r"C:\uv\bin\UG.EXE"
+        assert db_mod.windows_ug_exe("ug", r"C:\tools\ug.cmd") is None
+        assert db_mod.windows_ug_exe("ug", None) is None

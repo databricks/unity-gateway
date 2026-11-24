@@ -284,6 +284,16 @@ def _app_pid(run: Path) -> int | None:
     return None
 
 
+def app_running(home: Path | None = None) -> bool:
+    """Whether the app is open: it writes its run files under the Copilot home and leaves them
+    behind on exit, so the pid in them has to be alive."""
+    run = (home or copilot_home()) / "run"
+    if not (run / "ws.port").is_file():
+        return False
+    pid = _app_pid(run)
+    return pid is not None and process_running(pid)
+
+
 class _AppConnection:
     """One connection to the app's WebSocket API, matching each reply to its request."""
 

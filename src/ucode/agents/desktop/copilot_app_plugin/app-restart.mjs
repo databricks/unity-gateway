@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { copilotHome, readAppPid } from "./app-rows.mjs";
+import { windowsTool } from "./app-windows.mjs";
 
 export const RESTARTING_MESSAGE =
   "The GitHub Copilot app restarts once, as soon as no chat is running a turn, to finish loading the Databricks models.";
@@ -47,7 +48,7 @@ export async function planRestart({
   if (platform === "darwin") return { platform, pid, app: MAC_BUNDLE_ID };
   if (platform === "win32") {
     const command = `(Get-Process -Id ${pid}).Path`;
-    const app = (await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]))?.trim();
+    const app = (await run(windowsTool("powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", command]))?.trim();
     return app ? { platform, pid, app } : null;
   }
   return null;

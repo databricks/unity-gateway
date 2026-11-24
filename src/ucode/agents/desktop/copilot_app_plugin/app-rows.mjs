@@ -36,6 +36,11 @@ export function readAppPid(home) {
   return pidField(home, "app-owner.pid", 0) ?? pidField(home, "ws.port", 1);
 }
 
+export function readAppPidSource(home) {
+  if (pidField(home, "app-owner.pid", 0) !== null) return "app-owner.pid";
+  return pidField(home, "ws.port", 1) !== null ? "ws.port" : null;
+}
+
 export function readEndpoint(home) {
   try {
     const port = Number.parseInt(runValue(home, "ws.port"), 10);

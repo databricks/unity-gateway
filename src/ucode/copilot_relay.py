@@ -224,10 +224,12 @@ def _is_normalized(path: str) -> bool:
     return all(segment not in ("", ".", "..") for segment in path[1:].split("/"))
 
 
-def _error_body(message: str) -> bytes:
+def _error_body(message: str, source: str | None = None) -> bytes:
     # Readable as both an OpenAI and an Anthropic error, whichever API Copilot called.
-    payload = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
-    return json.dumps(payload).encode()
+    error: dict[str, str] = {"type": "invalid_request_error", "message": message}
+    if source:
+        error["source"] = source
+    return json.dumps({"type": "error", "error": error}).encode()
 
 
 def _log_direct_request(method: str, path: str) -> None:
@@ -382,11 +384,20 @@ class _CopilotRelayHandler(_ProxyHandler):
         self._send_json_error(400, f"Databricks sign-in expired. {self.sign_in_hint}")
         return True
 
+    def _auth_rejection_is_final(self, resp: httpx.Response) -> bool:
+        if not self._gateway_call or resp.status_code != 403:
+            return False
+        return _classify_denial(_denial_bytes(resp)).final
+
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         if not self._gateway_call or resp.status_code != 403:
             return super()._relay_response(resp, **kwargs)
+        denial = _classify_denial(_denial_bytes(resp))
+        log_proxy_diagnostic(
+            "copilot_gateway_denial", request_id=kwargs.get("diagnostic_id"), source=denial.source
+        )
         # Relayed through the base relay as a 400, so the error and byte counts are recorded.
-        body = _error_body(_gateway_denial_message(resp))
+        body = _error_body(denial.message, denial.source)
         denial = httpx.Response(
             400,
             headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
@@ -452,31 +463,71 @@ class _CopilotRelayHandler(_ProxyHandler):
 
 _GATEWAY_DENIAL_BODY_LIMIT = 64 * 1024
 _GENERIC_GATEWAY_DENIAL = "Unity Gateway denied this request. Check your access to the model."
+_GITHUB_DENIAL_HINT = (
+    "Check your Copilot CLI policy setting at https://github.com/settings/copilot."
+)
+_GITHUB_MESSAGE_LIMIT = 300
+# Databricks error codes of a denial that a fresh token can't change.
+_POLICY_ERROR_CODES = frozenset({"PERMISSION_DENIED", "INVALID_PARAMETER_VALUE"})
 
 
-def _gateway_denial_message(resp: httpx.Response) -> str:
-    """The message of a Databricks error body (``error_code`` and ``message``), or a generic one
-    when the body is missing, has another shape, or is over the limit."""
+class _Denial:
+    """A 403 from a gateway call, read into the message Copilot shows and where it came from:
+    ``gateway`` (a Databricks error body), ``github`` (GitHub's own body, passed through by the
+    gateway on the catalog routes) or ``unknown``."""
+
+    __slots__ = ("final", "message", "source")
+
+    def __init__(self, source: str, message: str, *, final: bool) -> None:
+        self.source = source
+        self.message = message
+        self.final = final
+
+
+def _denial_bytes(resp: httpx.Response) -> bytes | None:
+    """The 403 body up to the limit, or None when it is missing, oversized or unreadable."""
     buffer = bytearray()
     try:
         for chunk in resp.iter_bytes():
             buffer.extend(chunk)
             if len(buffer) > _GATEWAY_DENIAL_BODY_LIMIT:
-                return _GENERIC_GATEWAY_DENIAL
+                return None
     except httpx.HTTPError:
-        return _GENERIC_GATEWAY_DENIAL
+        return None
+    return bytes(buffer)
+
+
+def _github_denial(message: str) -> str:
+    text = " ".join(message.split())[:_GITHUB_MESSAGE_LIMIT].rstrip(" .")
+    return f"GitHub Copilot denied this request: {text}. {_GITHUB_DENIAL_HINT}"
+
+
+def _classify_denial(body: bytes | None) -> _Denial:
+    if not body:
+        return _Denial("unknown", _GENERIC_GATEWAY_DENIAL, final=False)
     try:
-        payload = json.loads(bytes(buffer))
+        payload = json.loads(body)
     except ValueError:
-        return _GENERIC_GATEWAY_DENIAL
-    if (
-        isinstance(payload, dict)
-        and isinstance(payload.get("error_code"), str)
-        and isinstance(payload.get("message"), str)
-        and payload["message"]
-    ):
-        return payload["message"]
-    return _GENERIC_GATEWAY_DENIAL
+        payload = None
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return _Denial("unknown", _GENERIC_GATEWAY_DENIAL, final=False)
+        if "error_code" in payload:
+            code = payload["error_code"]
+            if not isinstance(code, str):
+                return _Denial("unknown", _GENERIC_GATEWAY_DENIAL, final=False)
+            return _Denial("gateway", message, final=code in _POLICY_ERROR_CODES)
+        # GitHub's REST errors are `{"message": ...}` with no error code.
+        return _Denial("github", _github_denial(message), final=True)
+    try:
+        text = body.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return _Denial("unknown", _GENERIC_GATEWAY_DENIAL, final=False)
+    # The Copilot API answers a policy denial with one line of plain text.
+    if text and not text.startswith("<") and "\n" not in text and text.isprintable():
+        return _Denial("github", _github_denial(text), final=True)
+    return _Denial("unknown", _GENERIC_GATEWAY_DENIAL, final=False)
 
 
 def _https_base_url(host: str) -> str:

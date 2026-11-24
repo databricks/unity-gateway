@@ -1,6 +1,8 @@
 import { join } from "node:path";
 
+import { NO_DEBUG } from "./app-debug.mjs";
 import { detectLoopbackProxy } from "./app-proxy.mjs";
+import { createSystemProxyResolver } from "./app-system-proxy.mjs";
 import { createStateLog } from "./app-state.mjs";
 import {
   copilotHostForStatus,
@@ -112,7 +114,10 @@ export function createSeatRedirect(
     recordRequest,
     applyTimeoutMs = APPLY_TIMEOUT_MS,
     githubUserUrl,
-    proxyCheck = () => detectLoopbackProxy({ env }),
+    debug = NO_DEBUG,
+    systemProxy = createSystemProxyResolver({ debug }),
+    proxyCheck = ({ port } = {}) => detectLoopbackProxy({ env, debug, port, resolve: systemProxy }),
+    hostCheck = null,
   } = {},
 ) {
   if (!redirectEnabled(config, env)) return null;
@@ -122,6 +127,8 @@ export function createSeatRedirect(
   let redirect = null;
   let proxy = null;
   let proxyPending = null;
+  let proxyMs = null;
+  let hostMs = null;
   let builtInCalls = 0;
   let relayedCalls = 0;
   let lastGatewayError = null;
@@ -136,6 +143,8 @@ export function createSeatRedirect(
     userAgent: seatUserAgent(relay.userAgent, "copilot/app"),
     ...(githubUserUrl ? { userUrl: githubUserUrl } : {}),
     fallback: async () => (session ? copilotHostForStatus(await session.rpc.gitHubAuth.getStatus()) : null),
+    debug,
+    agentFor: (url) => server.agentFor(url),
   });
   const subagents = subagentHeaders(sessionId ?? "");
   const server = createSeatRelay({
@@ -151,6 +160,8 @@ export function createSeatRedirect(
     hintFor: (error) => (error?.code === "ENOENT" ? config.missingUgHint : config.loginHint),
     log,
     env,
+    debug,
+    systemProxy,
     observe: (event) => {
       noteRequest({ time: new Date(now()).toISOString(), ...(sessionId ? { sessionId } : {}), ...event });
       if (event.route !== "gateway" || !INFERENCE_CALLS.has(`${event.method} ${event.path}`)) return;
@@ -167,6 +178,9 @@ export function createSeatRedirect(
       redirect,
       ...(proxy?.reason ? { reason: proxy.reason } : {}),
       ...(proxy?.error ? { proxyCheck: proxy.error } : {}),
+      ...(proxy?.decision ? { proxyDecision: proxy.decision } : {}),
+      ...(hostMs !== null ? { hostMs } : {}),
+      ...(proxyMs !== null ? { proxyMs } : {}),
       builtInCalls,
       relayedCalls,
       ...(lastGatewayError ? { lastGatewayError } : {}),
@@ -174,16 +188,24 @@ export function createSeatRedirect(
   }
 
   function checkProxy() {
-    proxyPending ??= Promise.resolve()
-      .then(() => proxyCheck())
-      .catch((error) => ({ captured: false, reason: null, error: String(error?.message ?? error) }));
+    if (proxyPending) return proxyPending;
+    const started = now();
+    proxyPending = Promise.resolve()
+      .then(() => proxyCheck({ port: server.port }))
+      .catch((error) => ({ captured: false, reason: null, error: String(error?.message ?? error) }))
+      .then((result) => {
+        proxyMs = now() - started;
+        return result;
+      });
     return proxyPending;
   }
 
   function flush() {
     if (!dirty) return;
     dirty = false;
-    note(entry());
+    const current = entry();
+    debug("redirect.entry", current);
+    note(current);
   }
 
   return {
@@ -194,27 +216,37 @@ export function createSeatRedirect(
       return redirect;
     },
     async listen() {
-      checkProxy();
-      loadSystemCertificates();
+      debug("relay.certificates", { systemStore: loadSystemCertificates() });
       await server.listen();
+      debug("relay.listening", { port: server.port });
+      // The proxy check asks about the relay's own URL, so it needs the port.
+      checkProxy();
     },
     async apply(joined) {
       session = joined;
+      debug("redirect.apply.start", {});
+      hostMs = (await hostCheck)?.ms ?? null;
       proxy = await checkProxy();
+      debug("redirect.apply.checks", { hostMs, proxyMs, proxy });
       if (proxy.error) log(`Databricks seat relay: proxy check failed: ${proxy.error}`);
       if (proxy.captured) {
         redirect = "proxied";
         log(`Databricks seat relay: not redirecting, ${proxy.reason}`);
+        const cleared = now();
         await within(applyTimeoutMs, clearRedirect(session)).catch(() => {});
+        debug("redirect.clear", { why: "proxied", ms: now() - cleared });
         dirty = true;
         flush();
         return false;
       }
+      const applying = now();
       try {
         const result = await within(applyTimeoutMs, updateUrl(session, server.url));
         redirect = result?.success === false ? "unavailable" : "applied";
+        debug("redirect.apply.done", { redirect, result, ms: now() - applying });
       } catch (error) {
         redirect = "unavailable";
+        debug("redirect.apply.failed", { error: String(error?.message ?? error), ms: now() - applying });
         log(`Databricks seat relay: the app didn't take the redirect: ${error?.message ?? error}`);
         // An update that answers after the bound may still have applied.
         clearRedirect(session);
@@ -227,6 +259,13 @@ export function createSeatRedirect(
     },
     handle(event) {
       const type = event?.type;
+      debug("session.event", {
+        type,
+        statusCode: event?.data?.statusCode,
+        isByok: event?.data?.isByok,
+        provider: event?.data?.provider ?? event?.data?.providerId,
+        model: event?.data?.model,
+      });
       if (type === "model.call_start") {
         if (!ownModels.has(event.data?.model)) {
           builtInCalls++;
@@ -237,9 +276,11 @@ export function createSeatRedirect(
       }
     },
     async shutdown(ms = REVERT_TIMEOUT_MS) {
+      debug("redirect.shutdown", { redirect, ms });
       flush();
       if (!session) return;
       await within(ms, clearRedirect(session)).catch(() => {});
+      debug("redirect.clear", { why: "shutdown" });
     },
     close() {
       return server.close();
