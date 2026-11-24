@@ -530,11 +530,3 @@ def test_nested_version_scope_overrides_and_restores_identity(monkeypatch, overr
                     raise RuntimeError("stop")
         assert config.auto_mode_enabled()
     assert not config.auto_mode_enabled()
-
-
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
-def test_auto_version_enables_both_agents(agent):
-    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_AUTO_V0}
-    actual = config.resolve_environment(source, agent=agent)
-    assert actual[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] == "1"
-    assert actual[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"

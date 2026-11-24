@@ -95,8 +95,8 @@ _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL] = {
     ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
 }
 
-# Codex opts out of routing and orchestration in the claude_only versions.
-_CODEX_ROUTING_OFF = {
+# Agent-specific opt-out for versions that route only the other agent.
+_ROUTING_OFF = {
     ENABLE_SMART_ROUTING_ENV_VAR: "0",
     ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
@@ -133,12 +133,12 @@ _VERSIONS = {
     # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
-        AGENT_CODEX: _CODEX_ROUTING_OFF,
+        AGENT_CODEX: _ROUTING_OFF,
     },
     # Codex opts out of routing and orchestration; Claude keeps the blind orch v0 preset.
     SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
-        AGENT_CODEX: _CODEX_ROUTING_OFF,
+        AGENT_CODEX: _ROUTING_OFF,
     },
     SUBAGENT_AUTO_V0: {
         AGENT_CLAUDE: {
@@ -158,7 +158,7 @@ _VERSIONS = {
             ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
             ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
         },
-        AGENT_CODEX: _CODEX_ROUTING_OFF,
+        AGENT_CODEX: _ROUTING_OFF,
     },
 }
 

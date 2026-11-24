@@ -49,6 +49,10 @@ def session_env_path(env: Mapping[str, str] | None = None) -> Path:
     )
 
 
+def auto_state_path(controls: Path) -> Path:
+    return controls.with_suffix(".auto.json")
+
+
 def _validate(values: object) -> dict[str, str]:
     if not isinstance(values, dict) or any(
         key not in _ALLOWED_KEYS or not isinstance(value, str) for key, value in values.items()

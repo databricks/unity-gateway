@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
+
+from websockets.exceptions import ConnectionClosed
 
 from ucode.config_io import atomic_write_json
 from ucode.smart_routing.codex_feedback import (
@@ -14,7 +17,11 @@ from ucode.smart_routing.codex_feedback import (
     ThreadOwnership,
     collect_feedback,
 )
-from ucode.smart_routing.session_env import session_routing_enabled, set_session_environment
+from ucode.smart_routing.session_env import (
+    auto_state_path,
+    session_routing_enabled,
+    set_session_environment,
+)
 
 AUTO_MODEL = "codex-auto-ug"
 
@@ -39,10 +46,18 @@ class CodexAutoPicker:
         self.thread_id: str | None = None
         self.turn_id = ""
         self.busy = False
+        self.saved_model: str | None = None
+        self.upload_tasks: set[asyncio.Task] = set()
 
     @property
     def enabled(self) -> bool:
         return session_routing_enabled(self.router.controls)
+
+    async def ui_enabled(self) -> bool:
+        try:
+            return await asyncio.to_thread(session_routing_enabled, self.router.controls)
+        except (OSError, ValueError):
+            return False
 
     @property
     def main_model(self) -> str | None:
@@ -130,7 +145,7 @@ class CodexAutoPicker:
                     edit["value"] = self.settings.get("effort")
         return False
 
-    def observe(self, message: dict) -> tuple[bool, str | None]:
+    async def observe(self, message: dict) -> tuple[bool, str | None]:
         """Consume private replies; otherwise annotate native models/settings in place."""
         request_id = message.get("id")
         if (
@@ -142,7 +157,7 @@ class CodexAutoPicker:
             if future is not None and not future.done():
                 future.set_result(message)
             return True, None
-        method = self.requests.pop(request_id, None)
+        method = self.requests.pop(request_id, None) if message.get("method") is None else None
         result = message.get("result")
         if method == "model/list" and isinstance(result, dict):
             rows = result.get("data")
@@ -153,9 +168,18 @@ class CodexAutoPicker:
                         and isinstance(row.get("model"), str)
                         and not row.get("hidden")
                         and row["model"] != AUTO_MODEL
+                        and isinstance(row.get("defaultReasoningEffort"), str)
+                        and isinstance(row.get("supportedReasoningEfforts"), list)
+                        and all(
+                            isinstance(option, dict)
+                            and isinstance(option.get("reasoningEffort"), str)
+                            for option in row["supportedReasoningEfforts"]
+                        )
                     ):
                         self.models[row["model"]] = row
-                if self.models and not any(row.get("model") == AUTO_MODEL for row in rows):
+                if self.models and not any(
+                    isinstance(row, dict) and row.get("model") == AUTO_MODEL for row in rows
+                ):
                     base = self.models.get(self.main_model) or next(iter(self.models.values()))
                     result["data"] = [
                         {
@@ -183,26 +207,39 @@ class CodexAutoPicker:
                     "model": result.get("model"),
                     "effort": result.get("reasoningEffort"),
                 }
-                if self.enabled:
+                if await self.ui_enabled():
                     result["model"] = AUTO_MODEL
         params = message.get("params")
         if isinstance(params, dict) and params.get("threadId") == self.thread_id:
             if message.get("method") == "turn/started":
-                self.turn_id = params.get("turn", {}).get("id", "")
+                turn = params.get("turn")
+                self.turn_id = turn.get("id", "") if isinstance(turn, dict) else ""
             if message.get("method") == "thread/settings/updated":
                 settings = params.get("threadSettings")
                 if isinstance(settings, dict):
                     self.settings = settings.copy()
-                    if self.enabled:
+                    if await self.ui_enabled():
                         settings["model"] = AUTO_MODEL
-        if self.main_model and (
-            method in ("thread/start", "thread/resume")
-            or message.get("method") == "thread/settings/updated"
-        ):
-            atomic_write_json(
-                self.router.controls.with_suffix(".auto.json"), {"model": self.main_model}
+        if (
+            self.main_model
+            and self.main_model != self.saved_model
+            and (
+                method in ("thread/start", "thread/resume")
+                or message.get("method") == "thread/settings/updated"
             )
-        selection = self.selections.pop(request_id, None)
+        ):
+            try:
+                await asyncio.to_thread(
+                    atomic_write_json,
+                    auto_state_path(self.router.controls),
+                    {"model": self.main_model},
+                )
+                self.saved_model = self.main_model
+            except (OSError, RuntimeError) as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not update Codex Auto model state: %s", exc
+                )
+        selection = self.selections.pop(request_id, None) if message.get("method") is None else None
         if selection and "error" in message:
             self.busy = False
             selection = None
@@ -213,10 +250,44 @@ class CodexAutoPicker:
         # Picker prompts are independent of inference turns and must also work before the first prompt.
         return await self.inputs.ask(self.thread_id, "", question)
 
+    async def route(self, action: str, reason: str | None = None) -> dict:
+        arguments = {"action": action}
+        if reason is not None:
+            arguments["reason"] = reason
+        async with self.router.lock:
+            return await asyncio.to_thread(
+                self.router.execute, {"threadId": self.thread_id, "arguments": arguments}
+            )
+
+    async def report_delivery(self, report_id: str) -> None:
+        process = self.router.uploads.pop(report_id, None)
+        if process is None:
+            return
+        try:
+            result = await self.router.delivery(report_id, process)
+            message = result["message"]
+        except (OSError, RuntimeError, ValueError):
+            message = f"Feedback delivery is unconfirmed. Feedback ID: {report_id}."
+        try:
+            await self.notify(
+                json.dumps(
+                    {
+                        "method": "warning",
+                        "params": {"threadId": self.thread_id, "message": message},
+                    }
+                )
+            )
+        except (OSError, RuntimeError, ConnectionClosed):
+            pass
+
     async def choose(self, selection: str) -> None:
         old_settings = self.settings.copy()
-        old_controls = json.loads(self.router.controls.read_text())
+        old_controls = None
         try:
+            parsed_controls = json.loads(await asyncio.to_thread(self.router.controls.read_text))
+            if not isinstance(parsed_controls, dict):
+                raise ValueError("Invalid Smart Router session controls.")
+            old_controls = parsed_controls
             model = selection
             if selection == AUTO_MODEL:
                 ordered = sorted(self.models, key=lambda name: name != self.main_model)
@@ -260,24 +331,24 @@ class CodexAutoPicker:
                     )
                     if answer != ["Switch model"]:
                         return
-            params = {
-                "threadId": self.thread_id,
-                "arguments": {"action": "on" if selection == AUTO_MODEL else "off"},
-            }
-            result = self.router.execute(params)
+            row = self.models.get(model)
+            if row is None:
+                raise ValueError("The selected model is no longer available. Reopen /model.")
+            result = await self.route("on" if selection == AUTO_MODEL else "off")
             if result.get("needs_reason"):
                 reason = await collect_feedback(self.ask)
                 if reason is None:
-                    self.router.execute({**params, "arguments": {"action": "cancel"}})
+                    await self.route("cancel")
                     return
-                result = self.router.execute(
-                    {**params, "arguments": {"action": "off", "reason": reason}}
-                )
+                result = await self.route("off", reason)
                 if result.get("validation_error"):
                     raise ValueError(result["message"])
             if self.enabled != (selection == AUTO_MODEL):
                 raise ValueError(result.get("message", "Could not change Smart Router state."))
-            row = self.models[model]
+            if result.get("delivery") == "pending":
+                task = asyncio.create_task(self.report_delivery(result["feedback_id"]))
+                self.upload_tasks.add(task)
+                task.add_done_callback(self.upload_tasks.discard)
             effort = old_settings.get("effort")
             if effort not in {
                 option["reasoningEffort"] for option in row.get("supportedReasoningEfforts", [])
@@ -301,31 +372,41 @@ class CodexAutoPicker:
                 },
             )
             self.settings.update(model=model, effort=effort)
-        except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+        except (OSError, RuntimeError, ValueError, TimeoutError, KeyError) as exc:
             # Restore the accepted model and routing state if a later step fails.
-            set_session_environment(old_controls, env=self.router.environment)
-            await self.request(
-                "thread/settings/update",
-                {
-                    "threadId": self.thread_id,
-                    "model": old_settings["model"],
-                    "effort": old_settings.get("effort"),
-                },
-            )
+            message = str(exc)
+            if old_controls is not None:
+                try:
+                    await asyncio.to_thread(
+                        set_session_environment, old_controls, env=self.router.environment
+                    )
+                    await self.request(
+                        "thread/settings/update",
+                        {
+                            "threadId": self.thread_id,
+                            "model": old_settings["model"],
+                            "effort": old_settings.get("effort"),
+                        },
+                    )
+                except (OSError, RuntimeError, ValueError, TimeoutError, KeyError) as rollback:
+                    message += f" Could not restore the previous selection: {rollback}"
             self.settings = old_settings
             await self.notify(
                 json.dumps(
                     {
                         "method": "warning",
-                        "params": {"threadId": self.thread_id, "message": str(exc)},
+                        "params": {"threadId": self.thread_id, "message": message},
                     }
                 )
             )
         finally:
             self.busy = False
             settings = self.settings.copy()
-            if self.enabled:
-                settings["model"] = AUTO_MODEL
+            try:
+                if self.enabled:
+                    settings["model"] = AUTO_MODEL
+            except (OSError, ValueError):
+                pass
             if {
                 "approvalPolicy",
                 "approvalsReviewer",

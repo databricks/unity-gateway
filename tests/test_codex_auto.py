@@ -55,7 +55,7 @@ async def _auto_picker_main_model_manual_switch_and_cancel(monkeypatch):
     }
     result = {"id": 1, "result": {"data": [model("gpt-one"), model("gpt-two")]}}
     picker.requests[1] = "model/list"
-    picker.observe(result)
+    await picker.observe(result)
     assert result["result"]["data"][0]["model"] == AUTO_MODEL
 
     async def ask(question):
@@ -69,7 +69,7 @@ async def _auto_picker_main_model_manual_switch_and_cancel(monkeypatch):
             for request in list(requests):
                 if request["id"] not in seen:
                     seen.add(request["id"])
-                    picker.observe({"id": request["id"], "result": {}})
+                    await picker.observe({"id": request["id"], "result": {}})
 
     seen = set()
     responder = asyncio.create_task(reply())
@@ -143,3 +143,91 @@ async def _native_auto_selection_never_reaches_engine():
     }
     assert not await picker.before_tui(save)
     assert [edit["value"] for edit in save["params"]["edits"]] == ["gpt-one", "medium"]
+
+
+def test_observe_ignores_request_id_collisions_and_bad_catalog_rows(monkeypatch):
+    asyncio.run(_observe_ignores_request_id_collisions_and_bad_catalog_rows(monkeypatch))
+
+
+async def _observe_ignores_request_id_collisions_and_bad_catalog_rows(monkeypatch):
+    from ucode.smart_routing import codex_auto
+
+    controls = start_session({})
+    router = CodexSmartRouter(controls)
+    sent = []
+    picker = CodexAutoPicker(
+        router,
+        CodexFeedbackInput(lambda frame: asyncio.sleep(0)),
+        lambda frame: asyncio.sleep(0),
+        lambda frame: sent.append(json.loads(frame)) or asyncio.sleep(0),
+    )
+    picker.requests[7] = "model/list"
+    picker.selections[7] = AUTO_MODEL
+    assert await picker.observe({"id": 7, "method": "warning", "params": {}}) == (False, None)
+    assert picker.requests[7] == "model/list"
+    assert picker.selections[7] == AUTO_MODEL
+    result = {"id": 7, "result": {"data": [None, {"model": "missing-effort"}, model("gpt-one")]}}
+    assert await picker.observe(result) == (False, AUTO_MODEL)
+    assert list(picker.models) == ["gpt-one"]
+    assert result["result"]["data"][0]["model"] == AUTO_MODEL
+
+    thread_id = str(uuid4())
+    picker.thread_id = thread_id
+    await picker.observe(
+        {"method": "turn/started", "params": {"threadId": thread_id, "turn": None}}
+    )
+    assert picker.turn_id == ""
+    monkeypatch.setattr(
+        codex_auto, "atomic_write_json", lambda *_a: (_ for _ in ()).throw(OSError("read only"))
+    )
+    await picker.observe(
+        {
+            "method": "thread/settings/updated",
+            "params": {
+                "threadId": thread_id,
+                "threadSettings": {"model": "gpt-one", "effort": "medium"},
+            },
+        }
+    )
+    assert picker.saved_model is None
+
+
+def test_failed_controls_read_and_rollback_do_not_lock_picker():
+    asyncio.run(_failed_controls_read_and_rollback_do_not_lock_picker())
+
+
+async def _failed_controls_read_and_rollback_do_not_lock_picker():
+    controls = start_session({})
+    router = CodexSmartRouter(controls)
+    thread_id = str(uuid4())
+    router.threads[thread_id] = ThreadOwnership.ROOT
+    notices = []
+    picker = CodexAutoPicker(
+        router,
+        CodexFeedbackInput(lambda frame: asyncio.sleep(0)),
+        lambda frame: asyncio.sleep(0),
+        lambda frame: notices.append(json.loads(frame)) or asyncio.sleep(0),
+    )
+    picker.thread_id = thread_id
+    picker.settings = {"model": "gpt-one", "effort": "medium"}
+    picker.models = {"gpt-one": model("gpt-one")}
+    picker.busy = True
+    controls.unlink()
+    await picker.choose(AUTO_MODEL)
+    assert not picker.busy
+    assert notices[-1]["method"] == "warning"
+
+    controls.write_text("{}")
+    notices.clear()
+    picker.busy = True
+    picker.ask = lambda question: asyncio.sleep(0, result=["gpt-one"])
+
+    async def fail_request(_method, _params):
+        raise TimeoutError("injected timeout")
+
+    picker.request = fail_request
+    await picker.choose(AUTO_MODEL)
+    assert not picker.busy
+    warning = next(item for item in notices if item["method"] == "warning")
+    assert "injected timeout" in warning["params"]["message"]
+    assert "Could not restore the previous selection" in warning["params"]["message"]

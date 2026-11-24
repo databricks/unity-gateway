@@ -412,7 +412,7 @@ async def _handle_tui(
                     controller.observe(message)
                 selection = None
                 if picker is not None and message is not None:
-                    consumed, selection = picker.observe(message)
+                    consumed, selection = await picker.observe(message)
                     if consumed:
                         continue
                     frame = json.dumps(message)
@@ -453,6 +453,11 @@ async def _handle_tui(
             for task in tool_tasks:
                 task.cancel()
             await asyncio.gather(*tool_tasks, return_exceptions=True)
+            if picker is not None:
+                upload_tasks = list(picker.upload_tasks)
+                for task in upload_tasks:
+                    task.cancel()
+                await asyncio.gather(*upload_tasks, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

@@ -1,7 +1,8 @@
 # Test suites and user journeys
 
 `test_codex_auto.py` covers the native Auto row, main-model choice, cancellation, manual
-model selection, and prevention of synthetic model IDs in engine requests. Live Codex TUI
+model selection, synthetic model IDs staying out of engine requests, and failure-path
+recovery for malformed catalog data and failed session writes. Live Codex TUI
 and gateway inference for this flow have not been exercised.
 
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray

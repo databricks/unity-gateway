@@ -8,7 +8,11 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, session_routing_enabled
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    auto_state_path,
+    session_routing_enabled,
+)
 
 SERVER_NAME = "ug-smart-router-statusline"
 TOOL_NAME = "statusline"
@@ -93,11 +97,14 @@ def render(state: dict[str, Any]) -> dict:
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
-    if controls and label == "ON" and Path(controls).with_suffix(".auto.json").exists():
+    if controls and label == "ON":
         try:
-            main = json.loads(Path(controls).with_suffix(".auto.json").read_text())["model"]
-            model_name = f"Auto ({main})"
-        except (OSError, ValueError, KeyError):
+            state = json.loads(auto_state_path(Path(controls)).read_text())
+            main = state.get("model") if isinstance(state, dict) else None
+            model_name = f"Auto ({main})" if isinstance(main, str) and main else "Auto"
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
             model_name = "Auto"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
