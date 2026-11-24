@@ -168,8 +168,9 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
             1,
         ),
         ({"routing_disabled": False}, 0),
+        ({"routing_disabled": True, "router_name": "stable", "logged": True}, 0),
     ],
-    ids=["unsupported", "supported"],
+    ids=["unsupported", "supported", "toggle-already-logged"],
 )
 def test_route_validation_is_logged_once_for_the_root_thread(tmp_path, validation, logged):
     async def run():

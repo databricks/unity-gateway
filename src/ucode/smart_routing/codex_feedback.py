@@ -20,6 +20,7 @@ from ucode.smart_routing import feedback, route_validation, routing, session_log
 from ucode.smart_routing.session_env import (
     ROUTING_DISABLED_KEY,
     SESSION_ENV_VAR,
+    VALIDATION_LOGGED_KEY,
     session_routing_enabled,
     set_session_environment,
     validation_dismissed_path,
@@ -477,7 +478,9 @@ class CodexSmartRouter:
         with contextlib.suppress(OSError):
             validation_dismissed_path(self.controls).unlink(missing_ok=True)
         with contextlib.suppress(OSError, RuntimeError):
-            atomic_write_json(validation_result_path(self.controls), verdict)
+            atomic_write_json(
+                validation_result_path(self.controls), {**verdict, VALIDATION_LOGGED_KEY: True}
+            )
         with contextlib.suppress(OSError, ValueError):
             session_log.append_route_validation(AGENT_CODEX, thread_id, verdict)
 

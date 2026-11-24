@@ -33,6 +33,7 @@ ROUTING_DISABLED_KEY = "routing_disabled"
 VALIDATION_FAILED_KEY = "validation_failed"
 VALIDATION_MS_KEY = "validation_ms"
 VALIDATION_PENDING_KEY = "pending"
+VALIDATION_LOGGED_KEY = "logged"
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 
@@ -109,7 +110,11 @@ def read_validation_result(session_controls: Path) -> dict[str, Any] | None:
 def read_unsupported_validation(session_controls: Path) -> dict[str, Any] | None:
     """Return the startup validation result when it turned routing off, else None."""
     result = read_validation_result(session_controls)
-    if result is not None and result.get(ROUTING_DISABLED_KEY) is True:
+    if (
+        result is not None
+        and result.get(ROUTING_DISABLED_KEY) is True
+        and result.get(VALIDATION_LOGGED_KEY) is not True
+    ):
         return result
     return None
 

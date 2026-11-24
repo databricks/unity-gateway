@@ -1101,7 +1101,9 @@ def test_on_checks_the_model_list_before_turning_routing_on(
         assert not result_path.exists()
         assert records == []
         return
-    assert json.loads(result_path.read_text()) == published
+    assert json.loads(result_path.read_text()) == {**published, "logged": True}
+    # The row is already written, so the first-prompt recorder must not log it again.
+    assert session_env.read_unsupported_validation(controls) is None
     [row] = records
     assert {key: row[key] for key in published} == published
 
