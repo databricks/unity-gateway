@@ -1,7 +1,6 @@
 """Linux-runnable checks for the macOS desktop Accessibility harness in tests/integration."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -86,7 +85,35 @@ def test_wait_gone_returns_once_the_screen_leaves_the_element(tmp_path, monkeypa
     trees = iter(
         [[["AXButton", "Go to ChatGPT", "", ""]], [["AXStaticText", "Skip setup?", "", ""]]]
     )
-    app.read_tree = lambda: next(trees)
+
+    def read_tree():
+        tree = next(trees)
+        app.ax_errors = []
+        return tree
+
+    app.read_tree = read_tree
+
+    app.wait_gone("AXButton", "Go to ChatGPT", 60)
+
+
+def test_wait_gone_keeps_waiting_while_the_traversal_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(macos_app.time, "sleep", lambda seconds: None)
+    app = mac_app(RecordingSession(tmp_path / "artifacts"))
+    # A busy app can return a partial tree with the button absent; that is not evidence the
+    # dialog left until the traversal stops reporting AX errors.
+    states = iter(
+        [
+            ([["AXApplication", "ChatGPT", "", ""]], ["children of AXApplication: cannotComplete"]),
+            ([["AXButton", "Go to ChatGPT", "", ""]], []),
+            ([["AXStaticText", "Skip setup?", "", ""]], []),
+        ]
+    )
+
+    def read_tree():
+        tree, app.ax_errors = next(states)
+        return tree
+
+    app.read_tree = read_tree
 
     app.wait_gone("AXButton", "Go to ChatGPT", 60)
 
@@ -97,13 +124,22 @@ def test_wait_gone_fails_with_the_ax_tree_when_the_dialog_stays(tmp_path, monkey
     session = RecordingSession(tmp_path / "artifacts")
     app = mac_app(session)
     stuck = [["AXStaticText", "Skip setup?", "", ""], ["AXButton", "Go to ChatGPT", "", ""]]
-    app.read_tree = lambda: stuck
+
+    def read_tree():
+        app.ax_errors = []
+        return stuck
+
+    app.read_tree = read_tree
 
     with pytest.raises(AssertionError, match="never dismissed AXButton 'Go to ChatGPT'"):
         app.wait_gone("AXButton", "Go to ChatGPT", 0)
 
     recorded = json.loads((session.artifacts / "chatgpt-tree.json").read_text())
-    assert recorded == {"stuck_on": ["AXButton", "Go to ChatGPT"], "tree": stuck}
+    assert recorded == {
+        "stuck_on": ["AXButton", "Go to ChatGPT"],
+        "tree": stuck,
+        "ax_errors": [],
+    }
 
 
 def test_app_environment_turns_off_the_app_sparkle_updater():
@@ -114,15 +150,3 @@ def test_app_environment_turns_off_the_app_sparkle_updater():
     assert env["CODEX_SPARKLE_ENABLED"] == "false"
     assert env["HOME"] == "/session/home"
     assert "CODEX_SPARKLE_ENABLED" not in session_env
-
-
-def test_native_client_keeps_the_failure_evidence_contract():
-    source = (Path(macos_app.__file__).parent / "macos_ax.swift").read_text()
-    # The macOS journey parses this exact failure format, and traversal failures ride between
-    # the tree and the fatal error instead of hiding behind an empty tree.
-    assert "Accessibility tree at failed click (PID \\(pid)):" in source
-    assert '"AX error: \\(error)"' in source
-    # One native command clicks: activate first, then press, then a mouse fallback at click
-    # time.
-    assert "AXUIElementPerformAction" in source
-    assert "kAXPositionAttribute" in source

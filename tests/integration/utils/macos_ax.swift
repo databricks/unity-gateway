@@ -47,11 +47,14 @@ func snapshot(_ application: AXUIElement) -> Snapshot {
     return result
 }
 
+// A CFTypeRef must be type-checked before the forced CF downcast: `as?` cannot fail on a
+// CoreFoundation type, so the type ID is compared instead of a conditional cast.
 func pointValue(_ element: AXUIElement, _ name: String) -> (point: CGPoint, error: AXError) {
     var value: CFTypeRef?
     let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
     var point = CGPoint.zero
-    if error == .success, let axValue = value as? AXValue, AXValueGetValue(axValue, .cgPoint, &point) {
+    if error == .success, let cf = value, CFGetTypeID(cf) == AXValueGetTypeID(),
+        AXValueGetValue(cf as! AXValue, .cgPoint, &point) {
         return (point, .success)
     }
     return (point, error == .success ? .failure : error)
@@ -61,7 +64,8 @@ func sizeValue(_ element: AXUIElement, _ name: String) -> (size: CGSize, error: 
     var value: CFTypeRef?
     let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
     var size = CGSize.zero
-    if error == .success, let axValue = value as? AXValue, AXValueGetValue(axValue, .cgSize, &size) {
+    if error == .success, let cf = value, CFGetTypeID(cf) == AXValueGetTypeID(),
+        AXValueGetValue(cf as! AXValue, .cgSize, &size) {
         return (size, .success)
     }
     return (size, error == .success ? .failure : error)

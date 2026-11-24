@@ -14,10 +14,8 @@ OSASCRIPT = Path("/usr/bin/osascript")
 def app_environment(session_env: dict[str, str]) -> dict[str, str]:
     """The app's process environment: the session environment plus the updater-off switch.
 
-    ChatGPT checks for updates through Sparkle unless CODEX_SPARKLE_ENABLED is exactly "false".
-    Left on, it replaced the SHA-pinned build between the two desktop journeys — the second one
-    saw 26.1120.x where the job installed 26.1103.31037. The app reads the gate once at
-    startup and leaves its updater uninitialized when it is off."""
+    ChatGPT's Sparkle updater otherwise replaces the SHA-pinned build mid-job; the app reads
+    this gate once at startup and leaves its updater uninitialized when it is "false"."""
     return {**session_env, "CODEX_SPARKLE_ENABLED": "false"}
 
 
@@ -29,6 +27,9 @@ def matches(row: list[str], role: str, label: str | None) -> bool:
 
 
 class MacApp:
+    # The AX calls that failed in the last read_tree traversal, reported by the native client.
+    ax_errors: list[str] = []
+
     def __init__(self, session, bundle: Path, name: str):
         assert bundle.is_dir(), f"{bundle} is not installed"
         self.session = session
@@ -70,7 +71,10 @@ class MacApp:
             self.session.record(f"{self.name}-log.json", {"log": log[-20000:]})
 
     def read_tree(self) -> list[list[str]]:
-        """Each element's role, title, description and value."""
+        """Each element's role, title, description and value.
+
+        The native client reports failed AX calls on stderr; they are kept on ``ax_errors`` so
+        the waiters can tell a partial tree of a busy app from the whole screen."""
         assert self.proc.poll() is None, f"{self.name} exited with {self.proc.returncode}"
         result = subprocess.run(
             [str(self.client), "tree", str(self.proc.pid)],
@@ -80,6 +84,11 @@ class MacApp:
             timeout=60,
             check=True,
         )
+        self.ax_errors = [
+            line.removeprefix("AX error: ")
+            for line in result.stderr.splitlines()
+            if line.startswith("AX error: ")
+        ]
         return [line.split("\t") for line in result.stdout.splitlines()]
 
     def wait_for(self, role: str, label: str | None, timeout: float) -> list[list[str]]:
@@ -115,14 +124,20 @@ class MacApp:
     def wait_gone(self, role: str, label: str | None, timeout: float) -> None:
         """Wait for a ``role`` element labelled ``label`` to disappear.
 
-        The click that should remove it is verified instead of assumed: a screen that never
-        leaves the element fails with the stuck AX tree recorded as evidence."""
+        The click that should remove it is verified instead of assumed. A traversal that
+        failed partway must not prove the element gone, so the wait continues while the native
+        client reports AX errors, and a screen that never leaves the element fails with the
+        stuck AX tree recorded as evidence."""
         deadline = time.monotonic() + timeout
-        while any(matches(row, role, label) for row in self.read_tree()):
+        while True:
+            tree = self.read_tree()
+            if not self.ax_errors and not any(matches(row, role, label) for row in tree):
+                return
             if time.monotonic() > deadline:
                 tree = self.read_tree()
                 self.session.record(
-                    f"{self.name}-tree.json", {"stuck_on": [role, label], "tree": tree}
+                    f"{self.name}-tree.json",
+                    {"stuck_on": [role, label], "tree": tree, "ax_errors": self.ax_errors},
                 )
                 raise AssertionError(f"{self.name} never dismissed {role} {label!r}")
             time.sleep(2)

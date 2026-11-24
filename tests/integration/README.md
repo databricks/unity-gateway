@@ -428,7 +428,9 @@ cannot replace the SHA-pinned build mid-job, and every launch asserts the instal
 the job's pin. Each click is one native command that activates the app, waits for the element
 and presses it, falling back to one mouse click at the element's current frame when it supports
 no press action; traversal failures surface as `AX error:` lines instead of an empty tree, and
-onboarding dismissals wait for the dialog to leave, recording the stuck tree on failure. It
+a dismissal wait treats a traversal that failed partway as not settled, so a busy app can no
+longer look like a left dialog. Onboarding dismissals wait for the dialog to leave, recording
+the stuck tree on failure. It
 then clicks an absent label in the same app and requires a nonzero helper exit with the native
 four-column accessibility tree captured before the fatal error in command evidence.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
