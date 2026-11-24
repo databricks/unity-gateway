@@ -911,7 +911,7 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
             assert needs and "security-gate" in needs[1].split(", "), (workflow, name)
             # GitHub's implicit success() is overridden by these status functions.
             job_header = job.split("\n    steps:", 1)[0]
-            if re.search(r"\b(?:always|failure|cancelled)\s*\(", job_header):
+            if re.search(r"\b(?:always|failure|cancelled|success)\s*\(", job_header):
                 assert "needs.security-gate.result == 'success'" in job_header, (workflow, name)
                 assert "||" not in job_header, (workflow, name)
 
@@ -929,11 +929,16 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         assert not credential.search(jobs[name]), name
 
 
-def test_credential_contract_rejects_a_new_ungated_job(monkeypatch):
+@pytest.mark.parametrize(
+    "prerequisites",
+    ["", "    needs: security-gate\n    if: ${{ success() || true }}\n"],
+)
+def test_credential_contract_rejects_a_new_ungated_job(monkeypatch, prerequisites):
     workflow = _workflow
     ci = workflow("ci.yml") + (
         "\n  accidental-secret:\n    runs-on: ubuntu-latest\n"
-        "    env:\n      TOKEN: ${{ secrets.CI_TOKEN }}\n"
+        + prerequisites
+        + "    env:\n      TOKEN: ${{ secrets.CI_TOKEN }}\n"
     )
     monkeypatch.setitem(
         globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
