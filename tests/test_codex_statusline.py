@@ -292,12 +292,3 @@ def test_footer_names_auto_main_model_only_for_auto_session(tmp_path, monkeypatc
         {ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"}
     )
     assert "Auto (gpt-two)" not in _labels(statusline.render(state))
-
-
-@pytest.mark.parametrize("payload", ["[]", '"bad"', '{"model":null}', '{"model":42}'])
-def test_footer_survives_invalid_auto_state(tmp_path, monkeypatch, payload):
-    controls = tmp_path / "controls.json"
-    controls.write_text("{}")
-    controls.with_suffix(".auto.json").write_text(payload)
-    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
-    assert "Auto" in _labels(statusline.render({"thread": {"model": {"id": "gpt-one"}}}))

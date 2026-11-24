@@ -20,6 +20,7 @@ from ucode.constants import UG_STARTUP_ROUTE_VALIDATION_ENV_VAR
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_AUTO_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
@@ -342,6 +343,48 @@ def completed_smart_routing_runs(cuj):
 
 class TestCujAutoModelPicker(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    def test_codex_auto_picker_selects_main_model_for_completed_task(self, cuj):
+        """Scenario: select Auto in Codex's native picker and choose another main model.
+
+        Expected: the chosen model completes a file task while subagent routing stays on.
+        The synthetic Auto ID never reaches gateway inference.
+        """
+        with smart_router_preset(cuj, SUBAGENT_AUTO_V0) as (session, _, recorder, configs):
+            default = configs[CODEX]["default_models"]["default_model"]
+            alternate = next(
+                model for model in configs[CODEX]["models"]["model_services"] if model != default
+            )
+            evidence = SessionEvidence(session.home, CODEX)
+            recorder.prepare_launch()
+            with Terminal(session, "codex-auto-picker", [CODEX]) as tui:
+                tui.boot(timeout=150)
+                tui.submit("/model")
+                tui.wait_for(
+                    lambda screen: (
+                        "select model" in screen.lower()
+                        and re.search(r"(?m)^\s*[❯›>]\s*\d+[.)]", screen)
+                        and re.search(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+Auto\b", screen)
+                    ),
+                    "Auto in Codex's native model picker",
+                )
+                tui.choose("Select", "Auto")
+                tui.choose("Main model", alternate)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({alternate})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto footer with routing on and the selected main model",
+                )
+                task = _file_task(session, CODEX)
+                checkpoint = recorder.checkpoint()
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                assert_inference_evidence(recorder, checkpoint, CODEX, task, alternate)
+                assert not any(
+                    request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+                tui.exit_normally()
 
     def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
         """Scenario: select the Auto preset, launch Claude, switch to manual, then back.

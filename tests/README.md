@@ -1,9 +1,7 @@
 # Test suites and user journeys
 
-`test_codex_auto.py` covers the native Auto row, main-model choice, cancellation, manual
-model selection, synthetic model IDs staying out of engine requests, and failure-path
-recovery for malformed catalog data and failed session writes. Live Codex TUI
-and gateway inference for this flow have not been exercised.
+CUJ4 covers Codex's native Auto row, main-model choice, and completed gateway
+inference on the selected model. This live journey has not been run locally.
 
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
