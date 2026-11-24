@@ -895,7 +895,7 @@ class TestFirstPromptHook:
             stop.set()
 
     @requires_pty
-    def test_orchestrator_workflow_reaches_the_replayed_first_prompt(self, tmp_path, monkeypatch):
+    def test_orchestrator_context_survives_the_first_prompt_hold(self, tmp_path, monkeypatch):
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
         )
@@ -931,7 +931,7 @@ class TestFirstPromptHook:
 
         assert claude_pty.first_prompt_hook_output(held)["decision"] == "block"
         assert claude_pty.first_prompt_hook_output(replay) is None
-        # Claude drops the held prompt's context with it, so the re-sent prompt must carry it.
+        # Claude discards a blocked prompt's context, so a once per session injection would be lost.
         assert replay_context == held_context
         context = replay_context["hookSpecificOutput"]["additionalContext"]
         assert "Smart Router Orchestrator is on for this session" in context
@@ -1170,8 +1170,9 @@ class TestV2Launch:
         }
         options = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
         assert options["orchestratorInstructions"] == orchestrator.CLAUDE_AGENT_DESCRIPTION
-        assert captured["argv"][3:5] == ["--system-prompt-snapshot", "off"]
-        assert "--model" not in captured["argv"]
+        argv = captured["argv"]
+        assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
+        assert "--model" not in argv
         assert captured["roles"] == {
             path.name for path in (orchestrator.skill_directory() / "agents").glob("*.md")
         }
