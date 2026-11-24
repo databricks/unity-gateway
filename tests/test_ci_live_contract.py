@@ -81,15 +81,21 @@ def test_fork_readiness_does_not_change_the_existing_job_conditions():
 
 def test_converting_to_draft_cancels_the_prior_pull_request_run():
     concurrency = CI.read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-    assert "github.event.pull_request.number || github.ref" in concurrency
-    assert "github.event_name" in concurrency
+    assert (
+        "group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}"
+        in concurrency
+    )
     assert "cancel-in-progress: ${{ github.event_name != 'schedule' }}" in concurrency
     assert not _condition("e2e-shards", "pull_request", True)
     assert not _condition("integration", "pull_request", True)
 
 
 def test_live_jobs_remain_behind_security_gate():
-    assert "needs: security-gate" in _job("e2e-shards")
+    shards = _job("e2e-shards")
+    assert "needs: security-gate" in shards
+    condition = re.search(r"(?m)^    if: (.*)$", shards).group(1)
+    # A status function removes GitHub's implicit success() guard on dependencies.
+    assert not re.search(r"\b(?:always|cancelled|failure|success)\(", condition)
     assert "needs: security-gate" in _job("integration")
     assert not _condition("integration", "pull_request", False, "failure")
 
@@ -133,6 +139,7 @@ def test_required_rollup_fails_closed(event, agent, integration):
         ["/bin/bash", "-c", script],
         env={**os.environ, "EVENT_NAME": event, "RESULT": agent, "INTEGRATION_RESULT": integration},
         capture_output=True,
+        timeout=10,
         check=False,
     )
     assert (result.returncode == 0) is (event == "merge_group" or agent == integration == "success")
