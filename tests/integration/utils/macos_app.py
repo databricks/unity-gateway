@@ -81,10 +81,21 @@ class MacApp:
 
     def click(self, role: str, label: str | None, timeout: float = 60) -> None:
         """Click the first ``role`` element labelled ``label`` (any label if None)."""
+        deadline = time.monotonic() + timeout
         self.wait_for(role, label, timeout)
-        self.session.run(
-            "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
-        )
+        while True:
+            try:
+                self.session.run(
+                    "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
+                )
+                return
+            except AssertionError as error:
+                # The helper exits before sending any mouse event when the target is missing.
+                if f"Fatal error: No {role} labelled {label or ''}" not in str(error):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                self.wait_for(role, label, deadline - time.monotonic())
 
     def type_line(self, text: str, *, submit: bool = True) -> None:
         """Type with real keystrokes, optionally pressing Return."""

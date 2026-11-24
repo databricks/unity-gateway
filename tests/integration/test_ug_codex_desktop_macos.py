@@ -32,11 +32,11 @@ MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
 def dismiss_skip_setup_dialog(app: MacApp) -> None:
-    app.click("AXButton", "Go to ChatGPT")
+    # The composer appears only once the Skip setup? dialog is gone; a single snapshot
+    # lacking the button can be a degenerate tree while the dialog is still up.
     deadline = time.monotonic() + 120
-    while any(row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()):
+    while not any(row[0] == "AXTextArea" for row in app.read_tree()):
         assert time.monotonic() < deadline, "Skip setup? dialog never dismissed"
-        time.sleep(2)
         try:
             app.click("AXButton", "Go to ChatGPT", timeout=1)
         except AssertionError as error:
@@ -44,10 +44,9 @@ def dismiss_skip_setup_dialog(app: MacApp) -> None:
                 str(error) == f"{app.name} never showed AXButton 'Go to ChatGPT'"
                 or "Fatal error: No AXButton labelled Go to ChatGPT" in str(error)
             )
-            if not missing or any(
-                row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()
-            ):
+            if not missing:
                 raise
+        time.sleep(2)
 
 
 def type_prompt(app: MacApp, prompt: str) -> None:
