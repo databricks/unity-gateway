@@ -67,7 +67,7 @@ def _fixture_routing_models(agent: str) -> list[str]:
 CLAUDE_MODELS = _fixture_routing_models("claude")
 CODEX_MODELS = _fixture_routing_models("codex")
 # Expected native Codex slugs, independently of the application's model mapper.
-CODEX_MODEL_SLUGS = {"gpt-6-sol", "gpt-6-luna"}
+CODEX_MODEL_SLUGS = {"gpt-6-sol", "gpt-6-1-sol", "gpt-6-luna"}
 SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 
 
