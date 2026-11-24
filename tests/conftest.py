@@ -21,6 +21,50 @@ from ucode.ui import normalize_workspace_url
 collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior"]
 
 
+def pytest_collection_modifyitems(config, items):
+    """Under UG_TEST_SHARD=<index>/<total>, keep only this CI shard's files and chunks."""
+    spec = os.environ.get("UG_TEST_SHARD")
+    if not spec:
+        return
+    from tests import shard
+
+    units = shard.units_for(spec)
+    slow = set(shard.load_times()["slow"])
+    owned = shard.owned_tests(units, [item.nodeid for item in items], slow)
+    keep = [item for item, mine in zip(items, owned, strict=True) if mine]
+    drop = [item for item, mine in zip(items, owned, strict=True) if not mine]
+    position = {}
+    for item in items:
+        path = shard.file_of(item.nodeid)
+        position[path] = position.get(path, -1) + 1
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
+    report = os.environ.get("UG_TEST_SHARD_REPORT")
+    # Every xdist worker collects the same files; one report per shard is enough.
+    if report and getattr(config, "workerinput", {}).get("workerid", "gw0") == "gw0":
+        with open(report, "w", encoding="utf-8") as output:
+            json.dump(
+                {
+                    "shard": spec,
+                    "units": [list(unit) for unit in units],
+                    "collected": dict(
+                        sorted((path, index + 1) for path, index in position.items())
+                    ),
+                    "selected": len(keep),
+                },
+                output,
+            )
+
+
+def pytest_xdist_auto_num_workers(config):
+    """Keep the live E2E suite serial: its shards share one workspace's model quota."""
+    if os.environ.get("UCODE_TEST_WORKSPACE") or any(
+        os.path.basename(arg.split("::")[0]) == "test_e2e.py" for arg in config.args
+    ):
+        return 0
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _isolate_route_validation(monkeypatch):
     from ucode.smart_routing import route_validation
