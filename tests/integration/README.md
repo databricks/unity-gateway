@@ -898,6 +898,13 @@ revert journey checks the user's own skills.json (including an entry added after
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
 
+Omnigent has manual Ubuntu ARM64 validation with version 0.22.0: installed configure,
+CLI startup, Claude/Codex skill invocation, and completed web-search MCP calls through
+Claude Code 2.1.330 and Codex 0.167.0. The Codex MCP call required approval in Omni's
+web UI; its native tool result and final answer confirmed completion. There is no
+automated live Omnigent lane or managed-policy/smart-routing coverage. Component
+coverage lives in `../test_omni.py`.
+
 VS Code Copilot Chat has four live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
 no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
 PATH. The configure journey runs it twice beside a developer's own `settings.json`, checks VS

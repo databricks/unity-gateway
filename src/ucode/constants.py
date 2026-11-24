@@ -8,6 +8,7 @@ LOOPBACK_HOST = "127.0.0.1"
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 AGENT_COPILOT = "copilot"
+AGENT_OMNI = "omni"
 AGENT_VSCODE = "vscode"
 # The Gateway reports Claude route options under this harness name.
 ROUTER_HARNESS_CLAUDE_CODE = "claude_code"

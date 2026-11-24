@@ -66,6 +66,7 @@ class TestToolSpecs:
             "kilo",
             "copilot",
             "pi",
+            "omni",
             "antigravity",
         }
 

@@ -405,6 +405,12 @@ These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
 the command fails or times out.
 
+`test_omni.py` covers configure selection, first-launch setup, argument forwarding,
+installation with TLS settings, MCP client aliases, skill refresh, config preservation,
+and revert/error recovery. These are component checks with isolated config paths.
+Manual Ubuntu validation is described in [the integration guide](integration/README.md);
+there is no automated live Omnigent lane.
+
 `test_opencode_family.py` covers the code OpenCode and Kilo share in `agents/opencode_family.py`.
 Kilo's rendered auth plugin must equal OpenCode's V1 plugin for the same state, and OpenCode's V2
 plugin must share the V1 prelude. The plugin must list the same provider ids as `PROVIDER_KEYS`,
