@@ -13,7 +13,7 @@ const ROUTED = {
 };
 const VALIDATED = { ...ROUTED, startupValidation: '1' };
 const OFF = '{"ENABLE_SMART_ROUTING_V2":"0","ENABLE_SMART_ROUTING_SUBAGENT_ONLY":"0","ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}';
-const WARNING = "This session's model list isn't supported by smart router";
+const WARNING = "smart routing unsupported";
 const FAILED = {
   routing_disabled: true, validation_failed: true, validation_failure_reason: "Smart Router didn't respond in time",
   router_name: 'stable', eligible_route_options: [], ineligible_route_options: [], available_route_options: [], validation_ms: 4000,

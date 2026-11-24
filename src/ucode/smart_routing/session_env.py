@@ -117,7 +117,7 @@ def validation_warning(result: dict[str, Any] | None) -> str | None:
     if result.get("validation_failed") is True:
         return "⚠ Smart Router couldn't validate this session's model list"
     if "validation_ms" in result:
-        return "⚠ This session's model list isn't supported by smart router"
+        return "⚠ smart routing unsupported"
     return None
 
 

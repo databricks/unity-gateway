@@ -200,7 +200,7 @@ def _controls(tmp_path, monkeypatch, enabled):
             False,
             (
                 "ERROR",
-                "⚠ This session's model list isn't supported by smart router",
+                "⚠ smart routing unsupported",
                 LOGS_DETAILS_HINT,
             ),
             id="startup-unsupported",
