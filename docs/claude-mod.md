@@ -44,12 +44,19 @@ Smart Router chooses the execution model independently of the requested role or 
 Claude may review an Agent call server-side before a mod sees its streamed response. The mod
 passes the stream and the `tool.call` input unchanged, including when
 `CLAUDE_CODE_AUTO_MODE_SERVER` is unset; routing occurs at `tool.call` and the selected model
-is applied at `agent.spawn`. A lone tool row displays `<animal> · <model> · <task>` through
-`ui.render`, without changing the call. The task title comes from the first sentence of the
-prompt. Claude's collapsed parallel-agent header is not exposed to that hook and retains the
-native description; routing cards and the agent list provide model details separately.
+is applied at `agent.spawn`. Parallel Agent calls route as the host dispatches their
+`tool.call` events, which it runs concurrently for calls written in one reply. A lone tool
+row displays `<animal> · <model> · <task>` through `ui.render`, without changing the call.
+The task title comes from the first sentence of the prompt.
 The selected model is a prediction until the child starts. Routing cards, the agent list and
 completed-task notices use the spawn receipt and flag a mismatch with `⚠ selected <model>`.
+Claude's collapsed parallel-agent header is not exposed to that hook, and the recorded call
+keeps the description Claude wrote, so that header, the transcript after a resume, a
+completed-task notice whose launch matches the selection, and other views of the recorded
+description (task-list entries read it the same way) show Claude's own text; only the lone
+row and a model mismatch carry the routed label. This gives up the
+`<animal> · <model> · <task>` headings #1784 wrote into the recorded call in exchange for
+never changing an Agent call after auto mode has reviewed it.
 A host that reports no launch model is logged and its labels are not saved. Session-scoped
 display files keep the receipts across resume. Native task descriptions, full prompts, agent
 addresses and permissions are unchanged.

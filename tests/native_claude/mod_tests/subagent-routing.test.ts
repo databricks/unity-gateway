@@ -1094,15 +1094,18 @@ test('completed notification labels restore per child and render without storage
   await retained.unmount();
 });
 
-for (const show of ['0', '1']) {
-  test(`parallel streamed calls preserve routing with model display ${show}`, {
+// The server-review setting no longer changes stream handling, so its values fold into this
+// fixture instead of a full cross-product with the display setting.
+for (const [show, serverSetting] of [['0', undefined], ['1', '0'], ['1', '1']] as const) {
+  test(`parallel streamed calls preserve routing with model display ${show} (server review ${serverSetting ?? 'unset'})`, {
     options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: show },
   }, async ($, on) => {
     const routerCalls: any[] = [];
     const spawned: any[] = [];
     const rows = new Map<string, any>();
     on('session.id', () => ({ value: 'session-1' }));
-    on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
+    on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data'
+      : e.name === 'CLAUDE_CODE_AUTO_MODE_SERVER' ? serverSetting : undefined }));
     on('fs.write', () => ({ value: undefined }));
     on('process.run', ($, event) => {
       const request = JSON.parse(event.init.stdin);
@@ -1193,27 +1196,6 @@ for (const show of ['0', '1']) {
     await clean.unmount();
   });
 
-}
-
-for (const serverSetting of [undefined, '0', '1']) {
-  test(`server review setting ${serverSetting} leaves streamed Agent input untouched`, async ($, on) => {
-    const routerCalls: any[] = [];
-    const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
-    on('session.id', () => ({ value: 'session-1' }));
-    on('env.get', ($, e) => ({ value: e.name === 'CLAUDE_CODE_AUTO_MODE_SERVER' ? serverSetting : undefined }));
-    on('process.run', ($, event) => { routerCalls.push(event); return { value: {
-      exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'Selected.' }),
-    } }; });
-    on('turn.step', async function* ($, e) {
-      yield { kind: 'tool', index: 0, id: 'server-0', name: 'Agent' };
-      yield { kind: 'input', index: 0, json: JSON.stringify(call) };
-      yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
-    });
-    const turn = await collectParentTurn($, 'server-review', 0);
-    expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
-    expect(routerCalls).toHaveLength(0);
-  });
 }
 
 test('a failed routing attempt is not repeated for the same tool call', async ($, on) => {
