@@ -1,31 +1,26 @@
 import type { AgentInfo, On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
-import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
 import { parseSmartRouterCommand } from '../hooks/isaac-feedback.ts';
 import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
 
-const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
 const ROUTED = {
   ENABLE_SMART_ROUTING_V2: '0',
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
   ENABLE_SMART_ROUTER_ORCHESTRATOR: '1',
   unset: [],
-  recipe: RECIPE,
 };
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 
-// A pinned environment variable is the policy refusal the managed security default
-// raises; only the extra body may carry the recipe.
-function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}) {
+function setup(on: On, { launched = true } = {}) {
   on('session.id', () => ({ value: 'session-1' }));
   on('fs.exists', () => ({ value: false }));
   // A routed launch puts its flags in the environment; session.start reads them back
   // so a reload keeps the toggle the session last applied.
   const env: Record<string, string | undefined> = {
     UCODE_AGENT_LABELS_DIR: '/plugin-data',
-    CLAUDE_CODE_EXTRA_BODY: body,
+    CLAUDE_CODE_EXTRA_BODY: CALLER_BODY,
     ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? ROUTED.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
@@ -34,14 +29,13 @@ function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
     writes.push(e.name);
-    if (e.name === pinned) return { deny: `env (managed): ${e.name} is not for plugins outside policy to change` };
     env[e.name] = e.value;
     return { value: undefined };
   });
   return { env, writes };
 }
 
-test('session start carries the launch recipe and forwards the event and result', { options: ROUTED }, async ($, on) => {
+test('session start moves only the routing flags and forwards the event and result', { options: ROUTED }, async ($, on) => {
   const { env, writes } = setup(on);
   let calls = 0;
   on('session.start', ($, e) => {
@@ -53,9 +47,10 @@ test('session start carries the launch recipe and forwards the event and result'
   const result = await $.session.start(start);
   expect(calls).toBe(1);
   expect(result).toEqual({ cwd: '/resolved-work' });
-  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
-  // The recipe left ANTHROPIC_CUSTOM_HEADERS, which a managed config pins.
-  expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
+  // The recipe never comes from here: ug's managed policy-tier mod alone writes the body.
+  expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
+  expect(writes).not.toContain('CLAUDE_CODE_EXTRA_BODY');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
 });
 
 test('an Auto flag without a launch picker leaves model and effort commands native', {
@@ -83,24 +78,22 @@ test('an Auto flag without a launch picker leaves model and effort commands nati
   expect(registered).not.toContain('auto');
 });
 
-test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on, { pinned: 'CLAUDE_CODE_EXTRA_BODY' });
+test('a toggle moves the flags and never the protected body', { options: ROUTED }, async ($, on) => {
+  const { env, writes } = setup(on);
+  // A routed launch supplies the session controls the toggle must also reach.
+  env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
+  env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  await $.session.start(start);
 
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });
 
-  expect(reply.text).toContain('Could not update Smart Router');
+  expect(reply.text).toBe('Smart Router is off');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+  expect(writes).not.toContain('CLAUDE_CODE_EXTRA_BODY');
+  // A body that is not even a JSON object is no concern of the session mod's.
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
-  // The rollback puts the flags the launch set back, so routing stays as it was.
-  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
-});
-
-test('a caller body that is not a JSON object is left alone', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on, { body: 'not json' });
-
-  const reply = await $.command.run({ command: 'smart-router', args: 'off' });
-
-  expect(reply.text).toContain('Could not update Smart Router');
-  expect(env.CLAUDE_CODE_EXTRA_BODY).toBe('not json');
 });
 
 test('a launch without routing keeps the command inert', { options: { ...ROUTED, ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($, on) => {

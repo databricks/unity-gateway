@@ -1696,7 +1696,7 @@ locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).
-Unit tests still run as one job. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
+Unit tests run as 24 Linux and 64 Windows shards (`Unit tests · <OS> · <n>/<total>`). `tests/shard.py` assigns each test slower than 2 s on its own, plus every file's remaining tests in interleaved 4-second chunks, slowest first to the least-loaded shard using `tests/unit_test_times.json` (measured per OS on hosted runners); each shard receives only its files, so it imports and collects only what it runs. Outside pull requests, `Unit test times` fails unless, for each OS, every unit ran exactly once and every collected test ran, and `test` requires it there, so the merge queue proves shard coverage before main; main's run also records fresh per-file timings as an artifact to commit when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main, and run its tools directly; uv is installed only when that cache misses. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
 `tests/e2e_cuj/test_cuj<N>_*.py` file, because CUJs share machine-wide `/etc` agent
 settings. All matrices use `fail-fast: false` so one failure does not cancel other coverage.
 
@@ -2090,12 +2090,16 @@ recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malfor
 responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
 deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
 flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
-check reports only an unsupported list and leaves routing on after a failure. The smart-routing
-launch tests cover the resolved Claude model/harness list and provider.
+check turns routing on only for a supported list or a 404; an unsupported list or a failed check
+keeps it off and records a logs row. The smart-routing launch tests cover the resolved Claude and
+Codex model/harness list and provider; the Codex test checks them at the HTTP call. The Codex toggle uses the same verdict and is covered in
+`test_smart_router_feedback.py`; its footer shows the warning and hint in `test_codex_statusline.py`,
+and `test_codex_smart_routing_v2.py` checks the check is wired even when the first prompt is not routed.
 Claude's native mod tests cover the band hold, the result handling, the unsupported and
 validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
-and the transcript log lines (`Smart Router is off` and the warning) logged only when
+and the two transcript log lines (`Smart Router is off` and the warning) logged only when
 `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
-The Claude back-on TUI journey in `tests/integration/test_ug_smart_routing_hooks.py` checks the live
-validate request that `/smart-router on` sends (HTTP 200, `is_supported: true`). These component tests
+The Claude and Codex back-on TUI journeys in `tests/integration/test_ug_smart_routing_hooks.py` check
+the live validate request that turning routing on sends (HTTP 200, `is_supported: true`), and CUJ 4
+checks the live startup request for both agents. These component tests
 do not establish live Gateway or classifier compatibility.

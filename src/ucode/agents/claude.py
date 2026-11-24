@@ -2345,41 +2345,71 @@ CLAUDE_PARENT_SETTINGS_BEHAVIOR = "merge"
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
 _HEADER_MOD_PREFIX = "ug-headers@"
 CLAUDE_HEADER_MOD_ID = f"{_HEADER_MOD_PREFIX}{CLAUDE_HEADER_MOD_MARKETPLACE}"
+CLAUDE_ROUTER_MOD_NAME = "ug-smart-router-recipe"
+CLAUDE_ROUTER_MOD_ID = f"{CLAUDE_ROUTER_MOD_NAME}@{CLAUDE_HEADER_MOD_MARKETPLACE}"
 _CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
-# The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
-# nothing in ug's own settings file can be overridden by them.
+# The managed mods' file entries. Revert removes them; they never count as conflicts, since nothing
+# in ug's own settings file can be overridden by them.
 CLAUDE_HEADER_MOD_PATHS = [
     ["extraKnownMarketplaces", CLAUDE_HEADER_MOD_MARKETPLACE],
     ["enabledPlugins", CLAUDE_HEADER_MOD_ID],
+    ["enabledPlugins", CLAUDE_ROUTER_MOD_ID],
     ["prependPlugins"],
 ]
 
 
-def _header_mod_files(root: Path) -> dict[Path, str]:
-    """The marketplace and plugin ug installs at ``root`` for its Claude header mod."""
+def managed_mod_files(root: Path) -> dict[Path, str]:
+    """The marketplace and plugins ug installs at ``root`` for its Claude managed mods.
+
+    Also the managed run's file contract: ``published_agent_config`` installs these files
+    itself, since it is the only writer its machines have.
+    """
     description = "Adds `ug --header` / UG_HEADERS to Claude's gateway requests."
+    recipe_description = "Adds the Unity Gateway smart-router recipe to Claude's requests."
     docs = {
         ".claude-plugin/marketplace.json": {
             "name": CLAUDE_HEADER_MOD_MARKETPLACE,
             "owner": {"name": "Unity Gateway"},
             # A relative source loads in place, which Claude requires of an organization's mod.
             "plugins": [
-                {"name": "ug-headers", "source": "./ug-headers", "description": description}
+                {"name": "ug-headers", "source": "./ug-headers", "description": description},
+                {
+                    "name": CLAUDE_ROUTER_MOD_NAME,
+                    "source": f"./{CLAUDE_ROUTER_MOD_NAME}",
+                    "description": recipe_description,
+                },
             ],
         },
         "ug-headers/.claude-plugin/plugin.json": {"name": "ug-headers", "description": description},
         "ug-headers/hooks/hooks.json": {"modules": ["./register.ts"]},
+        f"{CLAUDE_ROUTER_MOD_NAME}/.claude-plugin/plugin.json": {
+            "name": CLAUDE_ROUTER_MOD_NAME,
+            "description": recipe_description,
+        },
+        f"{CLAUDE_ROUTER_MOD_NAME}/hooks/hooks.json": {"modules": ["./register.ts"]},
     }
     files = {root / name: json.dumps(doc, indent=2) + "\n" for name, doc in docs.items()}
-    mod = Path(__file__).with_name("claude_header_mod") / "register.ts"
-    files[root / "ug-headers/hooks/register.ts"] = mod.read_text(encoding="utf-8")
+    source = Path(__file__).with_name("claude_header_mod") / "register.ts"
+    files[root / "ug-headers/hooks/register.ts"] = source.read_text(encoding="utf-8")
+    # The recipe mod shares the session mod's modules, so they stay one implementation.
+    recipe_mod = Path(__file__).with_name("claude_recipe_mod")
+    mods = Path(__file__).with_name("claude_mods")
+    for name, origin in (
+        ("register.ts", recipe_mod / "register.ts"),
+        ("constants.ts", mods / "constants.ts"),
+        ("extra-body.ts", mods / "extra-body.ts"),
+        ("routing-state.ts", mods / "routing-state.ts"),
+    ):
+        files[root / CLAUDE_ROUTER_MOD_NAME / "hooks" / name] = origin.read_text(encoding="utf-8")
     return files
 
 
-def _enable_header_mod(settings: dict, root: Path | None) -> dict:
-    """Enable ug's header mod in the managed file and run it ahead of every user's mod."""
-    if root is None:
-        return settings
+def enable_managed_mods(settings: dict, root: Path, mod_ids: tuple[str, ...]) -> dict:
+    """Enable ug's managed mods from ``root`` and run them ahead of every user's mod, in order.
+
+    Also the managed run's enablement contract: ``published_agent_config`` enables the recipe
+    mod in the settings it composes, which a plain launch never writes.
+    """
     marketplaces = settings.setdefault("extraKnownMarketplaces", {})
     plugins = settings.setdefault("enabledPlugins", {})
     if not isinstance(marketplaces, dict) or not isinstance(plugins, dict):
@@ -2387,15 +2417,24 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     marketplaces[CLAUDE_HEADER_MOD_MARKETPLACE] = {
         "source": {"source": "directory", "path": str(root)}
     }
-    plugins[CLAUDE_HEADER_MOD_ID] = True
+    for mod_id in mod_ids:
+        plugins[mod_id] = True
     # An unset list means the built-in guard alone, which a set list has to name to keep it.
     prepend = settings.get("prependPlugins")
     prepend = prepend if isinstance(prepend, list) else [_CLAUDE_GUARD_MOD_ID]
     settings["prependPlugins"] = [
-        CLAUDE_HEADER_MOD_ID,
-        *(entry for entry in prepend if entry != CLAUDE_HEADER_MOD_ID),
+        *mod_ids,
+        *(entry for entry in prepend if entry not in mod_ids),
     ]
     return settings
+
+
+def _enable_header_mod(settings: dict, root: Path | None) -> dict:
+    """Enable ug's managed mods in the managed file and run them ahead of every user's mod: the
+    header mod first, then the recipe mod, which re-applies the recipe before each request."""
+    if root is None:
+        return settings
+    return enable_managed_mods(settings, root, (CLAUDE_HEADER_MOD_ID, CLAUDE_ROUTER_MOD_ID))
 
 
 _explicit_configure = False
@@ -2412,17 +2451,17 @@ def request_explicit_configure(requested: bool = True) -> None:
 
 
 def _install_header_mod(root: Path | None, *, managed_file_exists: bool) -> bool:
-    """Install or update the header mod's files, returning whether this run did.
+    """Install or update the managed mods' files, returning whether this run did.
 
-    They are installed only where the managed file can be written, since the mod is enabled in
-    that file. A failure only costs ``ug --header`` for Claude; the caller then doesn't enable
-    the mod."""
+    They are installed only where the managed file can be written, since the mods are enabled in
+    that file. A failure only costs ``ug --header`` and the managed recipe write for Claude; the
+    caller then doesn't enable the mods."""
     if root is None or is_dry_run():
         return False
     if not managed_writes_allowed(repair_existing=managed_file_exists):
         return False
     try:
-        reconcile_privileged_files(_header_mod_files(root), display="Claude Code")
+        reconcile_privileged_files(managed_mod_files(root), display="Claude Code")
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         hint = (
             ""
@@ -2445,33 +2484,68 @@ def _remove_header_mod() -> None:
         print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
 
 
+def _managed_settings_doc() -> dict | None:
+    """The parsed managed settings file, or ``None`` when absent or unreadable."""
+    path = _managed_settings_path()
+    if path is None:
+        return None
+    try:
+        return _parse_managed_settings(read_managed_file(path) or "{}")
+    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+
+
 def header_mod_active(*, require_current: bool = False) -> bool:
     """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own mod, or another installer's copy enabled in the managed settings.
     ``require_current`` requires ug's current files for its language-context hooks.
     """
-    root = claude_header_mod_root()
-    path = _managed_settings_path()
-    if path is None:
+    settings = _managed_settings_doc()
+    if settings is None:
         return False
+    plugins = settings.get("enabledPlugins")
+    if not isinstance(plugins, dict):
+        return False
+    # TODO: remove once other installers use ug to update managed settings.
+    if not require_current and any(
+        key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
+        for key, value in plugins.items()
+    ):
+        return True
+    return _managed_mod_current(settings, claude_header_mod_root(), CLAUDE_HEADER_MOD_ID)
+
+
+def recipe_mod_active() -> bool:
+    """Whether the recipe mod is enabled with ug's current files, so routed requests carry one.
+
+    Without it a routed launch sends no recipe: the mod alone writes the extra body, since the
+    session mod's own write is what Claude's guard denies to the user tier.
+    """
+    settings = _managed_settings_doc()
+    return settings is not None and _managed_mod_current(
+        settings, claude_header_mod_root(), CLAUDE_ROUTER_MOD_ID
+    )
+
+
+def _managed_mod_current(settings: dict, root: Path | None, mod_id: str) -> bool:
+    """Whether ``mod_id`` is enabled in the managed file with ug's current files at ``root``."""
+    plugins = settings.get("enabledPlugins")
+    if not isinstance(plugins, dict) or plugins.get(mod_id) is not True:
+        return False
+    if root is None:
+        return False
+    # The marketplace is shared, so it counts for either mod; each mod's own files don't.
+    marketplace = root / ".claude-plugin/marketplace.json"
+    mod_root = root / mod_id.partition("@")[0]
     try:
-        settings = _parse_managed_settings(read_managed_file(path) or "{}")
-        plugins = settings.get("enabledPlugins")
-        if not isinstance(plugins, dict):
-            return False
-        # TODO: remove once other installers use ug to update managed settings.
-        if not require_current and any(
-            key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
-            for key, value in plugins.items()
-        ):
-            return True
-        if root is None or plugins.get(CLAUDE_HEADER_MOD_ID) is not True:
-            return False
-        for file, content in _header_mod_files(root).items():
+        for file, content in managed_mod_files(root).items():
+            if file != marketplace and not file.is_relative_to(mod_root):
+                continue
             if not file.is_file() or file.read_text(encoding="utf-8") != content:
                 return False
-    except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+    except OSError:
+        # A folder the user can't enter (an earlier install under umask 027) reads as inactive.
         return False
     return True
 
@@ -3348,10 +3422,20 @@ def launch(
                 os.environ.pop(key, None)
     routing_setup_failed = False
     if options.launch_smart_routing:
-        if not header_mod_active(require_current=True):
+        # A missing recipe mod costs routed requests their recipe; a stale header mod only
+        # language inheritance. The warning names whichever cannot be verified.
+        unverifiable = [
+            role
+            for role, active in (
+                ("Smart Router language inheritance", header_mod_active(require_current=True)),
+                ("the request recipe", recipe_mod_active()),
+            )
+            if not active
+        ]
+        if unverifiable:
             print_warning(
-                "Cannot verify Smart Router language inheritance: it requires the current UG "
-                "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
+                f"Cannot verify {' and '.join(unverifiable)}: it requires the current UG "
+                "managed mods. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
                 "Routing continues."
             )
         try:

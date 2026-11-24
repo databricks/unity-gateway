@@ -115,8 +115,14 @@ class _Client:
         return json.loads(reply["result"]["content"][0]["text"])
 
     def close(self):
+        self.close_stdin()
+        self.wait_for_exit()
+
+    def close_stdin(self):
         if not self.process.stdin.closed:
             self.process.stdin.close()
+
+    def wait_for_exit(self):
         try:
             self.process.wait(timeout=8)
         except subprocess.TimeoutExpired:
@@ -255,8 +261,11 @@ def clients(tmp_path):
         return client
 
     yield start
+    # Signal every relay before waiting, so their exits overlap; on Windows each takes about 2 s.
     for client in started:
-        client.close()
+        client.close_stdin()
+    for client in started:
+        client.wait_for_exit()
     for path in (tmp_path / ".ucode" / "mcp-proxy").glob("*/endpoint.json"):
         metadata = json.loads(path.read_text())
         try:

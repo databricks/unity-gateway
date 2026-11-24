@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -70,6 +71,7 @@ from ucode.skills import (
 )
 from ucode.smart_routing import (
     claude_routing,
+    codex_routing,
     codex_statusline,
     orchestrator,
     route_validation,
@@ -93,7 +95,12 @@ from ucode.smart_routing.config import (
     resolve_environment,
     selected_version,
 )
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    start_session,
+    validation_result_path,
+)
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -412,7 +419,6 @@ def _claude_mod_launch_options(
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
-        "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
         "logsCommand": [],
         "orchestratorInstructions": (
@@ -506,12 +512,6 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": [],
                     "title": "Absent flags",
                     "description": "Flags absent at launch",
-                },
-                "recipe": {
-                    "type": "string",
-                    "default": routing.ROUTER_NAME,
-                    "title": "Recipe",
-                    "description": "Original routing recipe",
                 },
             },
         },
@@ -1039,14 +1039,17 @@ def launch_claude(
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
+            launch_source = {**resolve_environment(agent=AGENT_CLAUDE), **env}
             mod_options = {
-                **_claude_mod_launch_options(
-                    {**resolve_environment(agent=AGENT_CLAUDE), **env},
-                    config_version=selected_version(),
-                ),
+                **_claude_mod_launch_options(launch_source, config_version=selected_version()),
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
+            # The managed recipe mod, which alone writes the extra body, reads its recipe here:
+            # pluginConfigs are the user tier's options and need not reach a policy-tier mod.
+            env[routing.ROUTER_NAME_ENV_VAR] = (
+                launch_source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME
+            )
             if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
                 mod_options["validateCommand"] = routing_hook_argv(
                     routing_state, ROUTE_VALIDATION_MOD_EVENT
@@ -1279,6 +1282,19 @@ def launch_codex(
             f"Could not enable plaintext Codex task routing: {exc} "
             "Encrypted subagent assignments will keep their requested model."
         )
+    if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+        # The footer shows a pending state until the check publishes its result.
+        with suppress(OSError):
+            config_io.atomic_write_json(validation_result_path(session_env_path), {"pending": True})
+        route_validation.start(
+            workspace,
+            os.environ[OAUTH_TOKEN_ENV_VAR],
+            codex_routing.codex_route_options(available_models),
+            router_name=routing.configured_router_name(),
+            session_controls=session_env_path,
+            provider=state.get("_codex_launch_provider"),
+            available_harness=AGENT_CODEX,
+        )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
@@ -1323,6 +1339,18 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            validate_model_list=(
+                (
+                    lambda: codex_routing.validate_codex_model_list(
+                        workspace,
+                        launch_token(state, workspace),
+                        available_models,
+                        provider=state.get("_codex_launch_provider"),
+                    )
+                )
+                if env_bool(UG_ROUTE_VALIDATION_ENV_VAR)
+                else None
+            ),
             **(
                 {"provider": state["_codex_launch_provider"]}
                 if state.get("_codex_launch_provider")

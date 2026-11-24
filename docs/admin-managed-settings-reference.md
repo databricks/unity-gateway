@@ -18,6 +18,7 @@ The supported agents are Claude Code and Codex.
 | Codex | `/etc/codex/ug-model-catalog.json` and `/etc/codex/managed_config.toml`, only for a static model list | No |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json`: the saved agent configuration | — |
 | Unity Gateway | `/etc/unitygateway/agents-state.json`: the marker file | — |
+| Unity Gateway | The recipe mod's files, in the `ucode-plugins` folder beside the Claude Code managed file: the smart-router recipe rides `CLAUDE_CODE_EXTRA_BODY` from the policy tier | — |
 
 The run builds each agent file from these layers. A later layer replaces an earlier one:
 
@@ -201,6 +202,9 @@ Check the tables for the `ug` version that your fleet runs.
 | `env.ENABLE_PROMPT_CACHING_1H` | Unity Gateway default |  | Yes | `"1"` | 1-hour prompt caching. |
 | `env.ENABLE_TOOL_SEARCH` | Unity Gateway default |  | Yes | `"true"` | Loads MCP tools on demand. |
 | `permissions.deny` | Shared list |  | Yes |  | Unity Gateway adds `WebSearch`, because the gateway rejects Claude's hosted web search. |
+| `extraKnownMarketplaces.ucode-managed` | Reserved |  | Yes |  | Unity Gateway's managed marketplace: the directory its recipe mod loads from. |
+| `enabledPlugins.ug-smart-router-recipe@ucode-managed` | Reserved |  | Yes |  | Unity Gateway's recipe mod, which writes the smart-router recipe from the policy tier. |
+| `prependPlugins` | Shared list |  | Yes |  | Unity Gateway prepends its recipe mod, which runs ahead of every mod a user installs; the built-in guard stays in the list. |
 
 ### Codex: `codex.requirements`
 

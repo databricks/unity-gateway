@@ -2,11 +2,13 @@
 
 Startup compatibility validation has component coverage in `../test_route_validation.py`,
 the smart-routing launch tests, and the native Claude mod suite. They control the validation
-response or transport. CUJ 4 adds one live supported journey: with `UG_ROUTE_VALIDATION=1`
-and the published model list, ug sends one recorded routes:validate request that the Gateway
-answers with HTTP 200 and `is_supported: true`, and the band and hint row show ON without the
-unsupported warning. The Claude back-on TUI journey in `test_ug_smart_routing_hooks.py` also checks the validate request
-that `/smart-router on` sends: exactly one, answered with HTTP 200 and `is_supported: true`.
+response or transport. CUJ 4 adds one live supported journey for Claude and one for Codex: with
+`UG_ROUTE_VALIDATION=1` and the published model list, ug sends one recorded routes:validate
+request with that agent's route options, the Gateway answers with HTTP 200 and
+`is_supported: true`, and Smart Router shows ON without the unsupported warning (Claude's band
+and hint row, Codex's footer). The Claude and Codex back-on TUI journeys in
+`test_ug_smart_routing_hooks.py` also check the validate request that turning routing on sends:
+exactly one, answered with HTTP 200 and `is_supported: true`.
 No live unsupported or classifier journey is claimed.
 
 The Codex footer has offline protocol, process-isolation, and launcher coverage in

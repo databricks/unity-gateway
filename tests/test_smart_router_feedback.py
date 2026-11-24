@@ -11,7 +11,8 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli
-from ucode.smart_routing import feedback, session_env, v2
+from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.smart_routing import feedback, route_validation, session_env, session_log, v2
 from ucode.smart_routing.codex_feedback import (
     TOOL_NAME,
     TOOL_SPEC,
@@ -418,7 +419,8 @@ def test_native_feedback_exemptions_skip_prompt_and_isaac(inline_feedback, monke
     popen.assert_not_called()
 
 
-@pytest.mark.parametrize("thread_id", [str(uuid4()), None, {}])
+# A fixed id keeps collection identical across pytest-xdist workers.
+@pytest.mark.parametrize("thread_id", ["5b0f6c1e-2d47-4b8e-9a3c-7e1d2f4a6b90", None, {}])
 def test_native_rejects_unbound_sessions(native_router, inline_feedback, thread_id):
     controls, run, popen, _ = inline_feedback
     with pytest.raises(ValueError, match="only to this session's root"):
@@ -985,3 +987,145 @@ def test_native_off_waits_for_correlated_turn_start_reply(
     assert run.call_count == int(not reply_error)
     assert session_env.session_routing_enabled(controls)
     upload.assert_not_called()
+
+
+UNSUPPORTED_CHECK = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "routing_unsupported_reason": "insufficient_eligible_options",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+    "validation_ms": 120,
+}
+FAILED_CHECK = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "validation_failed": True,
+    "validation_failure_reason": "Smart Router didn't respond in time",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [],
+    "validation_ms": 4000,
+}
+SUPPORTED_CHECK = {"routing_disabled": False}
+CHECK_RAISES = RuntimeError("token unavailable")
+UNEXPECTED_FAILURE_CHECK = {
+    **FAILED_CHECK,
+    "validation_failure_reason": route_validation.CHECK_FAILED_REASON,
+}
+
+
+@pytest.fixture
+def session_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+
+
+def toggle_router(controls, validate):
+    router = CodexSmartRouter(controls, validate)
+    request = {"id": "start", "method": "thread/start", "params": {}}
+    router.before_tui(request)
+    router.observe({"id": "start", "result": {"thread": {"id": SESSION_ID}}})
+    return router
+
+
+@pytest.mark.parametrize(
+    ("initially_on", "outcome", "enabled", "message", "published"),
+    [
+        pytest.param(
+            False,
+            SUPPORTED_CHECK,
+            True,
+            "Smart Router is on for this session.",
+            None,
+            id="turn-on-supported",
+        ),
+        pytest.param(
+            True,
+            SUPPORTED_CHECK,
+            True,
+            "Smart Router is already on for this session.",
+            None,
+            id="already-on-supported",
+        ),
+        pytest.param(
+            False,
+            UNSUPPORTED_CHECK,
+            False,
+            "Smart Router is off for this session.",
+            UNSUPPORTED_CHECK,
+            id="turn-on-unsupported",
+        ),
+        pytest.param(
+            True,
+            UNSUPPORTED_CHECK,
+            False,
+            "Smart Router is off for this session.",
+            UNSUPPORTED_CHECK,
+            id="already-on-unsupported",
+        ),
+        pytest.param(
+            False,
+            FAILED_CHECK,
+            False,
+            "Smart Router is off for this session.",
+            FAILED_CHECK,
+            id="turn-on-failed-check",
+        ),
+        pytest.param(
+            False,
+            CHECK_RAISES,
+            False,
+            "Smart Router is off for this session.",
+            UNEXPECTED_FAILURE_CHECK,
+            id="turn-on-check-raises",
+        ),
+    ],
+)
+def test_on_checks_the_model_list_before_turning_routing_on(
+    inline_feedback, session_logs, initially_on, outcome, enabled, message, published
+):
+    controls, *_ = inline_feedback
+    if not initially_on:
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+
+    def validate():
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    router = toggle_router(controls, validate)
+    assert native_call(router, "on") == {"message": message}
+    assert session_env.session_routing_enabled(controls) is enabled
+    result_path = session_env.validation_result_path(controls)
+    records = session_log.read_records("codex", SESSION_ID, session_log.ROUTE_VALIDATION_TYPE)
+    if published is None:
+        assert not result_path.exists()
+        assert records == []
+        return
+    result = json.loads(result_path.read_text())
+    [row] = records
+    if isinstance(outcome, Exception):
+        published = {**published, "validation_ms": result["validation_ms"]}
+    assert result == {**published, "logged": True}
+    # The row is already written, so the first-prompt recorder must not log it again.
+    assert session_env.read_unsupported_validation(controls) is None
+    assert {key: row[key] for key in published} == published
+    assert "Reason:" in session_log.render_validation_detail(row)
+
+
+@pytest.mark.parametrize(
+    ("initial", "action"),
+    [("{}", "on"), (json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")), "off")],
+    ids=["on", "off-while-already-off"],
+)
+def test_toggling_clears_the_previous_warning(inline_feedback, session_logs, initial, action):
+    controls, *_ = inline_feedback
+    controls.write_text(initial)
+    result_path = session_env.validation_result_path(controls)
+    result_path.write_text(json.dumps(UNSUPPORTED_CHECK))
+    session_env.validation_dismissed_path(controls).touch()
+    router = toggle_router(controls, lambda: SUPPORTED_CHECK)
+    native_call(router, action)
+    assert not result_path.exists()
+    assert not session_env.validation_dismissed_path(controls).exists()

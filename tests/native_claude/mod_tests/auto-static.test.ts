@@ -22,14 +22,12 @@ const AUTO = {
     { model: OTHER, label: 'Haiku 4.5', autoModel: OTHER_ALIAS },
   ],
 };
-const RECIPE = 'task_v3';
 const OPTIONS = {
   ENABLE_SMART_ROUTING_V2: '0',
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
   ENABLE_SMART_ROUTER_ORCHESTRATOR: '0',
   ENABLE_SMART_ROUTER_AUTO_MODE: '1',
   autoPicker: JSON.stringify(AUTO),
-  recipe: RECIPE,
   unset: [],
 };
 const START = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;

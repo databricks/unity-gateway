@@ -5,14 +5,24 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, session_routing_enabled
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    read_validation_result,
+    session_routing_enabled,
+    validation_dismissed_path,
+    validation_result_path,
+    validation_warning,
+)
 
 SERVER_NAME = "ug-smart-router-statusline"
 TOOL_NAME = "statusline"
 RESOURCE_URI = "ui://ug-smart-router/footer"
+LOGS_DETAILS_HINT = "($smart-router logs for details)"
+VALIDATION_PENDING_SECONDS = 5
 STATE_META_KEY = "com.openai/codex-statusline-state"
 TOOL = {
     "name": TOOL_NAME,
@@ -59,25 +69,51 @@ def _text(value: str, color: str) -> dict:
     return {"type": "text", "props": {"color": color}, "children": [value]}
 
 
-def _router_indicator(label: str) -> dict:
+def _router_indicator(
+    label: str | None, background: str = "#808080", notes: list[str] | None = None
+) -> dict:
     if label == "UNKNOWN":
         return _text("smart router UNKNOWN", "yellow")
-    badge = {
-        "type": "row",
-        "props": {"gap": 0, "background": "green" if label == "ON" else "#808080"},
-        "children": [
+    children = [_text("smart router", "primary")]
+    if label is not None:
+        children.append(
             {
-                "type": "text",
-                "props": {"color": "black", "weight": "bold"},
-                "children": [f" {label} "],
+                "type": "row",
+                "props": {"gap": 0, "background": background},
+                "children": [
+                    {
+                        "type": "text",
+                        "props": {"color": "black", "weight": "bold"},
+                        "children": [f" {label} "],
+                    }
+                ],
             }
-        ],
-    }
-    return {
-        "type": "row",
-        "props": {"gap": 1},
-        "children": [_text("smart router", "primary"), badge],
-    }
+        )
+    children += [_text(note, "yellow") for note in notes or []]
+    return {"type": "row", "props": {"gap": 1}, "children": children}
+
+
+def _validation_pending(result: dict[str, Any] | None, result_path: Path) -> bool:
+    if result is None or result.get("pending") is not True:
+        return False
+    try:
+        age = time.time() - result_path.stat().st_mtime
+    except OSError:
+        return False
+    return age < VALIDATION_PENDING_SECONDS
+
+
+def _validation_indicator(path: Path, enabled: bool) -> dict:
+    result = read_validation_result(path)
+    if _validation_pending(result, validation_result_path(path)):
+        return _router_indicator(None)
+    warning = validation_warning(result)
+    shown = None if validation_dismissed_path(path).exists() else warning
+    if warning is not None and result is not None and result.get("routing_disabled") is True:
+        return _router_indicator(
+            "ERROR", "yellow", [*([shown] if shown else []), LOGS_DETAILS_HINT]
+        )
+    return _router_indicator("ON", "green") if enabled else _router_indicator("OFF")
 
 
 def render(state: dict[str, Any]) -> dict:
@@ -85,17 +121,18 @@ def render(state: dict[str, Any]) -> dict:
     try:
         if not controls:
             raise ValueError("No session controls")
-        enabled = session_routing_enabled(Path(controls), retry=False)
-        label = "ON" if enabled else "OFF"
+        path = Path(controls)
+        enabled = session_routing_enabled(path, retry=False)
+        indicator = _validation_indicator(path, enabled)
     except (OSError, UnicodeError, ValueError):
-        label = "UNKNOWN"
+        indicator = _router_indicator("UNKNOWN")
 
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
-    children = [_router_indicator(label), _text(model_name, "status-model")]
+    children = [indicator, _text(model_name, "status-model")]
     cwd = _object(thread.get("workspace")).get("cwd")
     if cwd:
         path = PureWindowsPath(cwd) if "\\" in cwd else PurePosixPath(cwd)
