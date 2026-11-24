@@ -8,6 +8,7 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
+from ucode.smart_routing.codex_auto import AUTO_MODEL
 from ucode.smart_routing.session_env import (
     SESSION_ENV_VAR,
     auto_state_path,
@@ -101,7 +102,10 @@ def render(state: dict[str, Any]) -> dict:
         try:
             auto_state = json.loads(auto_state_path(Path(controls)).read_text())
             if isinstance(auto_state, dict):
-                model_name = f"Auto ({model.get('id') or model_name})"
+                main = model.get("id")
+                if main == AUTO_MODEL:
+                    main = auto_state.get("model")
+                model_name = f"Auto ({main})" if isinstance(main, str) and main else "Auto"
         except (OSError, ValueError):
             pass
     if model.get("reasoning_level"):
