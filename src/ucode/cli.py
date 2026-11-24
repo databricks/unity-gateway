@@ -3841,8 +3841,8 @@ def _toggle_current_smart_routing_session(
         and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
     ):
         print_err(
-            "Turn Smart Router off with this session's Smart Routing switch, which collects "
-            "feedback first. Smart Router is still on."
+            "Smart Router is still on. To turn it off, click the model name in this session's "
+            "message box and switch off Smart Routing."
         )
         raise typer.Exit(2)
     feedback_required = not enabled and smart_router_feedback_required()

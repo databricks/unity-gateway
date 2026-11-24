@@ -85,7 +85,7 @@ def test_cli_feedback_rule_by_agent_and_launch_mode(inline_feedback, monkeypatch
     if mode == "omni" and agent == "codex":
         assert result.exit_code == 2, result.output
         text = " ".join(result.output.split())
-        assert "Smart Routing switch" in text
+        assert "switch off Smart Routing" in text
         assert "reason" not in text
         assert json.loads(controls.read_text()) == {}
         return
@@ -106,8 +106,12 @@ def test_cli_feedback_rule_by_agent_and_launch_mode(inline_feedback, monkeypatch
     "mode,feedback_rule,reason,feedback_collected,expected_text",
     [
         pytest.param("omni", "1", None, True, None, id="omni-marked"),
-        pytest.param("omni", "1", REASON, False, "Smart Routing switch", id="omni-reason-unmarked"),
-        pytest.param("omni", "0", None, False, "Smart Routing switch", id="omni-feedback-rule-off"),
+        pytest.param(
+            "omni", "1", REASON, False, "switch off Smart Routing", id="omni-reason-unmarked"
+        ),
+        pytest.param(
+            "omni", "0", None, False, "switch off Smart Routing", id="omni-feedback-rule-off"
+        ),
         pytest.param("direct", "1", None, True, "16 characters", id="direct-marker-ignored"),
         pytest.param("direct", "1", REASON, True, None, id="direct-reason"),
         pytest.param("direct", "0", None, False, None, id="direct-feedback-rule-off"),
@@ -128,7 +132,7 @@ def test_codex_cli_off_needs_the_marker_in_omnigent(
     text = " ".join(result.output.split())
     if expected_text is not None:
         assert expected_text in text
-    if expected_text == "Smart Routing switch":
+    if expected_text == "switch off Smart Routing":
         assert "reason" not in text
     run.assert_not_called()
     popen.assert_not_called()
