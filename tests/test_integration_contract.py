@@ -1852,6 +1852,139 @@ def test_unit_shard_spec_rejects_bad_values(spec):
         shard.parse(spec)
 
 
+def _write_unit_shard_artifact(root, system, *, first_file_cases, first_file_collected):
+    """Write one downloaded shard artifact that owns every unit file whole.
+
+    The report claims the first file collected ``first_file_collected`` tests while its JUnit
+    holds exactly ``first_file_cases``, so a defect under test can make the two disagree.
+    """
+    from tests import shard
+
+    files = shard.test_files()
+    directory = root / f"unit-shard-{system}-1"
+    directory.mkdir(parents=True)
+    collected = {}
+    cases = []
+    for path in files:
+        module = Path(path).stem
+        if path == files[0]:
+            file_cases, count = first_file_cases, first_file_collected
+        else:
+            file_cases = [
+                (f"tests.{module}", "test_0", 0.1),
+                (f"tests.{module}", "test_1", 0.1),
+            ]
+            count = 2
+        cases += file_cases
+        collected[path] = count
+    junit = (
+        "<testsuite>"
+        + "".join(
+            f'<testcase classname="{classname}" name="{name}" time="{seconds}"/>'
+            for classname, name, seconds in cases
+        )
+        + "</testsuite>"
+    )
+    (directory / "junit.xml").write_text(junit, encoding="utf-8")
+    (directory / "shard-report.json").write_text(
+        json.dumps(
+            {
+                "shard": "1/1",
+                "units": [["chunk", path, 1, 1] for path in files],
+                "collected": collected,
+                "selected": sum(collected.values()),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _audit_unit_shards(tmp_path):
+    """Run scripts/unit_test_times.py over tmp_path's shard artifacts; return the result."""
+    script = Path(__file__).parent.parent / "scripts" / "unit_test_times.py"
+    output = tmp_path / "unit_test_times.json"
+    result = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "shards"), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result, output
+
+
+def test_unit_test_times_accepts_a_complete_shard_run(tmp_path):
+    """A both-OS shard set covering every test once passes and rebuilds class-qualified ids."""
+    from tests import shard
+
+    files = shard.test_files()
+    first = Path(files[0])
+    slow = round(shard.SLOW_SECONDS + 1, 2)
+    # Every file collects two tests; the first file also holds a class-based slow test, to
+    # prove the audit rebuilds its full nodeid from the JUnit classname.
+    cases = [
+        (f"tests.{first.stem}", "test_0", 0.1),
+        (f"tests.{first.stem}", "test_1", 0.1),
+        (f"tests.{first.stem}.TestRebuild", "test_slow", slow),
+    ]
+    for system in ("Linux", "Windows"):
+        _write_unit_shard_artifact(
+            tmp_path / "shards", system, first_file_cases=cases, first_file_collected=3
+        )
+    result, output = _audit_unit_shards(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    times = json.loads(output.read_text(encoding="utf-8"))
+    assert sorted(times) == ["Linux", "Windows"]
+    for system in ("Linux", "Windows"):
+        assert sorted(times[system]["files"]) == files
+        assert times[system]["slow"][f"{files[0]}::TestRebuild::test_slow"] == slow
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["a test ran twice", "a test never ran", "an OS never reported"],
+)
+def test_unit_test_times_rejects_incomplete_shard_runs(defect, tmp_path):
+    """A re-run test, a lost test or a missing OS fails the exactly-once audit.
+
+    A test that ran twice while another in the same file never ran keeps every per-file count
+    correct, so only the per-test check catches it.
+    """
+    from tests import shard
+
+    files = shard.test_files()
+    first = Path(files[0])
+    if defect == "a test ran twice":
+        cases = [
+            (f"tests.{first.stem}", "test_0", 0.1),
+            (f"tests.{first.stem}", "test_0", 0.1),
+        ]
+        collected = 2
+    else:
+        cases = [(f"tests.{first.stem}", "test_0", 0.1)]
+        collected = 2
+    _write_unit_shard_artifact(
+        tmp_path / "shards", "Linux", first_file_cases=cases, first_file_collected=collected
+    )
+    if defect != "an OS never reported":
+        _write_unit_shard_artifact(
+            tmp_path / "shards",
+            "Windows",
+            first_file_cases=cases,
+            first_file_collected=collected,
+        )
+    result, _ = _audit_unit_shards(tmp_path)
+    # SystemExit reports its message on stderr, where CI's job log shows it.
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "::error::Unit shards did not cover the suite" in result.stderr
+    if defect == "a test ran twice":
+        assert f"Linux: {files[0]}::test_0 ran 2 times" in result.stderr
+    elif defect == "a test never ran":
+        assert f"Linux: {files[0]} ran 1 of 2 tests" in result.stderr
+    else:
+        assert "Windows: no unit shard artifacts" in result.stderr
+
+
 def test_checks_run_exactly_the_just_lint_commands():
     """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
     justfile = (Path(__file__).parent.parent / "justfile").read_text()
