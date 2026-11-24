@@ -148,16 +148,13 @@ class CodexAutoPicker:
     async def observe(self, message: dict) -> tuple[bool, str | None]:
         """Consume private replies; otherwise annotate native models/settings in place."""
         request_id = message.get("id")
-        if (
-            message.get("method") is None
-            and isinstance(request_id, str)
-            and request_id.startswith("ug-auto-")
-        ):
+        is_reply = message.get("method") is None
+        if is_reply and isinstance(request_id, str) and request_id.startswith("ug-auto-"):
             future = self.pending.get(request_id)
             if future is not None and not future.done():
                 future.set_result(message)
             return True, None
-        method = self.requests.pop(request_id, None) if message.get("method") is None else None
+        method = self.requests.pop(request_id, None) if is_reply else None
         result = message.get("result")
         if method == "model/list" and isinstance(result, dict):
             rows = result.get("data")
@@ -239,7 +236,7 @@ class CodexAutoPicker:
                 logging.getLogger(__name__).warning(
                     "Could not update Codex Auto model state: %s", exc
                 )
-        selection = self.selections.pop(request_id, None) if message.get("method") is None else None
+        selection = self.selections.pop(request_id, None) if is_reply else None
         if selection and "error" in message:
             self.busy = False
             selection = None
@@ -284,10 +281,9 @@ class CodexAutoPicker:
         old_settings = self.settings.copy()
         old_controls = None
         try:
-            parsed_controls = json.loads(await asyncio.to_thread(self.router.controls.read_text))
-            if not isinstance(parsed_controls, dict):
+            old_controls = json.loads(await asyncio.to_thread(self.router.controls.read_text))
+            if not isinstance(old_controls, dict):
                 raise ValueError("Invalid Smart Router session controls.")
-            old_controls = parsed_controls
             model = selection
             if selection == AUTO_MODEL:
                 ordered = sorted(self.models, key=lambda name: name != self.main_model)
