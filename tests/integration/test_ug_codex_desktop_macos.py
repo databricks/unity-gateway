@@ -31,6 +31,25 @@ CHATGPT_APP = Path("/Applications/ChatGPT.app")
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
+def dismiss_skip_setup_dialog(app: MacApp) -> None:
+    app.click("AXButton", "Go to ChatGPT")
+    deadline = time.monotonic() + 120
+    while any(row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()):
+        assert time.monotonic() < deadline, "Skip setup? dialog never dismissed"
+        time.sleep(2)
+        try:
+            app.click("AXButton", "Go to ChatGPT", timeout=1)
+        except AssertionError as error:
+            missing = (
+                str(error) == f"{app.name} never showed AXButton 'Go to ChatGPT'"
+                or "Fatal error: No AXButton labelled Go to ChatGPT" in str(error)
+            )
+            if not missing or any(
+                row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()
+            ):
+                raise
+
+
 def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace):
     """Scenario: configure managed Codex, open the ChatGPT desktop app, and ask Codex for a value.
 
@@ -52,7 +71,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
+        dismiss_skip_setup_dialog(app)
         # Click the composer so the keystrokes cannot land in another control.
         app.click("AXTextArea", None, timeout=120)
         prompt = f"Reply with exactly {marker} and nothing else."
@@ -144,7 +163,7 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
+        dismiss_skip_setup_dialog(app)
         try:
             app.click("AXTextArea", None, timeout=120)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
