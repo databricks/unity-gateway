@@ -1751,9 +1751,9 @@ its separate hosted job statically scans the PR using policy from the workflow's
 `tests/test_security_scan_request.py` covers request validation and that policy wiring. There is
 no bootstrap pass when the trusted workflow is missing.
 
-Secret-free CI checks, unit shards, Windows provisioning and VS Code extension tests do not wait
-for `Security Gate`. Secret-bearing CI jobs and publisher tests still do. The gate finds the PR's
-CI request and requires a successful `workflow_run` scan for that run ID. A same-named PR-authored
+CI checks, unit shards, Windows provisioning, VS Code extension tests and live suites all wait
+for `Security Gate`, as do publisher tests. The gate finds the PR's CI request and requires a
+successful `workflow_run` scan for that run ID. A same-named PR-authored
 scan cannot satisfy it. All ordinary PR gates use hosted runners and the public API; authorized
 comment runs use main's gate on the allowlisted pool. The gate polls every 10 seconds for two
 minutes, every 30 seconds for three minutes, then after one minute and every two minutes, for at

@@ -31,6 +31,7 @@ jobs:
   # Lint, format and types in one job that reports every failing check, not just the first.
   checks:
     name: Checks
+    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -145,6 +146,7 @@ jobs:
   # so `Unit test times` can record fresh timings and prove nothing was missed.
   unit-linux:
     name: Unit tests · Linux · ${{ matrix.shard }}/24
+    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -194,6 +196,7 @@ jobs:
 
   unit-windows:
     name: Unit tests · Windows · ${{ matrix.shard }}/64
+    needs: security-gate
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
@@ -262,8 +265,8 @@ jobs:
     env:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: Unit test times
-    if: ${{ !cancelled() }}
-    needs: [unit-linux, unit-windows]
+    if: ${{ !cancelled() && needs.security-gate.result == 'success' }}
+    needs: [security-gate, unit-linux, unit-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -315,6 +318,7 @@ jobs:
     env:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: VS Code extension
+    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -454,8 +458,8 @@ jobs:
     env:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: All agent tests
-    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
-    needs: e2e-shards
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && needs.security-gate.result == 'success' }}
+    needs: [security-gate, e2e-shards]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -500,7 +504,7 @@ jobs:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: test
     if: ${{ !cancelled() }}
-    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
+    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -532,7 +536,7 @@ jobs:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: e2e
     if: ${{ always() && (github.event_name == 'pull_request' || !cancelled()) }}
-    needs: [e2e, integration]
+    needs: [security-gate, e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

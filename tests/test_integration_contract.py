@@ -916,9 +916,15 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
                 assert "needs.security-gate.result == 'success'" in job_header, (workflow, name)
                 assert "||" not in job_header, (workflow, name)
 
-    # These jobs form the required test check, so none may wait on the gate.
     ci = _workflow("ci.yml").split("\njobs:\n", 1)[1]
     jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", ci))
+    for name, job in jobs.items():
+        if name == "security-gate":
+            continue
+        needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+        assert needs and "security-gate" in needs[1].split(", "), name
+    for name in ("unit-test-times", "e2e"):
+        assert "needs.security-gate.result == 'success'" in jobs[name], name
     for name in (
         "checks",
         "unit-linux",
@@ -926,7 +932,6 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         "windows-provisioning",
         "vscode-extension",
     ):
-        assert "security-gate" not in jobs[name], name
         assert not credential.search(jobs[name]), name
 
 
@@ -1924,8 +1929,8 @@ def test_required_tests_enforces_lint_result(failing, bad):
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
     assert (
-        "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
-        "vscode-extension]\n" in required
+        "    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, "
+        "windows-provisioning, vscode-extension]\n" in required
     )
     script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
     names = [
