@@ -1758,10 +1758,13 @@ scan cannot satisfy it. All ordinary PR gates use hosted runners and the public 
 comment runs use main's gate on the allowlisted pool. The gate polls every 10 seconds for two
 minutes, every 30 seconds for three minutes, then after one minute and every two minutes, for at
 most 27 polls and 20 minutes of total sleep. API latency is additional; the job timeout is 25
-minutes. Extra pages or gates sharing an IP can reach the anonymous API rate limit.
+minutes. A 403 or 429 rate limit leaves the scan pending until the next poll or an earlier reset;
+the final poll stays at the original deadline to preserve coverage after repeated early resets.
+A limit that outlasts the gate still causes a timeout. Extra pages or gates sharing an IP can reach
+the anonymous API rate limit.
 `test_security_gate_waits_for_the_current_scan` covers failure/timeout, pagination and scan
 provenance; separate cases cover authentication and mismatched request/comment identities.
-`test_security_gate_explains_rate_limits` checks 403/429 retry messages; the API-error cases
+Rate-limit cases cover recovery, persistent limits and incomplete listings; the API-error cases
 cover access errors, server failures and network timeouts.
 The workflow-expression tests verify runner/token selection. These component tests do not
 establish live event delivery, organization runner restrictions or ruleset enforcement.

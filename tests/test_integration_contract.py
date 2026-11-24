@@ -1046,6 +1046,9 @@ def _run_security_gate(
     sha=HEAD,
     request_change=None,
     api_error=None,
+    api_errors=None,
+    observed=None,
+    first_scan_page_matches=False,
 ):
     body = _workflow("security-gate.yml").split("        run: |\n", 1)[1].split("\n      - ", 1)[0]
     script = textwrap.dedent(body).removeprefix("python3 - <<'PY'\n").removesuffix("PY")
@@ -1082,10 +1085,13 @@ def _run_security_gate(
     fetches = []
 
     def pages(which, index):
-        changes = responses[min(index, len(responses) - 1)]
+        changes = responses() if callable(responses) else responses[min(index, len(responses) - 1)]
         runs = [request] if which == "request" else [scan | change for change in changes]
+        first_page = (
+            scan if which == "scan" and first_scan_page_matches else scan | {"path": "other.yml"}
+        )
         return [
-            {"workflow_runs": [scan | {"path": "other.yml"}] * 100},
+            {"workflow_runs": [first_page] * 100},
             {"workflow_runs": runs},
         ]
 
@@ -1105,9 +1111,11 @@ def _run_security_gate(
             "Bearer test-token" if authenticated else None
         )
         assert timeout == 30
+        fetches.append(request.full_url)
         if api_error:
             raise api_error
-        fetches.append(request.full_url)
+        if api_errors and len(fetches) in api_errors:
+            raise api_errors[len(fetches)]
         endpoint, page = request.full_url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
@@ -1118,13 +1126,17 @@ def _run_security_gate(
     slept = []
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
     monkeypatch.setattr("time.sleep", slept.append)
+    monkeypatch.setattr("time.time", lambda: 1794602000 + sum(slept))
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
-    assert slept == ([10] * 12 + [30] * 6 + [60] + [120] * 7)[: len(slept)]
+    if not api_errors and not api_error:
+        assert slept == ([10] * 12 + [30] * 6 + [60] + [120] * 7)[: len(slept)]
     assert sum(slept) <= 20 * 60
     if max(calls.values()) == 27:
         assert sum(slept) == 20 * 60
     assert len(fetches) <= 56
+    if observed is not None:
+        observed.update(sleeps=slept, fetches=fetches)
     return result.value.code, max(calls.values())
 
 
@@ -1197,17 +1209,91 @@ def test_security_gate_api_errors_block_ci(monkeypatch, error):
 
 
 @pytest.mark.parametrize("status", [403, 429])
-def test_security_gate_explains_rate_limits(monkeypatch, status):
+@pytest.mark.parametrize("failure_call", [1, 3, 4])
+@pytest.mark.parametrize(("reset", "wait"), [(1794602003, 3), (1794602050, 10)])
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_security_gate_waits_through_rate_limits(
+    monkeypatch, status, failure_call, reset, wait, authenticated
+):
     error = urllib.error.HTTPError(
         "https://api.github.com",
         status,
         "rate limited",
-        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1794602022"},
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset)},
         None,
     )
-    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error)
-    assert "rate limit reached; tests remain blocked" in code
-    assert "Re-run failed CI jobs" in code and "1794602022" in code
+    observed = {}
+    code, _ = _run_security_gate(
+        monkeypatch,
+        [[{}]],
+        authenticated=authenticated,
+        api_errors={failure_call: error},
+        observed=observed,
+    )
+    assert code == 0
+    assert observed["sleeps"] == [wait]
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_security_gate_honors_retry_after_without_a_reset_header(monkeypatch, status):
+    error = urllib.error.HTTPError(
+        "https://api.github.com", status, "rate limited", {"Retry-After": "3"}, None
+    )
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_errors={1: error}, observed=observed)
+    assert code == 0
+    assert observed["sleeps"] == [3]
+
+
+def test_security_gate_reserves_its_final_poll_after_repeated_early_resets(monkeypatch):
+    errors = {
+        call: urllib.error.HTTPError(
+            "https://api.github.com",
+            429,
+            "rate limited",
+            {"X-RateLimit-Reset": str(1794602000 + call)},
+            None,
+        )
+        for call in range(1, 27)
+    }
+
+    def responses():
+        return [{}] if time.time() >= 1794602100 else [{"status": "in_progress"}]
+
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, responses, api_errors=errors, observed=observed)
+    assert code == 0
+    assert sum(observed["sleeps"]) == 20 * 60
+
+
+def test_security_gate_does_not_trust_a_partial_rate_limited_scan_listing(monkeypatch):
+    error = urllib.error.HTTPError(
+        "https://api.github.com", 429, "rate limited", {"X-RateLimit-Reset": "1794602003"}, None
+    )
+    code, _ = _run_security_gate(
+        monkeypatch,
+        [[{"id": 2, "conclusion": "failure"}]],
+        api_errors={4: error},
+        first_scan_page_matches=True,
+    )
+    assert code == 1
+
+
+@pytest.mark.parametrize("status", [403, 429])
+@pytest.mark.parametrize("reset", [1794602003, 1794604000])
+def test_security_gate_rate_limit_persists_until_the_existing_deadline(monkeypatch, status, reset):
+    error = urllib.error.HTTPError(
+        "https://api.github.com",
+        status,
+        "rate limited",
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset)},
+        None,
+    )
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
+    assert "did not complete within 20 minutes" in code
+    assert sum(observed["sleeps"]) == 20 * 60
+    assert len(observed["fetches"]) == 27
 
 
 def test_security_gate_supports_required_workflow_events():

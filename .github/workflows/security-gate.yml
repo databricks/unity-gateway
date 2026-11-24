@@ -75,14 +75,17 @@ jobs:
                       with urllib.request.urlopen(request, timeout=30) as response:
                           pages.append(json.load(response))
                   except urllib.error.HTTPError as error:
+                      headers = error.headers or {}
                       if error.code == 429 or (error.code == 403 and (
-                          error.headers.get("X-RateLimit-Remaining") == "0"
-                          or error.headers.get("Retry-After")
+                          headers.get("X-RateLimit-Remaining") == "0"
+                          or headers.get("Retry-After")
                       )):
-                          reset = error.headers.get("X-RateLimit-Reset", "not supplied")
-                          sys.exit("::error::GitHub API rate limit reached; tests remain blocked. "
-                                   "Re-run failed CI jobs after the quota resets. "
-                                   f"Reset time (Unix seconds): {reset}.")
+                          reset = headers.get("X-RateLimit-Reset", "")
+                          retry_after = headers.get("Retry-After", "")
+                          reset_at = (int(reset) if reset.isdecimal() else
+                                      time.time() + int(retry_after) if retry_after.isdecimal() else None)
+                          print("GitHub API rate limited; the Security Scan remains pending.", flush=True)
+                          return None, reset_at
                       sys.exit(f"::error::GitHub API returned HTTP {error.code}; tests remain blocked. "
                                "Check API access and GitHub status, then re-run failed CI jobs.")
                   except (urllib.error.URLError, TimeoutError) as error:
@@ -90,7 +93,7 @@ jobs:
                                "Check connectivity and GitHub status, then re-run failed CI jobs.")
                   if len(pages[-1]["workflow_runs"]) < 100:
                       break
-              return [run for page in pages for run in page["workflow_runs"]]
+              return [run for page in pages for run in page["workflow_runs"]], None
 
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
@@ -100,11 +103,28 @@ jobs:
           # their resolver's wait for a protected runner. Anonymous pull_request calls share
           # GitHub's 60/hour limit per runner IP, so a gate makes at most 27 polls.
           delays = [10] * 12 + [30] * 6 + [60] + [120] * 7
+          reset_at = None
+          # Preserve the total wait budget when a rate-limit reset advances a poll.
+          deferred = 0
           for attempt in range(len(delays) + 1):
               if attempt:
-                  time.sleep(delays[attempt - 1])
+                  delay = delays[attempt - 1]
+                  if attempt == len(delays):
+                      # Reserve the last poll at the deadline even after earlier resets.
+                      delay += deferred
+                      deferred = 0
+                  elif reset_at is not None:
+                      until_reset = reset_at - time.time()
+                      if 0 < until_reset < delay:
+                          deferred += delay - until_reset
+                          delay = until_reset
+                  time.sleep(delay)
+              reset_at = None
               if request is None:
-                  requests = [run for run in workflow_runs(request_endpoint)
+                  requests, reset_at = workflow_runs(request_endpoint)
+                  if requests is None:
+                      continue
+                  requests = [run for run in requests
                               if run["event"] == "pull_request"
                               and run["path"] == ".github/workflows/ci.yml"
                               and run["display_title"] == f"CI #{pr}"
@@ -116,7 +136,10 @@ jobs:
                                f"?event=workflow_run&created=%3E%3D{request['created_at']}&per_page=100")
               # workflow_run definitions come from main. A PR-authored check with
               # the same name cannot satisfy this provenance and request-ID check.
-              runs = [run for run in workflow_runs(scan_endpoint)
+              runs, reset_at = workflow_runs(scan_endpoint)
+              if runs is None:
+                  continue
+              runs = [run for run in runs
                       if run["event"] == "workflow_run"
                       and run["path"] == ".github/workflows/security-scan.yml"
                       and run["display_title"] == f"Security Scan for CI run {request['id']}"
