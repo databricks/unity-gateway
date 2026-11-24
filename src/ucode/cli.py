@@ -74,6 +74,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ISAAC_LAUNCH_MODE_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3808,7 +3809,13 @@ _SMART_ROUTER_STATE_REPLY = "Smart Router is {state} for this session"
 _SMART_ROUTER_UNCHANGED_REPLY = "Smart Router is already {state} for this session"
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(
+    enabled: bool | None,
+    reason: str | None = None,
+    *,
+    agent: str,
+    feedback_collected: bool = False,
+) -> bool:
     if enabled is None:
         return False
     try:
@@ -3826,6 +3833,18 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if unchanged:
         print_success(_SMART_ROUTER_UNCHANGED_REPLY.format(state=state))
         return True
+    # Claude's mod checks this marker itself before it runs a plain off.
+    if (
+        agent == AGENT_CODEX
+        and not enabled
+        and not feedback_collected
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
+    ):
+        print_err(
+            "Smart Router is still on. To turn it off, open Omnigent's model menu in this "
+            "session's message composer and switch off Smart Routing."
+        )
+        raise typer.Exit(2)
     feedback_required = not enabled and smart_router_feedback_required()
     if feedback_required and len((reason or "").strip()) < 16:
         print_err(
@@ -5209,13 +5228,22 @@ def codex_cmd(
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
+    feedback_collected: Annotated[
+        bool,
+        typer.Option("--feedback-collected", hidden=True),
+    ] = False,
 ) -> None:
     """Launch Codex via Databricks."""
     # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag,
+        smart_router_feedback,
+        agent=AGENT_CODEX,
+        feedback_collected=feedback_collected,
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -5318,7 +5346,9 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CLAUDE
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

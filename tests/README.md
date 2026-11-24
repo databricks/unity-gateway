@@ -1279,7 +1279,7 @@ the smart-routing gate. Plain launches retain their existing version rules.
 `test_smart_router.py` executes Claude's installed skill commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Codex's skill uses
 `ug_smart_router`, a session-bound native tool serviced by the UG app-server interposer.
-It never requests shell approval or falls back to a shell toggle. Launcher lifecycle
+A session without that tool runs the exact CLI toggle instead, with no added arguments. Launcher lifecycle
 checks isolate the developer machine's optional managed catalog. Existing CLI commands
 remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
 The shared CLI only validates the reason and toggles routing; neither harness's CLI
@@ -1287,9 +1287,13 @@ prepares, captures, or uploads feedback. Native Codex owns that flow. CLI parity
 verify that valid reasons work without Isaac and that repeated off calls collect nothing.
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
-`ISAAC_LAUNCH_MODE=omni` exemption. Native Codex uses that same rule; Omnigent off
-turns routing off without opening a prompt, preparing evidence, or uploading.
-Component cases cover both CLIs with Omni, direct, empty, and unset launch modes,
+`ISAAC_LAUNCH_MODE=omni` exemption from that reason rule, and native Codex uses the same
+rule. In those Omnigent launches, the Codex CLI also keeps routing on for an
+off without `--feedback-collected`, which the launcher adds after collecting the reason,
+whether or not the feedback rule is on; Claude's mod checks that marker before it runs its
+plain CLI off. A marked off turns routing off without opening a prompt, preparing evidence,
+or uploading; on and an unchanged off need no marker. Component cases cover both CLIs with
+Omni, direct, empty, and unset launch modes, the Codex marker inside and outside Omnigent,
 and native Codex with feedback disabled or an Omni launch.
 `test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
@@ -1332,8 +1336,8 @@ ID types, using controlled transport rather than malformed native-Codex output.
 receipts instead of treating shell output as Codex toggle evidence. These component
 checks do not establish live backend delivery or terminal rendering of prompts/notices.
 New threads receive the native tool at startup. Older resumed threads that never had
-it must report that an updated launch/new thread is needed; the skill must not silently
-restart the conversation or fall back to a shell command.
+it run the CLI toggle; an off there that needs a reason reports that an updated launch is
+needed, and the skill never restarts the conversation.
 `mod_tests/register.test.ts` checks that the mod skips the form there
 only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
 form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,
