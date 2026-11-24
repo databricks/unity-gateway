@@ -182,6 +182,11 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
+Codex Auto is enabled only by `subagent_auto_v0_codex_only`. Its native `/model` Auto row
+opens a main-model selector through the session interposer. Keep the row and model changes
+launch-only; never send the synthetic row ID to inference or save it as a default.
+Manual model selection turns session routing off through the existing feedback control.
+
 Claude Auto is enabled only by the `subagent_auto_v0_claude_only` config version.
 `ENABLE_SMART_ROUTER_AUTO_MODE` is an internal derived flag: that version sets it to
 `"1"` for Claude, and other versions set it to `"0"`. Setting the flag directly,

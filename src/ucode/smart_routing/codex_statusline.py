@@ -93,6 +93,12 @@ def render(state: dict[str, Any]) -> dict:
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
+    if controls and label == "ON" and Path(controls).with_suffix(".auto.json").exists():
+        try:
+            main = json.loads(Path(controls).with_suffix(".auto.json").read_text())["model"]
+            model_name = f"Auto ({main})"
+        except (OSError, ValueError, KeyError):
+            model_name = "Auto"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
     children = [_router_indicator(label), _text(model_name, "status-model")]

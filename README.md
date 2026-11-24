@@ -816,6 +816,12 @@ use identical mappings for both agents. The Claude-only versions disable routing
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off | Shown |
 | `subagent_orch_v0_blind_subagent_model_claude_only` | Claude | On | Off | On | Off | Hidden |
 | `subagent_auto_v0_claude_only` | Claude | On | Off | On | On | Hidden |
+| `subagent_auto_v0_codex_only` | Codex | On | Off | On | On | Hidden |
+
+For Codex Auto, launch with `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_codex_only ug codex`.
+The native `/model` menu shows Auto first. Selecting it opens a main-model choice; selecting
+a specific model turns session routing off. The footer shows Auto and the chosen main model.
+This version is launch-only and requires Codex 0.171.0 or newer.
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and

@@ -86,6 +86,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import (
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+    SUBAGENT_AUTO_V0_CODEX_ONLY,
     apply_config,
     apply_enabled_version,
     auto_mode_enabled,
@@ -1234,6 +1235,11 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    auto_picker = selected_version() == SUBAGENT_AUTO_V0_CODEX_ONLY and not app_server_launch
+    if auto_picker and (has_explicit_model_arg(tool_args) or tool_args[:1] == ["resume"]):
+        from ucode.smart_routing.session_env import set_session_environment
+
+        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
     try:
         catalog_path = overlay.get("model_catalog_json") or custom_catalog_path()
         if catalog_path is not None:
@@ -1295,6 +1301,7 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            **({"auto_picker": True} if auto_picker else {}),
             **(
                 {"provider": state["_codex_launch_provider"]}
                 if state.get("_codex_launch_provider")

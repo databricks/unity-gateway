@@ -1,5 +1,9 @@
 # Test suites and user journeys
 
+`test_codex_auto.py` covers the native Auto row, main-model choice, cancellation, manual
+model selection, and prevention of synthetic model IDs in engine requests. Live Codex TUI
+and gateway inference for this flow have not been exercised.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
