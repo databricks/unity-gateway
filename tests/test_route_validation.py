@@ -8,12 +8,13 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from tests.conftest import metric_observations
 from ucode import databricks, metrics
-from ucode.smart_routing import startup_validation as validation
+from ucode.smart_routing import route_validation as validation
 from ucode.smart_routing.session_env import session_routing_enabled
 from ucode.workspace import activate
 
@@ -339,4 +340,64 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, route
             {"model": "custom", "harness": "claude", "reason": None},
         ],
         "available_route_options": [{"model": "claude-sonnet-5-5", "harness": "claude_code"}],
+    }
+
+
+def _validate(response, monkeypatch):
+    monkeypatch.setattr(
+        validation,
+        "_http_post_json",
+        Mock(side_effect=response)
+        if isinstance(response, Exception)
+        else Mock(return_value=response),
+    )
+    return validation.validate(
+        "https://example.com", "test-token", [("m", "claude")], router_name="stable"
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "failure"),
+    [
+        ((None, "HTTP 503"), "Smart Router returned an error (HTTP 503)"),
+        (RuntimeError("network down"), validation.CHECK_FAILED_REASON),
+    ],
+)
+def test_validate_disables_routing_when_the_toggle_check_fails(response, failure, monkeypatch):
+    result = _validate(response, monkeypatch)
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == {
+        "routing_disabled": True,
+        "router_name": "stable",
+        "validation_failed": True,
+        "validation_failure_reason": failure,
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [({"is_supported": True}, None), (None, "HTTP 404 NOT_FOUND")],
+    ids=["supported", "flag-off-404"],
+)
+def test_validate_keeps_routing_on_for_a_supported_list_or_a_flag_off_404(response, monkeypatch):
+    assert _validate(response, monkeypatch) == {"routing_disabled": False}
+
+
+def test_validate_disables_routing_with_the_unsupported_details(monkeypatch):
+    payload = {
+        "is_supported": False,
+        "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
+    }
+    result = _validate((payload, None), monkeypatch)
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == {
+        "routing_disabled": True,
+        "router_name": "stable",
+        "routing_unsupported_reason": "insufficient_eligible_options",
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
     }

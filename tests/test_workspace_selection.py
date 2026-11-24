@@ -249,16 +249,23 @@ class TestHelperArgv:
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
     def test_claude_router_hook_preserves_selection_and_launch_provider(self, selected):
-        from ucode.smart_routing.claude_hooks import ROUTE_SUBAGENT_MOD_EVENT, routing_hook_argv
+        from ucode.smart_routing.claude_hooks import (
+            ROUTE_SUBAGENT_MOD_EVENT,
+            ROUTE_VALIDATION_MOD_EVENT,
+            routing_hook_argv,
+        )
 
         state = {
             "workspace": SHARED,
             "provider_services": {"claude": "old.schema.provider"},
             "_claude_launch_provider": "new.schema.provider",
+            "claude_models": {"0": "system.ai.claude-opus-4-8"},
         }
-        argv = routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
-        assert argv[argv.index("--workspace-id") + 1] == WSID
-        assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+        for event in (ROUTE_SUBAGENT_MOD_EVENT, ROUTE_VALIDATION_MOD_EVENT):
+            argv = routing_hook_argv(state, event)
+            assert argv[argv.index("--workspace-id") + 1] == WSID
+            assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+            assert argv[argv.index("--model") + 1] == "system.ai.claude-opus-4-8"
         assert "--provider" not in routing_hook_argv(state, "session-start")
         del state["_claude_launch_provider"]
         assert "--provider" not in routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)

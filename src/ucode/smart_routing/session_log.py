@@ -31,6 +31,7 @@ ROUTE_VALIDATION_FIELDS = (
     "ineligible_route_options",
     "available_route_options",
     "validation_ms",
+    "routing_disabled",
 )
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600

@@ -289,14 +289,34 @@ async function setRouting(
 const VALIDATION_POLL_MS = 100;
 // Longer than the Python check's 4 s deadline, which always publishes its result first.
 const VALIDATION_WAIT_MS = 5000;
+const VALIDATE_COMMAND_TIMEOUT_MS = 10000;
 
 // Persists the unsupported or failed result as a Smart Router logs row; the warning band is transient.
-async function recordRouteValidation($: EngineInterface, options: PluginOptions, resultPath: string): Promise<void> {
+// A resultPath of '-' reads the result from stdin.
+async function recordRouteValidation($: EngineInterface, options: PluginOptions, resultPath: string, stdin?: string): Promise<void> {
   const result = await $.process.run(
     [...logsReaderCommand(options), '--session', await $.session.id(), '--record-route-validation', resultPath],
-    { timeoutMs: LOGS_COMMAND_TIMEOUT_MS },
+    { timeoutMs: LOGS_COMMAND_TIMEOUT_MS, ...(stdin === undefined ? {} : { stdin }) },
   );
   if (result.exitCode !== 0) $.ui.log(`Smart Router logs: route validation not recorded (exit ${result.exitCode})`, { to: 'debug' });
+}
+
+interface ToggleVerdict { disabled: boolean; failed: boolean; record?: string }
+
+// An unreadable verdict fails closed without a logs row.
+async function validateToggle($: EngineInterface, command: string[]): Promise<ToggleVerdict> {
+  try {
+    const result = await $.process.run(command, {
+      stdin: JSON.stringify({ session_id: await $.session.id() }),
+      timeoutMs: VALIDATE_COMMAND_TIMEOUT_MS,
+    });
+    const stdout = result.stdout.trim();
+    const verdict = result.exitCode === 0 && stdout ? JSON.parse(stdout) : undefined;
+    if (typeof verdict?.routing_disabled === 'boolean') {
+      return { disabled: verdict.routing_disabled, failed: verdict.validation_failed === true, record: verdict.routing_disabled ? stdout : undefined };
+    }
+  } catch {}
+  return { disabled: true, failed: true };
 }
 
 async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
@@ -958,14 +978,24 @@ export function register(on: On, options: PluginOptions): void {
   // External integrations match the "smart-router" command name exactly.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
+    const validateCommand = options.validateCommand as string[] | undefined;
+    let enabled = action === 'on';
     try {
-      await setRouting($, options, action === 'on', true);
+      const verdict = enabled && validateCommand?.length ? await validateToggle($, validateCommand) : undefined;
+      enabled &&= !verdict?.disabled;
+      await setRouting($, options, enabled, true);
       showStatusBand();
+      if (verdict?.disabled) {
+        if (verdict.failed) warnValidationFailed();
+        else warnUnsupportedModelList();
+        if (verdict.record) void recordRouteValidation($, options, '-', verdict.record).catch(() => {});
+        if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) $.ui.log(verdict.failed ? VALIDATION_FAILED_WARNING : UNSUPPORTED_MODEL_LIST_WARNING);
+      }
       $.ui.invalidate('ui.render');
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
-    return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
+    return {text: enabled ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
   registerStatusBand(on, auto);
   registerSubagentRouting(on, options, auto?.models.map(row => row.autoModel));

@@ -132,7 +132,7 @@ Usage and routing instrumentation uses these constants (all in `metrics`):
 | --- | --- |
 | `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
 | `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent` and `http_status_code` when a response is available. |
-| `ROUTE_VALIDATION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around the startup `routes:validate` call, including the HTTP request and its 4 s deadline; an HTTP 404 leaves routing on, while any other failure or a missed deadline turns it off. Its HTTP attempt uses `api_operation="routes_validate"`. |
+| `ROUTE_VALIDATION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around the startup and `/smart-router on` `routes:validate` calls, including the HTTP request and its 4 s deadline. An HTTP 404 leaves routing on; at startup any other failure or a missed deadline turns it off, while on `/smart-router on` it leaves routing on. Its HTTP attempt uses `api_operation="routes_validate"`. |
 
 All three durations are recorded on success and failure. Use `subagent_routing()` around
 subagent route selection so its trigger is scoped to that decision. Each routing HTTP

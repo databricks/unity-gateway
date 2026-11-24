@@ -1,7 +1,8 @@
-"""Startup Smart Router model-list check.
+"""Smart Router model-list check at startup and on `/smart-router on`.
 
-An unsupported model list, or a failed check, turns routing off for the session. HTTP 404 is the
-flag-off answer from the endpoint, so it leaves routing on and records nothing.
+At startup, an unsupported model list or a failed check turns routing off for the session. HTTP 404
+is the flag-off answer from the endpoint, so it leaves routing on and records nothing. On
+`/smart-router on`, only an unsupported result is reported and routing stays on.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ucode import metrics
 from ucode.config_io import atomic_write_json
@@ -170,6 +171,52 @@ def _check_route_options(
     return outcome.get("response", (None, ROUTE_VALIDATION_TIMED_OUT))
 
 
+def _request_body(route_options: list[tuple[str, str]], router_name: str) -> dict[str, Any]:
+    return {
+        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
+        "route_selector": {"router_name": router_name},
+    }
+
+
+def _verdict(
+    payload: object, reason: str | None, router_name: str, started: float
+) -> dict[str, Any]:
+    if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
+        return {"routing_disabled": False}
+    failure = _failure_reason(payload, reason)
+    if failure is None and not _is_unsupported(payload):
+        return {"routing_disabled": False}
+    details = (
+        _failure_details(failure, router_name)
+        if failure is not None
+        else _unsupported_details(cast(dict, payload), router_name)
+    )
+    return {
+        "routing_disabled": True,
+        **details,
+        "validation_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
+def validate(
+    workspace: str,
+    token: str,
+    route_options: list[tuple[str, str]],
+    *,
+    router_name: str,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    """Return the verdict; an unsupported list or a failed check disables routing."""
+    started = time.monotonic()
+    try:
+        payload, reason = _check_route_options(
+            workspace, token, _request_body(route_options, router_name), provider
+        )
+    except Exception:
+        payload, reason = None, CHECK_FAILED_REASON
+    return _verdict(payload, reason, router_name, started)
+
+
 def start(
     workspace: str,
     token: str,
@@ -179,29 +226,17 @@ def start(
     session_controls: Path,
     provider: str | None = None,
 ) -> None:
-    body = {
-        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
-        "route_selector": {"router_name": router_name},
-    }
+    body = _request_body(route_options, router_name)
 
     def check() -> None:
         started = time.monotonic()
         payload, reason = _check_route_options(workspace, token, body, provider)
-        if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
-            _publish(result_path(session_controls), {"routing_disabled": False})
-            return
-        failure = _failure_reason(payload, reason)
-        unsupported = _is_unsupported(payload)
-        result: dict[str, Any] = {"routing_disabled": False}
-        if failure is not None or unsupported:
-            with suppress(OSError, RuntimeError):
+        result = _verdict(payload, reason, router_name, started)
+        if result["routing_disabled"]:
+            try:
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-                result = (
-                    {"routing_disabled": True, **_failure_details(failure, router_name)}
-                    if failure is not None
-                    else {"routing_disabled": True, **_unsupported_details(payload, router_name)}
-                )
-                result["validation_ms"] = round((time.monotonic() - started) * 1000)
+            except (OSError, RuntimeError):
+                result = {"routing_disabled": False}
         _publish(result_path(session_controls), result)
 
     with suppress(Exception):

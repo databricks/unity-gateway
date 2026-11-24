@@ -2083,16 +2083,19 @@ and `ug upgrade` is not run against one.
 
 ## Smart Router startup validation
 
-The check runs only with `UG_STARTUP_ROUTE_VALIDATION=1`; launch and mod tests cover the default
-without it (no request, band from the first paint). `test_startup_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
+The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the default
+without it (no request, band from the first paint). `test_route_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
 responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
 deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
-flag-off answer) leaves routing on silently. Result-write failures are isolated. The smart-routing
+flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
+check reports only an unsupported list and leaves routing on after a failure. The smart-routing
 launch tests cover the resolved Claude model/harness list and provider.
 Claude's native mod tests cover the band hold, the result handling, the unsupported and
 validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
 and the transcript log lines (`Smart Router is off` and the warning) logged only when
 `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
-These component tests do not establish live Gateway or classifier compatibility.
+The Claude back-on TUI journey in `tests/integration/test_ug_smart_routing_hooks.py` checks the live
+validate request that `/smart-router on` sends (HTTP 200, `is_supported: true`). These component tests
+do not establish live Gateway or classifier compatibility.
