@@ -1327,6 +1327,10 @@ def main() -> int:
                 "UCODE_TEST_CODEX_ROUTING_FIXTURE": os.environ.get(
                     "UCODE_TEST_CODEX_ROUTING_FIXTURE", ""
                 ),
+                # The macOS desktop job pins the ChatGPT app by SHA; its journey asserts it
+                # drives exactly that build. Unset for harness-latest, which installs the
+                # newest appcast build instead.
+                "CHATGPT_APP_VERSION": os.environ.get("CHATGPT_APP_VERSION", ""),
                 "DATABRICKS_BEARER": bearer,
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,

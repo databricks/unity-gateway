@@ -1,5 +1,6 @@
 """CUJ: configure Codex through ug, then complete a turn in the real ChatGPT desktop app on macOS."""
 
+import os
 import time
 from pathlib import Path
 
@@ -25,29 +26,23 @@ from utils.managed import use_managed_config_fixture
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.macos_desktop, pytest.mark.codex]
 
-# The CI job installs this app at a pinned version.
+# The CI job installs this app at a pinned version and the harness launches it with its updater
+# off, so every launch must run exactly that build. Harness-latest installs the newest appcast
+# build instead and leaves this unset.
 CHATGPT_APP = Path("/Applications/ChatGPT.app")
+PINNED_APP_VERSION = os.environ.get("CHATGPT_APP_VERSION") or None
 # The managed_workspace_default fixture's Codex default model.
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
 def dismiss_skip_setup_dialog(app: MacApp) -> None:
+    """Dismiss the Skip setup? dialog and verify the app left that screen.
+
+    One native command activates the app, waits for the button and presses it, so the runtime
+    bundle installing behind onboarding can no longer drop the click. A dialog that survives
+    fails with the stuck AX tree recorded."""
     app.click("AXButton", "Go to ChatGPT")
-    deadline = time.monotonic() + 120
-    while any(row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()):
-        assert time.monotonic() < deadline, "Skip setup? dialog never dismissed"
-        time.sleep(2)
-        try:
-            app.click("AXButton", "Go to ChatGPT", timeout=1)
-        except AssertionError as error:
-            missing = (
-                str(error) == f"{app.name} never showed AXButton 'Go to ChatGPT'"
-                or "Fatal error: No AXButton labelled Go to ChatGPT" in str(error)
-            )
-            if not missing or any(
-                row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()
-            ):
-                raise
+    app.wait_gone("AXButton", "Go to ChatGPT", 120)
 
 
 def type_prompt(app: MacApp, prompt: str) -> None:
@@ -78,7 +73,8 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
 
     Expected: the app shows the answer, and its own Codex Desktop rollout, using ug's Databricks
     provider, records exactly that answer in a completed turn whose model is the managed system.ai
-    GPT default. Onboarding is skipped through its visible buttons with mouse clicks and the prompt
+    GPT default. Onboarding is skipped through its visible buttons with accessibility presses
+    (a mouse click at the element's current frame when it supports no press action) and the prompt
     is typed with real keystrokes, then submitted with Send; nothing is seeded. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered. A subsequent click on an absent label fails
     with the native accessibility tree before the fatal error, captured in command evidence.
@@ -91,6 +87,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
     )
 
     with MacApp(session, CHATGPT_APP, "chatgpt") as app:
+        assert not PINNED_APP_VERSION or app.version == PINNED_APP_VERSION, app.version
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
@@ -126,6 +123,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
             str(app.proc.pid),
             "AXButton",
             "__ug_missing_target__",
+            "1",
             binary=app.client,
             ok=False,
             timeout=60,
@@ -142,7 +140,11 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
             None,
         )
         assert fatal_index is not None, lines
-        tree_rows = [line for line in lines[1:fatal_index] if line]
+        # Traversal failures surface between the tree and the fatal error, prefixed to stay
+        # separable from the four-column tree rows.
+        tree_rows = [
+            line for line in lines[1:fatal_index] if line and not line.startswith("AX error: ")
+        ]
         assert tree_rows, lines
         assert all(len(row.split("\t")) == 4 for row in tree_rows), tree_rows
         assert any(row.split("\t")[0].startswith("AX") for row in tree_rows), tree_rows
@@ -180,6 +182,7 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
     session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
 
     with MacApp(session, CHATGPT_APP, "chatgpt") as app:
+        assert not PINNED_APP_VERSION or app.version == PINNED_APP_VERSION, app.version
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")

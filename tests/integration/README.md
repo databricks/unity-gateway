@@ -422,9 +422,15 @@ service needs a user session), the GUI, or inference.
 `test_ug_codex_desktop_macos.py` covers the GUI and inference on macOS only: after the same managed
 configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
 Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
-app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. It then clicks an
-absent label in the same app and requires a nonzero helper exit with the native four-column
-accessibility tree captured before the fatal error in command evidence.
+app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. The harness launches
+the app with its Sparkle updater off through the app's own `CODEX_SPARKLE_ENABLED` gate, so it
+cannot replace the SHA-pinned build mid-job, and every launch asserts the installed version is
+the job's pin. Each click is one native command that activates the app, waits for the element
+and presses it, falling back to one mouse click at the element's current frame when it supports
+no press action; traversal failures surface as `AX error:` lines instead of an empty tree, and
+onboarding dismissals wait for the dialog to leave, recording the stuck tree on failure. It
+then clicks an absent label in the same app and requires a nonzero helper exit with the native
+four-column accessibility tree captured before the fatal error in command evidence.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only

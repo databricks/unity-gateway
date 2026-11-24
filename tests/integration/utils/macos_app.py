@@ -11,6 +11,23 @@ AX_CLIENT_SOURCE = Path(__file__).with_name("macos_ax.swift")
 OSASCRIPT = Path("/usr/bin/osascript")
 
 
+def app_environment(session_env: dict[str, str]) -> dict[str, str]:
+    """The app's process environment: the session environment plus the updater-off switch.
+
+    ChatGPT checks for updates through Sparkle unless CODEX_SPARKLE_ENABLED is exactly "false".
+    Left on, it replaced the SHA-pinned build between the two desktop journeys — the second one
+    saw 26.1120.x where the job installed 26.1103.31037. The app reads the gate once at
+    startup and leaves its updater uninitialized when it is off."""
+    return {**session_env, "CODEX_SPARKLE_ENABLED": "false"}
+
+
+def matches(row: list[str], role: str, label: str | None) -> bool:
+    """True when an AX row is a ``role`` element whose title, description or value is ``label``.
+
+    A ``None`` label matches any element of the role, mirroring the native client's matcher."""
+    return row[0] == role and label in (None, *row[1:])
+
+
 class MacApp:
     def __init__(self, session, bundle: Path, name: str):
         assert bundle.is_dir(), f"{bundle} is not installed"
@@ -37,7 +54,7 @@ class MacApp:
             # The session environment gives the app the same HOME and CODEX_HOME as ug.
             self.proc = subprocess.Popen(
                 [str(self.executable)],
-                env=self.session.env,
+                env=app_environment(self.session.env),
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -70,7 +87,7 @@ class MacApp:
         deadline = time.monotonic() + timeout
         while True:
             tree = self.read_tree()
-            if any(row[0] == role and label in (None, *row[1:]) for row in tree):
+            if any(matches(row, role, label) for row in tree):
                 return tree
             if time.monotonic() > deadline:
                 self.session.record(
@@ -80,11 +97,35 @@ class MacApp:
             time.sleep(2)
 
     def click(self, role: str, label: str | None, timeout: float = 60) -> None:
-        """Click the first ``role`` element labelled ``label`` (any label if None)."""
-        self.wait_for(role, label, timeout)
+        """Click the first ``role`` element labelled ``label`` (any label if None).
+
+        One native command activates the app, waits for the target and presses that same
+        element, retrying its own traversal until ``timeout``. A busy app can no longer race
+        the wait with a second traversal that returns an empty tree."""
         self.session.run(
-            "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
+            "click",
+            str(self.proc.pid),
+            role,
+            label or "",
+            f"{timeout:g}",
+            binary=self.client,
+            timeout=int(timeout) + 30,
         )
+
+    def wait_gone(self, role: str, label: str | None, timeout: float) -> None:
+        """Wait for a ``role`` element labelled ``label`` to disappear.
+
+        The click that should remove it is verified instead of assumed: a screen that never
+        leaves the element fails with the stuck AX tree recorded as evidence."""
+        deadline = time.monotonic() + timeout
+        while any(matches(row, role, label) for row in self.read_tree()):
+            if time.monotonic() > deadline:
+                tree = self.read_tree()
+                self.session.record(
+                    f"{self.name}-tree.json", {"stuck_on": [role, label], "tree": tree}
+                )
+                raise AssertionError(f"{self.name} never dismissed {role} {label!r}")
+            time.sleep(2)
 
     def type_line(self, text: str, *, submit: bool = True) -> None:
         """Type with real keystrokes, optionally pressing Return."""

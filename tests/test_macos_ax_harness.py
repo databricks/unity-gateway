@@ -1,0 +1,128 @@
+"""Linux-runnable checks for the macOS desktop Accessibility harness in tests/integration."""
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tests.integration.utils import macos_app
+from tests.integration.utils.macos_app import matches
+
+
+class RecordingSession:
+    """The UserSession surface the MacApp helpers use, without a live session."""
+
+    def __init__(self, artifacts):
+        self.artifacts = artifacts
+        self.artifacts.mkdir(parents=True, exist_ok=True)
+        self.runs = []
+
+    def run(self, *args, timeout=120, ok=True, binary=None):
+        self.runs.append({"argv": [str(binary), *args], "timeout": timeout, "ok": ok})
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def record(self, name, value):
+        (self.artifacts / name).write_text(json.dumps(value, indent=2))
+
+
+def mac_app(session, pid=1813, client=None):
+    """A MacApp without an installed bundle; only its helper methods run."""
+    app = macos_app.MacApp.__new__(macos_app.MacApp)
+    app.session = session
+    app.name = "chatgpt"
+    app.proc = SimpleNamespace(pid=pid)
+    app.client = client
+    return app
+
+
+@pytest.mark.parametrize(
+    ("row", "role", "label", "expected"),
+    [
+        (["AXButton", "Go to ChatGPT", "", ""], "AXButton", "Go to ChatGPT", True),
+        (["AXButton", "", "Go to ChatGPT", ""], "AXButton", "Go to ChatGPT", True),
+        (["AXButton", "", "", "Go to ChatGPT"], "AXButton", "Go to ChatGPT", True),
+        (["AXButton", "Keep setting up", "", ""], "AXButton", "Go to ChatGPT", False),
+        (["AXStaticText", "Go to ChatGPT", "", ""], "AXButton", "Go to ChatGPT", False),
+        (["AXButton", "Keep setting up", "", ""], "AXButton", None, True),
+        (["AXStaticText", "Skip setup?", "", ""], "AXButton", None, False),
+    ],
+)
+def test_ax_rows_match_role_and_label(row, role, label, expected):
+    assert matches(row, role, label) is expected
+
+
+def test_click_waits_and_clicks_through_one_native_command(tmp_path):
+    session = RecordingSession(tmp_path / "artifacts")
+    app = mac_app(session, pid=1813, client=tmp_path / "macos-ax")
+
+    app.click("AXButton", "Go to ChatGPT", timeout=120)
+    app.click("AXTextArea", None)
+
+    explicit, default = session.runs
+    assert explicit["argv"] == [
+        str(tmp_path / "macos-ax"),
+        "click",
+        "1813",
+        "AXButton",
+        "Go to ChatGPT",
+        "120",
+    ]
+    assert explicit["timeout"] == 150
+    assert default["argv"] == [
+        str(tmp_path / "macos-ax"),
+        "click",
+        "1813",
+        "AXTextArea",
+        "",
+        "60",
+    ]
+    assert default["timeout"] == 90
+
+
+def test_wait_gone_returns_once_the_screen_leaves_the_element(tmp_path, monkeypatch):
+    monkeypatch.setattr(macos_app.time, "sleep", lambda seconds: None)
+    app = mac_app(RecordingSession(tmp_path / "artifacts"))
+    trees = iter(
+        [[["AXButton", "Go to ChatGPT", "", ""]], [["AXStaticText", "Skip setup?", "", ""]]]
+    )
+    app.read_tree = lambda: next(trees)
+
+    app.wait_gone("AXButton", "Go to ChatGPT", 60)
+
+
+def test_wait_gone_fails_with_the_ax_tree_when_the_dialog_stays(tmp_path, monkeypatch):
+    clock = iter([0, 1000])
+    monkeypatch.setattr(macos_app.time, "monotonic", lambda: next(clock))
+    session = RecordingSession(tmp_path / "artifacts")
+    app = mac_app(session)
+    stuck = [["AXStaticText", "Skip setup?", "", ""], ["AXButton", "Go to ChatGPT", "", ""]]
+    app.read_tree = lambda: stuck
+
+    with pytest.raises(AssertionError, match="never dismissed AXButton 'Go to ChatGPT'"):
+        app.wait_gone("AXButton", "Go to ChatGPT", 0)
+
+    recorded = json.loads((session.artifacts / "chatgpt-tree.json").read_text())
+    assert recorded == {"stuck_on": ["AXButton", "Go to ChatGPT"], "tree": stuck}
+
+
+def test_app_environment_turns_off_the_app_sparkle_updater():
+    session_env = {"HOME": "/session/home", "CODEX_HOME": "/session/home/.codex"}
+
+    env = macos_app.app_environment(session_env)
+
+    assert env["CODEX_SPARKLE_ENABLED"] == "false"
+    assert env["HOME"] == "/session/home"
+    assert "CODEX_SPARKLE_ENABLED" not in session_env
+
+
+def test_native_client_keeps_the_failure_evidence_contract():
+    source = (Path(macos_app.__file__).parent / "macos_ax.swift").read_text()
+    # The macOS journey parses this exact failure format, and traversal failures ride between
+    # the tree and the fatal error instead of hiding behind an empty tree.
+    assert "Accessibility tree at failed click (PID \\(pid)):" in source
+    assert '"AX error: \\(error)"' in source
+    # One native command clicks: activate first, then press, then a mouse fallback at click
+    # time.
+    assert "AXUIElementPerformAction" in source
+    assert "kAXPositionAttribute" in source
