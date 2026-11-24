@@ -195,15 +195,16 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
-Native routing components check that the streamed parent reply preserves all Agent and
-non-Agent arguments and chunk boundaries, whether the server-review environment variable is
-unset or set. Each Agent call is routed at tool execution without rewriting its input. Lone
-rows show the model through rendering only; cards and rows quote the neutral task title and
-the completed-task notice quotes the routed label, so a description that names the requested
-model is never printed — Claude's collapsed parallel header, which keeps its native
-description, is the exception. Cards, the agent list and completed-task notices show the
-launched model and flag
-a mismatch, a missing launch model is not persisted, and saved receipts are restored per child
+Native routing components check the streamed parent reply on both sides of the fallback gate:
+with Claude's local auto-mode fallback check on, parallel Agent calls are routed once and only
+their `description` becomes `<animal> · <model> · <task>` while other arguments, chunk order
+and non-Agent calls are unchanged, and `tool.call` does not route again; with the fallback off
+(`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` or `DO_NOT_TRACK` set, or
+`CLAUDE_CODE_AUTO_MODE_SERVER=1`), the reply streams untouched and `tool.call` does the
+routing. Cards and rows quote the neutral task title and the completed-task notice quotes the
+routed label, so a description that names the requested model is never printed. Cards, the
+agent list and completed-task notices show the launched model and flag a mismatch, a missing
+launch model is not persisted, and saved receipts are restored per child
 on resume. The agent-list assertions run only where Claude has that row (2.1.328 and later).
 Native auto-mode cases retain their approval/denial and zero fallback-classification assertions.
 The native status command checks old animal-only mappings, model labels with unchanged
