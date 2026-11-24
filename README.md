@@ -808,6 +808,7 @@ use identical mappings for both agents. The Claude-only versions disable routing
 | Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker | Subagent model details |
 | --- | --- | --- | --- | --- | --- | --- |
 | `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off | Shown |
+| `first_prompt_and_subagent_orch_v0` | Claude, Codex | On | On | On | Off | Shown |
 | `subagent_only_v0` | Claude, Codex | On | Off | Off | Off | Shown |
 | `subagent_only_v1` | Claude, Codex | On | Off | Off | Off | Shown |
 | `subagent_orch_v0` | Claude, Codex | On | Off | On | Off | Shown |
@@ -820,10 +821,12 @@ use identical mappings for both agents. The Claude-only versions disable routing
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. `first_prompt_and_subagent_orch_v0_claude_only` sets
-the same Claude flags with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, so the main agent starts on
-the model routed from the first prompt with the orchestrator workflow, and turns all routing
-flags off for Codex. Every other version routes subagents only;
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. `first_prompt_and_subagent_orch_v0` sets the same
+flags with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, so the main agent starts on the model routed
+from the first prompt with the orchestrator workflow. A routed `ug codex app-server` gets its
+subagent routing and orchestrator but, as with any preset, no first-prompt routing.
+`first_prompt_and_subagent_orch_v0_claude_only` keeps those flags for Claude and turns all
+routing flags off for Codex. Every other version routes subagents only;
 `subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
