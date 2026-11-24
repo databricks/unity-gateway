@@ -36,7 +36,10 @@ def _app_home(tmp_path, monkeypatch):
     monkeypatch.setattr("ucode.agents.vscode.copilot_models", lambda *args, **kwargs: CATALOG)
     monkeypatch.setattr("ucode.agents.copilot.uses_seat_relay", lambda *args, **kwargs: False)
     monkeypatch.setattr("ucode.agents.copilot.agent_version", lambda binary: "1.0.91")
-    monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug/bin/ug")
+    ug = tmp_path / "opt" / "ug" / "bin" / ("ug.exe" if os.name == "nt" else "ug")
+    ug.parent.mkdir(parents=True)
+    ug.write_text("")
+    monkeypatch.setattr("ucode.databricks.ug_binary", lambda: str(ug))
     monkeypatch.setattr(
         "ucode.databricks.databricks_cli_path", lambda: "/opt/databricks/bin/databricks"
     )
@@ -89,7 +92,8 @@ class TestConfigure:
         ]
         assert config["app"]["ownedProviderIds"] == list(copilot_app.OWNED_PROVIDER_IDS)
         assert config["databricksPath"] == "/opt/databricks/bin/databricks"
-        assert config["tokenCommand"][:2] == ["/opt/ug/bin/ug", "auth-token"]
+        assert Path(config["tokenCommand"][0]).parent.as_posix().endswith("/opt/ug/bin")
+        assert config["tokenCommand"][1] == "auth-token"
         assert "/opt/databricks/bin" in config["pathDirs"]
         out = _out(capsys)
         assert (
@@ -275,6 +279,21 @@ class TestSeatRelayProvider:
         assert result.row == "plugin installed, models through copilot-seats"
         assert result.warnings == ()
 
+    def test_status_points_at_the_diagnostics_log_once_the_extension_wrote_one(self):
+        desktop_setup.configure_copilot_app(STATE, provider="copilot-seats", location=None)
+        assert (
+            desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None).notes
+            == ()
+        )
+
+        log = plugin._extension_dir(plugin.plugin_root()) / "seat-relay-debug.log"
+        log.write_text('{"event":"start"}\n')
+
+        result = desktop_setup.copilot_app_status(STATE, provider="copilot-seats", location=None)
+
+        assert result.notes == (f"Diagnostics: {log}",)
+        assert result.warnings == ()
+
     def test_status_warns_until_the_relay_is_configured(self):
         desktop_setup.configure_copilot_app(STATE, provider="team-models", location=None)
 
@@ -302,12 +321,146 @@ class TestConfigureCopilotApp:
 
         assert plugin.status() == "installed"
 
-    def test_a_missing_app_skips_it(self, monkeypatch):
+    def test_a_missing_app_skips_it_and_says_so(self, monkeypatch, capsys):
         monkeypatch.setattr(desktop_setup, "copilot_app_installed", lambda: False)
         agents_mod.configure_copilot_app(STATE, provider=None, parent_schema=None)
 
         assert not plugin.plugin_root().exists()
         assert not _settings_path().exists()
+        assert "GitHub Copilot app: not found, skipped." in _out(capsys)
+
+
+class TestCopilotAppLocation:
+    """The real detection, which the conftest otherwise stubs out for every test."""
+
+    @pytest.fixture(autouse=True)
+    def _nowhere(self, tmp_path, monkeypatch):
+        from ucode.managed_files import OS
+
+        monkeypatch.setattr(desktop_setup, "current_os", lambda: OS.LINUX)
+        monkeypatch.setattr(desktop_setup, "_COPILOT_APP_LINUX_BINARIES", (tmp_path / "github",))
+        monkeypatch.setattr(
+            desktop_setup, "_linux_desktop_entry_dirs", lambda: (tmp_path / "applications",)
+        )
+        monkeypatch.setattr(desktop_setup, "_linux_appimage_dirs", lambda: (tmp_path / "images",))
+        monkeypatch.setattr(copilot_app, "process_running", lambda pid: False)
+
+    def _run_files(self, pid: int) -> None:
+        run = copilot_app.copilot_home() / "run"
+        run.mkdir(parents=True)
+        (run / "ws.port").write_text(f"4321\n{pid}\n")
+
+    def test_nothing_found(self):
+        assert desktop_setup.copilot_app_location() is None
+
+    def test_the_binary(self, tmp_path):
+        (tmp_path / "github").write_text("")
+
+        assert desktop_setup.copilot_app_location() == tmp_path / "github"
+
+    def test_a_running_app_anywhere(self, monkeypatch):
+        self._run_files(4242)
+        monkeypatch.setattr(copilot_app, "process_running", lambda pid: pid == 4242)
+
+        assert desktop_setup.copilot_app_location() == copilot_app.copilot_home() / "run"
+
+    def test_run_files_of_a_closed_app_do_not_count(self):
+        self._run_files(4242)
+
+        assert desktop_setup.copilot_app_location() is None
+
+    @pytest.mark.parametrize(
+        ("name", "text"),
+        [
+            (
+                "com.github.githubapp.desktop",
+                "[Desktop Entry]\nName=GitHub\nExec=/usr/bin/github\n",
+            ),
+            (
+                "GitHub Copilot.desktop",
+                "[Desktop Entry]\nName=GitHub Copilot\nExec=env K=V github %u\n",
+            ),
+            (
+                "copilot.desktop",
+                '[Desktop Entry]\nName=GitHub Copilot (work)\nExec="/opt/apps/github" %u\n',
+            ),
+        ],
+        ids=["the-apps-own-entry", "a-launcher-entry", "a-quoted-path"],
+    )
+    def test_a_desktop_entry(self, tmp_path, name, text):
+        (tmp_path / "applications").mkdir()
+        (tmp_path / "applications" / name).write_text(text)
+
+        assert desktop_setup.copilot_app_location() == tmp_path / "applications" / name
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "[Desktop Entry]\nName=GitHub Desktop\nExec=github-desktop %u\n",
+            "[Desktop Entry]\nName=GitHub Copilot notes\nExec=gedit copilot.md\n",
+            "[Desktop Entry]\nName=Copilot\nExec=/usr/bin/github\n",
+        ],
+        ids=["another-github-app", "the-name-alone", "the-command-alone"],
+    )
+    def test_other_desktop_entries_do_not_count(self, tmp_path, text):
+        (tmp_path / "applications").mkdir()
+        (tmp_path / "applications" / "other.desktop").write_text(text)
+
+        assert desktop_setup.copilot_app_location() is None
+
+    def test_an_appimage(self, tmp_path):
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "GitHub-Copilot-1.4.3.AppImage").write_text("")
+        (tmp_path / "images" / "Other.AppImage").write_text("")
+
+        assert (
+            desktop_setup.copilot_app_location()
+            == tmp_path / "images" / "GitHub-Copilot-1.4.3.AppImage"
+        )
+
+    def test_macos_falls_back_to_a_running_app(self, monkeypatch):
+        from ucode.managed_files import OS
+
+        monkeypatch.setattr(desktop_setup, "current_os", lambda: OS.MACOS)
+        self._run_files(4242)
+        monkeypatch.setattr(copilot_app, "process_running", lambda pid: pid == 4242)
+
+        assert desktop_setup.copilot_app_location() == copilot_app.copilot_home() / "run"
+
+
+class TestWindowsUgExe:
+    EXE = r"C:\uv\bin\ug.exe"
+
+    def _windows(self, monkeypatch, found, launcher):
+        monkeypatch.setattr(desktop_setup, "current_os", lambda: desktop_setup.OS.WINDOWS)
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: found)
+        monkeypatch.setattr("ucode.databricks.running_launcher", lambda: launcher)
+
+    @pytest.mark.parametrize("found", [r"C:\tools\ug.cmd", "ug"])
+    def test_the_plugin_runs_the_exe_launcher_over_a_shim_node_cant_start(self, monkeypatch, found):
+        self._windows(monkeypatch, found, self.EXE)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        config = _extension_config()
+        assert config["ugPath"] == self.EXE
+        assert config["tokenCommand"][0] == self.EXE
+
+    def test_an_exe_on_the_path_is_kept(self, monkeypatch):
+        self._windows(monkeypatch, r"C:\tools\UG.EXE", None)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert _extension_config()["ugPath"] == r"C:\tools\UG.EXE"
+
+    def test_without_an_exe_the_app_is_skipped(self, monkeypatch, capsys):
+        self._windows(monkeypatch, "ug", None)
+
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+
+        assert not plugin.plugin_root().exists()
+        assert not _settings_path().exists()
+        assert "Skipped the GitHub Copilot app: ug's `ug.exe` wasn't found" in _out(capsys)
 
 
 class TestRemove:
@@ -409,6 +562,18 @@ class TestRemove:
 class TestStatus:
     def _status(self, app_state=STATE):
         return desktop_setup.copilot_app_status(app_state, provider=None, location=None)
+
+    def test_a_moved_ug_warns(self, app):
+        desktop_setup.configure_copilot_app(STATE, provider=None, location=None)
+        _register(app)
+        Path(_extension_config()["ugPath"]).unlink()
+
+        result = self._status()
+
+        assert result.row == "plugin installed, models registered"
+        assert len(result.warnings) == 1
+        assert "which no longer exists" in result.warnings[0]
+        assert "`ug configure --agents copilot`" in result.warnings[0]
 
     def test_installed_and_registered(self, app):
         desktop_setup.configure_copilot_app(STATE, provider=None, location=None)

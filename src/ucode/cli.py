@@ -47,6 +47,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_vscode_code,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -361,20 +362,18 @@ def _print_managed_summary(
         return
     lines = [f"[bold]Workspace:[/bold] [cyan]{state.get('workspace', '?')}[/cyan]"]
     if tool is not None:
-        lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
+        lines.append(f"[bold]Agent:[/bold] [green]{_agent_label(tool)}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
     failed: list[str] = []
     if configured_tools is not None:
         failed = [t for t in enabled if t not in configured_tools]
         enabled = [t for t in enabled if t in configured_tools]
     if enabled:
-        lines.append(
-            f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
-        )
+        lines.append(f"[bold]Coding Agents:[/bold] {', '.join(_agent_label(t) for t in enabled)}")
     if failed:
         lines.append(
             f"[bold]Failed to configure:[/bold] "
-            f"[yellow]{', '.join(TOOL_SPECS[t]['display'] for t in failed)}[/yellow]"
+            f"[yellow]{', '.join(_agent_label(t) for t in failed)}[/yellow]"
         )
     if tool is not None:
         provider = managed_provider_service(managed, tool)
@@ -2024,6 +2023,8 @@ def status() -> int:
                 rows.append(("GitHub Copilot app", app_status.row))
                 for warning in app_status.warnings:
                     print_warning(warning)
+                for note in app_status.notes:
+                    print_note(note)
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -2133,7 +2134,7 @@ def revert() -> int:
     from ucode.agents import vscode
 
     try:
-        vscode_result = vscode.revert()
+        vscode_result = vscode.revert(state)
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
         # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
@@ -5764,6 +5765,15 @@ def configure(
             "Copilot Chat in VS Code.",
         ),
     ] = False,
+    vscode_code: Annotated[
+        str | None,
+        typer.Option(
+            "--vscode-code",
+            hidden=True,
+            help="The desktop VS Code's `code` command to set up, when the one ug finds is "
+            "another product's. `UG_VSCODE_CODE` does the same for every run.",
+        ),
+    ] = None,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5885,6 +5895,7 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
+        request_vscode_code(vscode_code)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

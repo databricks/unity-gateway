@@ -2544,3 +2544,82 @@ class TestSeatRelay:
         assert str(failure) in captured.err
         assert "Run `ug configure --agents copilot`, then restart VS Code." in captured.err
         assert started == []
+
+
+class TestSeatRelayJourney:
+    """`ug copilot` on a seat relay, against a fake gateway, with a client that honours the launch
+    environment's proxy variables the way Copilot does."""
+
+    def test_launch_relays_the_signed_in_calls_and_keeps_a_proxy_off_the_relay(
+        self, tmp_path, monkeypatch
+    ):
+        import urllib.error
+        import urllib.request
+        from unittest import mock
+
+        from tests.test_copilot_relay import _Upstream
+
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        from ucode import copilot_relay
+
+        monkeypatch.setattr(
+            copilot_relay, "cached_copilot_api_host", lambda *_a: "api.business.githubcopilot.com"
+        )
+        gateway = _Upstream()
+        proxy = _Upstream()
+        seen: dict = {}
+
+        def popen(argv, *, env):
+            seen["env"] = env
+            # Copilot resolves proxies from its environment: the launch env names a proxy for
+            # everything but loopback, so the relay's requests must reach the relay, not the proxy.
+            proxied = {
+                "HTTP_PROXY": proxy.base_url,
+                "NO_PROXY": env["NO_PROXY"],
+                "no_proxy": env["no_proxy"],
+            }
+            with mock.patch.dict(os.environ, proxied):
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler())
+                request = urllib.request.Request(
+                    f"{env['COPILOT_API_URL']}/meta", headers={"Authorization": "Bearer gho_cli"}
+                )
+                with opener.open(request, timeout=5) as response:
+                    seen["meta"] = response.status
+                # The relay retries one 403 after a token refresh before giving up.
+                gateway.statuses.extend([403, 403])
+                try:
+                    opener.open(request, timeout=5)
+                except urllib.error.HTTPError as error:
+                    seen["denied"] = error.code
+            return _ExitedProcess(0)
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        state = dict(STATE, workspace=gateway.base_url)
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = SEAT_MPS
+        try:
+            with pytest.raises(SystemExit) as exit_info:
+                copilot.launch(state, [], options=copilot.LaunchOptions())
+        finally:
+            gateway.close()
+            proxy.close()
+
+        assert exit_info.value.code == 0
+        env = seen["env"]
+        assert env["NO_PROXY"] == env["no_proxy"] == "127.0.0.1,localhost"
+        assert seen["meta"] == 200
+        # Copilot shows the body of a 400 and hides a 403's.
+        assert seen["denied"] == 400
+        assert proxy.requests == []
+        relayed, denied, retried = gateway.requests
+        assert relayed["path"] == "/ai-gateway/github-copilot/v1/meta"
+        assert relayed["headers"]["authorization"] == "Bearer gho_cli"
+        assert relayed["headers"]["x-databricks-ai-gateway-token"] == "Bearer dbx-token"
+        assert relayed["headers"]["databricks-model-provider-service"] == SEAT_MPS
+        assert relayed["headers"]["x-databricks-github-copilot-api-host"] == (
+            "api.business.githubcopilot.com"
+        )
+        assert denied["path"] == retried["path"] == relayed["path"]

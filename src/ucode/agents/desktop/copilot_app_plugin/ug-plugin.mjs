@@ -85,11 +85,15 @@ export function createTokenSource(config, { run = runCommand, now = Date.now } =
     }
     return pending;
   }
-  token.invalidate = () => {
+  // `rejected` is the token the upstream refused; when a newer one is already cached, another
+  // request's refresh has done the work and this one keeps it instead of minting again.
+  token.invalidate = (rejected) => {
+    if (rejected !== undefined && cached && cached.value !== rejected) return false;
     generation++;
     cached = null;
     pending = null;
     forceRefresh = true;
+    return true;
   };
   return token;
 }

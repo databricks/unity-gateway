@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-import { copilotHome, readAppPid } from "./app-rows.mjs";
+import { NO_DEBUG } from "./app-debug.mjs";
+import { copilotHome, readAppPid, readAppPidSource } from "./app-rows.mjs";
+import { windowsTool } from "./app-windows.mjs";
 
 // The Copilot CLI and VS Code's Copilot runtime read the same settings file as the desktop app,
 // so with Copilot's experimental features on they start this extension too. Only the app's own
@@ -11,7 +13,8 @@ import { copilotHome, readAppPid } from "./app-rows.mjs";
 // session whose process tree is hidden.
 export const SANDBOX_MARKER_ENV = "COPILOT_EXTENSION_SANDBOXED";
 export const MAX_ANCESTORS = 12;
-const COMMAND_TIMEOUT_MS = 3_000;
+// A cold PowerShell with endpoint security can take several seconds to list the processes.
+const COMMAND_TIMEOUT_MS = 10_000;
 
 function parentFromProc(pid) {
   try {
@@ -24,11 +27,22 @@ function parentFromProc(pid) {
   }
 }
 
-function runCommand(command, args) {
+// Resolves to the command's output, or null when it failed; `details` collects what happened.
+function runCommand(command, args, details = {}) {
+  const started = Date.now();
   return new Promise((resolve) => {
-    execFile(command, args, { timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout) =>
-      resolve(error ? null : String(stdout)),
-    );
+    execFile(command, args, { timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) => {
+      details.command = command;
+      details.args = args;
+      details.ms = Date.now() - started;
+      details.stdoutLength = String(stdout ?? "").length;
+      if (error) {
+        details.error = String(error.code ?? error.message);
+        details.killed = Boolean(error.killed);
+        details.stderr = String(stderr ?? "").slice(0, 300);
+      }
+      resolve(error ? null : String(stdout));
+    });
   });
 }
 
@@ -42,20 +56,26 @@ export function parsePidTable(output) {
   return parents;
 }
 
-async function parentLookup(platform, run) {
+async function parentLookup(platform, run, details = {}) {
   if (platform === "linux") return parentFromProc;
   let output = null;
-  if (platform === "darwin") output = await run("ps", ["-axo", "pid=,ppid="]);
+  if (platform === "darwin") output = await run("ps", ["-axo", "pid=,ppid="], details);
   if (platform === "win32") {
-    output = await run("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
-    ]);
+    output = await run(
+      windowsTool("powershell.exe"),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+      ],
+      details,
+    );
   }
   if (output === null) return null;
   const parents = parsePidTable(output);
+  details.pairs = parents.size;
+  details.firstPairs = [...parents.entries()].slice(0, 20);
   return (pid) => parents.get(pid) ?? null;
 }
 
@@ -84,9 +104,25 @@ export async function runningUnderApp({
   platform = process.platform,
   pid = process.pid,
   run = runCommand,
+  debug = NO_DEBUG,
 } = {}) {
+  const started = Date.now();
   const appPid = readAppPid(home);
-  const parentOf = await parentLookup(platform, run);
+  const details = {};
+  const parentOf = await parentLookup(platform, run, details);
   const ancestors = parentOf ? ancestorsOf(pid, parentOf) : null;
-  return hostDecision({ appPid, ancestors, env });
+  const decision = hostDecision({ appPid, ancestors, env });
+  debug("host.check", {
+    platform,
+    pid,
+    appPid,
+    appPidSource: readAppPidSource(home),
+    home,
+    ancestors,
+    sandboxMarker: env[SANDBOX_MARKER_ENV] ?? null,
+    ...details,
+    ...decision,
+    ms: Date.now() - started,
+  });
+  return decision;
 }

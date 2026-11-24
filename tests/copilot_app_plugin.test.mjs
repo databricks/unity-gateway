@@ -207,6 +207,19 @@ test("buildProviders attaches the token provider to every provider", () => {
   assert.equal(config.providers[0].bearerTokenProvider, undefined);
 });
 
+test("invalidate with a token another request already replaced keeps the fresh one", async () => {
+  let minted = 0;
+  const token = createTokenSource(config, { run: async () => jwt(3600 + ++minted), now: () => 0 });
+  const first = await token();
+  assert.equal(token.invalidate(first), true);
+  const second = await token();
+  assert.notEqual(second, first);
+  // A second request that was refused with the old token must not throw the new one away.
+  assert.equal(token.invalidate(first), false);
+  assert.equal(await token(), second);
+  assert.equal(minted, 2);
+});
+
 test("invalidate drops the cached token and force-refreshes the next mint once", async () => {
   const calls = [];
   const token = createTokenSource(config, {
