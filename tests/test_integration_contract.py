@@ -904,6 +904,7 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
         for name, job in jobs.items():
             if name == "security-gate":
+                assert not credential.search(job), (workflow, name)
                 continue
             if not credential.search(job) and "uses: ./.github/workflows/" not in job:
                 continue
@@ -944,6 +945,20 @@ def test_credential_contract_rejects_a_new_ungated_job(monkeypatch, prerequisite
         globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
     )
     with pytest.raises(AssertionError, match="accidental-secret"):
+        test_pr_jobs_with_credentials_require_a_successful_security_gate()
+
+
+def test_credential_contract_rejects_secrets_in_the_gate(monkeypatch):
+    workflow = _workflow
+    ci = workflow("ci.yml").replace(
+        "    uses: ./.github/workflows/security-gate.yml\n",
+        "    uses: ./.github/workflows/security-gate.yml\n    secrets: inherit\n",
+        1,
+    )
+    monkeypatch.setitem(
+        globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
+    )
+    with pytest.raises(AssertionError, match="security-gate"):
         test_pr_jobs_with_credentials_require_a_successful_security_gate()
 
 

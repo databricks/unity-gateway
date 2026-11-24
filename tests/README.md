@@ -1745,17 +1745,20 @@ pending. The advisory Windows installation and headless lanes are not part of `A
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 One shared `Security Scan` runs from the default branch on `workflow_run: requested` for
-PR CI. Its protected resolver validates the PR, source repository, branch and commit against
-GitHub; its separate hosted job statically scans the PR using policy from the workflow's main
-commit. `tests/test_security_scan_request.py` covers request validation and that policy wiring.
-There is no bootstrap pass when the trusted workflow is missing.
+PR CI. A new request cancels an older scan for the same event, source repository and branch.
+Its protected resolver validates the PR, source repository, branch and commit against GitHub;
+its separate hosted job statically scans the PR using policy from the workflow's main commit.
+`tests/test_security_scan_request.py` covers request validation and that policy wiring. There is
+no bootstrap pass when the trusted workflow is missing.
 
-CI and publisher tests wait through `Security Gate`. The gate finds the PR's CI request and
-requires a successful `workflow_run` scan for that run ID. A same-named PR-authored scan cannot
-satisfy it. All ordinary PR gates use hosted runners and the public API. Authorized comment
-runs use main's gate on the allowlisted pool. Queries are scoped to the selected CI request,
-with two-minute polling for up to 20 minutes and explicit retry messages for API errors.
-The job budget is 25 minutes to allow for request latency.
+Secret-free CI checks, unit shards, Windows provisioning and VS Code extension tests do not wait
+for `Security Gate`. Secret-bearing CI jobs and publisher tests still do. The gate finds the PR's
+CI request and requires a successful `workflow_run` scan for that run ID. A same-named PR-authored
+scan cannot satisfy it. All ordinary PR gates use hosted runners and the public API; authorized
+comment runs use main's gate on the allowlisted pool. The gate polls every 10 seconds for two
+minutes, every 30 seconds for three minutes, then after one minute and every two minutes, for at
+most 27 polls and 20 minutes of total sleep. API latency is additional; the job timeout is 25
+minutes. Extra pages or gates sharing an IP can reach the anonymous API rate limit.
 `test_security_gate_waits_for_the_current_scan` covers failure/timeout, pagination and scan
 provenance; separate cases cover authentication and mismatched request/comment identities.
 `test_security_gate_explains_rate_limits` checks 403/429 retry messages; the API-error cases
@@ -1770,9 +1773,10 @@ triggers alongside workflow reuse. Push, schedule and dispatch skip the gate. Me
 rely on native PR enforcement; live verification remains a
 [rollout blocker](#security-scan-rollout).
 
-`test_security_scan_runs_before_every_job_that_runs_pr_code` checks every CI/publisher job
-has a dependency path through the gate and checks the diff flags that keep a PR's
-`.gitattributes` from hiding changes. The shared scanner test
+`test_pr_jobs_with_credentials_require_a_successful_security_gate` checks both PR-code callers
+for credential-bearing jobs without a successful gate. `test_security_scan_provenance_and_gate`
+checks the publisher dependencies and diff flags that keep a PR's `.gitattributes` from hiding
+changes. The shared scanner test
 `test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
 a name the exfil scan watches. `test_security_scan_parsers_survive_diff_and_path_tricks` checks
 that added lines posing as diff headers and quoted or non-ASCII file names still reach the exfil,
