@@ -1758,10 +1758,10 @@ scan cannot satisfy it. All ordinary PR gates use hosted runners and the public 
 comment runs use main's gate on the allowlisted pool. The gate polls every 10 seconds for two
 minutes, every 30 seconds for three minutes, then after one minute and every two minutes, for at
 most 27 polls and 20 minutes of total sleep. API latency is additional; the job timeout is 25
-minutes. A 403 or 429 rate limit leaves the scan pending until the next poll or an earlier reset;
-the final poll stays at the original deadline to preserve coverage after repeated early resets.
-A limit that outlasts the gate still causes a timeout. Extra pages or gates sharing an IP can reach
-the anonymous API rate limit.
+minutes. A rate limit leaves the scan pending until both `Retry-After` and `X-RateLimit-Reset`
+have passed; without either header, it waits at least one minute. Waiting never exceeds the
+original sleep budget, and a limit that outlasts the gate still causes a timeout. Extra pages or
+gates sharing an IP can reach the anonymous API rate limit.
 `test_security_gate_waits_for_the_current_scan` covers failure/timeout, pagination and scan
 provenance; separate cases cover authentication and mismatched request/comment identities.
 Rate-limit cases cover recovery, persistent limits and incomplete listings; the API-error cases
@@ -2106,10 +2106,10 @@ requirements, not guarantees supplied by the YAML or component tests.
 Re-running CI reuses its original scan. A maintainer can apply
 `skip-scan:<full 40-character head SHA>` for a reviewed commit, then re-run all scan jobs
 to refresh labels and the failed CI jobs. Later pushes need a new waiver; the old generic
-`skip-security-scan` label has no effect. Gates poll every two minutes for up to 20 minutes
-(with a 25-minute job budget). Public API limits still
-fail closed; retry after the reported quota reset. A static scan does not replace human
-authorization for credentialed integration.
+`skip-security-scan` label has no effect. Gates use the bounded polling schedule described
+above, with up to 20 minutes of scheduled sleep and a 25-minute job budget. Rate-limited
+responses remain pending until the retry and reset times have passed; a limit outlasting the gate
+still fails closed. A static scan does not replace human authorization for credentialed integration.
 
 TLS trust-store component coverage in `test_tls.py` checks precedence (`UG_TLS_TRUST_STORE`,
 saved `tls_trust_store`, default `os`), warnings for unknown values, `truststore` injection

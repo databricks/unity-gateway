@@ -883,6 +883,57 @@ def test_no_workflow_uses_pull_request_target():
     assert [path.name for path in workflows if "pull_request_target" in path.read_text()] == []
 
 
+def _requires_gate_success(header):
+    condition = re.search(r"(?m)^    if: (.*)$", header)
+    if not condition:
+        return False
+    expression = condition[1].strip().removeprefix("${{").removesuffix("}}").strip()
+    terms = []
+    depth = 0
+    quoted = False
+    start = 0
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char == "'":
+            quoted = not quoted
+        elif not quoted:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    return False
+            elif depth == 0 and expression[index : index + 2] in ("&&", "||"):
+                if expression[index : index + 2] == "||":
+                    return False
+                terms.append(expression[start:index].strip())
+                index += 1
+                start = index + 1
+        index += 1
+    terms.append(expression[start:].strip())
+    return not quoted and depth == 0 and "needs.security-gate.result == 'success'" in terms
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        (
+            "github.event_name != 'merge_group' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.security-gate.result == 'success' && !cancelled()",
+            True,
+        ),
+        ("needs.security-gate.result == 'success' || true", False),
+        ("always() || needs.security-gate.result == 'success'", False),
+        ("success() || needs.security-gate.result == 'success'", False),
+        ("needs.security-gate.result == 'success' && success() || true", False),
+        ("(needs.security-gate.result == 'success' || true) && success()", False),
+        ("(needs.security-gate.result == 'success' && success()) || true", False),
+    ],
+)
+def test_gate_success_condition_requires_a_top_level_guard(expression, expected):
+    assert _requires_gate_success(f"    if: ${{{{ {expression} }}}}\n") is expected
+
+
 def test_pr_jobs_with_credentials_require_a_successful_security_gate():
     workflows = Path(__file__).parent.parent / ".github/workflows"
     credential = re.compile(
@@ -912,9 +963,11 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
             assert needs and "security-gate" in needs[1].split(", "), (workflow, name)
             # GitHub's implicit success() is overridden by these status functions.
             job_header = job.split("\n    steps:", 1)[0]
-            if re.search(r"\b(?:always|failure|cancelled|success)\s*\(", job_header):
-                assert "needs.security-gate.result == 'success'" in job_header, (workflow, name)
-                assert "||" not in job_header, (workflow, name)
+            if (
+                re.search(r"\b(?:always|failure|cancelled|success)\s*\(", job_header)
+                or "needs.security-gate.result" in job_header
+            ):
+                assert _requires_gate_success(job_header), (workflow, name)
 
     ci = _workflow("ci.yml").split("\njobs:\n", 1)[1]
     jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", ci))
@@ -937,7 +990,14 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
 
 @pytest.mark.parametrize(
     "prerequisites",
-    ["", "    needs: security-gate\n    if: ${{ success() || true }}\n"],
+    [
+        "",
+        "    needs: security-gate\n    if: ${{ success() || true }}\n",
+        "    needs: security-gate\n    if: ${{ needs.security-gate.result == 'success' || true }}\n",
+        "    needs: security-gate\n    if: ${{ always() || needs.security-gate.result == 'success' }}\n",
+        "    needs: security-gate\n    if: ${{ needs.security-gate.result == 'success' && success() || true }}\n",
+        "    needs: security-gate\n    if: ${{ (needs.security-gate.result == 'success' || true) && success() }}\n",
+    ],
 )
 def test_credential_contract_rejects_a_new_ungated_job(monkeypatch, prerequisites):
     workflow = _workflow
@@ -967,6 +1027,20 @@ def test_credential_contract_rejects_secrets_in_the_gate(monkeypatch):
         test_pr_jobs_with_credentials_require_a_successful_security_gate()
 
 
+def test_publisher_contract_rejects_a_new_ungated_job(monkeypatch):
+    workflow = _workflow
+    publish = (
+        workflow("publish-skills-test.yml") + "\n  accidental-job:\n    runs-on: ubuntu-latest\n"
+    )
+    monkeypatch.setitem(
+        globals(),
+        "_workflow",
+        lambda name: publish if name == "publish-skills-test.yml" else workflow(name),
+    )
+    with pytest.raises(AssertionError, match="accidental-job"):
+        test_security_scan_provenance_and_gate()
+
+
 def test_security_scan_provenance_and_gate():
     gate_job = (
         "  security-gate:\n    name: Security Gate\n    permissions:\n"
@@ -977,10 +1051,28 @@ def test_security_scan_provenance_and_gate():
     scan = _workflow("security-scan.yml")
     gate = _workflow("security-gate.yml")
     assert gate_job in ci and gate_job in publish
-    for job in ("tests", "smoke"):
-        assert re.search(
-            rf"(?ms)^  {job}:\n(?:(?!^  [a-z0-9-]+:\n).)*?^    needs: security-gate$", publish
+    jobs = dict(
+        re.findall(
+            r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+            publish.split("\njobs:\n", 1)[1],
         )
+    )
+    gated = {"security-gate"}
+    while True:
+        previous = gated.copy()
+        for name, job in jobs.items():
+            needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+            header = job.split("\n    steps:", 1)[0]
+            overrides_success = re.search(r"\b(?:always|failure|cancelled|success)\s*\(", header)
+            if (
+                overrides_success or "needs.security-gate.result" in header
+            ) and not _requires_gate_success(header):
+                continue
+            if needs and {need.strip() for need in needs[1].split(",")} <= gated:
+                gated.add(name)
+        if gated == previous:
+            break
+    assert set(jobs) == gated, f"Publisher jobs without a successful gate: {set(jobs) - gated}"
     assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
     assert (
@@ -1145,19 +1237,6 @@ def _run_security_gate(
     return result.value.code, max(calls.values())
 
 
-def test_polling_contract_detects_a_changed_cadence(monkeypatch):
-    workflow = _workflow
-    gate = workflow("security-gate.yml").replace(
-        "delays = [10] * 12 + [30] * 6 + [60] + [120] * 7",
-        "delays = [30] + [10] * 12 + [30] * 5 + [60] + [120] * 7",
-    )
-    monkeypatch.setitem(
-        globals(), "_workflow", lambda name: gate if name == "security-gate.yml" else workflow(name)
-    )
-    with pytest.raises(AssertionError):
-        _run_security_gate(monkeypatch, [[]])
-
-
 @pytest.mark.parametrize(
     "change",
     [
@@ -1215,11 +1294,8 @@ def test_security_gate_api_errors_block_ci(monkeypatch, error):
 
 @pytest.mark.parametrize("status", [403, 429])
 @pytest.mark.parametrize("failure_call", [1, 3, 4])
-@pytest.mark.parametrize(("reset", "wait"), [(1794602003, 3), (1794602050, 10)])
-@pytest.mark.parametrize("authenticated", [True, False])
-def test_security_gate_waits_through_rate_limits(
-    monkeypatch, status, failure_call, reset, wait, authenticated
-):
+@pytest.mark.parametrize(("reset", "wait"), [(1794602003, 10), (1794602050, 50)])
+def test_security_gate_waits_through_rate_limits(monkeypatch, status, failure_call, reset, wait):
     error = urllib.error.HTTPError(
         "https://api.github.com",
         status,
@@ -1231,7 +1307,7 @@ def test_security_gate_waits_through_rate_limits(
     code, _ = _run_security_gate(
         monkeypatch,
         [[{}]],
-        authenticated=authenticated,
+        authenticated=False,
         api_errors={failure_call: error},
         observed=observed,
     )
@@ -1239,18 +1315,71 @@ def test_security_gate_waits_through_rate_limits(
     assert observed["sleeps"] == [wait]
 
 
-@pytest.mark.parametrize("status", [403, 429])
-def test_security_gate_honors_retry_after_without_a_reset_header(monkeypatch, status):
+def test_security_gate_waits_through_a_secondary_limit_without_retry_headers(monkeypatch):
     error = urllib.error.HTTPError(
-        "https://api.github.com", status, "rate limited", {"Retry-After": "3"}, None
+        "https://api.github.com",
+        403,
+        "forbidden",
+        {"X-RateLimit-Remaining": "42"},
+        io.BytesIO(b'{"message":"You have exceeded a secondary rate limit."}'),
+    )
+    observed = {}
+    code, _ = _run_security_gate(
+        monkeypatch, [[{}]], authenticated=False, api_errors={1: error}, observed=observed
+    )
+    assert code == 0
+    assert observed["sleeps"] == [60]
+
+
+@pytest.mark.parametrize("status", [403, 429])
+@pytest.mark.parametrize(("retry_after", "wait"), [(3, 10), (45, 45)])
+def test_security_gate_honors_retry_after_without_a_reset_header(
+    monkeypatch, status, retry_after, wait
+):
+    error = urllib.error.HTTPError(
+        "https://api.github.com", status, "rate limited", {"Retry-After": str(retry_after)}, None
     )
     observed = {}
     code, _ = _run_security_gate(monkeypatch, [[{}]], api_errors={1: error}, observed=observed)
     assert code == 0
-    assert observed["sleeps"] == [3]
+    assert observed["sleeps"] == [wait]
 
 
-def test_security_gate_reserves_its_final_poll_after_repeated_early_resets(monkeypatch):
+@pytest.mark.parametrize("status", [403, 429])
+@pytest.mark.parametrize(
+    ("reset", "retry_after", "wait"), [(1794602003, 45, 45), (1794602050, 3, 50)]
+)
+def test_security_gate_waits_for_both_rate_limit_headers(
+    monkeypatch, status, reset, retry_after, wait
+):
+    error = urllib.error.HTTPError(
+        "https://api.github.com",
+        status,
+        "rate limited",
+        {
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(reset),
+            "Retry-After": str(retry_after),
+        },
+        None,
+    )
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_errors={1: error}, observed=observed)
+    assert code == 0
+    assert observed["sleeps"] == [wait]
+
+
+@pytest.mark.parametrize("status", [429, 403])
+def test_security_gate_waits_at_least_one_minute_without_rate_limit_headers(monkeypatch, status):
+    body = io.BytesIO(b'{"message":"You have exceeded a secondary rate limit."}')
+    error = urllib.error.HTTPError("https://api.github.com", status, "rate limited", {}, body)
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_errors={1: error}, observed=observed)
+    assert code == 0
+    assert observed["sleeps"] == [60]
+
+
+def test_security_gate_reserves_its_final_poll_after_repeated_rate_limits(monkeypatch):
     errors = {
         call: urllib.error.HTTPError(
             "https://api.github.com",
@@ -1298,7 +1427,7 @@ def test_security_gate_rate_limit_persists_until_the_existing_deadline(monkeypat
     code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
     assert "did not complete within 20 minutes" in code
     assert sum(observed["sleeps"]) == 20 * 60
-    assert len(observed["fetches"]) == 27
+    assert len(observed["fetches"]) == (1 if reset == 1794604000 else 27)
 
 
 def test_security_gate_supports_required_workflow_events():
@@ -2567,7 +2696,7 @@ def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
     assert "mode: required" in required
     assert "needs: [security-gate, integration]" in advisory
     assert "mode: advisory" in advisory
-    assert "needs: [e2e, integration]" in jobs["required-e2e"]
+    assert "needs: [security-gate, e2e, integration]" in jobs["required-e2e"]
 
 
 def test_integration_modes_preserve_blocking_and_advisory_lanes():

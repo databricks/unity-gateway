@@ -79,11 +79,16 @@ jobs:
                       if error.code == 429 or (error.code == 403 and (
                           headers.get("X-RateLimit-Remaining") == "0"
                           or headers.get("Retry-After")
+                          or b"secondary rate limit" in error.read(4096).lower()
                       )):
                           reset = headers.get("X-RateLimit-Reset", "")
                           retry_after = headers.get("Retry-After", "")
-                          reset_at = (int(reset) if reset.isdecimal() else
-                                      time.time() + int(retry_after) if retry_after.isdecimal() else None)
+                          limits = []
+                          if reset.isdecimal():
+                              limits.append(int(reset))
+                          if retry_after.isdecimal():
+                              limits.append(time.time() + int(retry_after))
+                          reset_at = max(limits) if limits else time.time() + 60
                           print("GitHub API rate limited; the Security Scan remains pending.", flush=True)
                           return None, reset_at
                       sys.exit(f"::error::GitHub API returned HTTP {error.code}; tests remain blocked. "
@@ -98,27 +103,22 @@ jobs:
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
           request = None
-          # Poll every 10 s for 2 minutes, every 30 s for the next 3, then every 2 minutes up to
-          # the 20-minute deadline. Scans finish in 19 s at p50 and 89 s at p95, the tail being
-          # their resolver's wait for a protected runner. Anonymous pull_request calls share
-          # GitHub's 60/hour limit per runner IP, so a gate makes at most 27 polls.
+          # Bound polling to 27 attempts and 1,200 seconds of scheduled sleep.
           delays = [10] * 12 + [30] * 6 + [60] + [120] * 7
           reset_at = None
-          # Preserve the total wait budget when a rate-limit reset advances a poll.
-          deferred = 0
+          remaining = sum(delays)
           for attempt in range(len(delays) + 1):
               if attempt:
+                  if remaining <= 0:
+                      break
                   delay = delays[attempt - 1]
-                  if attempt == len(delays):
-                      # Reserve the last poll at the deadline even after earlier resets.
-                      delay += deferred
-                      deferred = 0
-                  elif reset_at is not None:
-                      until_reset = reset_at - time.time()
-                      if 0 < until_reset < delay:
-                          deferred += delay - until_reset
-                          delay = until_reset
+                  if reset_at is not None:
+                      delay = max(delay, reset_at - time.time())
+                  delay = min(delay, remaining)
                   time.sleep(delay)
+                  remaining -= delay
+                  if reset_at is not None and time.time() < reset_at:
+                      break
               reset_at = None
               if request is None:
                   requests, reset_at = workflow_runs(request_endpoint)
