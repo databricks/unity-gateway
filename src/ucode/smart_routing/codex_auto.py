@@ -254,7 +254,7 @@ class CodexAutoPicker:
             self.busy = False
             self.default_selection = None
             choice = None
-        if choice and choice[1] is None and method is None and self.busy:
+        if choice and choice[0] != AUTO_MODEL and choice[1] is None and self.busy:
             # Enter saves its effort in a later batch write; the session shortcut sends it here.
             self.default_selection = choice[0]
             choice = None
