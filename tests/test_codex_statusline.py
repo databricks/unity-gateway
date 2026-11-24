@@ -11,12 +11,7 @@ import time
 
 import pytest
 
-from ucode.constants import (
-    ENABLE_SMART_ROUTING_ENV_VAR,
-    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-    UNSUPPORTED_MODEL_LIST_WARNING,
-    VALIDATION_FAILED_WARNING,
-)
+from ucode.constants import ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR
 from ucode.smart_routing import codex_statusline as statusline
 from ucode.smart_routing.codex_statusline import LOGS_DETAILS_HINT
 from ucode.smart_routing.session_env import (
@@ -203,7 +198,11 @@ def _controls(tmp_path, monkeypatch, enabled):
             False,
             UNSUPPORTED,
             False,
-            ("ERROR", UNSUPPORTED_MODEL_LIST_WARNING, LOGS_DETAILS_HINT),
+            (
+                "ERROR",
+                "⚠ This session's model list isn't supported by smart router",
+                LOGS_DETAILS_HINT,
+            ),
             id="startup-unsupported",
         ),
         pytest.param(
@@ -217,7 +216,11 @@ def _controls(tmp_path, monkeypatch, enabled):
             False,
             FAILED,
             False,
-            ("ERROR", VALIDATION_FAILED_WARNING, LOGS_DETAILS_HINT),
+            (
+                "ERROR",
+                "⚠ Smart Router couldn't validate this session's model list",
+                LOGS_DETAILS_HINT,
+            ),
             id="startup-failed",
         ),
         pytest.param(

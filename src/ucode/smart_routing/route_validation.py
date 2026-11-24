@@ -24,11 +24,7 @@ from ucode.constants import (
 )
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
-from ucode.smart_routing.session_env import (
-    ROUTING_DISABLED_KEY,
-    VALIDATION_FAILED_KEY,
-    validation_result_path,
-)
+from ucode.smart_routing.session_env import validation_result_path
 from ucode.workspace import WorkspaceSelectionReason
 
 # The Claude mod shows routing ON after 5 s without a result, so the check must publish sooner.
@@ -91,7 +87,7 @@ def _unsupported_details(
 def _failure_details(failure: str, router_name: str) -> dict[str, Any]:
     return {
         "router_name": router_name,
-        VALIDATION_FAILED_KEY: True,
+        "validation_failed": True,
         "validation_failure_reason": failure,
         "eligible_route_options": [],
         "ineligible_route_options": [],
@@ -189,17 +185,17 @@ def _verdict(
     available_harness: str,
 ) -> dict[str, Any]:
     if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
-        return {ROUTING_DISABLED_KEY: False}
+        return {"routing_disabled": False}
     failure = _failure_reason(payload, reason)
     if failure is None and not _is_unsupported(payload):
-        return {ROUTING_DISABLED_KEY: False}
+        return {"routing_disabled": False}
     details = (
         _failure_details(failure, router_name)
         if failure is not None
         else _unsupported_details(cast(dict, payload), router_name, available_harness)
     )
     return {
-        ROUTING_DISABLED_KEY: True,
+        "routing_disabled": True,
         **details,
         "validation_ms": round((time.monotonic() - started) * 1000),
     }
@@ -208,7 +204,7 @@ def _verdict(
 def check_failed(router_name: str, started: float) -> dict[str, Any]:
     """Return the verdict for a check that could not run."""
     return {
-        ROUTING_DISABLED_KEY: True,
+        "routing_disabled": True,
         **_failure_details(CHECK_FAILED_REASON, router_name),
         "validation_ms": round((time.monotonic() - started) * 1000),
     }
@@ -250,11 +246,11 @@ def start(
         started = time.monotonic()
         payload, reason = _check_route_options(workspace, token, body, provider)
         result = _verdict(payload, reason, router_name, started, available_harness)
-        if result[ROUTING_DISABLED_KEY]:
+        if result["routing_disabled"]:
             try:
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
             except (OSError, RuntimeError):
-                result = {ROUTING_DISABLED_KEY: False}
+                result = {"routing_disabled": False}
         _publish(validation_result_path(session_controls), result)
 
     with suppress(Exception):

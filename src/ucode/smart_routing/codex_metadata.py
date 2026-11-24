@@ -21,8 +21,6 @@ from ucode.smart_routing.session_env import (
 
 ROUTING_STATE_KEY = "smart_router_state"
 TASK_STATE_SUFFIX = re.compile(r"(?:__sr_(?:on|off))+$")
-TURN_STARTED = "turn/started"
-TURN_COMPLETED = "turn/completed"
 
 
 def routing_state(enabled: bool) -> str:
@@ -110,7 +108,7 @@ class RoutingMetadata:
     def observe(self, message: dict) -> None:
         params = message.get("params")
         params = params if isinstance(params, dict) else {}
-        if message.get("method") in (TURN_STARTED, TURN_COMPLETED):
+        if message.get("method") in ("turn/started", "turn/completed"):
             self._observe_turn(message["method"], params)
         result = message.get("result")
         result = result if isinstance(result, dict) else {}
@@ -130,10 +128,10 @@ class RoutingMetadata:
         if not isinstance(turn.get("id"), str):
             return
         key = (thread_id, turn["id"])
-        if method == TURN_STARTED and thread_id in self.arming_threads:
+        if method == "turn/started" and thread_id in self.arming_threads:
             self.arming_threads.discard(thread_id)
             self.armed_turns.add(key)
-        elif method == TURN_COMPLETED and key in self.armed_turns:
+        elif method == "turn/completed" and key in self.armed_turns:
             self.armed_turns.discard(key)
             with suppress(OSError):
                 validation_dismissed_path(self.controls).touch()

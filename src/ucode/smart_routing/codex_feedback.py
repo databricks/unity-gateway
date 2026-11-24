@@ -19,9 +19,7 @@ from ucode.config_io import atomic_write_json
 from ucode.constants import AGENT_CODEX, SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing import feedback, route_validation, routing, session_log
 from ucode.smart_routing.session_env import (
-    ROUTING_DISABLED_KEY,
     SESSION_ENV_VAR,
-    VALIDATION_LOGGED_KEY,
     session_routing_enabled,
     set_session_environment,
     validation_dismissed_path,
@@ -402,7 +400,7 @@ class CodexSmartRouter:
         requested = action == "on"
         if requested:
             verdict = self._check_model_list(thread_id)
-            if verdict[ROUTING_DISABLED_KEY]:
+            if verdict["routing_disabled"]:
                 set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), env=env)
                 return {"message": "Smart Router is off for this session."}
         if enabled == requested:
@@ -463,13 +461,13 @@ class CodexSmartRouter:
 
     def _check_model_list(self, thread_id: str) -> dict[str, Any]:
         verdict = self._model_list_verdict()
-        if verdict[ROUTING_DISABLED_KEY]:
+        if verdict["routing_disabled"]:
             self._publish_verdict(thread_id, verdict)
         return verdict
 
     def _model_list_verdict(self) -> dict[str, Any]:
         if self.validate is None:
-            return {ROUTING_DISABLED_KEY: False}
+            return {"routing_disabled": False}
         started = time.monotonic()
         try:
             return self.validate()
@@ -480,9 +478,7 @@ class CodexSmartRouter:
         with contextlib.suppress(OSError):
             validation_dismissed_path(self.controls).unlink(missing_ok=True)
         with contextlib.suppress(OSError, RuntimeError):
-            atomic_write_json(
-                validation_result_path(self.controls), {**verdict, VALIDATION_LOGGED_KEY: True}
-            )
+            atomic_write_json(validation_result_path(self.controls), {**verdict, "logged": True})
         with contextlib.suppress(OSError, ValueError):
             session_log.append_route_validation(AGENT_CODEX, thread_id, verdict)
 

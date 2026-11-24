@@ -10,9 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
 from ucode.smart_routing.session_env import (
-    ROUTING_DISABLED_KEY,
     SESSION_ENV_VAR,
-    VALIDATION_PENDING_KEY,
     read_validation_result,
     session_routing_enabled,
     validation_dismissed_path,
@@ -25,13 +23,6 @@ TOOL_NAME = "statusline"
 RESOURCE_URI = "ui://ug-smart-router/footer"
 LOGS_DETAILS_HINT = "($smart-router logs for details)"
 VALIDATION_PENDING_SECONDS = 5
-ERROR_LABEL = "ERROR"
-ON_LABEL = "ON"
-OFF_LABEL = "OFF"
-UNKNOWN_LABEL = "UNKNOWN"
-GREEN = "green"
-YELLOW = "yellow"
-GRAY = "#808080"
 STATE_META_KEY = "com.openai/codex-statusline-state"
 TOOL = {
     "name": TOOL_NAME,
@@ -79,10 +70,10 @@ def _text(value: str, color: str) -> dict:
 
 
 def _router_indicator(
-    label: str | None, background: str = GRAY, notes: list[str] | None = None
+    label: str | None, background: str = "#808080", notes: list[str] | None = None
 ) -> dict:
-    if label == UNKNOWN_LABEL:
-        return _text(f"smart router {UNKNOWN_LABEL}", YELLOW)
+    if label == "UNKNOWN":
+        return _text("smart router UNKNOWN", "yellow")
     children = [_text("smart router", "primary")]
     if label is not None:
         children.append(
@@ -98,12 +89,12 @@ def _router_indicator(
                 ],
             }
         )
-    children += [_text(note, YELLOW) for note in notes or []]
+    children += [_text(note, "yellow") for note in notes or []]
     return {"type": "row", "props": {"gap": 1}, "children": children}
 
 
 def _validation_pending(result: dict[str, Any] | None, result_path: Path) -> bool:
-    if result is None or result.get(VALIDATION_PENDING_KEY) is not True:
+    if result is None or result.get("pending") is not True:
         return False
     try:
         age = time.time() - result_path.stat().st_mtime
@@ -118,11 +109,11 @@ def _validation_indicator(path: Path, enabled: bool) -> dict:
         return _router_indicator(None)
     warning = validation_warning(result)
     shown = None if validation_dismissed_path(path).exists() else warning
-    if warning is not None and result is not None and result.get(ROUTING_DISABLED_KEY) is True:
+    if warning is not None and result is not None and result.get("routing_disabled") is True:
         return _router_indicator(
-            ERROR_LABEL, YELLOW, [*([shown] if shown else []), LOGS_DETAILS_HINT]
+            "ERROR", "yellow", [*([shown] if shown else []), LOGS_DETAILS_HINT]
         )
-    return _router_indicator(ON_LABEL, GREEN) if enabled else _router_indicator(OFF_LABEL)
+    return _router_indicator("ON", "green") if enabled else _router_indicator("OFF")
 
 
 def render(state: dict[str, Any]) -> dict:
@@ -134,7 +125,7 @@ def render(state: dict[str, Any]) -> dict:
         enabled = session_routing_enabled(path, retry=False)
         indicator = _validation_indicator(path, enabled)
     except (OSError, UnicodeError, ValueError):
-        indicator = _router_indicator(UNKNOWN_LABEL)
+        indicator = _router_indicator("UNKNOWN")
 
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))

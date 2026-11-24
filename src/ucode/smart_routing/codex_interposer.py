@@ -14,7 +14,11 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
-from ucode.smart_routing.codex_feedback import CodexFeedbackInput, CodexSmartRouter
+from ucode.smart_routing.codex_feedback import (
+    CodexFeedbackInput,
+    CodexSmartRouter,
+    ValidateModelList,
+)
 from ucode.smart_routing.codex_metadata import RoutingMetadata
 from ucode.smart_routing.feedback import FeedbackUpload
 
@@ -26,7 +30,6 @@ TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
-ValidateModelFn = Callable[[], dict]
 SwitchMessageFn = Callable[[str, str], str]
 TokenProvider = Callable[[], str]
 
@@ -217,7 +220,7 @@ async def _handle_tui(
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
     provider: str | None = None,
-    validate_model_list: ValidateModelFn | None = None,
+    validate_model_list: ValidateModelList | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -459,7 +462,7 @@ async def _serve(
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
     provider: str | None = None,
-    validate_model_list: ValidateModelFn | None = None,
+    validate_model_list: ValidateModelList | None = None,
 ):
     async def handler(tui):
         try:
@@ -500,7 +503,7 @@ def start_interposer_thread(
     ready_timeout: float = 10.0,
     session_controls: Path | None = None,
     provider: str | None = None,
-    validate_model_list: ValidateModelFn | None = None,
+    validate_model_list: ValidateModelList | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:

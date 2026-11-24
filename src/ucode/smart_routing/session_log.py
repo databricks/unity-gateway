@@ -18,7 +18,6 @@ from typing import Any
 from ucode.config_io import APP_DIR
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw_box
-from ucode.smart_routing.session_env import ROUTING_DISABLED_KEY, VALIDATION_FAILED_KEY
 
 SCHEMA_VERSION = 1
 DECISION_TYPE = "decision"
@@ -48,12 +47,6 @@ PROMPT_PLACEHOLDER = "(prompt not recorded)"
 MIN_ID_PREFIX_CHARS = 4
 DETAIL_LABEL_WIDTH = 17
 MODEL_PREFIXES = ("system.ai.", "databricks-")
-ROUTE_VALIDATION_ROW = "Failed to enable smart routing."
-ROUTE_VALIDATION_FAILED_ROW = "Failed to validate smart routing."
-ROUTE_VALIDATION_ON_ROW = "Warning: unsupported model list."
-ROUTE_VALIDATION_LOAD_ERROR = "Could not load this route validation."
-VALIDATION_MODEL_CELL = "—"
-# Mirrors the reason texts in agents/claude_mods/routing-logs.ts; keep both in sync.
 ROUTE_VALIDATION_REASONS = {
     "insufficient_eligible_options": "At least two supported models are required. Please reach out to your workspace admin",
     "missing_required_tier_option": "Required models are missing from this list",
@@ -62,7 +55,6 @@ ROUTE_VALIDATION_REASONS = {
     "mixed_harnesses_not_supported": "Mixed harnesses not supported",
 }
 ROUTE_VALIDATION_GENERIC_REASON = "Smart Routing does not support this agent's model list."
-ROUTE_VALIDATION_FAILED_REASON = "Smart Router couldn't validate this agent's model list."
 MODEL_REASONS = {
     "model_not_supported": "Model source not supported",
     "model_not_in_recipe": "Not available in Smart Router",
@@ -71,7 +63,6 @@ MODEL_REASONS = {
     "model_provider_service_unresolved": "Model provider service unresolved",
     "harness_not_supported": "",
 }
-MODEL_GENERIC_REASON = "Not eligible for routing"
 REASON_CODE = re.compile(r"[A-Za-z0-9_]+")
 
 
@@ -322,11 +313,11 @@ def _is_validation_listed(record: dict[str, Any]) -> bool:
 
 
 def _validation_task(record: dict[str, Any]) -> str:
-    if record.get(VALIDATION_FAILED_KEY) is True:
-        return ROUTE_VALIDATION_FAILED_ROW
-    if record.get(ROUTING_DISABLED_KEY) is False:
-        return ROUTE_VALIDATION_ON_ROW
-    return ROUTE_VALIDATION_ROW
+    if record.get("validation_failed") is True:
+        return "Failed to validate smart routing."
+    if record.get("routing_disabled") is False:
+        return "Warning: unsupported model list."
+    return "Failed to enable smart routing."
 
 
 def _table_row(record: dict[str, Any], now: float) -> tuple[str, ...]:
@@ -335,7 +326,7 @@ def _table_row(record: dict[str, Any], now: float) -> tuple[str, ...]:
             _short_id(record["validation_id"]),
             _age(record["at"], now),
             _validation_task(record),
-            VALIDATION_MODEL_CELL,
+            "—",
             f"{round(record['validation_ms'])} ms",
         )
     summary = overview(record)
@@ -483,10 +474,10 @@ def render_detail(record: dict[str, Any], *, now: float | None = None) -> str:
 
 
 def _validation_reason(record: dict[str, Any]) -> str:
-    if record.get(VALIDATION_FAILED_KEY) is True:
+    if record.get("validation_failed") is True:
         failure = record.get("validation_failure_reason")
         text = failure.strip() if isinstance(failure, str) else ""
-        return text or ROUTE_VALIDATION_FAILED_REASON
+        return text or "Smart Router couldn't validate this agent's model list."
     reason = record.get("routing_unsupported_reason")
     if not isinstance(reason, str):
         return ROUTE_VALIDATION_GENERIC_REASON
@@ -500,7 +491,7 @@ def _model_reason(reason: object) -> str:
     return (
         MODEL_REASONS[reason]
         if isinstance(reason, str) and reason in MODEL_REASONS
-        else MODEL_GENERIC_REASON
+        else "Not eligible for routing"
     )
 
 
@@ -521,7 +512,7 @@ def render_validation_detail(record: dict[str, Any]) -> str:
         and _is_option_list(record.get("ineligible_route_options"), with_reason=True)
         and _is_option_list(record.get("available_route_options"))
     ):
-        raise ValueError(ROUTE_VALIDATION_LOAD_ERROR)
+        raise ValueError("Could not load this route validation.")
     lines = [
         *_labeled("Reason:", _clean(" ".join(_validation_reason(record).split()))),
         *_labeled("Validation Time:", f"{record['validation_ms'] / 1000:.1f}s"),
