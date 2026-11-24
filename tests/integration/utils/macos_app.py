@@ -108,7 +108,7 @@ class MacApp:
     def click(self, role: str, label: str | None, timeout: float = 60) -> None:
         """Click the first ``role`` element labelled ``label`` (any label if None).
 
-        One native command activates the app, waits for the target and presses that same
+        One native command activates the app, waits for the target and clicks that same
         element, retrying its own traversal until ``timeout``. A busy app can no longer race
         the wait with a second traversal that returns an empty tree."""
         self.session.run(

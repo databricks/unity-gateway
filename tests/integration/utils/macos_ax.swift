@@ -1,7 +1,9 @@
 // An Accessibility client for one app: `tree PID` prints its UI elements, `click PID ROLE LABEL
 // [WAIT]` activates the app, waits up to WAIT seconds (60 by default) for the first element
-// matching ROLE and LABEL (any label if LABEL is empty) and clicks that same element — AXPress
-// where the element supports it, else one mouse click at its current frame.
+// matching ROLE and LABEL (any label if LABEL is empty) and clicks that same element with one
+// mouse click at its current frame. The app's web controls accept AXPress without acting on it
+// (run 45506553887: the first onboarding screen stayed up after successful presses), so the
+// mouse click is the click.
 import AppKit
 
 let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
@@ -94,26 +96,21 @@ case "click" where arguments.count == 5 || arguments.count == 6:
             attribute(element, kAXRoleAttribute) == arguments[3]
                 && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
         }) {
-            // AXPress travels over the accessibility connection, so a busy event loop cannot
-            // drop it the way a posted mouse event is lost.
-            let pressed = AXUIElementPerformAction(target, kAXPressAction as CFString)
-            if pressed == .success { exit(0) }
-            if pressed == .actionUnsupported {
-                let (position, positionError) = pointValue(target, kAXPositionAttribute)
-                let (size, sizeError) = sizeValue(target, kAXSizeAttribute)
-                if positionError == .success && sizeError == .success && activated {
-                    let centre = CGPoint(x: position.x + size.width / 2, y: position.y + size.height / 2)
-                    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-                        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: centre, mouseButton: .left)?.post(tap: .cghidEventTap)
-                        usleep(100_000)
-                    }
-                    exit(0)
+            let (position, positionError) = pointValue(target, kAXPositionAttribute)
+            let (size, sizeError) = sizeValue(target, kAXSizeAttribute)
+            if positionError == .success && sizeError == .success && activated {
+                // The frame is read at click time, after activation and from the same traversal
+                // that found the element, so a window that moved or rebuilt is clicked where it
+                // is now.
+                let centre = CGPoint(x: position.x + size.width / 2, y: position.y + size.height / 2)
+                for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+                    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: centre, mouseButton: .left)?.post(tap: .cghidEventTap)
+                    usleep(100_000)
                 }
-                if positionError != .success || sizeError != .success {
-                    snap.errors.append("frame of \(arguments[3]): position \(positionError.rawValue), size \(sizeError.rawValue)")
-                }
-            } else {
-                snap.errors.append("press of \(arguments[3]): \(pressed)")
+                exit(0)
+            }
+            if positionError != .success || sizeError != .success {
+                snap.errors.append("frame of \(arguments[3]): position \(positionError.rawValue), size \(sizeError.rawValue)")
             }
         }
         if !activated { snap.errors.append("activation of PID \(pid) failed") }

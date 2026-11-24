@@ -38,9 +38,9 @@ MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 def dismiss_skip_setup_dialog(app: MacApp) -> None:
     """Dismiss the Skip setup? dialog and verify the app left that screen.
 
-    One native command activates the app, waits for the button and presses it, so the runtime
-    bundle installing behind onboarding can no longer drop the click. A dialog that survives
-    fails with the stuck AX tree recorded."""
+    One native command activates the app, waits for the button and clicks it, so the wait and
+    the click can no longer race on two traversals. A dialog that survives fails with the stuck
+    AX tree recorded."""
     app.click("AXButton", "Go to ChatGPT")
     app.wait_gone("AXButton", "Go to ChatGPT", 120)
 
@@ -73,8 +73,8 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
 
     Expected: the app shows the answer, and its own Codex Desktop rollout, using ug's Databricks
     provider, records exactly that answer in a completed turn whose model is the managed system.ai
-    GPT default. Onboarding is skipped through its visible buttons with accessibility presses
-    (a mouse click at the element's current frame when it supports no press action) and the prompt
+    GPT default. Onboarding is skipped through its visible buttons with one native click at each
+    button's current frame and the prompt
     is typed with real keystrokes, then submitted with Send; nothing is seeded. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered. A subsequent click on an absent label fails
     with the native accessibility tree before the fatal error, captured in command evidence.
