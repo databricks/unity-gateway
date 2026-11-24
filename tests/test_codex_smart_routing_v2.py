@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -444,16 +445,14 @@ class TestLaunchCodex:
         interposer_args = {}
         stopped = []
         token_calls = []
-        startup_checks = []
         validation_requests = []
+        startup_check_sent = threading.Event()
 
         def validate(url, token, body, **kwargs):
             validation_requests.append((token, body, kwargs.get("headers")))
+            startup_check_sent.set()
             return {"is_supported": True}, None
 
-        monkeypatch.setattr(
-            v2.route_validation, "start", lambda *a, **kw: startup_checks.append((a, kw))
-        )
         monkeypatch.setattr(v2.route_validation, "_http_post_json", validate)
         monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         user_config = tmp_path / "config.toml"
@@ -529,19 +528,16 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 7
-        route_options = [("system.ai.gpt-5-6-sol", "codex"), ("system.ai.glm-5-2", "codex")]
-        router_name = v2.routing.configured_router_name()
-        assert startup_checks == [
-            (
-                (WS, "token-1", route_options),
-                {
-                    "router_name": router_name,
-                    "session_controls": Path(os.environ["UCODE_SESSION_ENV_FILE"]),
-                    "provider": "provider-a",
-                    "available_harness": "codex",
-                },
-            )
-        ]
+        assert startup_check_sent.wait(3)
+        validation_body = {
+            "route_options": [
+                {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
+                {"model": "system.ai.glm-5-2", "harness": "codex"},
+            ],
+            "route_selector": {"router_name": v2.routing.configured_router_name()},
+        }
+        provider_header = {v2.route_validation.MODEL_PROVIDER_SERVICE_HEADER: "provider-a"}
+        assert validation_requests == [("token-1", validation_body, provider_header)]
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
@@ -669,17 +665,8 @@ class TestLaunchCodex:
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert interposer_args["kwargs"]["validate_model_list"]() == {"routing_disabled": False}
-        assert validation_requests == [
-            (
-                f"token-{len(token_calls)}",
-                {
-                    "route_options": [
-                        {"model": model, "harness": harness} for model, harness in route_options
-                    ],
-                    "route_selector": {"router_name": router_name},
-                },
-                {v2.route_validation.MODEL_PROVIDER_SERVICE_HEADER: "provider-a"},
-            )
+        assert validation_requests[1:] == [
+            (f"token-{len(token_calls)}", validation_body, provider_header)
         ]
         assert stopped == [True]
         assert processes[0].terminated is True
