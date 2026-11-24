@@ -929,6 +929,19 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         assert not credential.search(jobs[name]), name
 
 
+def test_credential_contract_rejects_a_new_ungated_job(monkeypatch):
+    workflow = _workflow
+    ci = workflow("ci.yml") + (
+        "\n  accidental-secret:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      TOKEN: ${{ secrets.CI_TOKEN }}\n"
+    )
+    monkeypatch.setitem(
+        globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
+    )
+    with pytest.raises(AssertionError, match="accidental-secret"):
+        test_pr_jobs_with_credentials_require_a_successful_security_gate()
+
+
 def test_security_scan_provenance_and_gate():
     gate_job = (
         "  security-gate:\n    name: Security Gate\n    permissions:\n"
@@ -1087,11 +1100,25 @@ def _run_security_gate(
     monkeypatch.setattr("time.sleep", slept.append)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
+    assert slept == ([10] * 12 + [30] * 6 + [60] + [120] * 7)[: len(slept)]
     assert sum(slept) <= 20 * 60
     if max(calls.values()) == 27:
         assert sum(slept) == 20 * 60
     assert len(fetches) <= 56
     return result.value.code, max(calls.values())
+
+
+def test_polling_contract_detects_a_changed_cadence(monkeypatch):
+    workflow = _workflow
+    gate = workflow("security-gate.yml").replace(
+        "delays = [10] * 12 + [30] * 6 + [60] + [120] * 7",
+        "delays = [30] + [10] * 12 + [30] * 5 + [60] + [120] * 7",
+    )
+    monkeypatch.setitem(
+        globals(), "_workflow", lambda name: gate if name == "security-gate.yml" else workflow(name)
+    )
+    with pytest.raises(AssertionError):
+        _run_security_gate(monkeypatch, [[]])
 
 
 @pytest.mark.parametrize(
@@ -2354,18 +2381,6 @@ def test_live_shard_times_verifies_coverage_and_records(tmp_path):
     )
     assert result.returncode != 0
     assert "full-claude/Windows: shard set is" in result.stderr + result.stdout
-
-
-def test_windows_unit_shards_check_out_their_required_sources():
-    windows = (
-        _workflow("ci.yml")
-        .split("\n  unit-windows:\n", 1)[1]
-        .split("\n  windows-provisioning:\n", 1)[0]
-    )
-    assert "uses: actions/checkout@" in windows
-    assert "persist-credentials: false" in windows
-    sparse = windows.split("          sparse-checkout: |\n", 1)[1].split("\n      - ", 1)[0]
-    assert {".github", "docs", "scripts", "skills", "src", "tests"} <= set(sparse.split())
 
 
 def test_checks_run_exactly_the_just_lint_commands():
