@@ -31,7 +31,6 @@ jobs:
   # Lint, format and types in one job that reports every failing check, not just the first.
   checks:
     name: Checks
-    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -146,7 +145,6 @@ jobs:
   # so `Unit test times` can record fresh timings and prove nothing was missed.
   unit-linux:
     name: Unit tests · Linux · ${{ matrix.shard }}/24
-    needs: security-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -196,7 +194,6 @@ jobs:
 
   unit-windows:
     name: Unit tests · Windows · ${{ matrix.shard }}/64
-    needs: security-gate
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
@@ -319,7 +316,6 @@ jobs:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: VS Code extension
     runs-on: ubuntu-latest
-    needs: security-gate
     timeout-minutes: 10
     defaults:
       run:

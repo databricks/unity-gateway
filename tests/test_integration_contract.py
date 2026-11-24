@@ -883,8 +883,53 @@ def test_no_workflow_uses_pull_request_target():
     assert [path.name for path in workflows if "pull_request_target" in path.read_text()] == []
 
 
-def test_security_scan_runs_before_every_job_that_runs_pr_code():
-    # A finding skips every test job, which fails the required test and e2e checks.
+def test_pr_jobs_with_credentials_require_a_successful_security_gate():
+    workflows = Path(__file__).parent.parent / ".github/workflows"
+    credential = re.compile(
+        r"secrets\s*[.\[]|(?m:^\s*secrets:)|(?m:^\s*environment:)|"
+        r"\b(?:DATABRICKS_CLIENT_ID|DATABRICKS_CLIENT_SECRET|DATABRICKS_BEARER|"
+        r"[A-Z0-9_]*SP_CLIENT_(?:ID|SECRET))\b"
+    )
+    # The secret-bearing integration workflow runs PR code only through these two callers.
+    callers = {
+        path.name
+        for path in workflows.glob("*.yml")
+        if "uses: ./.github/workflows/integration.yml" in path.read_text()
+    }
+    assert callers == {"ci.yml", "fork-integration.yml"}
+    for workflow in callers:
+        text = _workflow(workflow)
+        header, body = text.split("\njobs:\n", 1)
+        assert not credential.search(header), f"{workflow}: workflow-wide credentials"
+        jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
+        for name, job in jobs.items():
+            if name == "security-gate":
+                continue
+            if not credential.search(job) and "uses: ./.github/workflows/" not in job:
+                continue
+            needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+            assert needs and "security-gate" in needs[1].split(", "), (workflow, name)
+            # GitHub's implicit success() is overridden by these status functions.
+            job_header = job.split("\n    steps:", 1)[0]
+            if re.search(r"\b(?:always|failure|cancelled)\s*\(", job_header):
+                assert "needs.security-gate.result == 'success'" in job_header, (workflow, name)
+                assert "||" not in job_header, (workflow, name)
+
+    # These jobs form the required test check, so none may wait on the gate.
+    ci = _workflow("ci.yml").split("\njobs:\n", 1)[1]
+    jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", ci))
+    for name in (
+        "checks",
+        "unit-linux",
+        "unit-windows",
+        "windows-provisioning",
+        "vscode-extension",
+    ):
+        assert "security-gate" not in jobs[name], name
+        assert not credential.search(jobs[name]), name
+
+
+def test_security_scan_provenance_and_gate():
     gate_job = (
         "  security-gate:\n    name: Security Gate\n    permissions:\n"
         "      actions: read\n    uses: ./.github/workflows/security-gate.yml\n"
@@ -893,28 +938,19 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     publish = _workflow("publish-skills-test.yml")
     scan = _workflow("security-scan.yml")
     gate = _workflow("security-gate.yml")
-
-    for workflow in (ci, publish):
-        assert gate_job in workflow
-        jobs = dict(
-            re.findall(
-                r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
-                workflow.split("\njobs:\n", 1)[1],
-            )
+    assert gate_job in ci and gate_job in publish
+    for job in ("tests", "smoke"):
+        assert re.search(
+            rf"(?ms)^  {job}:\n(?:(?!^  [a-z0-9-]+:\n).)*?^    needs: security-gate$", publish
         )
-        gated = {"security-gate"}
-        while True:
-            previous = gated.copy()
-            for name, job in jobs.items():
-                needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
-                if needs and {need.strip() for need in needs[1].split(",")} <= gated:
-                    gated.add(name)
-            if gated == previous:
-                break
-        assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
     assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
-    assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
+    assert (
+        "group: security-scan-${{ github.event.workflow_run.event }}-"
+        "${{ github.event.workflow_run.head_repository.id }}-"
+        "${{ github.event.workflow_run.head_branch }}" in scan
+    )
+    assert "cancel-in-progress: true" in scan
     assert "run-name: 'Security Scan for CI run ${{ github.event.workflow_run.id }}'" in scan
     assert "run-name: 'CI #${{ github.event.pull_request.number || github.run_id }}'" in ci
     assert 'origin "$POLICY_SHA"' in scan and "${{ github.workflow_sha }}" in scan
@@ -939,13 +975,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 11),
-        ([[{"status": "queued", "conclusion": None}]], False, 11),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 11),
-        ([[{"display_title": "Security Scan #8"}]], False, 11),
-        ([[{"event": "pull_request"}]], False, 11),
-        ([[{"event": "workflow_dispatch"}]], False, 11),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 11),
+        ([[]], False, 27),
+        ([[{"status": "queued", "conclusion": None}]], False, 27),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 27),
+        ([[{"display_title": "Security Scan #8"}]], False, 27),
+        ([[{"event": "pull_request"}]], False, 27),
+        ([[{"event": "workflow_dispatch"}]], False, 27),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 27),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -1010,6 +1046,7 @@ def _run_security_gate(
         "created_at": "2026-11-13T00:00:00Z",
     } | (request_change or {})
     calls = {"request": 0, "scan": 0}
+    fetches = []
 
     def pages(which, index):
         changes = responses[min(index, len(responses) - 1)]
@@ -1037,6 +1074,7 @@ def _run_security_gate(
         assert timeout == 30
         if api_error:
             raise api_error
+        fetches.append(request.full_url)
         endpoint, page = request.full_url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
@@ -1044,10 +1082,15 @@ def _run_security_gate(
             calls[which] += 1
         return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
 
+    slept = []
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
-    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("time.sleep", slept.append)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
+    assert sum(slept) <= 20 * 60
+    if max(calls.values()) == 27:
+        assert sum(slept) == 20 * 60
+    assert len(fetches) <= 56
     return result.value.code, max(calls.values())
 
 
@@ -1063,7 +1106,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 11
+    assert code != 0 and calls == 27
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -1074,7 +1117,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 11)
+    assert calls == (1 if matches_commit else 27)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
