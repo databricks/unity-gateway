@@ -15,6 +15,7 @@ const ROUTED = {
 const VALIDATED = { ...ROUTED, startupValidation: '1' };
 const OFF = '{"ENABLE_SMART_ROUTING_V2":"0","ENABLE_SMART_ROUTING_SUBAGENT_ONLY":"0","ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}';
 const WARNING = "This session's model list isn't supported by smart router";
+const LOGS_HINT = '(/smart-router logs for details)';
 const FAILED = {
   routing_disabled: true, validation_failed: true, validation_failure_reason: "Smart Router didn't respond in time",
   router_name: 'stable', eligible_route_options: [], ineligible_route_options: [], available_route_options: [], validation_ms: 4000,
@@ -98,6 +99,7 @@ for (const { name, result, routed, warning } of cases) {
     for (const text of [UNSUPPORTED_MODEL_LIST_WARNING, VALIDATION_FAILED_WARNING]) {
       expect(shown.includes(text)).toBe(text === warning);
     }
+    if (warning) expect(shown).toContain(`${warning} ${LOGS_HINT}`);
     expect(await hint($)).toBe(`smart router ${routed ? 'ON' : UNSUPPORTED_ROUTER_STATE}`);
     expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
     expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
@@ -196,7 +198,7 @@ for (const { name, endsBeforeResult, routed, failed = false } of turnCases) {
     if (!routed) files['/session/env.json'] = OFF;
     files['/session/env.validation.json'] = JSON.stringify(failed ? FAILED : { routing_disabled: !routed });
     await clock.advance(100);
-    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : failed ? VALIDATION_FAILED_WARNING : WARNING);
+    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : `${failed ? VALIDATION_FAILED_WARNING : WARNING} ${LOGS_HINT}`);
     if (!routed) {
       await $.prompt.submit({ text: 'next prompt' });
       await $.turn.complete({ answer: 'done' });

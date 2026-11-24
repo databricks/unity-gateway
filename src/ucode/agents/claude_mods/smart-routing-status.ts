@@ -6,6 +6,7 @@ import {
 import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
+const LOGS_DETAILS_HINT = '(/smart-router logs for details)'
 
 // The band shows once the route validation finishes and after each toggle, and hides once the
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
@@ -135,7 +136,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
       : Text({ bold: true, color: 'black', backgroundColor: warning ? 'yellow' : 'gray', children: [' OFF '] })
     const trailer = warning
-      ? Text({ color: 'yellow', children: [warning] })
+      ? Text({ color: 'yellow', children: [`${warning} ${LOGS_DETAILS_HINT}`] })
       : enabled
       ? Text({
           dimColor: true,
