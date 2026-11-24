@@ -3,7 +3,7 @@ test "$GITHUB_ACTIONS" = true
 test "$(uname -s)" = Darwin
 # The workflow env pins the archive and the cache key together, so bumping one bumps both.
 : "${CLAUDE_DESKTOP_MACOS_URL:?Set CLAUDE_DESKTOP_MACOS_URL to the pinned Claude Desktop archive}"
-: "${CLAUDE_DESKTOP_MACOS_SHA256:?Set CLAUDE_DESKTOP_MACOS_SHA256 to the archive's SHA256}"
+: "${CLAUDE_DESKTOP_MACOS_SHA256:?Set CLAUDE_DESKTOP_MACOS_SHA256 to the SHA256 of the pinned archive}"
 evidence="$RUNNER_TEMP/macos-cowork-evidence"
 mkdir -p "$evidence"
 archive="$RUNNER_TEMP/Claude.zip"

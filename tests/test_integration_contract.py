@@ -1520,6 +1520,19 @@ def test_live_suites_use_fresh_id_for_random_ids():
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="CI parses these on Linux runners")
+def test_cowork_shell_scripts_parse():
+    # The ${VAR:?message} word re-parses quotes, so an apostrophe in it breaks the whole script;
+    # bash -n keeps that from reaching a macOS lane.
+    scripts = sorted((Path(__file__).parent.parent / "scripts/cowork-inference").rglob("*.sh"))
+    assert scripts
+    for path in scripts:
+        result = subprocess.run(
+            ["bash", "-n", str(path)], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0, f"{path}: {result.stderr}"
+
+
 @pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
 def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
