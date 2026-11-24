@@ -75,6 +75,8 @@ env:
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
   CLAUDE_DESKTOP_WINDOWS_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
   CLAUDE_DESKTOP_WINDOWS_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+  CLAUDE_DESKTOP_MACOS_URL: https://downloads.claude.ai/releases/darwin/universal/4.23118.0/Claude-8175c354eda704cea00fdeddfa69cea329dd321a.zip
+  CLAUDE_DESKTOP_MACOS_SHA256: 5b8feee3da048e26bbb29a5d601e97034f674ac3b76f7d0237751c46d6034b23
   NPM_REGISTRY: https://registry.npmjs.org
 
 jobs:
@@ -342,7 +344,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/Claude.zip
-          key: claude-desktop-macos-5b8feee3da048e26bbb29a5d601e97034f674ac3b76f7d0237751c46d6034b23
+          key: claude-desktop-macos-${{ env.CLAUDE_DESKTOP_MACOS_SHA256 }}
       - name: Install and verify Claude Desktop
         run: bash scripts/cowork-inference/macos/install-desktop.sh
       - name: Install UG checkout and pinned Claude CLI
