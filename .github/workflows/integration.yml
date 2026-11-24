@@ -693,12 +693,11 @@ jobs:
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # Native Codex routing needs a newer binary; other journeys retain the baseline.
-      max-parallel: 4
       matrix:
         os: [ubuntu-22.04, windows-latest]
         agent: [claude, codex]
         smart_routing: [false]
+        # Native Codex routing needs a newer binary; other journeys retain the baseline.
         include:
           - os: ubuntu-22.04
             agent: codex

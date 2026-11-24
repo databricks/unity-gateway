@@ -412,7 +412,10 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     jobs = _integration_jobs()
     assert "concurrency:" not in jobs["smoke"]
     assert "concurrency:" not in jobs["full"]
-    assert "max-parallel: 4" in jobs["full"]
+    assert "max-parallel:" not in jobs["full"]
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in jobs["full"]
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in jobs["full"]
+    assert "E2E_ADMIN_SP_CLIENT_ID" not in jobs["full"]
 
 
 def test_full_claude_lane_includes_both_desktop_journeys():

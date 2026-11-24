@@ -1949,8 +1949,8 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. Full runs at most four
-matrix rows in parallel: cases share no workspace state, only inference capacity.
+separate runners isolate those writes as well as the PTYs. Full matrix rows run in parallel:
+cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,
 and other PRs, so rate limits remain possible.
 No test retries or assertion changes
