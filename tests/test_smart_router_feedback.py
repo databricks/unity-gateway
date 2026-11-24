@@ -60,16 +60,18 @@ def inline_feedback(tmp_path, monkeypatch):
     return controls, run, popen, calls
 
 
-def off(reason=None, *, agent="codex"):
+def off(reason=None, *, agent="codex", feedback_collected=False):
     args = [agent, "--disable-smart-routing"]
     if reason is not None:
         args.extend(["--smart-router-feedback", reason])
+    if feedback_collected:
+        args.append("--feedback-collected")
     return runner.invoke(cli.app, args)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("mode", ["omni", "direct", "", None])
-def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, agent, mode):
+def test_cli_feedback_rule_by_agent_and_launch_mode(inline_feedback, monkeypatch, agent, mode):
     controls, run, popen, _ = inline_feedback
     if mode is None:
         monkeypatch.delenv("ISAAC_LAUNCH_MODE")
@@ -81,6 +83,13 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     run.assert_not_called()
     popen.assert_not_called()
     assert not controls.with_name("feedback-target.json").exists()
+    if mode == "omni" and agent == "codex":
+        assert result.exit_code == 2, result.output
+        text = " ".join(result.output.split())
+        assert "switch off Smart Routing" in text
+        assert "reason" not in text
+        assert json.loads(controls.read_text()) == {}
+        return
     if mode == "omni":
         assert result.exit_code == 0, result.output
         assert "Smart Router is off" in result.output
@@ -92,6 +101,57 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     assert "Smart Router skill to collect and submit feedback" in text
     assert "direct CLI command does not submit feedback" in text
     assert json.loads(controls.read_text()) == {}
+
+
+@pytest.mark.parametrize(
+    "mode,feedback_rule,reason,feedback_collected,expected_text",
+    [
+        pytest.param("omni", "1", None, True, None, id="omni-marked"),
+        pytest.param(
+            "omni", "1", REASON, False, "switch off Smart Routing", id="omni-reason-unmarked"
+        ),
+        pytest.param(
+            "omni", "0", None, False, "switch off Smart Routing", id="omni-feedback-rule-off"
+        ),
+        pytest.param("direct", "1", None, True, "16 characters", id="direct-marker-ignored"),
+        pytest.param("direct", "1", REASON, True, None, id="direct-reason"),
+        pytest.param("direct", "0", None, False, None, id="direct-feedback-rule-off"),
+    ],
+)
+def test_codex_cli_off_needs_the_marker_in_omnigent(
+    inline_feedback, monkeypatch, mode, feedback_rule, reason, feedback_collected, expected_text
+):
+    controls, run, popen, _ = inline_feedback
+    monkeypatch.setenv("ISAAC_LAUNCH_MODE", mode)
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", feedback_rule)
+
+    result = off(reason, feedback_collected=feedback_collected)
+
+    turned_off = expected_text is None
+    assert result.exit_code == (0 if turned_off else 2), result.output
+    assert session_env.session_routing_enabled(controls) is not turned_off
+    text = " ".join(result.output.split())
+    if expected_text is not None:
+        assert expected_text in text
+    if expected_text == "switch off Smart Routing":
+        assert "reason" not in text
+    run.assert_not_called()
+    popen.assert_not_called()
+
+
+def test_codex_cli_on_and_repeated_off_need_no_marker(inline_feedback, monkeypatch):
+    controls, _, _, _ = inline_feedback
+    monkeypatch.setenv("ISAAC_LAUNCH_MODE", "omni")
+    assert off(feedback_collected=True).exit_code == 0
+
+    repeated = off()
+    assert repeated.exit_code == 0, repeated.output
+    assert "already off" in repeated.output
+
+    result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+    assert result.exit_code == 0, result.output
+    assert "Smart Router is on for this session" in " ".join(result.output.split())
+    assert session_env.session_routing_enabled(controls)
 
 
 @pytest.mark.parametrize("reason", ["", "  too short  ", "界" * 15])
@@ -487,11 +547,17 @@ def test_native_invalid_calls_return_errors_without_mutation(
     popen.assert_not_called()
 
 
-def test_codex_skill_requires_native_host_tool():
+def test_codex_skill_falls_back_to_exact_cli_toggles_without_the_native_tool():
     text = (Path(__file__).parents[1] / "skills/smart-router/SKILL.md").read_text()
+    commands = [
+        '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing',
+        '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing',
+    ]
     assert "ug_smart_router" in text
-    assert "do not fall back to Bash" in text
-    assert "-m ucode.cli codex" not in text
+    for command in commands:
+        assert f"`{command}`" in text
+        assert f"Bash({command})" in text
+    assert "-m ucode.cli codex --disable-smart-routing --" not in text
     assert "sandbox_permissions" not in text
 
 
