@@ -796,8 +796,8 @@ jobs:
       ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
     steps: *live-steps
 
-  # Non-blocking, like Copilot. Needs a seat-relay Model Provider Service in the test workspace and
-  # a GitHub token with a Copilot seat; both come from repository settings, not the code.
+  # Non-blocking, like Copilot. Needs the seat-relay Model Provider Service that
+  # scripts/run_integration.py names in the test workspace, and a GitHub token with a Copilot seat.
   copilot-seat:
     name: Full journeys · Copilot seat relay · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
@@ -812,7 +812,6 @@ jobs:
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      UG_INTEGRATION_COPILOT_SEAT_PROVIDER: ${{ vars.UG_INTEGRATION_COPILOT_SEAT_PROVIDER }}
       COPILOT_SEAT_GITHUB_TOKEN: ${{ secrets.COPILOT_SEAT_GITHUB_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: copilot

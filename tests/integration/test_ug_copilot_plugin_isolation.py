@@ -9,13 +9,12 @@ from utils.evidence import FileTask, assert_completed_task_model, assert_no_sess
 
 pytestmark = [pytest.mark.live, pytest.mark.copilot]
 
-# CI has no GitHub Copilot desktop app, so the plugin is installed the way configure installs it
-# when it finds one, with the detection answered for it.
+# CI has no GitHub Copilot desktop app, and configure skips the app when it finds none, so the
+# plugin is installed by the step configure runs once it finds one.
 INSTALL_APP_PLUGIN = """
 import ucode.agents.desktop.setup as setup
 from ucode.state import load_state
 
-setup.copilot_app_installed = lambda: True
 setup.configure_copilot_app(load_state(), provider=None, location=None)
 """
 

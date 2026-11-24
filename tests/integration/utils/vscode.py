@@ -671,8 +671,8 @@ class VSCode:
     def wait_for_answer(self, prompt: str) -> str:
         """Wait until the turn for ``prompt`` finishes and return its response text.
 
-        A confirmation for a read-only tool is allowed once, as a developer would; any other tool
-        confirmation or dialog fails the turn."""
+        A read-only tool's confirmation is answered Allow Once, as a developer would, up to
+        MAX_TOOL_APPROVALS times a turn; any other tool confirmation or dialog fails the turn."""
         deadline = time.monotonic() + TURN_TIMEOUT_S
         idle_since = None
         approvals = 0

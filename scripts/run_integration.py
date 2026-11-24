@@ -561,7 +561,7 @@ def arguments(
     )
     parser.add_argument(
         "--copilot-seat-provider",
-        default=environment.get("UG_INTEGRATION_COPILOT_SEAT_PROVIDER", ""),
+        default="main.ucode.ci_e2e_copilot_seat_relay_mps",
         help="Existing Model Provider Service that relays GitHub Copilot seats, for the seat CUJs.",
     )
     parser.add_argument(
@@ -914,6 +914,7 @@ def main() -> int:
                 second_bearer,
                 oauth_token,
                 codex_access_token,
+                copilot_seat_github_token,
                 *client_secrets,
             ),
         )

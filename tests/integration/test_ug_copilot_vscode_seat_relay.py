@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from utils.vscode import vscode_user_dir
 
 pytestmark = [pytest.mark.live, pytest.mark.copilot, pytest.mark.copilot_seat]
 
@@ -20,9 +21,11 @@ if sys.argv[1:2] == ["--install-extension"]:
     shutil.copy(sys.argv[2], os.path.join(directory, "installed.vsix"))
 """
 # Stands in for VS Code's bundled Copilot runtime: records how it was started, then exits.
+# Only the variables the test checks, so no credential reaches the file.
 FAKE_RUNTIME = """import json, os, sys
+keys = ("COPILOT_API_URL", "NO_PROXY", "COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES")
 with open(os.environ["UG_TEST_RUNTIME_OUT"], "w", encoding="utf-8") as out:
-    json.dump({"argv": sys.argv[1:], "env": dict(os.environ)}, out)
+    json.dump({"argv": sys.argv[1:], "env": {key: os.environ.get(key) for key in keys}}, out)
 """
 _NODE_ARCHES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 WINDOWS_VERSION_FOLDER = "1234567890ab"
@@ -77,14 +80,6 @@ def _install_fake_vscode(root: Path) -> tuple[Path, Path]:
     return bin_dir, runtime
 
 
-def _vscode_settings(session) -> Path:
-    if os.name == "nt":
-        return Path(session.env["APPDATA"]) / "Code/User/settings.json"
-    if sys.platform == "darwin":
-        return session.home / "Library/Application Support/Code/User/settings.json"
-    return session.home / ".config/Code/User/settings.json"
-
-
 def test_ug_configure_routes_vscode_copilot_through_the_seat_relay(
     live_session, workspace, copilot_seat_provider
 ):
@@ -121,7 +116,9 @@ def test_ug_configure_routes_vscode_copilot_through_the_seat_relay(
     wrappers = sorted((session.home / ".ucode/vscode/code").glob("ug-copilot-runtime*"))
     assert len(wrappers) == 1, wrappers
     wrapper = wrappers[0]
-    settings = json.loads(_vscode_settings(session).read_text(encoding="utf-8"))
+    settings = json.loads(
+        (vscode_user_dir(session) / "User/settings.json").read_text(encoding="utf-8")
+    )
     assert settings["chat.agentHost.copilot.runtimePath"] == str(wrapper), settings
     session.record("vscode-seat-wrapper.json", {"wrapper": str(wrapper), "runtime": str(runtime)})
     if os.name == "nt":
@@ -140,9 +137,7 @@ def test_ug_configure_routes_vscode_copilot_through_the_seat_relay(
     )
     assert started.returncode == 0, started.stdout + started.stderr
     recorded = json.loads(dump.read_text(encoding="utf-8"))
-    session.record(
-        "runtime-start.json", {"argv": recorded["argv"], "env_keys": sorted(recorded["env"])}
-    )
+    session.record("runtime-start.json", recorded)
     assert recorded["argv"][-2:] == ["--headless", "--stdio"], recorded["argv"]
     runtime_env = recorded["env"]
     assert runtime_env["COPILOT_API_URL"].startswith("http://127.0.0.1:"), runtime_env[

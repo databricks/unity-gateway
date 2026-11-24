@@ -32,11 +32,12 @@ def _recording_proxy() -> ThreadingHTTPServer:
     return server
 
 
-def _assert_token_not_under_ug_files(session, token: str) -> None:
+def _assert_token_not_in_ug_or_copilot_files(session, token: str) -> None:
     encoded = token.encode()
-    for path in (session.home / ".ucode").rglob("*"):
-        if path.is_file() and not path.is_symlink():
-            assert encoded not in path.read_bytes(), f"{path} holds the GitHub token"
+    for folder in (".ucode", ".copilot"):
+        for path in (session.home / folder).rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                assert encoded not in path.read_bytes(), f"{path} holds the GitHub token"
 
 
 def test_ug_copilot_seat_relay_headless_task(
@@ -47,7 +48,7 @@ def test_ug_copilot_seat_relay_headless_task(
 
     Expected: Copilot, signed in to GitHub through GH_TOKEN, completes the file task through the
     relay; the proxy receives nothing, because the launch environment exempts loopback from it;
-    neither the Databricks bearer nor the GitHub token lands in ug's files, and the session
+    neither the Databricks bearer nor the GitHub token lands in ug's or Copilot's files, and the session
     registry is gone afterwards.
     """
     session = live_session
@@ -80,5 +81,5 @@ def test_ug_copilot_seat_relay_headless_task(
     session.record("seat-relay-proxy-requests.json", list(_Recorder.requests))
     assert _Recorder.requests == [], _Recorder.requests
     assert_no_bearer_on_disk(session)
-    _assert_token_not_under_ug_files(session, copilot_seat_github_token)
+    _assert_token_not_in_ug_or_copilot_files(session, copilot_seat_github_token)
     assert_no_session_registry_left(session)

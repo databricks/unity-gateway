@@ -199,7 +199,7 @@ PROMPT = "Read the local file input.txt in the current directory using a tool."
 READ_CONFIRMATION = 'Read input.txt Input { "path": "/tmp/project/input.txt" } Allow Once Skip'
 
 
-def test_wait_for_answer_allows_a_read_only_tool_once():
+def test_wait_for_answer_allows_a_read_only_tool():
     window = ScreenedVSCode(
         [
             {
