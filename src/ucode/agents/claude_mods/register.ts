@@ -277,9 +277,9 @@ async function setRouting(
 }
 
 const VALIDATION_POLL_MS = 100;
-// Longer than the Python check's 4 s deadline, which always publishes its result first.
-const VALIDATION_WAIT_MS = 5000;
-const VALIDATE_COMMAND_TIMEOUT_MS = 10000;
+// Longer than the Python check's 10 s deadline, which always publishes its result first.
+const VALIDATION_WAIT_MS = 11000;
+const VALIDATE_COMMAND_TIMEOUT_MS = 15000;
 
 // Persists the unsupported or failed result as a Smart Router logs row; the warning band is transient.
 // A resultPath of '-' reads the result from stdin.

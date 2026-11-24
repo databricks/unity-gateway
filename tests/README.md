@@ -2087,7 +2087,7 @@ The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the
 without it (no request, band from the first paint). `test_route_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
-responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
+responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
 deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
 flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
 check turns routing on only for a supported list or a 404; an unsupported list or a failed check
@@ -2096,7 +2096,7 @@ Codex model/harness list and provider; the Codex test checks them at the HTTP ca
 `test_smart_router_feedback.py`; its footer shows the warning and hint in `test_codex_statusline.py`,
 and `test_codex_smart_routing_v2.py` checks the check is wired even when the first prompt is not routed.
 Claude's native mod tests cover the band hold, the result handling, the unsupported and
-validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
+validation-failed warnings and their one-turn hide, the failed logs row and detail, the 11 s fallback,
 and the two transcript log lines (`Smart Router is off` and the warning) logged only when
 `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
 The Claude and Codex back-on TUI journeys in `tests/integration/test_ug_smart_routing_hooks.py` check
