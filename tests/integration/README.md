@@ -1429,7 +1429,8 @@ disable flag. It also verifies the installed version is unchanged. On supported 
 both skills, a completed routed child and parent answer, and a correlated decision. This keeps
 the same journey valid for pinned, latest-agent, and explicit-version runs. `test_smart_router_managed_default_routes_supported_codex_at_launch`
 runs in the routing-capable Codex lane and requires both skills, a completed child and parent
-answer, and a correlated routing decision. Automatic fallback for subscription relays and unknown versions
+answer, and a correlated routing decision. Its recipe is temporarily pinned to
+`m2-r315-quality-20260929`. Automatic fallback for subscription relays and unknown versions
 has no live journey. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json` or `codex_smart_routing_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars. The shared Claude fixtures omit GLM. Only

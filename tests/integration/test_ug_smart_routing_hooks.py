@@ -1061,6 +1061,9 @@ def test_smart_router_managed_default_matches_codex_version_at_launch(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    if routing_supported:
+        # TODO: remove once the latest recipe supports codex
+        session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
     with AgentTerminal(
         session,
         "codex",
@@ -1120,6 +1123,8 @@ def test_smart_router_managed_default_routes_supported_codex_at_launch(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    # TODO: remove once the latest recipe supports codex
+    session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
     with AgentTerminal(
         session, "codex", [str(session.binary), "codex"], "smart-router-managed-default-supported"
     ) as tui:
