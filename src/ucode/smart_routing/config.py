@@ -46,7 +46,7 @@ SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY = (
 )
 
 SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
-SUBAGENT_AUTO_V0_CODEX_ONLY = "subagent_auto_v0_codex_only"
+SUBAGENT_AUTO_V0 = "subagent_auto_v0"
 
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
@@ -140,8 +140,12 @@ _VERSIONS = {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
         AGENT_CODEX: _CODEX_ROUTING_OFF,
     },
-    SUBAGENT_AUTO_V0_CODEX_ONLY: {
-        AGENT_CLAUDE: _CODEX_ROUTING_OFF,
+    SUBAGENT_AUTO_V0: {
+        AGENT_CLAUDE: {
+            **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
+            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+        },
         AGENT_CODEX: {
             **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
             ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
@@ -210,8 +214,8 @@ def version_scope() -> Iterator[None]:
 
 
 def auto_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Whether this launch selected Claude Auto's configuration version."""
-    return selected_version(env) == SUBAGENT_AUTO_V0_CLAUDE_ONLY
+    """Whether this launch selected a Claude Auto configuration version."""
+    return selected_version(env) in (SUBAGENT_AUTO_V0, SUBAGENT_AUTO_V0_CLAUDE_ONLY)
 
 
 def subagent_model_visible(env: Mapping[str, str]) -> bool:

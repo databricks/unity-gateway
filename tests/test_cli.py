@@ -1178,6 +1178,8 @@ class TestSubcommandRouting:
             (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, "1", False, False),
             (smart_routing_config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, "0", True, False),
             (smart_routing_config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, "1", False, True),
+            (smart_routing_config.SUBAGENT_AUTO_V0, "0", True, False),
+            (smart_routing_config.SUBAGENT_AUTO_V0, "1", False, True),
         ],
     )
     def test_auto_version_survives_materialization_and_does_not_leak(
@@ -1594,6 +1596,7 @@ class TestSubcommandRouting:
             ("unknown", [], False, False),
             (smart_routing_config.SUBAGENT_ONLY_V0, [], False, False),
             (smart_routing_config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, [], False, True),
+            (smart_routing_config.SUBAGENT_AUTO_V0, [], False, True),
             (
                 smart_routing_config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
                 ["--model", "system.ai.claude-sonnet-5-5"],

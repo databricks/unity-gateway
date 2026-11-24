@@ -182,14 +182,16 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
-Codex Auto is enabled only by `subagent_auto_v0_codex_only`. Its native `/model` Auto row
+Codex Auto is enabled only by `subagent_auto_v0`. Its native `/model` Auto row
 opens a main-model selector through the session interposer. Keep the row and model changes
 launch-only; never send the synthetic row ID to inference or save it as a default.
 Manual model selection turns session routing off through the existing feedback control.
 
-Claude Auto is enabled only by the `subagent_auto_v0_claude_only` config version.
+Claude Auto is enabled by `subagent_auto_v0` or the legacy
+`subagent_auto_v0_claude_only` config version.
 `ENABLE_SMART_ROUTER_AUTO_MODE` is an internal derived flag: that version sets it to
-`"1"` for Claude, and other versions set it to `"0"`. Setting the flag directly,
+`"1"` for Claude, and the shared Auto version also sets it for Codex. Other versions set
+it to `"0"`. Setting the flag directly,
 managed smart routing alone, and an installed static Auto row cannot enable Auto.
 Capture the selected version in a scoped Python context before materializing its
 flags and consuming the environment selector. Restore that context on every exit;
@@ -216,7 +218,8 @@ Configure provisions Auto aliases only with the exact Auto version and effective
 enabled. For a UG-owned picker
 without managed smart routing, it sets `modelPicker.replaceBuiltInOptions=false`.
 When managed Claude `smart_routing_enabled` is true AND the configure-time selector
-is `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
+is `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0` or the legacy
+`subagent_auto_v0_claude_only`,
 configure keeps `replaceBuiltInOptions=true` on the UG-owned static catalog and serves
 Auto from one row inside it, first among UG's rows (below Claude's native Default row): the default variant's alias with label `Auto`, its
 `modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
