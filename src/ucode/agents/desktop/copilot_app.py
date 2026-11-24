@@ -40,13 +40,13 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.os_compatibility.system_cross_os import process_running
 from ucode.ui import print_warning
 
-# The app versions whose WebSocket messages ug was checked against; others get a warning.
-VERIFIED_APP_VERSIONS = frozenset({"1.4.2"})
 # The app only lists models for an Anthropic provider that has a key. The plugin's provider
 # replaces it with a bearer token, so it is never sent.
 PLACEHOLDER_KEY = "ug-placeholder-not-a-secret"
 _ID_NAMESPACE = uuid.UUID("6f1c2a4e-5d1b-4c39-9a57-0d2b8e7f4a11")
 _REQUEST_TIMEOUT_S = 15
+# `ug status` reads the app on every run, so a hung app may hold it up only briefly.
+_STATUS_TIMEOUT_S = 3
 
 AppStatus = Literal["registered", "outdated", "not_registered", "not_running"]
 
@@ -153,10 +153,14 @@ def _own_model_id(model: str) -> str:
     return model if model.count(".") >= 2 else f"databricks.{model}"
 
 
+# The app's picker lists ug's rows next to GitHub's own models, some with the same names.
+APP_LABEL_SUFFIX = " (Databricks)"
+
+
 def _model_rows(
     catalog: Iterable[CopilotModel], wire: str, *, provider_service: str | None
 ) -> list[dict[str, Any]]:
-    """The app's model rows for ``catalog``'s models on ``wire``.
+    """The app's model rows for ``catalog``'s models on ``wire``, labelled as Databricks models.
 
     A Claude row's id is Copilot's catalog id for the model behind it, which is what makes the app
     apply Claude's request settings, and its wire model is the gateway's id. Other rows get an id
@@ -185,7 +189,7 @@ def _model_rows(
         row: dict[str, Any] = {
             "modelId": model_id,
             "wireModel": model.id,
-            "displayName": labels[model],
+            "displayName": labels[model] + APP_LABEL_SUFFIX,
             "supportsVision": wire == WIRE_ANTHROPIC,
         }
         if wire == WIRE_RESPONSES:
@@ -262,39 +266,75 @@ def state_providers(
     from ucode.agents.vscode import copilot_models
 
     return desired_providers(
-        state["workspace"], copilot_models(state, provider, location), provider_service=provider
+        state["workspace"],
+        copilot_models(state, provider, location, agent="the GitHub Copilot app"),
+        provider_service=provider,
     )
+
+
+def _app_pid(run: Path) -> int | None:
+    # The app writes its pid to app-owner.pid; ws.port carries none in app 1.4.2.
+    for name, index in (("app-owner.pid", 0), ("ws.port", 1)):
+        try:
+            pid = int((run / name).read_text().split()[index])
+        except (OSError, ValueError, IndexError):
+            continue
+        if pid > 1:
+            return pid
+    return None
+
+
+def app_running(home: Path | None = None) -> bool:
+    """Whether the app is open: it writes its run files under the Copilot home and leaves them
+    behind on exit, so the pid in them has to be alive."""
+    run = (home or copilot_home()) / "run"
+    if not (run / "ws.port").is_file():
+        return False
+    pid = _app_pid(run)
+    return pid is not None and process_running(pid)
 
 
 class _AppConnection:
     """One connection to the app's WebSocket API, matching each reply to its request."""
 
-    def __init__(self, home: Path) -> None:
+    def __init__(
+        self, home: Path, *, session_channels: bool = False, timeout: float = _REQUEST_TIMEOUT_S
+    ) -> None:
         from websockets.exceptions import InvalidHandshake, InvalidStatus
         from websockets.sync.client import connect
 
         run = home / "run"
         try:
-            # Each file holds the value, then the app's pid. The app leaves them behind when it
-            # exits, and another program may since have taken the port.
-            port_file = (run / "ws.port").read_text().split()
-            port = int(port_file[0])
+            port = int((run / "ws.port").read_text().split()[0])
             token = (run / "ws.token").read_text().split()[0]
-            pid = int(port_file[1]) if len(port_file) > 1 else None
         except (OSError, ValueError, IndexError):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
+        # The app leaves its run files behind when it exits, and another program may since have
+        # taken the port.
+        pid = _app_pid(run)
         if pid is not None and not process_running(pid):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.")
-        query = urlencode({"token": token, "requester_id": "ug", "session_channels": "false"})
+        # With session channels, the app also sends every session's events, its window's chats
+        # included.
+        query = urlencode(
+            {
+                "token": token,
+                "requester_id": "ug",
+                "session_channels": "true" if session_channels else "false",
+            }
+        )
         url = f"ws://127.0.0.1:{port}/?{query}"
         try:
             # No Origin: the app refuses any origin but its own window.
-            self._connection = connect(url, origin=None, compression=None, open_timeout=5)
+            self._connection = connect(
+                url, origin=None, compression=None, open_timeout=min(5, timeout)
+            )
             self._ws = self._connection.__enter__()
         except InvalidStatus as exc:
             raise CopilotAppError(f"The GitHub Copilot app refused ug ({exc}).") from None
         except (OSError, TimeoutError, InvalidHandshake):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
+        self._timeout = timeout
         self._backlog: list[dict[str, Any]] = []
         try:
             hello = self._wait(lambda message: message.get("type") == "server_hello")
@@ -327,8 +367,13 @@ class _AppConnection:
                 return message
         return None
 
-    def _wait(self, matches, timeout: float = _REQUEST_TIMEOUT_S) -> dict[str, Any] | None:
-        deadline = time.monotonic() + timeout
+    def next_message(self, timeout: float) -> dict[str, Any] | None:
+        """The app's next message within ``timeout`` seconds, or None. Raises
+        ``CopilotAppNotRunning`` once the app closes the connection."""
+        return self._next(time.monotonic() + timeout)
+
+    def _wait(self, matches, timeout: float | None = None) -> dict[str, Any] | None:
+        deadline = time.monotonic() + (self._timeout if timeout is None else timeout)
         skipped: list[dict[str, Any]] = []
         try:
             while (message := self._next(deadline)) is not None:
@@ -345,6 +390,9 @@ class _AppConnection:
 
         for attempt in range(6):
             request_id = f"ug-{uuid.uuid4().hex[:12]}"
+            # Requests run one at a time, so nothing received before this send answers it; an
+            # id-less error left over from earlier would otherwise read as a refusal.
+            self._backlog.clear()
             try:
                 self._ws.send(json.dumps({**message, "request_id": request_id}))
             except ConnectionClosed:
@@ -379,12 +427,6 @@ class _AppConnection:
         self._connection.__exit__(None, None, None)
 
 
-def _version(app: _AppConnection) -> str | None:
-    reply = app.request({"type": "get_healthcheck"}, "command_result")
-    version = ((reply.get("data") or {}).get("app") or {}).get("version")
-    return version if isinstance(version, str) else None
-
-
 def _providers(app: _AppConnection) -> dict[str, dict[str, Any]]:
     providers = app.request({"type": "list_model_providers"}, "model_providers_list").get(
         "providers"
@@ -411,22 +453,8 @@ def _models(app: _AppConnection, provider_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _connect() -> _AppConnection:
-    app = _AppConnection(copilot_home())
-    try:
-        version = _version(app)
-    except CopilotAppNotRunning:
-        app.close()
-        raise
-    except CopilotAppError:
-        # The version only decides the warning below.
-        version = None
-    if version not in VERIFIED_APP_VERSIONS:
-        print_warning(
-            f"GitHub Copilot app {version or '(unknown version)'} hasn't been verified with ug; "
-            "continuing anyway."
-        )
-    return app
+def _connect(*, timeout: float = _REQUEST_TIMEOUT_S) -> _AppConnection:
+    return _AppConnection(copilot_home(), timeout=timeout)
 
 
 def _delete_provider(app: _AppConnection, provider_id: str) -> None:
@@ -463,11 +491,12 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
     """Whether the running app has ``providers`` and their models as ug's only providers, with the
     same names, settings and row fields (those the app lists back).
 
-    ``outdated`` means it has some of ug's providers, but not these. Raises
+    ``outdated`` means it has some of ug's providers, but not these, or one is missing its key.
+    Raises
     :class:`CopilotAppError` when the app refuses."""
     providers = list(providers)
     try:
-        app = _connect()
+        app = _connect(timeout=_STATUS_TIMEOUT_S)
     except CopilotAppNotRunning:
         return "not_running"
     try:
@@ -480,6 +509,9 @@ def status(providers: Iterable[AppProvider]) -> AppStatus:
         for provider in providers:
             wanted = provider.rows()
             if _differs(existing[provider.id], dict(wanted.provider)):
+                return "outdated"
+            # Without its key, the app hides the provider's models from the picker.
+            if wanted.secret is not None and not existing[provider.id].get("hasSecret"):
                 return "outdated"
             listed = {model["id"]: model for model in _models(app, provider.id)}
             if set(listed) != {model["id"] for model in wanted.models}:

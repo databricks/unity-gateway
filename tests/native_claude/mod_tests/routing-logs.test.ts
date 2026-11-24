@@ -1,4 +1,7 @@
 import { expect, test } from 'claude-code/testing';
+import {
+  ROUTE_VALIDATION_FAILED_REASON, ROUTE_VALIDATION_FAILED_ROW, ROUTE_VALIDATION_ON_ROW, ROUTE_VALIDATION_ROW, modelReason, routeValidationReason,
+} from '../hooks/routing-logs.ts';
 
 const options = { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', logsCommand: ['/bin/ug', 'smart-router-logs'] };
 const pane = {
@@ -25,6 +28,24 @@ const decision = {
     ],
     router_name: 'router', routing_ms: 840, rationale: 'Because it is a search.', raw_rationale: null,
   },
+};
+const explanation = {
+  selected_model: 'claude-sonnet',
+  session_id: 'session-one',
+  tool_use_id: 't1',
+  summary: 'Sonnet is the best fit for this search task.',
+  task_understanding: ['Search the source tree', 'Report the relevant implementation'],
+  models: [
+    { id: 'claude-sonnet', name: 'Claude Sonnet', selected: true, considered: true,
+      reason: 'Strong fit for repository analysis.', quality_estimate: 0.91,
+      estimated_cost_usd: 0.0000004, routing_score: 0.82,
+      components: { quality: 0.91 }, difference_from_winner: { quality: 0 } },
+    { id: 'glm-5', name: 'GLM 5', selected: false, considered: true,
+      reason: 'Lower expected quality for this task.', quality_estimate: 0.78,
+      estimated_cost_usd: 0.002, routing_score: 0.71,
+      components: { quality: 0.78 }, difference_from_winner: { quality: -0.13 } },
+  ],
+  formula: 'quality - cost penalty',
 };
 
 test('opens and refreshes session rows newest first', { options }, async ($, on) => {
@@ -61,6 +82,95 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);
   await ui.unmount();
+});
+
+const validation = {
+  v: 1, type: 'route_validation', validation_id: 'c1', at: now - 120, harness: 'claude', session_id: 'session-one',
+  router_name: 'stable', routing_unsupported_reason: 'insufficient_eligible_options',
+  eligible_route_options: [{ model: 'system.ai.claude-sonnet', harness: 'claude' }],
+  ineligible_route_options: [
+    { model: 'system.ai.claude-haiku-4-5', harness: 'claude', reason: 'model_not_in_recipe' },
+    { model: 'gpt-x', harness: 'codex', reason: 'harness_not_supported' },
+    { model: 'main.custom', harness: 'claude', reason: 'future_reason' },
+  ],
+  available_route_options: [
+    { model: 'system.ai.claude-sonnet', harness: 'claude_code' },
+    { model: 'databricks-glm-5', harness: 'claude_code' },
+  ],
+  validation_ms: 1234,
+};
+
+test('a route validation row opens its detail without another read', { options }, async ($, on) => {
+  const runs: string[][] = [];
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    runs.push(e.argv);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records, route_validations: [validation, { validation_id: 1 }] }) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  let tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(`"key":"c1","label":"  2m ago  ${ROUTE_VALIDATION_ROW}"`);
+  expect(tree.indexOf('"key":"d2"')).toBeLessThan(tree.indexOf('"key":"c1"'));
+  expect(tree.indexOf('"key":"c1"')).toBeLessThan(tree.indexOf('"key":"d1"'));
+  await ui.press({ key: 'c1' });
+  expect(runs).toHaveLength(1);
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('"children":["Reason: "]');
+  expect(tree).toContain('At least two supported models are required. Please reach out to your workspace admin');
+  expect(tree).toContain('"children":["Validation Time: "]');
+  expect(tree).toContain('1.2s');
+  expect(tree).toContain('✓ claude-sonnet');
+  expect(tree).toContain('✗ claude-haiku-4-5  Not available in Smart Router');
+  expect(tree).toContain('"✗ gpt-x"');
+  expect(tree).toContain('✗ main.custom  Not eligible for routing');
+  expect(tree.indexOf('Supported models')).toBeLessThan(tree.indexOf('  glm-5'));
+  await ui.press({ key: 'back' });
+  expect(JSON.stringify(await ui.drawn())).toContain('"key":"c1"');
+  await ui.unmount();
+});
+
+const failedValidation = {
+  v: 1, type: 'route_validation', validation_id: 'c2', at: now - 120, harness: 'claude', session_id: 'session-one',
+  router_name: 'stable', routing_unsupported_reason: null, validation_failed: true,
+  validation_failure_reason: 'Smart Router returned an error (HTTP 500)',
+  eligible_route_options: [], ineligible_route_options: [], available_route_options: [], validation_ms: 1234,
+};
+
+for (const [reason, shown] of [
+  ['Smart Router returned an error (HTTP 500)', 'Smart Router returned an error (HTTP 500)'],
+  [null, ROUTE_VALIDATION_FAILED_REASON],
+] as const) test(`a failed route validation row with reason ${reason} opens a detail with no model lists`, { options }, async ($, on) => {
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  const validation = { ...failedValidation, validation_failure_reason: reason };
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: [], route_validations: [validation] }) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  let tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(`"key":"c2","label":"  2m ago  ${ROUTE_VALIDATION_FAILED_ROW}"`);
+  expect(tree).not.toContain(ROUTE_VALIDATION_ROW);
+  await ui.press({ key: 'c2' });
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain(shown);
+  expect(tree).not.toContain('Smart Routing does not support this agent');
+  expect(tree).toContain('"children":["Validation Time: "]');
+  expect(tree).toContain('1.2s');
+  expect(tree).not.toContain('Models');
+  expect(tree).not.toContain('Supported models');
+  await ui.unmount();
+});
+
+test('route validation reasons map codes and pass server sentences through', () => {
+  expect(routeValidationReason('INCOMPLETE_REQUIRED_OPTIONS')).toBe('Required models are missing from this list');
+  expect(routeValidationReason('Smart Routing supports at most 20 distinct model services'))
+    .toBe('Smart Routing supports at most 20 distinct model services');
+  for (const reason of ['some_new_code', 'toString', null]) {
+    expect(routeValidationReason(reason)).toBe("Smart Routing does not support this agent's model list.");
+  }
+  expect(modelReason('excluded_by_policy')).toBe('Excluded by routing policy');
+  expect(modelReason('toString')).toBe('Not eligible for routing');
 });
 
 test('pressing a row fetches the decision and Back returns to the list', { options }, async ($, on) => {
@@ -107,6 +217,167 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   await ui.press({ key: 'd1' });
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('2 routed prompts this session');
+  await ui.unmount();
+});
+
+test('the decision detail compares only validated candidates and reveals estimates on request', { options }, async ($, on) => {
+  const runs: (readonly string[])[] = [];
+  const explained = { ...decision, decision: { ...decision.decision, explanation } };
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    expect(e.argv).toEqual(runs.length === 0
+      ? ['/bin/ug', 'smart-router-logs', '--session', 'session-one']
+      : ['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--decision', 'd1']);
+    runs.push(e.argv);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify(
+      runs.length === 1 ? { v: 1, decisions: records } : explained,
+    ) } };
+  });
+  await $.command.run(command);
+  expect(runs.length).toBe(1);
+  const ui = await $.ui.mount(pane);
+  await ui.press({ key: 'd1' });
+  expect(runs.length).toBe(2);
+
+  let tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('Routing explanation');
+  expect(tree).toContain('Sonnet is the best fit for this search task.');
+  expect(tree).toContain('Search the source tree');
+  expect(tree).toContain('Claude Sonnet — considered');
+  expect(tree).not.toContain('Est. cost:');
+  expect(tree).not.toContain('Scoring formula:');
+
+  await ui.select({ key: 'compare-model', value: 'glm-5' });
+  expect(runs.length).toBe(2);
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('GLM 5 — considered');
+  expect(tree).toContain('Lower expected quality for this task.');
+  expect(tree).not.toContain('Est. cost:');
+
+  await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
+  tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('Quality estimate: 0.780');
+  expect(tree).toContain('Est. cost: 0.002 USD');
+  expect(tree).toContain('Scoring formula: quality - cost penalty');
+  await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Scoring formula:');
+  await ui.select({ key: 'compare-model', value: 'claude-sonnet' });
+  expect(runs.length).toBe(2);
+  await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
+  expect(JSON.stringify(await ui.drawn())).toContain('Est. cost: <0.000001 USD');
+  await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
+  await ui.unmount();
+});
+
+test('the comparison selector preserves gateway and full dotted catalog identities', { options }, async ($, on) => {
+  const cases = [
+    {
+      selected: 'anthropic-aigw-c442a48-system.ai.databricks-gpt-5-5[1m]',
+      candidates: [
+        'system.ai.databricks-gpt-5-4[1m]',
+        'anthropic-aigw-c442a48-system.ai.databricks-gpt-5-5[1m]',
+      ],
+      ids: ['databricks-gpt-5-4', 'databricks-gpt-5-5'],
+      selectedId: 'databricks-gpt-5-5', otherId: 'databricks-gpt-5-4',
+    },
+    {
+      selected: 'main.default.acme.model-b[1m]',
+      candidates: ['main.default.acme.model-a', 'main.default.acme.model-b[1m]'],
+      ids: ['main.default.acme.model-a', 'main.default.acme.model-b[1m]'],
+      selectedId: 'main.default.acme.model-b[1m]', otherId: 'main.default.acme.model-a',
+    },
+    {
+      selected: 'anthropic-aigw-01234567-system.ai.model-b[1m]',
+      candidates: ['system.ai.model-a', 'anthropic-aigw-01234567-system.ai.model-b[1m]'],
+      ids: ['model-a', 'model-b'], selectedId: 'model-b', otherId: 'model-a',
+    },
+  ];
+  let caseIndex = 0;
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => {
+    const current = cases[caseIndex];
+    const detail = {
+      ...decision,
+      decision: {
+        ...decision.decision,
+        selected_model: current.selected,
+        candidates: current.candidates.map(model => ({ model, harness: 'claude' })),
+        explanation: {
+          session_id: 'session-one', tool_use_id: 't1', selected_model: current.selectedId,
+          summary: 'The selected model matches the offered catalog.', task_understanding: [],
+          models: current.ids.map((id, index) => ({
+            id, name: `Catalog model ${index}`, selected: id === current.selectedId,
+            considered: true, reason: `Reason ${index}`,
+          })),
+        },
+      },
+    };
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify(
+      e.argv.includes('--decision') ? detail : { v: 1, decisions: records },
+    ) } };
+  });
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  for (caseIndex = 0; caseIndex < cases.length; caseIndex++) {
+    await ui.press({ key: 'd1' });
+    let tree = JSON.stringify(await ui.drawn());
+    expect(tree).toContain('The selected model matches the offered catalog.');
+    expect(tree).not.toContain('No detailed routing explanation is available.');
+    await ui.select({ key: 'compare-model', value: cases[caseIndex].otherId });
+    tree = JSON.stringify(await ui.drawn());
+    expect(tree).toContain(`Catalog model ${cases[caseIndex].ids.indexOf(cases[caseIndex].otherId)} — considered`);
+    if (caseIndex + 1 < cases.length) await ui.press({ key: 'back' });
+  }
+  await ui.unmount();
+});
+
+test('invalid explanation identity, selected model, catalog, or numbers keep the routed detail', { options }, async ($, on) => {
+  const extraModel = { id: 'extra-model', name: 'Extra', selected: false, considered: false, reason: 'Not offered.' };
+  const invalid = [
+    { ...explanation, session_id: 'another-session' },
+    { ...explanation, tool_use_id: 'another-call' },
+    { ...explanation, evidence: { tool_use_id: 'another-call' } },
+    { ...explanation, summary: '界'.repeat(22000) },
+    { ...explanation, selected_model: 'claude-opus' },
+    { ...explanation, models: [...explanation.models, extraModel] },
+    { ...explanation, models: [explanation.models[0]] },
+    { ...explanation, models: [explanation.models[0], explanation.models[0]] },
+    { ...explanation, models: explanation.models.map(model => ({ ...model, selected: true })) },
+    { ...explanation, models: explanation.models.map(model => ({ ...model, selected: false })) },
+    { ...explanation, models: explanation.models.map(model => ({ ...model, considered: false })) },
+    { ...explanation, models: [{ ...explanation.models[0], quality_estimate: Number.NaN }, explanation.models[1]] },
+  ];
+  let index = -1;
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', ($, e) => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify(
+    e.argv.includes('--decision')
+      ? { ...decision, decision: { ...decision.decision, explanation: invalid[index] } }
+      : { v: 1, decisions: records },
+  ) } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  for (index = 0; index < invalid.length; index++) {
+    await ui.press({ key: 'd1' });
+    const tree = JSON.parse(JSON.stringify(await ui.drawn())) as {
+      children: Array<{ props?: { flexDirection?: string } }>;
+    };
+    const selectedRow = tree.children.find(row => row.props?.flexDirection === 'row'
+      && JSON.stringify(row).includes('Selected: ')
+      && JSON.stringify(row).includes('claude-sonnet'));
+    expect(selectedRow).toBeDefined();
+    const rendered = JSON.stringify(tree);
+    expect(rendered).toContain('Because it is a search.');
+    expect(rendered).toContain('No detailed routing explanation is available.');
+    expect(rendered).not.toContain('Sonnet is the best fit for this search task.');
+    if (index + 1 < invalid.length) await ui.press({ key: 'back' });
+  }
   await ui.unmount();
 });
 
@@ -426,9 +697,9 @@ test('turn completion and status cleanup do not wait for the open-pane reader', 
     plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
   } as const;
   on('session.id', () => ({ value: 'session-one' }));
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.panes', () => { paneChecks++; return { value: [{ id: pane.requestId }] }; });
   on('process.run', async () => {
@@ -494,3 +765,16 @@ test('a UG route agent type is not shown as the prompt label', { options }, asyn
   expect(tree).not.toContain('ucode-route-');
   await ui.unmount();
 });
+
+for (const [routingDisabled, row] of [[true, ROUTE_VALIDATION_ROW], [false, ROUTE_VALIDATION_ON_ROW]] as const) {
+  test(`a route validation row with routing_disabled ${routingDisabled} names the routing state`, { options }, async ($, on) => {
+    on('session.id', () => ({ value: 'session-one' }));
+    on('ui.open', () => ({ value: { isPlaced: true } }));
+    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: [], route_validations: [{ ...validation, routing_disabled: routingDisabled }] }) } }));
+    await $.command.run(command);
+    const ui = await $.ui.mount(pane);
+    const shown = row.length > 70 ? `${row.slice(0, 69)}…` : row;
+    expect(JSON.stringify(await ui.drawn())).toContain(`"label":"  2m ago  ${shown}"`);
+    await ui.unmount();
+  });
+}

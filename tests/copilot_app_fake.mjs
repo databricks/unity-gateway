@@ -64,6 +64,7 @@ export class FakeApp {
     this.fail = null;
     this.drop = null;
     this.beforeReply = {};
+    this.beforeHello = [];
     // Called with each request before it's answered, as another client acting meanwhile.
     this.onRequest = null;
     this.server = http.createServer();
@@ -82,7 +83,8 @@ export class FakeApp {
     mkdirSync(join(home, "run"), { recursive: true });
     writeFileSync(join(home, "run", "ws.port"), `${this.port}`);
     writeFileSync(join(home, "run", "ws.token"), `${this.token}`);
-    writeFileSync(join(home, "run", "app-owner.pid"), "4242");
+    // This process stands in for the app, so an extension run in-process is one of its descendants.
+    writeFileSync(join(home, "run", "app-owner.pid"), `${process.pid}`);
   }
 
   _upgrade(request, socket) {
@@ -105,6 +107,7 @@ export class FakeApp {
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
     const send = (message) => socket.write(encode(JSON.stringify(message)));
+    for (const frame of this.beforeHello) send(frame);
     send({ type: "server_hello", connection_id: this.connections });
     send({ type: "keep_awake_changed" });
     socket.on("error", () => {});

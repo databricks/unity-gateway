@@ -3368,8 +3368,9 @@ class TestRevertMcpConfigs:
 
         assert removed == [("claude", "svc"), ("codex", "svc")]
         assert result == {"claude": True, "codex": True}
-        assert "Could not remove MCP server `svc` from GitHub Copilot (CLI and VS Code)" in _unwrap(
-            capsys.readouterr().out
+        assert (
+            "Could not remove MCP server `svc` from GitHub Copilot (CLI, VS Code and app)"
+            in _unwrap(capsys.readouterr().out)
         )
 
     def test_removes_copilot_servers_from_its_user_config_and_the_legacy_side_file(self):
@@ -5204,7 +5205,7 @@ def test_setup_mcp_clients_names_vs_code_for_copilot(monkeypatch, capsys):
         {"workspace": WS}, "Managed MCP Servers", require_auth=False, action_note="Registering for"
     )
 
-    assert "Registering for: Claude Code, GitHub Copilot (CLI and VS Code)" in _unwrap(
+    assert "Registering for: Claude Code, GitHub Copilot (CLI, VS Code and app)" in _unwrap(
         capsys.readouterr().out
     )
 

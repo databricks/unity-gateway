@@ -25,12 +25,16 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
+import ucode.metrics as metrics_mod
+from tests.conftest import metric_observations
 from ucode import agents, tls
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
+from ucode.smart_routing import session_log
+from ucode.smart_routing.claude_hooks import ROUTE_VALIDATION_MOD_EVENT
 from ucode.state import save_state as real_save_state
 
 # Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
@@ -78,6 +82,11 @@ def no_state_writes():
 def no_gateway_catalog_fetch(monkeypatch):
     """Keep plain Claude launches off real auth and the network; an empty catalog falls back."""
     monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    # The launch's speculation fetches on a background thread; stub it too so no test
+    # shells out to a real `databricks auth token` from there.
+    monkeypatch.setattr(
+        cli_mod, "fetch_databricks_token_untimed", lambda *_args, **_kwargs: "token"
+    )
     monkeypatch.setattr(
         cli_mod,
         "list_anthropic_model_catalog",
@@ -236,7 +245,7 @@ class TestHelp:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        toggle.assert_called_once_with(True, None)
+        toggle.assert_called_once_with(True, None, agent="codex", feedback_collected=False)
         launch.assert_not_called()
 
     @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])
@@ -690,6 +699,12 @@ def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
 
     assert result.exit_code == 0, result.output
     launch.assert_called_once()
+
+
+_NOTICE_VISIBILITY_CASES = [
+    (smart_routing_config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, False),
+    (smart_routing_config.SUBAGENT_ORCH_V0, True),
+]
 
 
 class TestSubcommandRouting:
@@ -2027,6 +2042,71 @@ class TestSubcommandRouting:
         assert json.loads(result.output) == routed
         return mock_token, mock_route
 
+    @pytest.mark.parametrize(("version", "show_notice"), _NOTICE_VISIBILITY_CASES)
+    def test_codex_subagent_hook_resolves_notice_visibility(self, version, show_notice):
+        from ucode.smart_routing import codex_routing
+
+        with (
+            patch("ucode.cli._router_hook_token", return_value="token"),
+            patch(
+                "ucode.smart_routing.codex_routing.request_routing_decision",
+                return_value=(
+                    codex_routing.RoutingDecision(
+                        model="system.ai.gpt-5-6-luna", rationale="Focused task."
+                    ),
+                    None,
+                ),
+            ),
+            patch("ucode.smart_routing.routing.write_decision_record"),
+            patch("ucode.smart_routing.session_log.append_decision"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "codex-router-hook",
+                    "route-subagent",
+                    "--host",
+                    "https://example.com",
+                    "--model",
+                    "system.ai.gpt-5-6-luna",
+                ],
+                input=(
+                    '{"tool_name":"collaboration.spawn_agent","tool_input":'
+                    '{"task_name":"reviewer","message":"Review this change."}}'
+                ),
+                env={"SMART_ROUTER_CONFIG_VERSION": version},
+            )
+
+        assert result.exit_code == 0, result.output
+        output = json.loads(result.output)
+        hook = output["hookSpecificOutput"]
+        assert hook["updatedInput"]["model"] == "gpt-5.6-luna"
+        assert ("systemMessage" in output) is show_notice
+        assert ("permissionDecisionReason" in hook) is show_notice
+
+    @pytest.mark.parametrize(("version", "show_notice"), _NOTICE_VISIBILITY_CASES)
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_record_subagent_hook_respects_notice_visibility(self, version, show_notice, agent):
+        with patch(
+            f"ucode.smart_routing.{agent}_routing.record_subagent_start",
+            return_value={"matches_router_decision": True, "model": "gpt-5.6-luna"},
+        ) as record:
+            result = runner.invoke(
+                app,
+                [f"{agent}-router-hook", "record-subagent"],
+                input='{"session_id":"session"}',
+                env={"SMART_ROUTER_CONFIG_VERSION": version},
+            )
+
+        assert result.exit_code == 0, result.output
+        record.assert_called_once_with({"session_id": "session"})
+        if show_notice:
+            assert json.loads(result.output) == {
+                "systemMessage": "Smart Routing verified. Subagent is using gpt-5.6-luna."
+            }
+        else:
+            assert result.output == ""
+
     def test_codex_subagent_hook_reuses_fresh_oauth_token(self, monkeypatch):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         token = _jwt(time.time() + 300)
@@ -2149,6 +2229,43 @@ class TestSubcommandRouting:
         else:
             assert result.output == ""
             route.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "validation",
+        [
+            {"routing_disabled": True, "router_name": "stable"},
+            {"routing_disabled": False},
+        ],
+    )
+    @pytest.mark.parametrize("session_routing", ["1", "0"])
+    def test_claude_mod_validation_prints_the_verdict_without_recording_it(
+        self, tmp_path, monkeypatch, validation, session_routing
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        controls = tmp_path / "env.json"
+        controls.write_text(json.dumps({"ENABLE_SMART_ROUTING_V2": session_routing}))
+        monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(controls))
+        monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+        with patch(
+            "ucode.smart_routing.route_validation.validate", return_value=validation
+        ) as validate:
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    ROUTE_VALIDATION_MOD_EVENT,
+                    "--host",
+                    "https://example.com",
+                    "--model",
+                    "system.ai.claude-opus-4-8",
+                ],
+                input='{"session_id":"s1"}',
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
+            )
+        assert result.exit_code == 0, result.output
+        assert validate.call_args.args[2] == [("system.ai.claude-opus-4-8", "claude")]
+        assert result.output == json.dumps(validation)
+        assert session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE) == []
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
@@ -3436,7 +3553,7 @@ class TestStatus:
         output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
         assert "MCP servers: 1" in output
-        assert "GitHub Copilot (CLI and VS Code)" in output
+        assert "GitHub Copilot (CLI, VS Code and app)" in output
         assert "Claude Code" not in output
         assert "Gemini CLI" not in output
         assert "databricks-sql" not in result.output
@@ -3491,6 +3608,50 @@ class TestStatus:
             output = re.sub(r"\s+", " ", _strip_ansi(result.output))
             assert result.exit_code == 0, result.output
             assert ("VS Code: off (workspace-managed)" in output) is shown
+
+    def test_status_shows_the_copilot_app_row_and_its_warnings(self, monkeypatch):
+        from ucode.agents.desktop.setup import CopilotAppStatus
+
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        seen = []
+
+        def app_status(effective_state, *, provider, location):
+            seen.append(effective_state)
+            return CopilotAppStatus(
+                "plugin disabled, models registered", ("their turns fail without it",)
+            )
+
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.agents.desktop.setup.copilot_app_status", side_effect=app_status),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app: plugin disabled, models registered" in output
+        assert "their turns fail without it" in output
+        assert seen[0]["workspace"] == state["workspace"]
+
+    def test_status_shows_a_pending_copilot_app_removal_after_revert(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.agents.desktop.setup.copilot_app_unconfigured_status",
+                return_value="removal pending: soon",
+            ),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "GitHub Copilot app" in output
+        assert "removal pending: soon" in output
 
     def test_status_labels_self_configured_setup(self, monkeypatch):
         with (
@@ -4790,6 +4951,27 @@ class TestRevert:
         assert "VS Code extension: failed" in output
         assert restore_file.called
         clear_state.assert_called_once()
+
+    @pytest.mark.parametrize("result", ["removed", "not set up", "failed: x"])
+    def test_reports_the_copilot_app(self, result):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_machine_policy", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.agents.desktop.setup.revert_copilot_app", return_value=result),
+            patch("ucode.cli.clear_state"),
+        ):
+            outcome = runner.invoke(app, ["revert"])
+
+        output = " ".join(outcome.output.split())
+        assert outcome.exit_code == 0, outcome.output
+        assert f"GitHub Copilot app: {result}" in output
+        assert "keep the Databricks models" not in output
 
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
@@ -6121,6 +6303,18 @@ class TestConfigureAgentsSelection:
         # The rich panel wraps lines, so match on the labels and names rather than exact spacing.
         assert "Coding Agents:" in out and "Claude Code" in out
         assert "Failed to configure:" in out and "Codex" in out
+
+    def test_managed_summary_names_everything_copilot_sets_up(self, capsys, monkeypatch):
+        import ucode.cli as cli_mod
+
+        managed = {"enabled_agents": {"copilot": {}}}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
+        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
+        cli_mod._summarize_managed_config(managed, ["copilot"], [])
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "GitHub Copilot (CLI, VS Code and app)" in out
+        assert "GitHub Copilot CLI" not in out
 
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
@@ -10626,6 +10820,29 @@ class TestCopilotSeatRuntime:
         # The runtime owns stdout.
         assert "not for VS Code" not in result.stdout
 
+    def test_looks_the_runtime_up_again_from_the_code_command(self, monkeypatch):
+        from ucode.agents import vscode
+
+        monkeypatch.setattr(vscode, "resolve_runtime", lambda runtime, code: f"{runtime}@{code}")
+        _result, seen, _pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://ws.example"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://ws.example",
+                "--runtime",
+                "/old/copilot-runtime",
+                "--code",
+                "/vscode/bin/code",
+                "--",
+            ],
+        )
+
+        assert seen["runtime"] == "/old/copilot-runtime@/vscode/bin/code"
+
     def test_needs_a_configured_workspace(self, monkeypatch):
         result, seen, _pinned = self._run(
             monkeypatch,
@@ -10689,3 +10906,355 @@ class TestCopilotSeatRuntime:
 
         assert result.exit_code == 7
         assert seen["provider"] == "p"
+
+
+class TestLaunchOverlapsPickerCatalogWithConfigure:
+    """The Anthropic picker catalog is settled by inputs known before `configure_shared_state`
+    runs, so the launch starts it speculatively and reads the result where it always did."""
+
+    WAIT_SECONDS = 5
+
+    @staticmethod
+    def _invoke_with_overlapped_catalog(
+        monkeypatch,
+        *,
+        managed,
+        argv=("claude",),
+        persisted_provider=None,
+        auto_picker=False,
+        expect_catalog_start=True,
+        relayed=False,
+        catalog_error_msg: str | None = None,
+        catalog_error_once: str | None = None,
+        token_error: Exception | None = None,
+        configure_returns: dict | None = None,
+        configure_hook: object | None = None,
+        real_speculation_fetch: bool = False,
+    ):
+        state = dict(MINIMAL_STATE)
+        catalog_started = threading.Event()
+        catalog_calls: list[tuple[threading.Thread, tuple, dict]] = []
+        picker_catalog = db_mod.AnthropicModelCatalog(
+            model_ids=["main.default.claude-sonnet-5"],
+            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
+        )
+
+        catalog_fetches = {"n": 0}
+
+        def fake_catalog(*args, **kwargs):
+            catalog_calls.append((threading.current_thread(), args, kwargs))
+            catalog_started.set()
+            n = catalog_fetches["n"]
+            catalog_fetches["n"] += 1
+            error = catalog_error_msg or (catalog_error_once if n == 0 else None)
+            if error:
+                return db_mod.AnthropicModelCatalog(
+                    model_ids=[], model_id_to_display_name={}, error_msg=error
+                )
+            return picker_catalog
+
+        def fake_configure_shared_state(*_args, **_kwargs):
+            # The speculative fetch must be in flight by the time configure runs; a launch that
+            # never sees it start fails right here.
+            if expect_catalog_start:
+                assert catalog_started.wait(
+                    TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS
+                ), "picker catalog did not start during configure"
+            if configure_hook is not None:
+                configure_hook()
+            return {**state, **(configure_returns or {})}
+
+        configure = MagicMock(side_effect=lambda _tool, configured, *_args, **_kwargs: configured)
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
+        monkeypatch.setattr(
+            cli_mod, "get_provider_service", lambda _state, _tool: persisted_provider
+        )
+        token_calls: list[tuple[tuple, dict]] = []
+
+        def fake_token(*args, **kwargs):
+            token_calls.append((args, kwargs))
+            if token_error is not None and len(token_calls) == 1:
+                raise token_error
+            return "token"
+
+        if not real_speculation_fetch:
+            monkeypatch.setattr(cli_mod, "fetch_databricks_token_untimed", fake_token)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, relayed)
+        )
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "launch_agent", MagicMock())
+        if auto_picker:
+            monkeypatch.setattr(cli_mod.smart_routing_config, "auto_mode_enabled", lambda: True)
+            monkeypatch.setattr(cli_mod, "_routes_launch", lambda *a, **k: True)
+
+        result = runner.invoke(app, list(argv))
+        current = threading.current_thread()
+        for thread in {entry[0] for entry in catalog_calls} - {current}:
+            thread.join(TestLaunchOverlapsPickerCatalogWithConfigure.WAIT_SECONDS)
+
+        return {
+            "result": result,
+            "configure": configure,
+            "catalog_calls": catalog_calls,
+            "catalog_thread": catalog_calls[0][0] if catalog_calls else None,
+            "token_calls": token_calls,
+        }
+
+    def test_unmanaged_picker_catalog_starts_during_configure_and_feeds_it(
+        self, monkeypatch, metrics_recorder
+    ):
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, persisted_provider=None
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["catalog_thread"] is not None and calls["catalog_thread"].daemon
+        assert len(calls["catalog_calls"]) == 1
+        # The untimed speculative fetch takes no re-auth kwargs at all.
+        assert calls["token_calls"] == [((MINIMAL_STATE["workspace"], None), {})]
+        assert "main.default.claude-sonnet-5" in (
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        )
+
+    def test_scoped_picker_catalog_starts_during_configure(self, monkeypatch):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "main.default"}}
+            }
+        }
+        calls = self._invoke_with_overlapped_catalog(monkeypatch, managed=managed)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+        assert calls["catalog_calls"][0][2] == {"parent_schema": "main.default"}
+
+    def test_speculated_fetch_is_reported_as_the_launchs_cache_miss(
+        self, monkeypatch, metrics_recorder
+    ):
+        """Configure's timed token fetch waits on the speculation's inflight fetch; it must
+        report the real CLI fetch as the launch's cache miss with that fetch's duration,
+        not as a cache hit, and record no second duration sample."""
+        db_mod.clear_databricks_token_cache()
+        cli_fetch_started = threading.Event()
+
+        def fake_cli_run(cmd, **_kwargs):
+            cli_fetch_started.set()
+            time.sleep(0.2)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"access_token": "token", "expires_in": 3600}), ""
+            )
+
+        monkeypatch.setattr(db_mod, "run", fake_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda _workspace: None)
+        for key in [k for k in os.environ if k.startswith("DATABRICKS_BEARER")]:
+            monkeypatch.delenv(key, raising=False)
+        # Run the real timed wrapper and the real memo/single-flight machinery; only the CLI
+        # subprocess is faked. configure's own fetch below is the production one at
+        # `configure_shared_state`'s gateway probe, which overlaps the speculation.
+        monkeypatch.setattr(cli_mod, "get_databricks_token", db_mod.get_databricks_token)
+        monkeypatch.setattr(
+            cli_mod, "fetch_databricks_token_untimed", db_mod.fetch_databricks_token_untimed
+        )
+
+        def configure_hook():
+            assert cli_fetch_started.wait(self.WAIT_SECONDS), "speculation never fetched"
+            assert cli_mod.get_databricks_token(MINIMAL_STATE["workspace"], None) == "token"
+
+        try:
+            calls = self._invoke_with_overlapped_catalog(
+                monkeypatch,
+                managed=None,
+                expect_catalog_start=False,
+                configure_hook=configure_hook,
+                real_speculation_fetch=True,
+            )
+        finally:
+            db_mod.clear_databricks_token_cache()
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+        [(value, labels)] = metric_observations(
+            metrics_recorder, metrics_mod.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert labels["in_process_cache_hit"] is False
+        assert labels["token_source"] == "cli"
+        assert value >= 100
+
+    @pytest.mark.parametrize(
+        "configure_returns",
+        [
+            {"profile": "resolved-profile"},
+            {"workspace": "https://other.example.com"},
+            {"workspace_id": "111"},
+        ],
+        ids=["profile", "workspace", "workspace_id"],
+    )
+    def test_changed_state_refetches_serially(self, monkeypatch, configure_returns):
+        """configure_shared_state can resolve a different profile, workspace or workspace id
+        than the one the speculation tokenized for; the result must not be reused then."""
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, configure_returns=configure_returns
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 2
+        # The speculation tokenized for and queried the launch's original workspace even though
+        # configure resolved a different one; its result is dropped, not reused.
+        speculative_workspace = calls["catalog_calls"][0][1][0]
+        assert speculative_workspace == MINIMAL_STATE["workspace"]
+        assert calls["token_calls"][0][0] == (speculative_workspace, None)
+        assert calls["catalog_calls"][1][1][0] == configure_returns.get(
+            "workspace", MINIMAL_STATE["workspace"]
+        )
+
+    def test_speculative_catalog_error_refetches_with_live_token(
+        self, monkeypatch, metrics_recorder
+    ):
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, catalog_error_once="HTTP 401 Unauthorized"
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 2
+        assert "main.default.claude-sonnet-5" in (
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        )
+        # The definitive auth failure was reported as handled before the refetch.
+        [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
+        assert count == 1
+        assert labels["operation"] == metrics_mod.MODELS_LIST_OPERATION
+        assert labels["continued_with_fallback"] is True
+
+    def test_speculative_token_failure_falls_back_to_the_serial_fetch(
+        self, monkeypatch, metrics_recorder
+    ):
+        """A background token failure must not fail the launch: the join falls back to the
+        serial fetch on the live token."""
+        # The token failure kills the speculation before any catalog request, so configure
+        # cannot see one start.
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            token_error=RuntimeError("Databricks CLI returned no access token"),
+            expect_catalog_start=False,
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+        # The raised exception is the background token fetch, reported under its operation.
+        [(count, labels)] = metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR)
+        assert count == 1
+        assert labels["operation"] == metrics_mod.DATABRICKS_TOKEN_FETCH_OPERATION
+        assert labels["continued_with_fallback"] is True
+        assert "main.default.claude-sonnet-5" in (
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        )
+
+    def test_expected_login_miss_falls_back_without_an_error_report(
+        self, monkeypatch, metrics_recorder
+    ):
+        """A no-reauth speculation miss on missing credentials is expected: configure's auth
+        step performs the login, so the join falls back without reporting a token-fetch
+        failure; other failures still report."""
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            token_error=db_mod.DatabricksLoginRequiredError(
+                "Databricks CLI returned no access token"
+            ),
+            expect_catalog_start=False,
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+        assert metric_observations(metrics_recorder, metrics_mod.UG_CLI_ERROR) == []
+        assert "main.default.claude-sonnet-5" in (
+            calls["configure"].call_args.kwargs["picker_catalog"].model_ids
+        )
+
+    def test_persistent_403_makes_exactly_one_request(self, monkeypatch):
+        """A non-auth catalog failure would fail a live-token fetch the same way, so the
+        speculative result is kept instead of doubling the request on every launch."""
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, catalog_error_msg="HTTP 403 Forbidden"
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert len(calls["catalog_calls"]) == 1
+
+    def test_auto_picker_starts_no_unmanaged_catalog(self, monkeypatch):
+        monkeypatch.setattr(cli_mod.smart_routing_config, "auto_mode_enabled", lambda: True)
+        monkeypatch.setattr(cli_mod, "_routes_launch", lambda *a, **k: True)
+
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch, managed=None, auto_picker=True, expect_catalog_start=False
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["catalog_calls"] == []
+
+    def test_relayed_provider_launch_starts_no_catalog(self, monkeypatch):
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=None,
+            persisted_provider="main.default.relay",
+            relayed=True,
+            expect_catalog_start=False,
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["catalog_calls"] == []
+
+    def test_catalog_error_still_fails_the_launch(self, monkeypatch):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "main.default"}}
+            }
+        }
+        calls = self._invoke_with_overlapped_catalog(
+            monkeypatch,
+            managed=managed,
+            catalog_error_msg="HTTP 403 Forbidden",
+        )
+
+        assert calls["result"].exit_code == 1
+        assert "Could not discover Claude models for Unity Catalog location main.default" in (
+            calls["result"].output
+        )
+        assert len(calls["catalog_calls"]) == 1
+
+
+class TestSpeculativePickerCatalogJoin:
+    """The speculation's join drops the result unless the launch identity and the catalog
+    scope it started with still match; None sends that caller to the serial fetch."""
+
+    def test_result_requires_the_started_scope(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "fetch_databricks_token_untimed", lambda *_a, **_k: "token")
+        catalog_calls: list[tuple[str, dict]] = []
+
+        def fake_catalog(workspace, _token, **kwargs):
+            catalog_calls.append((workspace, kwargs))
+            return db_mod.AnthropicModelCatalog(
+                model_ids=["main.default.claude-sonnet-5"], model_id_to_display_name={}
+            )
+
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", fake_catalog)
+        state = dict(MINIMAL_STATE)
+        speculation = cli_mod._SpeculativePickerCatalog.start(
+            state, None, parent_schema="main.default"
+        )
+        speculation.future.result()
+
+        assert speculation.result(state, None, parent_schema="main.default") is not None
+        # A join for a different Unity Catalog location must not reuse the speculation.
+        assert speculation.result(state, None, parent_schema="other.default") is None
+        assert catalog_calls == [
+            ("https://example.databricks.com", {"parent_schema": "main.default"})
+        ]

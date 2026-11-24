@@ -344,8 +344,8 @@ def test_vscode_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
     # The real pinned digest cannot match this stand-in archive.
     _serve(monkeypatch, _vscode_archive())
 
-    with pytest.raises(RuntimeError, match="expected 17b72a7e"):
-        runner.install_vscode("1.144.0", tmp_path / "vscode")
+    with pytest.raises(RuntimeError, match="expected 6fd8b146"):
+        runner.install_vscode("1.147.0", tmp_path / "vscode")
 
     assert not (tmp_path / "vscode/VSCode-linux-x64").exists()
 

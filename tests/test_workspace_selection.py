@@ -170,7 +170,7 @@ class TestHttpChokepoints:
             sent.append(request)
             return response
 
-        with patch.object(db_mod.urllib_request, "urlopen", side_effect=urlopen):
+        with patch.object(db_mod, "_http_open", side_effect=urlopen):
             result = db_mod._http_get_json(url, "tok")
         return result, sent[0]
 
@@ -185,9 +185,7 @@ class TestHttpChokepoints:
         url = f"{SHARED}/api/ai-gateway/v2/usage-analytics-dashboard"
         dashboard_url = f"{SHARED}/dashboardsv3/dashboard/published?o={WSID}"
         body = json.dumps({"dashboard_url": dashboard_url}).encode()
-        with patch.object(
-            db_mod.urllib_request, "urlopen", return_value=_Response(body, url, WSID)
-        ) as urlopen:
+        with patch.object(db_mod, "_http_open", return_value=_Response(body, url, WSID)) as urlopen:
             assert db_mod.get_usage_dashboard_url(SHARED, "tok") == dashboard_url
 
         request = urlopen.call_args.args[0]
@@ -227,7 +225,7 @@ class TestHelperArgv:
     def test_model_service_metadata_lookup(self, selected):
         url = f"{SHARED}/api/2.1/unity-catalog/model-services/main.team.opaque"
         with patch.object(
-            db_mod.urllib_request, "urlopen", return_value=_Response(b"{}", url, WSID)
+            db_mod, "_http_open", return_value=_Response(b"{}", url, WSID)
         ) as urlopen:
             assert db_mod.get_model_service("main.team.opaque", SHARED, "tok") == ({}, None)
 
@@ -251,16 +249,23 @@ class TestHelperArgv:
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
     def test_claude_router_hook_preserves_selection_and_launch_provider(self, selected):
-        from ucode.smart_routing.claude_hooks import ROUTE_SUBAGENT_MOD_EVENT, routing_hook_argv
+        from ucode.smart_routing.claude_hooks import (
+            ROUTE_SUBAGENT_MOD_EVENT,
+            ROUTE_VALIDATION_MOD_EVENT,
+            routing_hook_argv,
+        )
 
         state = {
             "workspace": SHARED,
             "provider_services": {"claude": "old.schema.provider"},
             "_claude_launch_provider": "new.schema.provider",
+            "claude_models": {"0": "system.ai.claude-opus-4-8"},
         }
-        argv = routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
-        assert argv[argv.index("--workspace-id") + 1] == WSID
-        assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+        for event in (ROUTE_SUBAGENT_MOD_EVENT, ROUTE_VALIDATION_MOD_EVENT):
+            argv = routing_hook_argv(state, event)
+            assert argv[argv.index("--workspace-id") + 1] == WSID
+            assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+            assert argv[argv.index("--model") + 1] == "system.ai.claude-opus-4-8"
         assert "--provider" not in routing_hook_argv(state, "session-start")
         del state["_claude_launch_provider"]
         assert "--provider" not in routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
@@ -409,7 +414,9 @@ class TestAgentConfigs:
 
     def test_vscode_selection_comes_after_admin_headers(self, selected, monkeypatch):
         written = {}
-        monkeypatch.setattr(vscode, "find_code", lambda: Path("code"))
+        install = vscode.VSCodeInstall(Path("code"), Path("app"), {"nameShort": "Code"})
+        monkeypatch.setattr(vscode, "find_install", lambda prefer_runtime=False: install)
+        monkeypatch.setattr(vscode, "first_code_on_path", lambda: Path("code"))
         monkeypatch.setattr(
             vscode, "install_extension", lambda code, config: written.update(config)
         )

@@ -198,6 +198,68 @@ class TestGatewayRoutes:
         assert sent["headers"]["x-databricks-ai-gateway-token"] == f"Bearer {DATABRICKS_TOKEN}"
         assert github.requests[0]["headers"].get("user-agent") != "ucode/1 copilot/2"
 
+    def test_vscode_runtime_calls_get_ugs_labels_on_the_gateway_only(
+        self, gateway, github, monkeypatch
+    ):
+        from ucode.agents import copilot
+
+        monkeypatch.setattr(copilot, "ug_version", lambda: "0.9.0")
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        session = "0b6f3a52-2c5e-4d1e-9a51-1f2b8e4c7d90"
+        runtime = {
+            "User-Agent": "copilot/1.0.111-0 (linux unknown) term/unknown client/vscode",
+            "x-client-session-id": session,
+        }
+        admin = {"copilot_http_headers": {"X-Team": "data"}}
+        with _relay(
+            gateway,
+            github,
+            added_headers=copilot.proxy_headers(admin, user_agent=False),
+            request_headers_adder=copilot.seat_runtime_headers(),
+        ) as (http, _port, _direct):
+            http.post(f"/{SECRET}/v1/messages", headers=_auth(**runtime), content=b"{}")
+            http.get(f"/{SECRET}/agents/swe/custom-agents/o/r", headers=_auth(**runtime))
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["user-agent"].startswith(
+            "ucode/0.9.0 copilot/1.0.111-0 term/unknown client/vscode ("
+        )
+        assert sent["names"].count("user-agent") == 1
+        assert sent["headers"]["session-id"] == session
+        assert sent["headers"]["x-team"] == "data"
+        (direct,) = github.requests
+        assert direct["headers"]["user-agent"] == runtime["User-Agent"]
+        assert "session-id" not in direct["headers"]
+        assert "x-team" not in direct["headers"]
+
+    def test_vscode_runtime_admin_session_and_user_agent_win_over_the_call_labels(
+        self, gateway, github, monkeypatch
+    ):
+        from ucode.agents import copilot
+
+        monkeypatch.setattr(copilot, "ug_version", lambda: "0.9.0")
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        runtime = {
+            "User-Agent": "copilot/1.0.111-0 (linux unknown) term/unknown client/vscode",
+            "x-client-session-id": "0b6f3a52-2c5e-4d1e-9a51-1f2b8e4c7d90",
+        }
+        admin = {
+            "copilot_http_headers": {"session-id": "admin-session", "User-Agent": "admin-agent"}
+        }
+        with _relay(
+            gateway,
+            github,
+            added_headers=copilot.proxy_headers(admin, user_agent=False),
+            request_headers_adder=copilot.seat_runtime_headers(copilot.managed_http_headers(admin)),
+        ) as (http, _port, _direct):
+            http.post(f"/{SECRET}/v1/messages", headers=_auth(**runtime), content=b"{}")
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["session-id"] == "admin-session"
+        assert sent["headers"]["user-agent"] == "admin-agent"
+        assert sent["names"].count("session-id") == 1
+        assert sent["names"].count("user-agent") == 1
+
     def test_a_dead_databricks_login_answers_with_the_sign_in_hint(self, gateway, github):
         gateway._status = 401
 
@@ -335,10 +397,58 @@ class TestGatewayDenials:
         assert resp.status_code == 400
         assert resp.json() == {
             "type": "error",
-            "error": {"type": "invalid_request_error", "message": DENIAL},
+            "error": {"type": "invalid_request_error", "message": DENIAL, "source": "gateway"},
         }
-        # The rewrite answers the retry with a refreshed token, not the first 403.
+        # A policy denial is final: no token refresh and no second gateway call.
+        assert len(gateway.requests) == 1
+        assert github.requests == []
+
+    def test_a_403_that_may_be_a_stale_token_is_retried_once(self, gateway, github):
+        gateway._status = 403
+        gateway._body = json.dumps({"error_code": "UNAUTHENTICATED", "message": "expired"}).encode()
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert resp.json()["error"] == {
+            "type": "invalid_request_error",
+            "message": "expired",
+            "source": "gateway",
+        }
         assert len(gateway.requests) == 2
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b"unauthorized: not authorized to use this Copilot feature\n", id="text"),
+            pytest.param(
+                b'{"message": "unauthorized: not authorized to use this Copilot feature", '
+                b'"documentation_url": "https://docs.github.com/rest"}',
+                id="json",
+            ),
+        ],
+    )
+    def test_a_github_403_passed_through_by_the_gateway_reads_as_githubs(
+        self, gateway, github, body
+    ):
+        # The catalog routes pass GitHub's 403 through raw; it is GitHub's policy, not ours.
+        gateway._status = 403
+        gateway._body = body
+        gateway._headers = {"Content-Type": "text/plain"}
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.get(f"/{SECRET}/models", headers=_auth())
+
+        assert resp.status_code == 400
+        assert resp.json()["error"] == {
+            "type": "invalid_request_error",
+            "message": (
+                "GitHub Copilot denied this request: unauthorized: not authorized to use this "
+                "Copilot feature. Check your Copilot CLI policy setting at "
+                "https://github.com/settings/copilot."
+            ),
+            "source": "github",
+        }
+        assert len(gateway.requests) == 1
         assert github.requests == []
 
     @pytest.mark.parametrize(
@@ -346,7 +456,6 @@ class TestGatewayDenials:
         [
             pytest.param(b"<html>denied</html>", id="html"),
             pytest.param(b"", id="empty"),
-            pytest.param(b'{"message": "no error code"}', id="no-error-code"),
             pytest.param(b'{"error_code": 7, "message": "bad code"}', id="code-not-a-string"),
             pytest.param(b'{"error_code": "PERMISSION_DENIED", "message": ""}', id="empty-message"),
             pytest.param(
@@ -365,6 +474,9 @@ class TestGatewayDenials:
 
         assert resp.status_code == 400
         assert resp.json()["error"]["message"] == copilot_relay._GENERIC_GATEWAY_DENIAL
+        assert resp.json()["error"]["source"] == "unknown"
+        # An unreadable denial may still be a stale token, so the retry stays.
+        assert len(gateway.requests) == 2
 
     @pytest.mark.parametrize("status", [404, 429])
     def test_other_gateway_errors_are_relayed_unchanged(self, gateway, github, status):

@@ -16,15 +16,20 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from ucode.constants import UG_ROUTE_VALIDATION_ENV_VAR
+from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
     SUBAGENT_ORCH_V0,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
     SUBAGENT_ORCH_V0_CLAUDE_ONLY,
     SUBAGENT_ORCH_V1,
     resolve_environment,
+    subagent_model_visible,
 )
 
 from .base import BaseCujTest
@@ -53,6 +58,8 @@ SMART_ROUTER_CONFIG_VERSIONS = (
     SUBAGENT_ONLY_V1,
     SUBAGENT_ORCH_V0,
     SUBAGENT_ORCH_V1,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
     SUBAGENT_ORCH_V0_CLAUDE_ONLY,
 )
 
@@ -523,7 +530,11 @@ class TestCujSmartRouting(BaseCujTest):
         When subagent routing is on, a decision correlated with the child task is recorded,
         the child's inference uses the selected model, and the recipe correlates with the
         launch turn; when off, no decision, recipe, or orchestrator context appears. Claude
-        then reports no running background tasks and exits cleanly.
+        then reports no running background tasks. Blind presets show no routed-model
+        notices or cards while the child runs or after it completes. For every Claude preset,
+        /smart-router logs shows a nonempty session decision list, including when inline
+        model details are hidden.
+        The agent exits cleanly after closing the logs pane.
         """
         with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (
             session,
@@ -624,6 +635,21 @@ class TestCujSmartRouting(BaseCujTest):
                 decision_count = len(read_jsonl(decisions_path))
                 checkpoint = recorder.checkpoint()
                 existing_sessions = set(agent_sessions(session, agent))
+                show_subagent_model = subagent_model_visible(
+                    resolve_environment(
+                        {"SMART_ROUTER_CONFIG_VERSION": SMART_ROUTER_CONFIG_VERSION}, agent=agent
+                    )
+                )
+
+                def check_subagent_screen(screen):
+                    if not show_subagent_model:
+                        assert not re.search(
+                            r"Selected Model\s*:|Launched Model\s*:|"
+                            r"Using Unity Gateway Smart Router - Subagent|Smart Routing verified",
+                            screen,
+                        ), screen
+                    return False
+
                 tui.submit(child_task.prompt)
                 # The parent can resume a finished child before replying; wait for its
                 # reply so /tasks sees that run.
@@ -633,7 +659,9 @@ class TestCujSmartRouting(BaseCujTest):
                         and child_task.completed(session, agent)
                     ),
                     "completed native subagent file task and parent reply",
+                    on_screen=check_subagent_screen,
                 )
+                check_subagent_screen("\n".join(tui.screen.display))
                 children = {
                     path: records
                     for path, records in agent_sessions(session, agent).items()
@@ -726,9 +754,32 @@ class TestCujSmartRouting(BaseCujTest):
                             assert "smart_router_state" not in metadata
                 if agent == CLAUDE:
                     tui.wait_for_background_tasks()
+                    tui.submit("/smart-router logs")
+                    routed_count = r"\b[1-9]\d* routed prompts? this session\b"
+                    tui.wait_for(
+                        lambda screen: (
+                            "Smart Router logs" in screen and re.search(routed_count, screen)
+                        ),
+                        "Smart Router logs with at least one recorded decision",
+                    )
+                    tui.send("\x1b", "close Smart Router logs")
+                    tui.wait_for(
+                        lambda screen: not re.search(routed_count, screen),
+                        "the prompt after closing Smart Router logs",
+                    )
                 tui.exit_normally()
 
-    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION",
+        (
+            FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+            SUBAGENT_ONLY_V0,
+            SUBAGENT_ONLY_V1,
+            SUBAGENT_ORCH_V0,
+            SUBAGENT_ORCH_V1,
+            SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        ),
+    )
     def test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles(
         self, cuj, SMART_ROUTER_CONFIG_VERSION
     ):
@@ -799,6 +850,40 @@ class TestCujSmartRouting(BaseCujTest):
                         f"smart router {state} left in the prompt hint row",
                     )
                 tui.exit_normally()
+
+    def test_supported_model_list_passes_startup_route_validation_and_routing_stays_on(self, cuj):
+        """Scenario: launch Claude with startup route validation on and the published model list.
+
+        Expected: ug sends one routes:validate request with the session's Claude route options,
+        the Gateway answers HTTP 200 with is_supported true, and the band shows ON without the
+        unsupported warning while the prompt hint row keeps smart router ON.
+        """
+        with smart_router_preset(cuj, SUBAGENT_ORCH_V0_CLAUDE_ONLY) as (session, _, recorder, _):
+            session.env[UG_ROUTE_VALIDATION_ENV_VAR] = "1"
+            try:
+                checkpoint = recorder.checkpoint()
+                recorder.prepare_launch()
+                with Terminal(session, "startup-route-validation-supported", [CLAUDE]) as tui:
+                    tui.boot(timeout=150)
+                    tui.wait_for(
+                        lambda _: (
+                            _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                            and _smart_router_hint_shown(tui, enabled=True)
+                        ),
+                        "the ON Smart Router band and smart router ON in the prompt hint row",
+                    )
+                    assert not any("isn't supported" in line for line in tui.screen.display)
+                    tui.exit_normally()
+            finally:
+                session.env.pop(UG_ROUTE_VALIDATION_ENV_VAR, None)
+            [request] = [
+                r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
+            ]
+            options = request.payload["route_options"]
+            assert options and {option["harness"] for option in options} == {CLAUDE}
+            response = recorder.response_for(request)
+            assert response.status_code == 200
+            assert response.payload["is_supported"] is True
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(

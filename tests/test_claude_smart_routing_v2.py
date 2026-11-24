@@ -16,7 +16,7 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import claude_hooks, routing, session_log, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -24,6 +24,681 @@ if sys.platform != "win32":
 requires_pty = pytest.mark.skipif(
     sys.platform == "win32", reason="Claude PTY routing is POSIX-only"
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+
+
+_EXPLANATION = {
+    "selected_model": "model-b",
+    "summary": "Chosen for lower expected cost.",
+    "task_understanding": [],
+    "models": [
+        {
+            "id": "model-b",
+            "name": "Selected model",
+            "selected": True,
+            "considered": True,
+            "reason": "Best expected fit.",
+        },
+        {
+            "id": "alternative",
+            "name": "Alternative",
+            "selected": False,
+            "considered": False,
+            "reason": "Excluded by the routing policy.",
+        },
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("explanation", "retained"),
+    [
+        (_EXPLANATION, True),
+        (json.dumps(_EXPLANATION), True),
+        (
+            {**_EXPLANATION, "session_id": "s1", "tool_use_id": "t1"},
+            True,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "evidence": {"session_id": "s1", "tool_use_id": "t1"},
+            },
+            True,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"session_id": "s1", "tool_use_id": "t1"},
+            },
+            True,
+        ),
+        (None, False),
+        ({"summary": "private-invalid-metadata"}, False),
+    ],
+    ids=[
+        "object",
+        "json-string",
+        "matching-direct-identities",
+        "matching-nested-identities",
+        "matching-direct-and-nested-identities",
+        "absent",
+        "invalid",
+    ],
+)
+def test_explanation_roundtrip_does_not_change_subagent_selection(
+    tmp_path, monkeypatch, caplog, explanation, retained
+):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
+    selected = "system.ai.model-b"
+    calls = []
+    original = {"prompt": "inspect parser", "subagent_type": "general-purpose", "model": "opus"}
+    payload = {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "tool_name": "Agent",
+        "tool_input": original.copy(),
+    }
+
+    def reply(request, timeout):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+    assert result == {"model": selected, "rationale": "Selected by router."}
+    assert payload["tool_input"] == original
+    assert len(calls) == 1
+    assert calls[0]["task"] == {"prompt": "inspect parser"}
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    session_records = session_log.read_decisions("claude", "s1")
+    assert len(session_records) == 1
+    session_record = session_records[0]
+    assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    assert record["rationale"] == "Selected by router."
+    if retained:
+        expected = json.loads(explanation) if isinstance(explanation, str) else explanation
+        assert record["explanation"] == session_record["explanation"] == expected
+        assert session_record["prompt"]["preview"] == "inspect parser"
+    else:
+        assert "explanation" not in record
+        assert "explanation" not in session_record
+    assert ("Discarded routing explanation" in caplog.text) == (
+        explanation is not None and not retained
+    )
+    assert "private-invalid-metadata" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "explanation",
+    [
+        *[
+            pytest.param(
+                {
+                    **_EXPLANATION,
+                    **(
+                        {"selected_model": model_id}
+                        if field == "selected_model"
+                        else {
+                            "models": [
+                                {**_EXPLANATION["models"][0], "id": model_id},
+                                _EXPLANATION["models"][1],
+                            ]
+                        }
+                    ),
+                },
+                id=f"model-{case}-{field}",
+            )
+            for field in ["selected_model", "candidate_id"]
+            for case, model_id in [("ansi", "\x1b[35mmodel-b\x1b[0m"), ("control", "model-b\x00")]
+        ],
+        *[
+            pytest.param(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], field: value},
+                        _EXPLANATION["models"][1],
+                    ],
+                },
+                id=case,
+            )
+            for case, field, value in [
+                ("boolean-quality", "quality_estimate", True),
+                ("boolean-score", "routing_score", False),
+                ("negative-cost", "estimated_cost_usd", -0.1),
+                ("breakdown-array", "components", []),
+                ("breakdown-boolean", "components", {"quality": True}),
+                ("breakdown-nonfinite", "difference_from_winner", {"cost": float("nan")}),
+                ("breakdown-invalid-key", "components", {"cost\n": 1}),
+                ("breakdown-too-many", "components", {f"field{i}": i for i in range(9)}),
+            ]
+        ],
+        pytest.param(
+            {**_EXPLANATION, "models": _EXPLANATION["models"][:1]},
+            id="missing-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "unoffered"},
+                ],
+            },
+            id="unoffered-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "model-b", "considered": True},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="duplicate-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    *_EXPLANATION["models"],
+                    {
+                        "id": "unoffered",
+                        "name": "Unoffered model",
+                        "selected": False,
+                        "considered": True,
+                        "reason": "Outside the offered menu.",
+                    },
+                ],
+            },
+            id="extra-model",
+        ),
+        pytest.param("invalid", id="invalid-json"),
+        pytest.param("[]", id="array"),
+        pytest.param(
+            json.dumps(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                        _EXPLANATION["models"][1],
+                    ],
+                }
+            ),
+            id="nonfinite-json",
+        ),
+        pytest.param(
+            json.dumps({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}),
+            id="oversized-json",
+        ),
+        pytest.param("[" * 2000 + "0" + "]" * 2000, id="deeply-nested"),
+        pytest.param(
+            {**_EXPLANATION, "evidence": {"audit": "x" * 65536}},
+            id="oversized-object",
+        ),
+        pytest.param(
+            {key: value for key, value in _EXPLANATION.items() if key != "task_understanding"},
+            id="missing-task-understanding",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "task_understanding": [""]},
+            id="empty-task-understanding-item",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "name": ""},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="empty-model-name",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "selected_model": "alternative"},
+            id="invalid-selected-model",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "session_id": "s\x1b[31m1"},
+            id="identity-ansi",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "tool_use_id": "t\x00"},
+            id="identity-control",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "session_id": "s" * 257},
+            id="identity-too-long",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "tool_use_id": 1},
+            id="identity-nonstring",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "evidence": {"session_id": []}},
+            id="evidence-identity-nonstring",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "selected": True, "considered": True},
+                ],
+            },
+            id="double-selected",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "considered": False},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="selected-not-considered",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "selected": 1},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="nonbool-selected",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "considered": 1},
+                ],
+            },
+            id="nonbool-considered",
+        ),
+    ],
+)
+def test_parse_routing_explanation_rejects_invalid_metadata(explanation):
+    assert (
+        routing._parse_routing_explanation(
+            explanation,
+            "system.ai.model-b",
+            (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "identity_fields",
+    [
+        pytest.param({"session_id": "stale-session", "tool_use_id": "t1"}, id="stale-session"),
+        pytest.param({"session_id": "s1", "tool_use_id": "stale-call"}, id="stale-tool-use"),
+        pytest.param(
+            {
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"session_id": "other-session"},
+            },
+            id="nested-session-conflict",
+        ),
+        pytest.param(
+            {
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"tool_use_id": "other-call"},
+            },
+            id="nested-tool-use-conflict",
+        ),
+    ],
+)
+def test_explanation_roundtrip_rejects_stale_identity_before_audit(
+    tmp_path, monkeypatch, caplog, identity_fields
+):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
+    selected = "system.ai.model-b"
+    explanation = {**_EXPLANATION, **identity_fields}
+    payload = {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "inspect parser", "subagent_type": "general-purpose"},
+    }
+
+    def reply(request, timeout):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+
+    assert result == {"model": selected, "rationale": "Selected by router."}
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    assert record["router_model"] == selected
+    assert record["rationale"] == "Selected by router."
+    assert "explanation" not in record
+    assert "session or tool-call identity does not match request" in caplog.text
+
+
+def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
+    selected = {
+        **_EXPLANATION["models"][0],
+        "name": " \x1b[34mSelected\x1b[0m model ",
+        "reason": " Best\x01 fit ",
+        "quality_estimate": 0.91,
+        "estimated_cost_usd": 0.24,
+        "routing_score": -0.1,
+        "components": {"quality": 0.91},
+        "difference_from_winner": {"quality": -0.09},
+        "internal_trace": {"discard": "this"},
+    }
+    alternative = {
+        **_EXPLANATION["models"][1],
+        "internal_trace": "discard this too",
+    }
+    explanation = {
+        **_EXPLANATION,
+        "summary": "\x1b[31mSummary\x1b[0m\x01more\n" + "x" * 2050,
+        "task_understanding": ["\x1b[32mStep\x1b[0m\x00 two"],
+        "recipe": {"malformed": "unused optional metadata"},
+        "formula": "formula\x7f text",
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "evidence": {
+            "session_id": "s1",
+            "tool_use_id": "t1",
+            "internal_trace": "discard this",
+        },
+        "internal_trace": "discard this",
+        "models": [selected, alternative],
+    }
+    original = json.loads(json.dumps(explanation))
+
+    normalized = routing._parse_routing_explanation(
+        explanation,
+        "system.ai.model-b",
+        (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+    )
+
+    assert normalized is not None
+    summary_prefix = "Summary more "
+    assert normalized["summary"] == summary_prefix + "x" * (2000 - len(summary_prefix))
+    assert normalized["task_understanding"] == ["Step two"]
+    assert "recipe" not in normalized
+    assert normalized["formula"] == "formula text"
+    assert normalized["models"] == [
+        {
+            "id": "model-b",
+            "name": "Selected model",
+            "selected": True,
+            "considered": True,
+            "reason": "Best fit",
+            "quality_estimate": 0.91,
+            "estimated_cost_usd": 0.24,
+            "routing_score": -0.1,
+            "components": {"quality": 0.91},
+            "difference_from_winner": {"quality": -0.09},
+        },
+        {
+            "id": "alternative",
+            "name": "Alternative",
+            "selected": False,
+            "considered": False,
+            "reason": "Excluded by the routing policy.",
+        },
+    ]
+    assert normalized["session_id"] == "s1"
+    assert normalized["tool_use_id"] == "t1"
+    assert normalized["evidence"] == {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+    }
+    assert set(normalized) == {
+        "selected_model",
+        "summary",
+        "task_understanding",
+        "models",
+        "formula",
+        "session_id",
+        "tool_use_id",
+        "evidence",
+    }
+    assert explanation == original
+
+    null_identity = {
+        **_EXPLANATION,
+        "session_id": None,
+        "tool_use_id": None,
+        "evidence": {"session_id": None, "tool_use_id": None},
+    }
+    normalized_null_identity = routing._parse_routing_explanation(
+        null_identity,
+        "system.ai.model-b",
+        (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+    )
+    assert normalized_null_identity is not None
+    assert normalized_null_identity["session_id"] is None
+    assert normalized_null_identity["tool_use_id"] is None
+    assert normalized_null_identity["evidence"] == {"session_id": None, "tool_use_id": None}
+
+
+@pytest.mark.parametrize(
+    ("selected", "execution_model", "explanation_id"),
+    [
+        (
+            "anthropic-aigw-c442a48-system.ai.model-b",
+            "anthropic-aigw-c442a48-system.ai.model-b",
+            "model-b",
+        ),
+        (
+            "anthropic-aigw-01234567-system.ai.model-b",
+            "anthropic-aigw-01234567-system.ai.model-b",
+            "model-b",
+        ),
+        ("gpt-5.4.1", "gpt-5.4.1[1m]", "gpt-5.4.1"),
+        (
+            "anthropic-aigw-c442a48-gpt-5.4.1",
+            "anthropic-aigw-c442a48-gpt-5.4.1",
+            "gpt-5.4.1",
+        ),
+        ("system.ai.gpt-5.4.1", "system.ai.gpt-5.4.1[1m]", "gpt-5.4.1"),
+        (
+            "anthropic-aigw-01234567-system.ai.gpt-5.4.1",
+            "anthropic-aigw-01234567-system.ai.gpt-5.4.1[1m]",
+            "gpt-5.4.1",
+        ),
+        (
+            "anthropic-aigw-c442a48-system.ai.gpt-5.4.1",
+            "anthropic-aigw-c442a48-system.ai.gpt-5.4.1",
+            "gpt-5.4.1",
+        ),
+        ("databricks-gpt-5.4.1", "databricks-gpt-5.4.1[1m]", "databricks-gpt-5.4.1"),
+        ("anthropic-aigw-01234567-gpt-5.4.1", "anthropic-aigw-01234567-gpt-5.4.1[1m]", "gpt-5.4.1"),
+        ("gpt-5.4.1[1m]", "gpt-5.4.1[1m]", "gpt-5.4.1[1m]"),
+        ("custom.catalog.gpt-5.4.1", "custom.catalog.gpt-5.4.1", "custom.catalog.gpt-5.4.1"),
+        (
+            "custom.catalog.gpt-5.4.1[1m]",
+            "custom.catalog.gpt-5.4.1[1m]",
+            "custom.catalog.gpt-5.4.1[1m]",
+        ),
+    ],
+)
+def test_gateway_wrappers_and_context_hint_preserve_valid_explanation(
+    tmp_path, monkeypatch, selected, execution_model, explanation_id
+):
+    explanation = {
+        **_EXPLANATION,
+        "selected_model": explanation_id,
+        "models": [
+            {**model, "id": explanation_id if model["selected"] else model["id"]}
+            for model in _EXPLANATION["models"]
+        ],
+    }
+
+    def reply(request, timeout):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        {
+            "session_id": "wrapped-session",
+            "tool_use_id": "wrapped-call",
+            "tool_name": "Agent",
+            "tool_input": {"prompt": "inspect the repository"},
+        },
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+
+    assert result == {"model": execution_model, "rationale": "Selected by router."}
+    records = session_log.read_decisions("claude", "wrapped-session")
+    assert len(records) == 1
+    assert records[0]["explanation"] == explanation
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch, wrapped):
+    model_ids = [f"custom.catalog.model-{index:02d}" for index in range(20)]
+    model_ids[1] = model_ids[0] + "[1m]"
+    model_ids[2] = "custom.catalog.namespace.model-02"
+    model_ids[3] = model_ids[2] + "[1m]"
+    offered_models = [
+        ("anthropic-aigw-01234567-" if wrapped else "") + model for model in model_ids
+    ]
+    selected_model = offered_models[0]
+    explanation = {
+        "selected_model": model_ids[0],
+        "summary": "Selected from the offered custom catalog.",
+        "task_understanding": [],
+        "models": [
+            {
+                "id": model_id,
+                "name": f"Custom model {index:02d}",
+                "selected": model_id == model_ids[0],
+                "considered": index < 18,
+                "reason": (
+                    "Not available for comparison."
+                    if index >= 18
+                    else "Selected for the task."
+                    if model_id == model_ids[0]
+                    else "Evaluated by the router."
+                ),
+            }
+            for index, model_id in enumerate(model_ids)
+        ],
+    }
+    calls = []
+    payload = {
+        "session_id": "s20",
+        "tool_use_id": "t20",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "inspect the repository", "subagent_type": "general-purpose"},
+    }
+
+    def reply(request, timeout):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected_model},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected from the custom catalog.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=offered_models,
+        audit_decision=True,
+    )
+
+    assert result == {"model": selected_model, "rationale": "Selected from the custom catalog."}
+    assert len(calls) == 1
+    assert calls[0]["route_options"] == [
+        {"model": model_id, "harness": "claude"} for model_id in offered_models
+    ]
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    rows = record["explanation"]["models"]
+    assert len(rows) == 20
+    assert [row["id"] for row in rows] == model_ids
+    assert all(row["considered"] for row in rows[:18])
+    assert all(not row["considered"] for row in rows[-2:])
+    assert [row["reason"] for row in rows[-2:]] == ["Not available for comparison."] * 2
+
+    assert record["explanation"] == explanation
 
 
 @pytest.mark.parametrize("catalog_size", [128, 129, 256])
@@ -465,10 +1140,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
+    @pytest.mark.parametrize("validation", [False, True])
     @pytest.mark.parametrize("auto_picker", [False, True])
     def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, auto_picker
+        self, tmp_path, monkeypatch, auto_picker, validation
     ):
+        if validation:
+            monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -554,19 +1232,31 @@ class TestV2Launch:
         assert captured["controls"] == (
             dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if auto_picker else {}
         )
+        route_argv = [
+            "/bin/ug",
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            "https://example.com",
+            "--model",
+            "system.ai.claude-opus-4-8",
+        ]
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
-                "routeCommand": [
-                    "/bin/ug",
-                    "claude-router-hook",
-                    "route-subagent-mod",
-                    "--host",
-                    "https://example.com",
-                    "--model",
-                    "system.ai.claude-opus-4-8",
-                ],
+                "routeCommand": route_argv,
+                **(
+                    {
+                        "validateCommand": [
+                            *route_argv[:2],
+                            claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                            *route_argv[3:],
+                        ]
+                    }
+                    if validation
+                    else {}
+                ),
             }
         }
         env = settings["env"]
@@ -941,7 +1631,7 @@ class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, picker_catalog):
+    def _launch(monkeypatch, tmp_path, *, picker_catalog, provider=None):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -971,7 +1661,7 @@ class TestV2ModelPickerDiscovery:
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
-                {"workspace": "https://example.com"},
+                {"workspace": "https://example.com", "_claude_launch_provider": provider},
                 [],
                 binary="claude",
                 user_settings_path=user_settings,
@@ -982,6 +1672,46 @@ class TestV2ModelPickerDiscovery:
             )
         assert exc.value.code == 0
         return discovery_calls
+
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            (None, "databricks-claude-opus-4-8", "system.ai.claude-opus-4-8"),
+            (
+                "main.default.anthropic-mps",
+                "anthropic.claude-opus-4-8",
+                "anthropic.claude-opus-4-8",
+            ),
+        ],
+    )
+    def test_startup_validation_gets_the_launch_model_list_and_provider(
+        self, tmp_path, monkeypatch, provider, model, expected
+    ):
+        validation_start = Mock()
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
+        monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
+        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
+
+        assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
+
+        validation_start.assert_called_once_with(
+            "https://example.com",
+            "token",
+            [(expected, "claude")],
+            router_name="chosen-recipe",
+            session_controls=Path(os.environ[v2.SESSION_ENV_VAR]),
+            provider=provider,
+        )
+
+    def test_startup_validation_is_off_by_default(self, tmp_path, monkeypatch):
+        validation_start = Mock()
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
+        catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
+
+        assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0
+
+        validation_start.assert_not_called()
 
     def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
         discovery_calls = self._launch(

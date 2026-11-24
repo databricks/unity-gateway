@@ -29,7 +29,15 @@ COMMAND_OPERATION = "command"
 UG_CLI_ERROR = "ug_cli_error"
 DATABRICKS_TOKEN_FETCH_OPERATION = "databricks_token_fetch"
 DATABRICKS_TOKEN_FETCH_DURATION_MS = f"{DATABRICKS_TOKEN_FETCH_OPERATION}_duration_ms"
+# Scope slot, not a label: `record_awaited_duration` stashes it on the measure scope and
+# `measure` records it as the operation's duration instead of the wall time around the
+# call, so a caller that awaited another thread's fetch reports that fetch's duration
+# (see the Databricks token fetch's in-process single flight) without the per-sample ms
+# value ever shipping as an exported attribute.
+AWAITED_DURATION_MS = "awaited_duration_ms"
 DATABRICKS_LOGIN_OPERATION = "databricks_login"
+# The api_operation label for the gateway's model listing (`/models`).
+MODELS_LIST_OPERATION = "models_list"
 DATABRICKS_LOGIN_DURATION_MS = f"{DATABRICKS_LOGIN_OPERATION}_duration_ms"
 CODING_AGENT_CONFIG_FETCH_DURATION_MS = "coding_agent_config_fetch_duration_ms"
 MODEL_SERVICE_ACCESS_CHECK_DURATION_MS = "model_service_access_check_duration_ms"
@@ -38,6 +46,7 @@ HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
 HTTP_RETRY_COUNT = "http_retry_count"
 UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
 ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
+ROUTE_VALIDATION_DURATION_MS = "route_validation_duration_ms"
 PROXY_REQUEST_OPERATION = "proxy_request"
 PROXY_REQUEST_DURATION_MS = f"{PROXY_REQUEST_OPERATION}_duration_ms"
 PROXY_UPSTREAM_HEADERS_DURATION_MS = "proxy_upstream_headers_duration_ms"
@@ -62,6 +71,7 @@ DURATION_METRICS = frozenset(
         AGENT_CONFIGURATION_DURATION_MS,
         SKILLS_REFRESH_DURATION_MS,
         ROUTING_DECISION_DURATION_MS,
+        ROUTE_VALIDATION_DURATION_MS,
         UG_USAGE_DURATION_MS,
         HTTP_REQUEST_DURATION_MS,
         PROXY_UPSTREAM_HEADERS_DURATION_MS,
@@ -118,6 +128,7 @@ _AGENT_SESSION_COMMANDS = frozenset(
         "codex-router-hook",
         "cowork-hook",
         "copilot-seat-runtime",
+        "copilot-app-restart",
         "claude-desktop-auth",
         "smart-router-describe",
         "smart-router-logs",
@@ -405,6 +416,21 @@ def annotate(**labels: Any) -> None:
         current["labels"].update(_labels(labels))
 
 
+@_best_effort
+def record_awaited_duration(name: str, duration_ms: float) -> None:
+    """Attribute the measurement named `name` to the awaited operation's own duration
+    instead of the wall time around the call — an untimed fetch's duration, reported once
+    by the first timed caller that reuses it. The value rides the measure scope outside
+    the label set, so it is never exported as a sample attribute; the innermost scope
+    named `name` wins when measurements nest."""
+    current = _scope.get()
+    while current is not None:
+        if current["name"] == name:
+            current[AWAITED_DURATION_MS] = duration_ms
+            return
+        current = current["parent"]
+
+
 def error_code(error: BaseException | str) -> str:
     # Categorize locally; exception messages, URLs, response bodies and prompts are never exported.
     text = str(error).lower()
@@ -481,7 +507,8 @@ def measure(
     **labels: Any,
 ) -> Iterator[dict[str, Any]]:
     values: dict[str, Any] = {}
-    scope = None
+    scope: dict[str, Any] | None = None
+    scope_token = None
     started = None
     with suppress(Exception):
         values = _labels(labels)
@@ -489,15 +516,14 @@ def measure(
             if workspace:
                 workspace = destination(workspace)
             started = time.perf_counter()
-            scope = _scope.set(
-                {
-                    "workspace": workspace,
-                    "labels": values,
-                    "fallback": continued_with_fallback,
-                    "name": name,
-                    "parent": _scope.get(),
-                }
-            )
+            scope = {
+                "workspace": workspace,
+                "labels": values,
+                "fallback": continued_with_fallback,
+                "name": name,
+                "parent": _scope.get(),
+            }
+            scope_token = _scope.set(scope)
     try:
         yield values
     except Exception as exc:
@@ -507,10 +533,18 @@ def measure(
     finally:
         with suppress(Exception):
             if scope is not None and started is not None:
-                record(name, (time.perf_counter() - started) * 1000, workspace=workspace, **values)
+                awaited = scope.pop(AWAITED_DURATION_MS, None)
+                record(
+                    name,
+                    awaited
+                    if isinstance(awaited, (int, float))
+                    else (time.perf_counter() - started) * 1000,
+                    workspace=workspace,
+                    **values,
+                )
         with suppress(Exception):
-            if scope is not None:
-                _scope.reset(scope)
+            if scope_token is not None:
+                _scope.reset(scope_token)
 
 
 def timed(
@@ -647,6 +681,7 @@ def api_operation(url: str) -> str:
         ("coding-agent-config", "coding_agent_config_fetch"),
         ("budget", "budget_spend_statuses"),
         ("routes:select", "routes_select"),
+        ("routes:validate", "routes_validate"),
         ("model-provider-services", "model_provider_services_list"),
         ("model-services", "model_services_list"),
         ("/messages", "messages"),
@@ -655,7 +690,7 @@ def api_operation(url: str) -> str:
         ("/traces", "otel_traces"),
         ("/metrics", "otel_metrics"),
         ("/logs", "otel_logs"),
-        ("/models", "models_list"),
+        ("/models", MODELS_LIST_OPERATION),
         ("/skills", "skills"),
         ("/mcp", "mcp"),
         ("/scim/", "scim_me"),

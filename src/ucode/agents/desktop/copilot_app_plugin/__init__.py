@@ -43,12 +43,23 @@ Status = Literal["installed", "removal_pending", "disabled", "not_installed", "i
 
 _MARKETPLACES_KEY = "extraKnownMarketplaces"
 _ENABLED_KEY = "enabledPlugins"
+_TELEMETRY_KEY = "telemetry"
+_HEADERS_PROVIDER_KEY = "headersProvider"
+_UG_BINARY_NAMES = frozenset({"ug", "ug.exe", "ucode", "ucode.exe"})
 _SOURCE_FILES = (
     "extension.mjs",
     "ug-plugin.mjs",
     "app-rows.mjs",
     "app-remove.mjs",
     "app-restart.mjs",
+    "app-state.mjs",
+    "app-host.mjs",
+    "app-proxy.mjs",
+    "app-windows.mjs",
+    "app-debug.mjs",
+    "app-system-proxy.mjs",
+    "app-seat-relay.mjs",
+    "app-seat-redirect.mjs",
 )
 # The app unloads the extension within about 3 s of its settings keys going away. Deleting the
 # directory first leaves the running extensions serving open chats until a new chat starts.
@@ -115,6 +126,12 @@ class PluginConfig:
     # Every provider id ug may have written to the app; the extension deletes those not in
     # ``app_providers``.
     owned_provider_ids: tuple[str, ...] = ()
+    # The relayed Model Provider Service the app's own GitHub Copilot calls go through; None
+    # leaves them direct.
+    seat_relay: str | None = None
+    # ug's own User-Agent (`ucode/<v> (<platform>)`); the relay puts the runtime's product tokens
+    # between the two, so the gateway attributes the call to Copilot at the runtime's version.
+    user_agent: str | None = None
 
 
 def copilot_settings_path() -> Path:
@@ -228,12 +245,31 @@ def extension_config(config: PluginConfig) -> dict:
             "providers": [_app_entry(rows) for rows in config.app_providers],
             "ownedProviderIds": list(config.owned_provider_ids),
         },
+        "seatRelay": (
+            {
+                "gatewayBase": config.workspace.rstrip("/"),
+                "providerService": config.seat_relay,
+                "headers": dict(config.headers),
+                "userAgent": config.user_agent,
+                "askGitHub": True,
+            }
+            if config.seat_relay
+            else None
+        ),
     }
 
 
 # What the extension keeps between runs, in its own directory; a reinstall carries them over, so
 # an unchanged configure neither resyncs nor restarts the app.
-_EXTENSION_STATE_FILES = ("app-sync.json", "app-restart.json", "app-restart.log")
+_EXTENSION_STATE_FILES = (
+    "app-sync.json",
+    "app-restart.json",
+    "app-restart.log",
+    "seat-relay-sessions.json",
+    "seat-relay-requests.json",
+    "seat-relay-debug.log",
+    "seat-relay-debug.log.1",
+)
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
 # Older leftovers are from a run that crashed, never from one still writing.
@@ -440,6 +476,21 @@ def _has_ug_keys(settings: dict, root: Path) -> bool:
     return bool(_ug_entries(settings, root))
 
 
+def debug_log_path(root: Path | None = None) -> Path | None:
+    """The installed extension's diagnostics log, when it has written one."""
+    path = _extension_dir(root or plugin_root()) / "seat-relay-debug.log"
+    return path if path.is_file() else None
+
+
+def missing_ug_path(root: Path | None = None) -> str | None:
+    """The absolute ``ug`` path the installed extension runs, when it no longer exists there."""
+    config = _read_extension_config(root or plugin_root())
+    path = config.get("ugPath") if config is not None else None
+    if isinstance(path, str) and os.path.isabs(path) and not os.path.isfile(path):
+        return path
+    return None
+
+
 def _read_extension_config(root: Path, plugin: str = PLUGIN) -> dict | None:
     try:
         path = _extension_dir(root, plugin) / "config.json"
@@ -465,6 +516,44 @@ def enable(root: Path | None = None, settings_path: Path | None = None) -> None:
     }
     _object(settings, _ENABLED_KEY, path)[PLUGIN_KEY] = True
     _write_settings(path, settings)
+
+
+def seat_relay_provider(root: Path | None = None) -> str | None:
+    """The relayed Model Provider Service the installed extension routes the app's GitHub Copilot
+    calls through, or None."""
+    config = _read_extension_config(root or plugin_root())
+    relay = config.get("seatRelay") if config is not None else None
+    service = relay.get("providerService") if isinstance(relay, dict) else None
+    return service if isinstance(service, str) and service else None
+
+
+def remove_headers_provider(settings_path: Path | None = None) -> bool:
+    """Remove the ``telemetry.headersProvider`` running ``ug otel-headers`` that earlier builds
+    wrote; another one stays. Returns whether it was removed."""
+    path = settings_path or copilot_settings_path()
+    if not path.exists():
+        return False
+    settings = read_settings(path)
+    telemetry = settings.get(_TELEMETRY_KEY)
+    provider = telemetry.get(_HEADERS_PROVIDER_KEY) if isinstance(telemetry, dict) else None
+    args = provider.get("args") if isinstance(provider, dict) else None
+    executable = provider.get("path") if isinstance(provider, dict) else None
+    # ug wrote ``<ug> otel-headers --host <workspace> ...``; a user's own helper stays, even one
+    # with the same arguments.
+    if (
+        not isinstance(telemetry, dict)
+        or not isinstance(executable, str)
+        or Path(executable).name.lower() not in _UG_BINARY_NAMES
+        or not isinstance(args, list)
+        or args[:1] != ["otel-headers"]
+        or "--host" not in args
+    ):
+        return False
+    del telemetry[_HEADERS_PROVIDER_KEY]
+    if not telemetry:
+        del settings[_TELEMETRY_KEY]
+    _write_settings(path, settings)
+    return True
 
 
 def _created_settings_marker(root: Path) -> Path:

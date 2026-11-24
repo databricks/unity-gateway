@@ -717,7 +717,7 @@ class TestFetchClient:
             captured["request"] = request
             return _FakeResponse()
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert captured["request"].get_header("User-agent") == f"{expected} {client_platform()}"
 

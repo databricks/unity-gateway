@@ -16,7 +16,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .harness import process_group_options, stop_process
+from .harness import WindowsJob, process_group_options, stop_process
 
 FIRST_LAUNCH_TIMEOUT_S = 90
 STEP_TIMEOUT_S = 60
@@ -39,12 +39,24 @@ _SCREEN = """() => {
   const dialog = [...document.querySelectorAll('.monaco-dialog-box')].find(visible);
   const picker = [...document.querySelectorAll('.chat-model-picker-widget')].find(visible);
   const button = document.querySelector('.interactive-input-part .model-picker-split');
+  const target = document.querySelector('.interactive-input-part .chat-session-target-picker-item');
+  const tour = [...document.querySelectorAll('.spotlight-overlay .spotlight-callout')].find(visible);
+  // A finished tool call renders in a collapsible confirmation widget with nothing to approve.
   const confirmation = [...document.querySelectorAll(
     '.chat-confirmation-widget-container, .chat-confirmation-widget, .chat-confirmation-widget2'
-  )].filter(visible).pop();
-  const response = [...document.querySelectorAll(
-    '.interactive-item-container.interactive-response'
-  )].pop();
+  )].filter(e => visible(e)
+    && !e.matches('.chat-confirmation-widget-collapsible')
+    && !e.querySelector('.chat-confirmation-widget-collapsible')).pop();
+  // The chat list renders only rows in view and reuses row elements, so earlier turns can leave
+  // the DOM and DOM order isn't chat order. The current turn is the last request by row index and
+  // the response after it.
+  const row = e => Number(e.closest('.monaco-list-row')?.dataset.index ?? -1);
+  const items = [...document.querySelectorAll(
+    '.interactive-item-container.interactive-request, .interactive-item-container.interactive-response'
+  )].sort((a, b) => row(a) - row(b));
+  const last = items.findLastIndex(e => e.classList.contains('interactive-request'));
+  const request = last < 0 ? null : items[last];
+  const response = items.slice(last + 1).find(e => e.classList.contains('interactive-response'));
   const welcome = [...document.querySelectorAll('.tabs-container .tab')].find(
     e => text(e).startsWith('Welcome')
   );
@@ -62,14 +74,16 @@ _SCREEN = """() => {
     pickerSearch: !!(picker && picker.querySelector('input')),
     pickerQuery: picker && picker.querySelector('input') ? picker.querySelector('input').value : null,
     modelButton: button ? button.getAttribute('aria-label') : null,
+    sessionTarget: target ? text(target) : null,
+    tour: tour ? text(tour) : null,
     confirmation: confirmation ? text(confirmation) : null,
+    request: request ? text(request) : null,
     response: response
       ? {busy: response.classList.contains('chat-response-loading'), text: text(response)}
       : null,
-    responses: document.querySelectorAll('.interactive-item-container.interactive-response').length,
     welcome: !!welcome && visible(welcome),
-    byokToast: visible(document.evaluate(
-      "//*[normalize-space(text())='Set BYOK utility models']", document, null,
+    signedOutNotice: visible(document.evaluate(
+      "//*[normalize-space(text())='Choose how you want to use Copilot.']", document, null,
       XPathResult.FIRST_ORDERED_NODE_TYPE, null
     ).singleNodeValue),
     modelsEditor: !!modelsEditor,
@@ -104,7 +118,8 @@ class VSCode:
         self.actions: list[str] = []
         self.states: list[str] = []
         self.started = time.monotonic()
-        self.copilot_chat_ready = False
+        self.copilot_session_ready = False
+        self.job: WindowsJob | None = None
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
@@ -121,7 +136,10 @@ class VSCode:
             app = session.which("code").resolve().parent.parent / (
                 "Code.exe" if os.name == "nt" else "code"
             )
-            self.code = subprocess.Popen(
+            if os.name == "nt":
+                self.job = WindowsJob()
+            start = self.job.popen if self.job else subprocess.Popen
+            self.code = start(
                 [
                     str(app),
                     "--no-sandbox",
@@ -190,6 +208,8 @@ class VSCode:
         for name in ("code", "display"):
             if proc := getattr(self, name, None):
                 stop_process(proc)
+        if job := getattr(self, "job", None):
+            job.close()
         if log := getattr(self, "log", None):
             log.close()
 
@@ -259,11 +279,7 @@ class VSCode:
             return None
 
     def screen(self) -> dict:
-        screen = self.page.evaluate(_SCREEN)
-        # The toast hides itself after some seconds, so remember it from any read.
-        if screen["byokToast"]:
-            self.copilot_chat_ready = True
-        return screen
+        return self.page.evaluate(_SCREEN)
 
     def shot(self, name: str) -> None:
         self.shots += 1
@@ -346,13 +362,19 @@ class VSCode:
                 and screen["picker"] is None
                 and not screen["modelsEditor"]
                 and not screen["copilotChatOffNotice"]
+                and screen["tour"] is None
             ):
                 # ug's extension can switch the model and a second Language Models editor can open
                 # just after the providers are added, so the picked screen has to hold.
                 self._seen("picked", screen)
                 last, picked_since = "picked", picked_since or time.monotonic()
                 if time.monotonic() - picked_since >= SETTLE_S:
-                    self._wait_for_copilot_chat()
+                    if not self.copilot_session_ready:
+                        # Copilot Chat can open the second editor as its session starts, so the
+                        # picked screen holds again from then.
+                        self._wait_for_copilot_session()
+                        picked_since, deadline = None, min(time.monotonic() + STEP_TIMEOUT_S, cap)
+                        continue
                     self.shot("model-picked")
                     return
                 time.sleep(POLL_S)
@@ -390,6 +412,10 @@ class VSCode:
                 if self._picker_state(self.screen(), label) == state:
                     raise
                 self.actions.append(f"  (the screen changed before the click: {state})")
+            if state == "language models editor":
+                # Its action returns once the editor has closed, so an editor on the next read is
+                # another one, even when no other screen was read in between.
+                last = None
         raise AssertionError(f"Timed out picking {label}; last screen {self.screen()}")
 
     def _picker_action(self, state: str, screen: dict, label: str) -> None:
@@ -397,7 +423,14 @@ class VSCode:
         picker = page.locator(".chat-model-picker-widget:visible")
         model_button = page.locator(".interactive-input-part .model-picker-split").first
         row = picker.locator(f'.monaco-list-row[aria-label^="{label},"]').first
-        if state == "dialog: trust folder":
+        if state == "tour":
+            # An experiment shows this tour to some new profiles only; it blocks every other click.
+            self.shot("tour")
+            self._click(
+                "tour: End Tour",
+                page.locator(".spotlight-callout:visible").get_by_role("button", name="End Tour"),
+            )
+        elif state == "dialog: trust folder":
             self._click(
                 "trust dialog: Trust Folder & Continue",
                 page.locator(".monaco-dialog-box:visible").get_by_role(
@@ -496,17 +529,21 @@ class VSCode:
 
         self._act(f"model picker: type {label}", type_label)
 
-    def _wait_for_copilot_chat(self) -> None:
-        # Copilot Chat shows this toast once it runs on Databricks models. A prompt sent before
-        # then goes to VS Code's setup agent, which asks for a GitHub sign-in.
-        if self.copilot_chat_ready:
+    def _wait_for_copilot_session(self) -> None:
+        """Require the chat to be a Copilot session that doesn't ask for a GitHub sign-in."""
+        if self.copilot_session_ready:
             return
-        self._wait(
-            lambda: self.screen()["byokToast"],
+        screen = self._wait(
+            lambda: (screen := self.screen())["sessionTarget"] and screen,
             STEP_TIMEOUT_S,
-            "Copilot Chat to start on the Databricks models",
+            "the chat's session type",
         )
-        self.shot("copilot-chat-ready")
+        target = screen["sessionTarget"]
+        assert target == "Copilot", f"The chat opened a {target!r} session, not a Copilot session"
+        if screen["signedOutNotice"]:
+            self.shot("copilot-session-signed-out")
+            raise AssertionError("The Copilot session asks for a sign-in on Databricks models")
+        self.copilot_session_ready = True
 
     def assert_not_in_picker(self, label: str) -> None:
         """Search Copilot Chat's model picker for ``label``, require no match, and close it."""
@@ -545,6 +582,7 @@ class VSCode:
                     "dialog: trust folder",
                     "notice: Copilot Chat off",
                     "language models editor",
+                    "tour",
                 ):
                     # Reopening a profile can show the signed-out picker until Copilot Chat starts.
                     self._picker_action(state, screen, label)
@@ -554,6 +592,9 @@ class VSCode:
                 if self._picker_state(self.screen(), label) == state:
                     raise
                 self.actions.append(f"  (the screen changed before the click: {state})")
+            if state == "language models editor":
+                # As in pick_model: the next editor seen is another one.
+                last = None
         raise AssertionError(f"Timed out searching the picker for {label}; last {self.screen()}")
 
     def quit(self) -> None:
@@ -565,6 +606,13 @@ class VSCode:
             self.code.wait(timeout=STEP_TIMEOUT_S)
         except subprocess.TimeoutExpired as error:
             raise AssertionError(f"VS Code did not exit after {key}") from error
+        # Its other processes can outlive the main one for a moment, still holding the user
+        # data folder; the window opened next shares that folder.
+        if self.job and not self.job.wait_until_empty(STEP_TIMEOUT_S):
+            self.actions.append(
+                f"  ({self.job.active_processes()} VS Code processes still ran"
+                f" {STEP_TIMEOUT_S}s later)"
+            )
 
     def _picker_state(self, screen: dict, label: str) -> str:
         if screen["onboarding"] is not None:
@@ -573,6 +621,8 @@ class VSCode:
             if "Do you trust the authors" in screen["dialog"]:
                 return "dialog: trust folder"
             return f"dialog: {screen['dialog'][:200]}"
+        if screen["tour"] is not None:
+            return "tour"
         if screen["copilotChatOffNotice"] and not screen["dropdown"]:
             return "notice: Copilot Chat off"
         if screen["modelsEditor"]:
@@ -593,22 +643,22 @@ class VSCode:
             return "picker: no match" if screen["pickerQuery"] == label else "picker: searching"
         return "picker: models"
 
-    def send(self, prompt: str) -> int:
-        """Type ``prompt`` into the chat input and send it; returns the number of earlier turns."""
-        before = self.screen()["responses"]
+    def send(self, prompt: str) -> str:
+        """Type ``prompt`` into the chat input and send it; returns the prompt to wait on."""
         editor = self.page.locator(".interactive-input-part .interactive-input-editor").first
         self._click("chat input: focus", editor)
         self._act("chat input: type prompt", lambda: self.page.keyboard.type(prompt))
         self.shot("prompt")
         self._act("chat input: Enter", lambda: self.page.keyboard.press("Enter"))
-        return before
+        return prompt
 
-    def wait_for_answer(self, before: int) -> str:
-        """Wait until the turn after ``before`` finishes and return its response text.
+    def wait_for_answer(self, prompt: str) -> str:
+        """Wait until the turn for ``prompt`` finishes and return its response text.
 
         Any tool confirmation or dialog fails the turn."""
         deadline = time.monotonic() + TURN_TIMEOUT_S
         idle_since = None
+        prompt = " ".join(prompt.split())
         while time.monotonic() < deadline:
             screen = self.screen()
             if screen["dialog"] is not None:
@@ -618,7 +668,8 @@ class VSCode:
                 self.shot("confirmation")
                 raise UnknownScreen(f"Unexpected tool confirmation: {confirmation[:500]}")
             response = screen["response"]
-            if screen["responses"] > before and response and not response["busy"]:
+            request = screen["request"] or ""
+            if prompt in request and response and not response["busy"]:
                 # Busy drops only when the whole turn, every tool round included, is over.
                 idle_since = idle_since or time.monotonic()
                 if time.monotonic() - idle_since >= SETTLE_S:

@@ -751,11 +751,19 @@ def request_vscode_with_copilot(requested: bool = True) -> None:
     _vscode_with_copilot = requested
 
 
+def request_vscode_code(path: str | None) -> None:
+    """The `code` command ``ug configure --vscode-code`` names for this run, instead of the one ug
+    finds."""
+    from . import vscode
+
+    vscode.request_code(path)
+
+
 def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
     """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with, or remove
     an earlier setup when the workspace's managed config turns VS Code off."""
     if state.get("copilot_vscode_integration") is False:
-        _remove_vscode_for_managed_config()
+        _remove_vscode_for_managed_config(state)
         return
     if not _vscode_with_copilot:
         return
@@ -767,17 +775,27 @@ def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | 
     vscode.configure(state, provider=provider, location=parent_schema)
 
 
-def _remove_vscode_for_managed_config() -> None:
+def _remove_vscode_for_managed_config(state: dict) -> None:
     if is_dry_run():
         print_note("Dry run: VS Code isn't changed.")
         return
     from . import vscode
 
-    removed = vscode.revert() == "removed"
+    removed = vscode.revert(state) == "removed"
     print_note(
         "This workspace's managed configuration turns off GitHub Copilot in VS Code, so "
         + ("the VS Code extension was removed." if removed else "VS Code was skipped.")
     )
+
+
+def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Install ug's plugin in the GitHub Copilot desktop app when it is installed."""
+    from ucode.agents.desktop import setup as desktop_setup
+
+    if not desktop_setup.copilot_app_installed():
+        print_note("GitHub Copilot app: not found, skipped.")
+        return
+    desktop_setup.configure_copilot_app(state, provider=provider, location=parent_schema)
 
 
 def configure_single_tool(
@@ -806,6 +824,7 @@ def configure_single_tool(
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
     if with_vscode and tool == AGENT_COPILOT:
         configure_vscode(state, provider=provider, parent_schema=parent_schema)
+        configure_copilot_app(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -905,6 +924,7 @@ def configure_selected_tools(
             # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
             if tool == AGENT_COPILOT:
                 configure_vscode(state, provider=provider, parent_schema=parent_schema)
+                configure_copilot_app(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))

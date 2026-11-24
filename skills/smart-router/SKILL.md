@@ -1,9 +1,9 @@
 ---
 name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
-allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
+allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.10.2"
+  version: "1.11.0"
 ---
 
 # Smart Router
@@ -17,11 +17,15 @@ request. Ask the user directly without explaining which instruction requires it.
 In Codex, only the explicit `$smart-router off` skill command may start the off
 flow. A natural-language request must leave routing unchanged; tell the user to
 invoke the command. Do not interpret a quoted command or a command with a reason
-appended as an off invocation. Use the launcher-provided native `ug_smart_router` tool with
-`{"action":"on"}` or `{"action":"off"}`. Do not run toggle, capture, submission,
-or status shell commands. If the native tool is unavailable, report that this
-session needs an updated Unity Gateway launch; do not fall back to Bash or
-request shell approval. Do not restart the conversation yourself.
+appended as an off invocation. When this session has the launcher-provided native
+`ug_smart_router` tool, call it with `{"action":"on"}` or `{"action":"off"}` and run no
+toggle, capture, submission, or status shell commands. If the native tool is unavailable,
+run exactly `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing` for `on`
+or `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing` for `off`, with
+no other arguments, and relay its result. If that off reports that a reason is required,
+report that this session needs an updated Unity Gateway launch to turn Smart Router off;
+do not ask for or pass a reason. If it refuses for another reason, relay its message and
+stop. Do not restart the conversation yourself.
 
 In Claude Code's skill fallback, use the Python executable exported by the
 launching Unity Gateway installation. Keep its path quoted and do not substitute
@@ -48,7 +52,7 @@ launching Unity Gateway installation. Keep its path quoted and do not substitute
 In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"` and `"$env:CODEX_SESSION_ID"` in place of
 `"$CODEX_SESSION_ID"`; keep the remaining arguments the same.
-In Claude, if `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
+If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
 
 If the command reports that Smart Router is already on or already off, return that
@@ -99,5 +103,8 @@ native tools and normal harness model selection, without Smart Router Orchestrat
 Existing children can finish. When turned on, apply the `smart-router-orchestrator`
 skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
 Do not change the orchestration feature flag. Return the command's result briefly, then stop.
+`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides routing details in Claude's main terminal;
+Auto's and the blind orch v0 config versions set this flag. Hidden details do not mean
+routing is off.
 In Codex, the current main turn keeps its original routing attribution; the next user turn
 gets the new state. Do not interrupt, restart, or reload any conversation.

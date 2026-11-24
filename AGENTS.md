@@ -66,7 +66,12 @@ Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
   For a smaller block, use `metrics.measure(metrics.DEPENDENCY_INSTALL_DURATION_MS,
   operation=metrics.DEPENDENCY_INSTALL_OPERATION, dependency=tool, action="install")`.
   `metrics.annotate(...)` adds labels discovered during that measurement; `metrics.record(...)`
-  handles counters, byte sizes, or durations measured across callbacks.
+  handles counters, byte sizes, or durations measured across callbacks. To attribute a
+  measurement to an awaited operation's own duration — a timed caller that reuses a token
+  another thread fetched untimed (the launch's speculative Databricks token fetch) reports
+  that fetch once as the launch's cache miss — call `metrics.record_awaited_duration(name, ms)`
+  inside the `measure` block, where `name` is the measured metric (it walks up to that scope). The value rides the measure scope outside the label set, so
+  `record` can never export it as a sample attribute.
 - Report handled errors with `metrics.failure(operation, error, ...)`; set
   `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
   (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
@@ -127,8 +132,9 @@ Usage and routing instrumentation uses these constants (all in `metrics`):
 | --- | --- |
 | `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
 | `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent` and `http_status_code` when a response is available. |
+| `ROUTE_VALIDATION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around the startup and `/smart-router on` `routes:validate` calls, including the HTTP request and its 4 s deadline. An HTTP 404 leaves routing on; at startup any other failure or a missed deadline turns it off, while on `/smart-router on` it leaves routing on. Its HTTP attempt uses `api_operation="routes_validate"`. |
 
-Both durations are recorded on success and failure. Use `subagent_routing()` around
+All three durations are recorded on success and failure. Use `subagent_routing()` around
 subagent route selection so its trigger is scoped to that decision. Each routing HTTP
 attempt also uses `HTTP_REQUEST_DURATION_MS` with `api_operation="routes_select"`,
 `http_method="POST"`, `attempt=1`, and `http_status_code` when a response is available.
@@ -476,6 +482,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.171.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
+| Smart Router footer | Launch-only (-c), never written | Launch-only (-c), never written | On routed Codex 0.171.0 or newer, enable `features.tui_extensions_statusline`, select `tui.status_line_provider`, and add only `mcp_servers.ug-smart-router-statusline`. The app-server owns the session-local stdio provider; the terminal client receives the feature and selection overrides. Routed launches require stable 0.171.0 or newer through the existing upgrade gate. Saved footer settings and unrelated MCP servers are preserved. The footer relies on that launch gate; do not add a second version probe |
 | Smart Router native metadata | Launch-only (-c), never written | Launch-only (-c), never written | `responses_api_metadata.smart_router_recipe_name` records the configured recipe. The app-server interposer updates `smart_router_state` per main turn; spawn hooks stamp child task names. Reserve the state key for the interposer; a static config value would override turn updates |
 
 </details>

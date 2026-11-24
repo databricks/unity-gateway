@@ -2,11 +2,24 @@ import type { On, PluginOptions } from 'claude-code'
 import { matchesAutoModel } from './auto-model.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
+type NumericDetails = Record<string, number>
+export type ExplanationModel = {
+  id: string; name: string; selected: boolean; considered: boolean; reason: string
+  qualityEstimate?: number; estimatedCostUsd?: number; routingScore?: number
+  components?: NumericDetails; differenceFromWinner?: NumericDetails
+}
+export type RoutingExplanation = {
+  selectedModel: string; summary: string; taskUnderstanding: string[]; models: ExplanationModel[]
+  formula?: string
+}
 type RoutingRecord = {
   name: string; task: string; title: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
 }
 
+const MAX_EXPLANATION_BYTES = 64 * 1024
+const isObject = (value: unknown): value is Record<string, any> =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value))
 const safeText = (value: unknown, limit: number): string | undefined => {
   if (typeof value !== 'string') return undefined
   const clean = value
@@ -18,13 +31,101 @@ const safeText = (value: unknown, limit: number): string | undefined => {
   return clean || undefined
 }
 
+const safeNumber = (value: unknown, nonNegative = false): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 && (!nonNegative || value >= 0)
+    ? value : undefined
+
+function numericDetails(value: unknown): NumericDetails | undefined {
+  if (!isObject(value) || Object.keys(value).length > 8) return undefined
+  const entries = Object.entries(value)
+  if (entries.some(([key, number]) => !/^[A-Za-z][A-Za-z0-9_. -]{0,63}$/.test(key)
+      || safeNumber(number) === undefined)) return undefined
+  return Object.fromEntries(entries as [string, number][])
+}
+
 const unwrapGatewayModel = (model: string): string =>
   model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
+
+const explanationModelId = (model: string): string => {
+  const original = unwrapGatewayModel(model)
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  // Explanation IDs preserve every catalog suffix; execution matching below also accepts
+  // native [1m] expansion on dotted model versions such as main.default.claude-sonnet-4.5.
+  return original.split('.').length >= 3 ? original : original.replace(/\[1m\]$/, '')
+}
 
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+}
+
+function matchesIdentityFields(value: Record<string, any>, sessionId?: string, toolUseId?: string): boolean {
+  for (const [field, expected] of [['session_id', sessionId], ['tool_use_id', toolUseId]] as const) {
+    const actual = value[field]
+    if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
+  }
+  return true
+}
+
+function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
+  if (!isObject(value)) return true
+  return [value, value.evidence].every((source) => !isObject(source)
+    || matchesIdentityFields(source, sessionId, toolUseId))
+}
+
+export function parseRoutingExplanation(
+  value: unknown, routedModel: string, sessionId?: string, toolUseId?: string, offeredModels?: readonly string[],
+): RoutingExplanation | undefined {
+  if (!isObject(value)) return undefined
+  const serialized = JSON.stringify(value)
+  if (Object.keys(value).length > 32 || new TextEncoder().encode(serialized).byteLength > MAX_EXPLANATION_BYTES
+      || !matchesRequestIdentity(value, sessionId, toolUseId)) return undefined
+  const selectedModel = value.selected_model
+  const summary = safeText(value.summary, 2000)
+  if (typeof selectedModel !== 'string' || selectedModel.trim() !== selectedModel
+      || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
+      || selectedModel !== explanationModelId(routedModel) || !summary
+      || !Array.isArray(value.models) || value.models.length < 1
+      || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
+
+  const taskUnderstanding = value.task_understanding.map((item: unknown) => safeText(item, 240))
+  if (taskUnderstanding.some((item: string | undefined) => !item)) return undefined
+  const ids = new Set<string>()
+  const models: ExplanationModel[] = []
+  for (const candidate of value.models) {
+    if (!isObject(candidate)) return undefined
+    const id = candidate.id
+    const name = safeText(candidate.name, 128)
+    const reason = safeText(candidate.reason, 1200)
+    if (typeof id !== 'string' || id.trim() !== id
+        || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(id) || ids.has(id)
+        || !name || !reason || typeof candidate.selected !== 'boolean'
+        || typeof candidate.considered !== 'boolean' || (candidate.selected && !candidate.considered)) return undefined
+    ids.add(id)
+    const qualityEstimate = candidate.quality_estimate === undefined ? undefined : safeNumber(candidate.quality_estimate)
+    const estimatedCostUsd = candidate.estimated_cost_usd === undefined ? undefined : safeNumber(candidate.estimated_cost_usd, true)
+    const routingScore = candidate.routing_score === undefined ? undefined : safeNumber(candidate.routing_score)
+    const components = candidate.components === undefined ? undefined : numericDetails(candidate.components)
+    const differenceFromWinner = candidate.difference_from_winner === undefined
+      ? undefined : numericDetails(candidate.difference_from_winner)
+    if ((candidate.quality_estimate !== undefined && qualityEstimate === undefined)
+        || (candidate.estimated_cost_usd !== undefined && estimatedCostUsd === undefined)
+        || (candidate.routing_score !== undefined && routingScore === undefined)
+        || (candidate.components !== undefined && components === undefined)
+        || (candidate.difference_from_winner !== undefined && differenceFromWinner === undefined)) return undefined
+    models.push({ id, name, reason, selected: candidate.selected, considered: candidate.considered,
+      qualityEstimate, estimatedCostUsd, routingScore, components, differenceFromWinner })
+  }
+  if (models.filter((model) => model.selected).length !== 1
+      || !models.some((model) => model.id === selectedModel && model.selected)) return undefined
+  if (offeredModels) {
+    const offeredIds = new Set(offeredModels.map(explanationModelId))
+    if (ids.size !== offeredIds.size || [...offeredIds].some((id) => !ids.has(id))) return undefined
+  }
+  const formula = value.formula === undefined ? undefined : safeText(value.formula, 500)
+  if (value.formula !== undefined && !formula) return undefined
+  return { selectedModel, summary, taskUnderstanding: taskUnderstanding as string[], models, formula }
 }
 
 const children = new Map<string, RoutingRecord>()
@@ -284,7 +385,8 @@ export async function* routeAgentStream($: any, step: any, source: AsyncGenerato
   // Nothing to head when routing is off, so the reply streams untouched. An Auto launch keeps
   // the model's heading too: its session model is a picker alias, which cannot stand in as the
   // fallback reviewer once the server-side verdict is void.
-  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels) {
+  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels
+      || routing.options?.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI === '0') {
     return yield* source
   }
   const held: any[] = []
@@ -340,11 +442,13 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
+  const showModel = options.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI !== '0'
   routing.options = options
   routing.autoModels = autoModels
   for (const state of [names, pending, records, anchors]) state.clear()
   for (const state of [grouped, seen, attempted]) state.clear()
   unusedNames.splice(0, unusedNames.length, ...ANIMALS)
+
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     await routeCall({
       session: { id: () => $.session.id(), model: () => $.session.model() },
@@ -380,9 +484,9 @@ export const registerSubagentRouting = (
       routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
-    if (route && result.agentId && !result.deny && !result.model) {
+    if (showModel && route && result.agentId && !result.deny && !result.model) {
       $.ui.log('Claude did not report the launched model; routed labels cannot be verified for this subagent.')
-    } else if (route && result.agentId && !result.deny) {
+    } else if (showModel && route && result.agentId && !result.deny) {
       try {
         const session_id = await $.session.id()
         const saved = savedRoutedDisplay({ session_id, agent_id: result.agentId, name: taskLabel(route),
@@ -408,7 +512,7 @@ export const registerSubagentRouting = (
   // Claude's own notice already names the heading; a launch that differs from it is called out.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
-    if (e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
+    if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || !differs(saved.selected, saved.launched)) return next(e)
     return next({ ...e, props: { ...e.props,
@@ -418,6 +522,7 @@ export const registerSubagentRouting = (
 
   // The agent list reads the launch receipt, so it shows the launched model whatever the heading said.
   on('ui.render', { component: 'AgentRow' }, async ($, e, next) => {
+    if (!showModel) return next(e)
     const live = routedModels.record(e.requestId)
     const saved = routedDisplays.records.get(e.requestId)
     const display = live?.spawned?.model
@@ -432,13 +537,16 @@ export const registerSubagentRouting = (
     const original = await next(name && (record || pending.has(e.requestId)) ? {
       ...e,
       props: { ...e.props, tool: name,
-        ...(record && input !== null && typeof input === 'object' && !Array.isArray(input)
+        ...(showModel && record && input !== null && typeof input === 'object' && !Array.isArray(input)
           && record.spawned?.model && differs(record.model, record.spawned.model)
           ? { input: { ...input, description: receiptLabel({ animal: record.name, title: record.title,
             selected: record.model, launched: record.spawned.model }) } } : {}),
       },
     } : e)
-    if (!record && !pending.has(e.requestId)) return original
+    // The in-progress line names no model, so blind configs still show it; only the
+    // decided selection names the model and stays hidden when showModel is false.
+    const nothingToShow = record ? !showModel : !pending.has(e.requestId)
+    if (nothingToShow) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
@@ -462,7 +570,8 @@ export const registerSubagentRouting = (
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
-  // also says routing is under way, timed from the oldest call still waiting.
+  // also says routing is under way, timed from the oldest call still waiting. Its text
+  // names no model, so blind configs show it too; only the decided selection is hidden.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
@@ -482,7 +591,7 @@ export const registerSubagentRouting = (
       if (ready.length) anchors.set(e.requestId, ready)
     }
     const ids = anchors.get(e.requestId)
-    if (!ids) return original
+    if (!showModel || !ids) return original
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
   })

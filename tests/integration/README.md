@@ -1,5 +1,27 @@
 # Integration tests
 
+Startup compatibility validation has component coverage in `../test_route_validation.py`,
+the smart-routing launch tests, and the native Claude mod suite. They control the validation
+response or transport. CUJ 4 adds one live supported journey: with `UG_ROUTE_VALIDATION=1`
+and the published model list, ug sends one recorded routes:validate request that the Gateway
+answers with HTTP 200 and `is_supported: true`, and the band and hint row show ON without the
+unsupported warning. The Claude back-on TUI journey in `test_ug_smart_routing_hooks.py` also checks the validate request
+that `/smart-router on` sends: exactly one, answered with HTTP 200 and `is_supported: true`.
+No live unsupported or classifier journey is claimed.
+
+The Codex footer has offline protocol, process-isolation, and launcher coverage in
+`../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
+checks cover green ON/gray OFF badges, nullable snapshots, Python's `-P` provider
+launch flag, and terminal config isolation. Native checks must verify badge colors
+and ON/OFF text; OFF stays visible, matching Claude's persistent hint. See the
+[footer validation steps](../../docs/codex-smart-router-statusline.md). A native
+footer or resource read alone does not establish gateway inference or routed-child
+coverage. Windows native footer rendering remains untested.
+
+Component checks preserve routing feature overrides when the remote TUI forwards
+its footer configuration to the app-server. Live validation must still confirm a
+completed child task with a correlated routing decision, not only the ON badge.
+
 Routing CI pins stable Codex 0.171.0. Component checks in `../test_agent_codex.py`,
 `../test_codex_smart_routing_v2.py`, and `../test_cli.py` cover the required version,
 explicit/managed upgrades, refusal/failure, and routing disable. The managed-default
@@ -405,6 +427,8 @@ accessibility tree captured before the fatal error in command evidence.
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+The Windows inference-only journey explicitly completes sandbox setup and the same
+post-restart readiness check as the skill journey before sending its first prompt.
 Both inference cases wait for the rendered draft, click Send, and require the user prompt in
 the native rollout before the answer wait. Failed answer waits also retain rollout evidence.
 Each module also runs `test_ug_codex_desktop_*_skill_calls_mcp`. It reuses the same
@@ -888,15 +912,23 @@ and the short action timeout still lets the harness resample a changing screen.
 Nothing is seeded: each journey answers the first-launch onboarding with "Continue without Signing
 In", closes the Welcome editor, trusts the folder from the model picker, turns on the bundled
 Copilot Chat with the picker's "Add Models..." or ug's "Turn On Copilot Chat" notice, whichever
-is on screen first (both open the Language Models editor, which it closes), and picks a model by
-its label in the picker. The picked model has to hold for a few seconds, since ug's extension
-switches the chat to its default model once Copilot Chat is on. Each window records its actions
+is on screen first (both open the Language Models editor, which it closes, as often as one opens,
+including one already open on the first read after the last one closed), and picks a model by
+its label in the picker. `../test_integration_vscode_picker.py` covers that second editor
+offline. The picked model has to hold for a few seconds, since ug's extension switches the chat
+to its default model once Copilot Chat is on. The chat must be a Copilot session (Copilot Chat's
+agent host, which the pinned VS Code opens by default, also signed out). That session shows
+nothing when it can run on the added models, only a sign-in notice when it can't, so the pick
+also waits a few seconds with no such notice, and holds again from when the session starts, which
+can open the second editor after the first hold. Each window records its actions
 and every change of the recognized screen (`<name>-states.json`). Playwright connects once the
 window's DevTools page target exists, and connects again if that connection misses the workbench.
 An answer without the file's value also keeps the tool results and the last response of its turn
 (`missed-answer-<model>.json`).
+On Windows the window runs in a job object, so closing it ends every VS Code process, including
+ones whose parent already exited, before the bearer check reads the home.
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
-confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
+confirmation that asks for approval fails (a finished tool call's collapsed row asks for none). The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window
 closes. The provider journey
 configures `--provider` with the OpenAI MPS below and requires the provider service header and
@@ -908,11 +940,11 @@ requires the picker's search to find no workspace Claude model. Configure points
 recording forwarder, so each turn's requests must reach the expected route
 (`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/mlflow/v1/responses`) for the picked model, with
 ug's User-Agent naming the Copilot Chat version bundled in that VS Code, and get a non-empty HTTP
-200. The answer must contain the file's value, and VS Code's saved chat
-(`utils/agents/vscode.py`; VS Code saves it about a minute after launch) must record the
+200. The answer must contain the file's value, and the Copilot session's saved events
+(`~/.copilot/session-state/*/events.jsonl`, read by `utils/agents/vscode.py`) must record the
 Databricks model, a tool call, the value in the assistant's own text and no error, matched to each
 turn by its prompt (every chat journey). Not
-covered: GitHub sign-in or a Copilot seat, Copilot Chat's other agent harnesses, what the chat
+covered: GitHub sign-in or a Copilot seat, Copilot Chat's Local agent and other harnesses, what the chat
 shows for a model that went away after a reconfigure, MCP, skills, OTel, and macOS.
 
 The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
@@ -1003,7 +1035,7 @@ records its URL and SHA-512 in
 `versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
 sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
 ([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).
-VS Code is not on npm either: pass `--vscode-version` (for example `1.144.0`) together with
+VS Code is not on npm either: pass `--vscode-version` (for example `1.147.0`) together with
 `--copilot-version`, since ug sets VS Code up as part of the Copilot setup and would otherwise
 install an unpinned Copilot CLI. The runner downloads the Linux x64 or Windows x64 archive from
 VS Code's update service, checks it against the SHA-256 pinned in `VSCODE_SHA256` (or
@@ -1423,9 +1455,10 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the internal first-prompt-and-subagent mode). It independently
+The unit/component `../test_smart_routing_config.py` includes a 189-case Cartesian oracle over all
+three legacy routing flags (`None`, `0`, `1`) and seven selector forms (`None` plus the six
+supported presets, including the internal first-prompt-and-subagent mode and the blind
+subagent-model orch v0 preset). It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -2360,11 +2393,20 @@ including unchanged models, fresh sessions, inactive preference edits, cancellat
 answers, and preserved hook decisions. Native TUI checks use a controlled local response
 fixture to populate token accounting; they do not establish gateway cache hits or cost.
 
+Hidden subagent-model display has component coverage for Claude/Codex verification
+notices, restored native labels, missing-model warnings, and parallel streamed calls
+that still route at launch. CUJ4's delegated journeys reject verification notices too;
+its no-delegation status-band matrix omits the two blind presets, whose toggle behavior
+is shared with the existing orchestration preset. These additions have no live run evidence.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+CUJ 4's delegation journeys open `/smart-router logs` for every Claude preset, require a
+nonzero session routing count, and close the pane before exit. This includes presets that
+hide inline model details; these live log-pane checks have not been run locally.
+Its status-band journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 Its Auto selector journey also covers a non-replacing managed picker without managed
@@ -2460,6 +2502,9 @@ Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and re
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
+See [routing explanation component coverage](../README.md#routing-explanation-coverage)
+for the native pane and optional service-response checks.
+
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed
 spawns, and native role menus. Native auto-mode tests verify both foreground and
@@ -2501,3 +2546,7 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+Configure loading indicators: skill download component coverage verifies the shared spinner
+starts before bundle requests and reports completed/total downloads. MCP and skill
+reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.

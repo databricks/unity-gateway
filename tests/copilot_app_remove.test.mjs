@@ -235,16 +235,31 @@ const FAKE_SDK = `data:text/javascript,${encodeURIComponent(`
   export async function joinSession(...args) {
     globalThis.ugJoinCalls.push(args);
     if (globalThis.ugJoinFails) throw new Error("no session");
-    return { on() {}, log() {} };
+    return { on() {}, log() {}, rpc: { options: { update: async (options) => (globalThis.ugOptionUpdates.push(options), { success: true }) } } };
   }
 `)}`;
 
-async function runExtension(t, options, { joinFails = false } = {}) {
+async function runExtension(t, options, { joinFails = false, config = {}, appPid } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ug-copilot-extension-"));
-  for (const name of ["extension.mjs", "ug-plugin.mjs", "app-rows.mjs", "app-remove.mjs", "app-restart.mjs"]) {
+  for (const name of [
+    "extension.mjs",
+    "ug-plugin.mjs",
+    "app-rows.mjs",
+    "app-remove.mjs",
+    "app-restart.mjs",
+    "app-state.mjs",
+    "app-host.mjs",
+    "app-proxy.mjs",
+    "app-windows.mjs",
+    "app-debug.mjs",
+    "app-system-proxy.mjs",
+    "app-seat-relay.mjs",
+    "app-seat-redirect.mjs",
+  ]) {
     copyFileSync(join(SOURCE, name), join(dir, name));
   }
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...CONFIG, providers: [{ name: CLAUDE }], models: [{ id: "m" }] }));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...CONFIG, providers: [{ name: CLAUDE }], models: [{ id: "m" }], ...config }));
+  if (appPid !== undefined) writeFileSync(join(options.home, "run", "app-owner.pid"), `${appPid}`);
   const hooks = nodeModule.registerHooks({
     resolve: (specifier, context, next) =>
       specifier === "@github/copilot-sdk/extension" ? { url: FAKE_SDK, shortCircuit: true } : next(specifier, context),
@@ -252,6 +267,7 @@ async function runExtension(t, options, { joinFails = false } = {}) {
   const previousHome = process.env.COPILOT_HOME;
   process.env.COPILOT_HOME = options.home;
   globalThis.ugJoinCalls = [];
+  globalThis.ugOptionUpdates = [];
   globalThis.ugJoinFails = joinFails;
   t.after(() => {
     hooks.deregister();
@@ -261,7 +277,7 @@ async function runExtension(t, options, { joinFails = false } = {}) {
   const errors = [];
   t.mock.method(console, "error", (line) => errors.push(line));
   await import(pathToFileURL(join(dir, "extension.mjs")).href);
-  return { joins: globalThis.ugJoinCalls, errors };
+  return { dir, joins: globalThis.ugJoinCalls, errors, optionUpdates: globalThis.ugOptionUpdates };
 }
 
 const hookSkip = skip || (typeof nodeModule.registerHooks === "function" ? false : "this Node can't stub the SDK import");
@@ -269,10 +285,36 @@ const extensionTest = (name, fn) => nodeTest(name, { skip: hookSkip }, fn);
 
 extensionTest("in remove mode the extension removes ug and joins its session without serving", async (t) => {
   const { app, path, options } = await setup(t);
-  const { joins, errors } = await runExtension(t, options);
+  const { joins, errors, optionUpdates } = await runExtension(t, options);
   assert.deepEqual(joins, [[]]);
   assert.deepEqual(errors, []);
+  assert.deepEqual(optionUpdates, [{ copilotUrl: null }]);
   assert.deepEqual([...app.providers.keys()], ["mine"]);
+  assert.deepEqual(read(path), {});
+});
+
+extensionTest("outside the desktop app the extension joins nothing and leaves the session's models alone", async (t) => {
+  const { app, path, options } = await setup(t);
+  // The Copilot CLI and VS Code's runtime load the same plugin; neither is a descendant of the app.
+  const { dir, joins, errors, optionUpdates } = await runExtension(t, options, {
+    config: { remove: false, seatRelay: { gatewayBase: "http://127.0.0.1:9", providerService: "main.default.seat", askGitHub: false } },
+    appPid: 2 ** 22 - 2,
+  });
+  assert.deepEqual(joins, []);
+  assert.deepEqual(optionUpdates, []);
+  assert.deepEqual(errors, []);
+  assert.equal(app.connections, 0);
+  assert.deepEqual(read(path), UG_KEYS);
+  const [entry] = JSON.parse(readFileSync(join(dir, "seat-relay-sessions.json"), "utf8"));
+  assert.equal(entry.redirect, "not the app");
+  assert.equal(entry.host, "ancestry");
+});
+
+extensionTest("outside the desktop app remove mode still removes ug, without joining", async (t) => {
+  const { path, options } = await setup(t);
+  const { joins, optionUpdates } = await runExtension(t, options, { appPid: 2 ** 22 - 2 });
+  assert.deepEqual(joins, []);
+  assert.deepEqual(optionUpdates, []);
   assert.deepEqual(read(path), {});
 });
 

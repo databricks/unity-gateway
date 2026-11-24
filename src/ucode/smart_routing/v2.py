@@ -42,6 +42,8 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    TRUE_ENV_VALUES,
+    UG_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -52,6 +54,7 @@ from ucode.databricks import (
     map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import published_agent_config_used
 from ucode.os_compatibility import subprocess_cross_os
@@ -65,10 +68,18 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing, session_log
+from ucode.smart_routing import (
+    claude_routing,
+    codex_statusline,
+    orchestrator,
+    route_validation,
+    routing,
+    session_log,
+)
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
+    ROUTE_VALIDATION_MOD_EVENT,
     routing_hook_argv,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
@@ -411,6 +422,11 @@ def _claude_mod_launch_options(
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
+        "startupValidation": (
+            "1"
+            if source.get(UG_ROUTE_VALIDATION_ENV_VAR, "").strip().lower() in TRUE_ENV_VALUES
+            else ""
+        ),
     }
 
 
@@ -452,6 +468,19 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": "",
                     "title": "Isaac feedback directory",
                     "description": "Absolute directory for locally captured feedback",
+                },
+                "startupValidation": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Startup route validation",
+                    "description": "1 when ug runs the startup routes:validate check",
+                },
+                "validateCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Route validator",
+                    "description": "CLI argument list for the routes:validate check on toggle",
                 },
                 "routeCommand": {
                     "type": "string",
@@ -609,6 +638,23 @@ def _route_print_mode_prompt(
     display = catalog.model_id_to_display_name.get(decision.model, decision.model)
     print_note(format_routing_notice(display, decision.rationale))
     return model_name(_unwrapped_claude_model_id(decision.model))
+
+
+def validate_claude_model_list(
+    *,
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    provider: str | None = None,
+) -> dict:
+    """Return the toggle's route validation verdict, which keeps routing off when disabled."""
+    return route_validation.validate(
+        workspace,
+        token,
+        _claude_route_options(available_models),
+        router_name=routing.configured_router_name(),
+        provider=provider,
+    )
 
 
 def route_claude_subagent(
@@ -980,6 +1026,15 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+                route_validation.start(
+                    workspace,
+                    token,
+                    _claude_route_options(model_ids),
+                    router_name=routing.configured_router_name(),
+                    session_controls=session_path,
+                    provider=state.get("_claude_launch_provider"),
+                )
             env[SESSION_ENV_VAR] = str(session_path)
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
@@ -992,6 +1047,10 @@ def launch_claude(
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
+            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+                mod_options["validateCommand"] = routing_hook_argv(
+                    routing_state, ROUTE_VALIDATION_MOD_EVENT
+                )
             if auto_picker:
                 mod_options["autoPicker"] = json.dumps(auto_config)
                 # Settings env is reapplied when /model saves a native selection.
@@ -1226,6 +1285,8 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
+    statusline_config = codex_statusline.launch_config(session_env_path)
+    config_io.deep_merge_dict(overlay, statusline_config)
     config_args = codex_config_args(overlay)
     if app_server_launch:
         # The caller owns this app-server's address, model and clients, so run its command as is.
@@ -1281,7 +1342,15 @@ def launch_codex(
             )
         model_args = [] if has_explicit_model_arg(tool_args) else ["--model", start_model]
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, *model_args, *tool_args]
+            [
+                binary,
+                *provider_args,
+                *codex_config_args(codex_statusline.tui_config(overlay)),
+                "--remote",
+                tui_url,
+                *model_args,
+                *tool_args,
+            ]
         )
         try:
             returncode = tui.wait()

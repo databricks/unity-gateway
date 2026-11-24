@@ -12,8 +12,13 @@ The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entr
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
 Every routed launch includes the status band above the prompt. It shows at launch and after
 each `/smart-router on|off`, and hides once the next prompt's turn completes. The prompt hint row (the line under the
-input with the permission mode) carries `smart router ON` or `smart router OFF`, followed by
+input with the permission mode) carries `smart router ON` or `smart router OFF`, or
+`smart router ERROR (/smart-router logs for details)` once the startup check turns routing off
+until the next `/smart-router on|off`, followed by
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
+A failed startup check (any failure except HTTP 404) shows the same OFF band and ERROR hint, with the
+trailer `⚠ Smart Router couldn't validate this session's model list`. `/smart-router logs` lists it as
+`Failed to validate smart routing. Press enter for details.`, and its detail gives the reason.
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
 prompt hint for the main model. Native displays `Auto mode: Subagents smart routed.`
@@ -97,10 +102,52 @@ routing; the message that issued the calls is drawn before routing finishes and 
 a call still routing waits for a later reply, and a call whose routing failed draws no card.
 Cards survive a turn that ends while the reply waits on a background agent and are dropped
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
-Decisions are kept for the session; a plugin reload clears them from the screen, and the
-routing decision audit log is unchanged.
+Decisions are kept for the session; a plugin reload clears them from the screen. The
+`/smart-router logs` pane opens a recorded decision and shows its validated explanation
+and offered-model comparisons when task-text logging permits those details to be saved.
+`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides these selections, reasons,
+timers and parallel cards. The in-progress "Selecting a model…" spinner line and the
+turn spinner still say routing is under way; they name no model. The flag preserves
+native rows, animal names and routing behavior.
+Claude Auto's and the blind orch v0 config versions set it to `0`; other mappings set it
+to `1`.
+Without a version selector, an unset flag preserves the visible routing details.
+The same flag suppresses Codex's routed-subagent model card and post-launch model
+verification message, without changing the model injected into the spawn request.
+
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
+
+### Routing explanations
+
+`/smart-router logs` uses the existing logs pane. Select a recorded decision to see its
+validated explanation and compare the models the router was offered. **Show numbers**
+reveals optional quality, cost, and scoring estimates; these are not measured outcomes
+or billed costs. Missing or invalid explanation data leaves the selected route and its
+original rationale visible.
+
+Detailed comparisons require the routing service to include optional explanation data
+as `route_selection[0].params.routing_explanation`, either a JSON-encoded string or
+an object. The decoded object is limited to 64 KiB and must contain finite JSON values.
+Older services remain compatible: the log detail shows the original rationale and notes
+that no detailed explanation was recorded, while routing continues normally. Malformed,
+oversized, or mismatched explanation data is discarded independently of the model
+selection. Opening a detail uses the saved decision and never reruns the router.
+
+The explanation object contains `selected_model`, `summary`, `task_understanding`
+(a list of short strings), and `models`. Each model entry contains `id`, `name`,
+`selected`, `considered`, and `reason`; exactly one selected entry must match the routed
+model. Model IDs remove any synthetic Anthropic gateway wrapper. For `system.ai.` IDs,
+the client also removes that prefix and a trailing `[1m]` context hint. Other IDs with
+at least three dot-separated parts retain their full offered name, including `[1m]` when
+present; shorter IDs drop that suffix. The client requires one explanation row per distinct
+offered model and rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
+and `difference_from_winner` supply the numeric view. An optional `formula`
+explains the scoring policy. Any supplied `session_id` or `tool_use_id`, including
+inside `evidence`, must match the recorded call. Claude's session log retains its
+existing bounded prompt preview, task digest and length. The service must describe the same
+decision and offered alternatives, including reasons for excluded models, without
+running another classifier or changing its selection policy.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
@@ -193,6 +240,10 @@ Today `--feedback-collected` is honored only when `ISAAC_LAUNCH_MODE=omni`, wher
 Web UI is the caller. Those sessions also skip the CLI's reason rule. To support a caller in
 another launch mode, widen both checks: the one in `isaac-feedback.ts` and the one in
 `_toggle_current_smart_routing_session` in `cli.py`.
+
+The Codex CLI takes the same flag. With `ISAAC_LAUNCH_MODE=omni`,
+`ucode.cli codex --disable-smart-routing` keeps routing on unless the flag is passed, whether
+or not the feedback rule is on.
 
 In sessions with `ISAAC_SMART_ROUTER_FEEDBACK` enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available

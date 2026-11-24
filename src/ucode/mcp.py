@@ -121,8 +121,9 @@ MCP_CLIENTS = {
     },
     "copilot": {
         "binary": "copilot",
-        # VS Code reads the same user MCP file; `cli_display` names the CLI that `mcp list` probes.
-        "display": "GitHub Copilot (CLI and VS Code)",
+        # VS Code and the desktop app read the same user MCP file; `cli_display` names the CLI
+        # that `mcp list` probes.
+        "display": "GitHub Copilot (CLI, VS Code and app)",
         "cli_display": "GitHub Copilot CLI",
         "list_command": "copilot mcp list --json",
     },
@@ -137,6 +138,7 @@ MCP_CLIENTS = {
         "list_command": "agy mcp list",
     },
 }
+
 # These clients read their user MCP files on every supported OS. UG can write those files
 # directly, including when a desktop app exists without a CLI on PATH.
 CONFIG_WRITABLE_MCP_CLIENTS: dict[str, Callable[[], Path]] = {
@@ -1390,7 +1392,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         workspace, profile, clients = setup_mcp_clients(
             state, "Managed MCP Servers", agents=scope, action_note="Registering for"
         )
-        working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
+        with spinner("Loading workspace MCP servers..."):
+            working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
     else:
         # No MCP client configured: nothing to register, but still clear what a prior configure left.
         workspace = state.get("workspace")
@@ -1408,9 +1411,10 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         if working
         else {}
     )
-    login_required = _managed_connection_login_requirements(
-        working, workspace, profile, oauth_clients
-    )
+    with spinner("Checking workspace MCP connections..."):
+        login_required = _managed_connection_login_requirements(
+            working, workspace, profile, oauth_clients
+        )
 
     eligible = set()
     if "claude" in scope and claude.managed_mcp_uses_managed_file(workspace, use_pat=use_pat):

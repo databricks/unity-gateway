@@ -39,7 +39,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -435,7 +435,12 @@ def model_labels(
 
 
 def provider_service_catalog(
-    state: dict, service_name: str, requested: str | None, *, tool: str = "copilot"
+    state: dict,
+    service_name: str,
+    requested: str | None,
+    *,
+    tool: str = "copilot",
+    agent: str | None = None,
 ) -> list[CopilotModel]:
     """The models of Model Provider Service ``service_name`` that this launch registers.
 
@@ -447,7 +452,7 @@ def provider_service_catalog(
     service, error = resolve_provider_service(tool, service_name, workspace, token)
     if error or service is None:
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
-    agent = "Copilot" if tool == "copilot" else "VS Code"
+    agent = agent or ("Copilot" if tool == "copilot" else "VS Code")
     provider_type = service["provider_type"]
     named = list(service.get("targets") or [])
     listed: list[str] = []
@@ -865,13 +870,12 @@ def build_runtime_env(
     workspace traces Copilot, its OTLP export.
 
     Inherited ``COPILOT_PROVIDER*`` settings are dropped so a user's own BYOK setup can't take
-    over a ug session; with ``otel``, so are inherited exporter settings, so traces go only to the
-    workspace."""
+    over a ug session. Inherited exporter settings are always dropped, so traces go only where ug
+    configures them."""
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("COPILOT_PROVIDER")
-        and not (otel and key.startswith(_INHERITED_OTEL_PREFIXES))
+        if not key.startswith("COPILOT_PROVIDER") and not key.startswith(_INHERITED_OTEL_PREFIXES)
     }
     env["COPILOT_PROVIDERS_CONFIG"] = str(registry_path)
     env["COPILOT_MODEL"] = model.ref
@@ -1163,15 +1167,19 @@ def managed_http_headers(state: dict) -> dict[str, str]:
     }
 
 
-def proxy_headers(state: dict) -> dict[str, str]:
-    """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
-    headers = {
-        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}"),
-        # Makes the gateway map or drop the Anthropic betas its serving backend lacks. Without it,
-        # Copilot's tool search beta (`advanced-tool-use-2025-11-20`, sent once it has enough MCP
-        # tools) gets a 400 from Claude served through Bedrock.
-        "x-databricks-use-coding-agent-mode": "true",
-    }
+def proxy_headers(state: dict, *, user_agent: bool = True) -> dict[str, str]:
+    """Headers the proxy adds to every gateway request; admin-managed headers win by name.
+
+    Without ``user_agent``, ug's own User-Agent is left for the caller to set per request."""
+    headers: dict[str, str] = {}
+    if user_agent:
+        headers["User-Agent"] = ucode_user_agent(
+            ug_version(), f"copilot/{agent_version(SPEC['binary'])}"
+        )
+    # Makes the gateway map or drop the Anthropic betas its serving backend lacks. Without it,
+    # Copilot's tool search beta (`advanced-tool-use-2025-11-20`, sent once it has enough MCP
+    # tools) gets a 400 from Claude served through Bedrock.
+    headers["x-databricks-use-coding-agent-mode"] = "true"
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
@@ -1186,6 +1194,8 @@ def proxy_headers(state: dict) -> dict[str, str]:
 # Codex's own headers. Copilot sends no such ids to a provider of its own.
 SESSION_ID_HEADER = "session-id"
 SUBAGENT_ID_HEADER = "thread-id"
+# A Copilot runtime signed in to GitHub names its session in this header.
+CLIENT_SESSION_ID_HEADER = "x-client-session-id"
 _SESSION_FLAGS = ("--session-id", "-r", "--resume", "--continue", "--connect")
 
 
@@ -1253,21 +1263,69 @@ def first_user_text(body: bytes | None) -> str | None:
     return None
 
 
-def subagent_headers(session_id: str) -> Callable[[Any, bytes | None], dict[str, str]]:
-    """Gives a subagent's requests an id of that subagent: Copilot marks them only by type, and
-    its delegated prompt, the first user message, stays the same over the subagent's turns. The
-    hash is keyed for this launch, so the id can't confirm a guess at the prompt."""
+def client_session_id(request_headers: Any) -> str | None:
+    """The id of the Copilot session a request belongs to, when it names one by UUID."""
+    return _uuid(request_headers.get(CLIENT_SESSION_ID_HEADER) or "")
+
+
+def subagent_headers(
+    session_id: str | None = None,
+) -> Callable[[Any, bytes | None], dict[str, str]]:
+    """Gives a subagent's requests an id of that subagent, under ``session_id`` or else the
+    request's own session: Copilot marks them only by type, and its delegated prompt, the first
+    user message, stays the same over the subagent's turns. The hash is keyed for this launch, so
+    the id can't confirm a guess at the prompt."""
     key = secrets.token_bytes(32)
 
     def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
         if request_headers.get("x-interaction-type") != "conversation-subagent":
             return {}
+        session = session_id or client_session_id(request_headers)
         prompt = first_user_text(body)
-        if prompt is None:
+        if session is None or prompt is None:
             return {}
         # JSON can carry a lone surrogate, which strict UTF-8 can't encode.
         digest = hmac.new(key, prompt.encode("utf-8", "surrogatepass"), hashlib.sha256)
-        return {SUBAGENT_ID_HEADER: f"{session_id}-{digest.hexdigest()[:16]}"}
+        return {SUBAGENT_ID_HEADER: f"{session}-{digest.hexdigest()[:16]}"}
+
+    return headers
+
+
+_PRODUCT_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[^\s(),;/]+")
+_USER_AGENT_COMMENT = re.compile(r"\([^()]*\)")
+
+
+def seat_runtime_user_agent(runtime_user_agent: str | None) -> str:
+    """ug's User-Agent for a call of VS Code's Copilot runtime: the runtime's own products (e.g.
+    ``copilot/1.0.111-0 term/unknown client/vscode``) after ``ucode/<v>``, so the gateway
+    attributes the call to Copilot at the runtime's version and the usage log still names VS
+    Code."""
+    tokens = [
+        token
+        for token in _USER_AGENT_COMMENT.sub(" ", runtime_user_agent or "").split()
+        if _PRODUCT_TOKEN.fullmatch(token)
+    ]
+    if not tokens or not tokens[0].casefold().startswith("copilot/"):
+        tokens.insert(0, "copilot/unknown")
+    return ucode_user_agent(ug_version(), *tokens)
+
+
+def seat_runtime_headers(
+    admin_headers: Collection[str] = (),
+) -> Callable[[Any, bytes | None], dict[str, str]]:
+    """Headers for each call of VS Code's Copilot runtime on the seat relay. One runtime serves
+    every chat of a VS Code window, so the session id is each call's own chat session. Names in
+    ``admin_headers`` are left to the admin's headers, which win by name as in ``proxy_headers``."""
+    subagents = subagent_headers()
+    admin = {name.casefold() for name in admin_headers}
+
+    def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
+        added = {"User-Agent": seat_runtime_user_agent(request_headers.get("User-Agent"))}
+        session_id = client_session_id(request_headers)
+        if session_id:
+            added[SESSION_ID_HEADER] = session_id
+        per_call = {**added, **subagents(request_headers, body)}
+        return {name: value for name, value in per_call.items() if name.casefold() not in admin}
 
     return headers
 
@@ -1324,19 +1382,49 @@ _SEAT_RELAY_DROPPED_ENV = frozenset(
 )
 
 
-def seat_relay_env(api_url: str, *, mcp_host: str | None, tracing: bool = False) -> dict[str, str]:
+_LOOPBACK_PROXY_EXCEPTIONS = ("127.0.0.1", "localhost")
+
+
+def _with_loopback_exceptions(*values: str | None) -> str:
+    """``NO_PROXY`` with the loopback hosts added to whatever the user already lists."""
+    entries: list[str] = []
+    for value in values:
+        for entry in (value or "").split(","):
+            if entry.strip() and entry.strip() not in entries:
+                entries.append(entry.strip())
+    return ",".join(
+        [*entries, *(host for host in _LOOPBACK_PROXY_EXCEPTIONS if host not in entries)]
+    )
+
+
+def seat_relay_env(
+    api_url: str,
+    *,
+    mcp_host: str | None,
+    tracing: bool = False,
+    keep_inherited_otel: bool = False,
+) -> dict[str, str]:
     """Copilot's environment for a session on a GitHub Copilot seat relay: signed in to GitHub,
     with every Copilot API call sent to the relay at ``api_url``, and GitHub MCP sent straight to
     ``mcp_host`` (the caller's Copilot API host) when it's known. With ``tracing``, Copilot exports
-    OTLP to the same relay, and inherited exporter settings are dropped."""
+    OTLP to the same relay. Inherited exporter settings are dropped, so traces go only where ug
+    configures them, unless ``keep_inherited_otel`` keeps them: VS Code's runtime gets its
+    exporter settings from VS Code's own configuration, not the user's shell, and VS Code exports
+    Copilot's spans itself."""
+    if tracing and keep_inherited_otel:
+        raise ValueError("tracing and keep_inherited_otel can't both be set")
     env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith("COPILOT_PROVIDER")
         and key not in _SEAT_RELAY_DROPPED_ENV
-        and not (tracing and key.startswith(_INHERITED_OTEL_PREFIXES))
+        and (keep_inherited_otel or not key.startswith(_INHERITED_OTEL_PREFIXES))
     }
     env["COPILOT_API_URL"] = api_url
+    # A proxy the runtime routes loopback through would receive the relay's requests, GitHub
+    # token included.
+    exceptions = _with_loopback_exceptions(env.get("NO_PROXY"), env.get("no_proxy"))
+    env["NO_PROXY"] = env["no_proxy"] = exceptions
     # Copilot opens /responses as a WebSocket first, which the relay refuses; only `true` (not
     # `1`) turns that off.
     env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] = "true"
@@ -1450,30 +1538,78 @@ def _launch_seat_relay(
     raise SystemExit(returncode)
 
 
+# Set by ug's Windows wrapper for VS Code: the process VS Code started and terminates.
+RUNTIME_WRAPPER_PID_ENV = "UCODE_RUNTIME_WRAPPER_PID"
+
+
+def _stop_with_wrapper(proc: _ChildProcess) -> None:
+    """On Windows, stop the runtime once ug's Node wrapper exits. VS Code stops the runtime by
+    terminating the wrapper, and Windows doesn't pass that on to the wrapper's children (here the
+    `ug.exe` launcher and this Python), so without this the runtime and the relay would outlive
+    VS Code. The launcher stays up, so the wrapper's id comes from the wrapper, not the parent."""
+    if sys.platform != "win32":
+        return
+    try:
+        wrapper_pid = int(os.environ.get(RUNTIME_WRAPPER_PID_ENV, ""))
+    except ValueError:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    # Its own instance, so these prototypes don't change other callers'.
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    synchronize, infinite = 0x00100000, 0xFFFFFFFF
+    wrapper = kernel32.OpenProcess(synchronize, False, wrapper_pid)
+    if not wrapper:
+        return
+
+    def wait() -> None:
+        try:
+            kernel32.WaitForSingleObject(wrapper, infinite)
+        finally:
+            kernel32.CloseHandle(wrapper)
+        proc.terminate()
+
+    threading.Thread(target=wait, name="ug-runtime-wrapper", daemon=True).start()
+
+
 def run_seat_runtime(
     state: dict, provider_service: str, runtime: str, runtime_args: list[str]
 ) -> int:
     """Run VS Code's bundled Copilot runtime with its Copilot API calls through the seat relay.
 
     VS Code starts this in place of the runtime and talks to it over stdio, so nothing may be
-    written to stdout."""
+    written to stdout. Its OTLP settings are VS Code's, so they're kept."""
     from ucode import copilot_relay
 
-    headers = {
-        name: value
-        for name, value in proxy_headers(state).items()
-        # The runtime names VS Code in its own User-Agent.
-        if name.casefold() != "user-agent"
-    }
-    server, cache, client, api_url = start_seat_relay(
-        state,
-        provider_service,
-        headers=headers,
-        sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
-    )
+    sign_in_hint = "Run `ug configure --agents copilot`, then restart VS Code."
     try:
-        env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
+        # The relay mints its first Databricks token here; a lapsed login or a missing CLI must
+        # end in a hint in VS Code's log, not a traceback.
+        server, cache, client, api_url = start_seat_relay(
+            state,
+            provider_service,
+            headers=proxy_headers(state, user_agent=False),
+            sign_in_hint=sign_in_hint,
+            request_headers_adder=seat_runtime_headers(managed_http_headers(state)),
+        )
+    except (RuntimeError, OSError) as exc:
+        sys.stderr.write(
+            f"[ucode] Couldn't start the seat relay for VS Code's Copilot: {exc}. {sign_in_hint}\n"
+        )
+        return 1
+    try:
+        env = seat_relay_env(
+            api_url, mcp_host=copilot_relay.cached_copilot_api_host(), keep_inherited_otel=True
+        )
         proc = subprocess_cross_os.popen([runtime, *runtime_args], env=env)
+        _stop_with_wrapper(proc)
         if not hasattr(signal, "SIGTERM"):
             return _wait_for_exit(proc)
         # VS Code stops the runtime by terminating this process, which must stop it too.

@@ -207,6 +207,13 @@ test("an error without a request_id answers the pending request", async (t) => {
   assert.equal(app.providers.size, 0);
 });
 
+test("an error from before a request doesn't answer it", async (t) => {
+  const { app, options } = await setup(t);
+  app.beforeHello = [{ type: "error", message: "Invalid message format" }];
+  assert.equal(await syncOnce({ app: ROWS }, options), "changed");
+  assert.equal(app.providers.size, 2);
+});
+
 test("the sync retries while the app applies another change", async (t) => {
   const { app, options } = await setup(t);
   app.busy = 2;

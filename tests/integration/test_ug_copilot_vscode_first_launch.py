@@ -20,14 +20,21 @@ if sys.argv[1:2] == ["--install-extension"]:
 
 
 def _install_fake_code(directory):
+    """Lay out `directory` as a desktop VS Code app, since configure skips any other `code`."""
+    (directory / "product.json").write_text(
+        json.dumps({"nameShort": "Code", "nameLong": "Visual Studio Code", "version": "1.200.0"}),
+        encoding="utf-8",
+    )
+    bin_dir = directory / "bin"
+    bin_dir.mkdir()
     script = directory / "fake_code.py"
     script.write_text(FAKE_CODE, encoding="utf-8")
     if os.name == "nt":
-        (directory / "code.cmd").write_text(
+        (bin_dir / "code.cmd").write_text(
             f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8"
         )
         return
-    code = directory / "code"
+    code = bin_dir / "code"
     code.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{script}' \"$@\"\n", encoding="utf-8")
     code.chmod(0o755)
 
@@ -51,7 +58,7 @@ def test_ug_configure_installs_the_extension_build_that_refreshes_its_models(
     code_dir.mkdir()
     _install_fake_code(code_dir)
     session.env["UG_TEST_CODE_DIR"] = str(code_dir)
-    session.env["PATH"] = f"{code_dir}{os.pathsep}{session.env['PATH']}"
+    session.env["PATH"] = f"{code_dir / 'bin'}{os.pathsep}{session.env['PATH']}"
 
     result = session.run(
         "configure",
@@ -67,9 +74,9 @@ def test_ug_configure_installs_the_extension_build_that_refreshes_its_models(
     output = _flat(result.stdout)
     assert "VS Code extension: installed databricks.unity-gateway" in output, result.stdout
     restart = (
-        "Quit VS Code with Cmd+Q, even if no window is open"
+        "In VS Code: quit VS Code with Cmd+Q, even if no window is open, and open it again, then"
         if sys.platform == "darwin"
-        else "Close every VS Code window and open VS Code again."
+        else "In VS Code: close every VS Code window and open VS Code again, then"
     )
     assert restart in output, result.stdout
     assert "If VS Code is open" not in output, result.stdout

@@ -1,5 +1,18 @@
 # Test suites and user journeys
 
+`test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
+OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
+protocol errors, and two real stdio providers using Python's `-P` flag.
+`test_codex_smart_routing_v2.py` also checks the footer's POSIX/Windows app-server
+registration, terminal selection, and preservation of unrelated MCP entries.
+Native UI and credentialed gateway validation are separate, as described in the
+[validation guide](../docs/codex-smart-router-statusline.md).
+
+The remote TUI and app-server receive matching feature overrides so the footer's
+forwarded feature table preserves plaintext subagent routing and collaboration guidance.
+`test_codex_statusline.py` and `test_codex_smart_routing_v2.py` cover this configuration
+boundary; they do not establish a live routed-child pass.
+
 The Codex smart-routing floor is stable 0.171.0. `test_agent_codex.py` covers the
 stable boundary, prerelease rejection at the minimum, and slow-probe recovery.
 `test_codex_smart_routing_v2.py` and `test_cli.py` cover explicit/managed upgrade
@@ -392,6 +405,14 @@ These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
 the command fails or times out.
 
+`test_opencode_family.py` covers the code OpenCode and Kilo share in `agents/opencode_family.py`.
+Kilo's rendered auth plugin must equal OpenCode's V1 plugin for the same state, and OpenCode's V2
+plugin must share the V1 prelude. The plugin must list the same provider ids as `PROVIDER_KEYS`,
+and Kilo must write the V1 plugin whatever Kilo version is installed. The token command in the
+plugin must carry the host, the profile, `--use-pat` and `--force-refresh`. These are component checks.
+Version, path and token lookups are patched on the wrapper modules, so they do not establish live
+OpenCode or Kilo behavior.
+
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
@@ -582,7 +603,10 @@ They cover Claude/Codex helper dispatch and rejection of routing decisions witho
 the agent-specific prompt-submission evidence.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
-child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
+child task. Every Claude preset also opens `/smart-router logs`, requires a nonzero session
+routing count, and closes the pane before exit. This includes presets that hide inline model
+details; these live log-pane checks have not been run locally.
+`subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
 Enabled Codex presets check `x-codex-turn-metadata` on successful parent and child
 inference: the recipe matches the router selector, `/root` has state `on`, and the
@@ -1255,7 +1279,7 @@ the smart-routing gate. Plain launches retain their existing version rules.
 `test_smart_router.py` executes Claude's installed skill commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Codex's skill uses
 `ug_smart_router`, a session-bound native tool serviced by the UG app-server interposer.
-It never requests shell approval or falls back to a shell toggle. Launcher lifecycle
+A session without that tool runs the exact CLI toggle instead, with no added arguments. Launcher lifecycle
 checks isolate the developer machine's optional managed catalog. Existing CLI commands
 remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
 The shared CLI only validates the reason and toggles routing; neither harness's CLI
@@ -1263,9 +1287,13 @@ prepares, captures, or uploads feedback. Native Codex owns that flow. CLI parity
 verify that valid reasons work without Isaac and that repeated off calls collect nothing.
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
-`ISAAC_LAUNCH_MODE=omni` exemption. Native Codex uses that same rule; Omnigent off
-turns routing off without opening a prompt, preparing evidence, or uploading.
-Component cases cover both CLIs with Omni, direct, empty, and unset launch modes,
+`ISAAC_LAUNCH_MODE=omni` exemption from that reason rule, and native Codex uses the same
+rule. In those Omnigent launches, the Codex CLI also keeps routing on for an
+off without `--feedback-collected`, which the launcher adds after collecting the reason,
+whether or not the feedback rule is on; Claude's mod checks that marker before it runs its
+plain CLI off. A marked off turns routing off without opening a prompt, preparing evidence,
+or uploading; on and an unchanged off need no marker. Component cases cover both CLIs with
+Omni, direct, empty, and unset launch modes, the Codex marker inside and outside Omnigent,
 and native Codex with feedback disabled or an Omni launch.
 `test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
@@ -1308,8 +1336,8 @@ ID types, using controlled transport rather than malformed native-Codex output.
 receipts instead of treating shell output as Codex toggle evidence. These component
 checks do not establish live backend delivery or terminal rendering of prompts/notices.
 New threads receive the native tool at startup. Older resumed threads that never had
-it must report that an updated launch/new thread is needed; the skill must not silently
-restart the conversation or fall back to a shell command.
+it run the CLI toggle; an off there that needs a reason reports that an updated launch is
+needed, and the skill never restarts the conversation.
 `mod_tests/register.test.ts` checks that the mod skips the form there
 only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
 form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,
@@ -1454,7 +1482,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug` | Configure Copilot with ug v0.2.0 (pinned commit; saves the bearer in `~/.copilot/ucode.env`), then configure with this ug, run a GPT task, revert | v0.2.0 left the bearer; after this ug's configure no file holds it; task completes; revert leaves no token and no `ucode.env` (non-blocking CI lane) |
 | `test_ug_configure_honors_managed_copilot_vscode_off` | Under the injected `copilot_vscode_off` managed config (Copilot entry with `vscode_integration.enabled: false`), `ug configure`, then `ug status` | Configure succeeds and says the workspace turns off GitHub Copilot in VS Code instead of looking for `code`; status shows `VS Code: off (workspace-managed)` |
 | `test_ug_configure_copilot_vscode_installs_and_reverts_the_extension` | Beside a developer's own VS Code `settings.json`, `ug configure --agents copilot` twice, then `ug revert` | `code --list-extensions` lists ug's extension after each configure, one copy installed; its `ug-config.json` names the workspace, a sign-in command, and the Claude and GPT test models on the Anthropic Messages and Responses wires; no file holds the bearer; after revert VS Code no longer lists it and the settings file is byte-identical. Configuration only (non-blocking CI lane) |
-| `test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window` | Configure, then in the real VS Code window on a fresh profile: continue without signing in, close Welcome, trust the folder, turn on Copilot Chat ("Add Models..." in the model picker or ug's "Turn On Copilot Chat" notice), pick the Claude test model, ask Agent mode to read a file; then pick the GPT test model and read a second file | Visible clicks and keys only, nothing seeded; each answer contains its own file value; the Claude turn's requests hit `/ai-gateway/anthropic/v1/messages` and the GPT turn's `/ai-gateway/mlflow/v1/responses`, each for its picked model with ug's User-Agent naming the bundled Copilot Chat and a non-empty 200; the saved chat records both turns on their Databricks models with a tool call, the value, no error; no file holds the bearer after the window closes (non-blocking CI lane, Linux and Windows) |
+| `test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window` | Configure, then in the real VS Code window on a fresh profile: continue without signing in, close Welcome, trust the folder, turn on Copilot Chat ("Add Models..." in the model picker or ug's "Turn On Copilot Chat" notice), stay in the Copilot session the chat opens on, pick the Claude test model, ask Agent mode to read a file; then pick the GPT test model and read a second file | Visible clicks and keys only, nothing seeded; each answer contains its own file value; the Claude turn's requests hit `/ai-gateway/anthropic/v1/messages` and the GPT turn's `/ai-gateway/mlflow/v1/responses`, each for its picked model with ug's User-Agent naming the bundled Copilot Chat and a non-empty 200; the Copilot session's saved events record both turns on their Databricks models with a tool call, the value, no error; no file holds the bearer after the window closes (non-blocking CI lane, Linux and Windows) |
 | `test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model` | `ug configure --agents copilot --provider` with the OpenAI MPS, then in the real window: first launch as above, pick the service's GPT model, read a file | The extension lists the service's model id; the answer contains the file value; every request hits `/ai-gateway/openai/v1/responses` with the provider service header, for that model, with a non-empty 200; the gateway's backend is not asserted (non-blocking CI lane, Linux and Windows) |
 | `test_vscode_copilot_chat_lists_the_new_models_after_reconfigure` | Claude turn, quit VS Code from the keyboard, `ug configure --agents copilot --provider` with the OpenAI MPS, reopen the same profile | After reconfigure the extension lists only the service's models; a turn on the service's model hits `/ai-gateway/openai/v1/responses` with the provider header and a non-empty 200; then the picker's search finds no workspace Claude model (non-blocking CI lane, Linux and Windows) |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
@@ -1834,6 +1862,12 @@ and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when
 adding, modifying, or removing tests. The ordinary suite enforces both the
 no-mocking boundary and the Scenario/Expected docstring format.
 
+Hidden subagent-model display has component coverage for Claude/Codex verification
+notices, restored native labels, missing-model warnings, and parallel streamed calls
+that still route at launch. CUJ4's delegated journeys reject verification notices too;
+its no-delegation status-band matrix omits the two blind presets, whose toggle behavior
+is shared with the existing orchestration preset. These additions have no live run evidence.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
@@ -1931,6 +1965,20 @@ added through `ug mcp add`, while retaining the original model/authentication-fi
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
+### Routing explanation coverage
+
+The decision-audit writer omits task text and explanations when task-text logging is
+disabled, retaining the task digest and length. Codex passes that privacy setting;
+Claude's session log retains its existing bounded preview. These choices never
+change the selected model. The existing `/smart-router logs`
+detail validates session and tool-call identity, the routed model, and the exact offered
+catalog before displaying comparisons. Native tests cover malformed and oversized
+metadata, dotted and gateway-wrapped model IDs, per-model selection, optional numeric
+estimates, and the default-hidden estimates control. Invalid explanation data leaves the
+selected route and rationale visible. These checks do not establish deployed-service
+explanation availability. See the Claude mod guide for the optional service response
+contract.
+
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed
 spawns, and native role menus. Native auto-mode tests verify both foreground and
@@ -1966,6 +2014,10 @@ Copilot CLI registry label checks cover human-readable labels for qualified cata
 duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names
 remain raw so regional target distinctions are preserved. Native picker and inference validation
 remain separate from these component checks.
+
+Configure loading indicators: skill download component coverage verifies the shared spinner
+starts before bundle requests and reports completed/total downloads. MCP and skill
+reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
 
 ## Security scan rollout
 
@@ -2028,3 +2080,22 @@ That last case runs on Linux (the store is a CA bundle file) and on the Windows 
 adds the CA to the certificate store and sets `UG_TEST_OS_TRUSTED_CA_DIR`; it is skipped on macOS
 and on a Windows machine without that variable. No test goes through a real TLS-inspection proxy,
 and `ug upgrade` is not run against one.
+
+## Smart Router startup validation
+
+The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the default
+without it (no request, band from the first paint). `test_route_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
+unsupported model list turns routing off for the session. Every other failure turns it off with a
+recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
+responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
+deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
+flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
+check reports only an unsupported list and leaves routing on after a failure. The smart-routing
+launch tests cover the resolved Claude model/harness list and provider.
+Claude's native mod tests cover the band hold, the result handling, the unsupported and
+validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
+and the transcript log lines (`Smart Router is off` and the warning) logged only when
+`ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
+The Claude back-on TUI journey in `tests/integration/test_ug_smart_routing_hooks.py` checks the live
+validate request that `/smart-router on` sends (HTTP 200, `is_supported: true`). These component tests
+do not establish live Gateway or classifier compatibility.
