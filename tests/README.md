@@ -1288,13 +1288,13 @@ verify that valid reasons work without Isaac and that repeated off calls collect
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
 `ISAAC_LAUNCH_MODE=omni` exemption from that reason rule, and native Codex uses the same
-rule. With the feedback rule on there, the Codex CLI keeps routing on for an off without
-`--feedback-collected`, which the launcher adds after collecting the reason; Claude's mod
-checks that marker before it runs its plain CLI off. A marked off turns routing off
-without opening a prompt, preparing evidence, or uploading; on and an unchanged off need
-no marker. Component cases cover both CLIs with Omni, direct, empty, and unset launch modes,
-the Codex marker with the feedback rule on and off, and native Codex with feedback disabled
-or an Omni launch.
+rule. In an Omnigent session (`OMNIGENT=1`), the Codex CLI also keeps routing on for an
+off without `--feedback-collected`, which the launcher adds after collecting the reason,
+whether or not the feedback rule is on; Claude's mod checks that marker before it runs its
+plain CLI off. A marked off turns routing off without opening a prompt, preparing evidence,
+or uploading; on and an unchanged off need no marker. Component cases cover both CLIs with
+Omni, direct, empty, and unset launch modes, the Codex marker inside and outside Omnigent,
+and native Codex with feedback disabled or an Omni launch.
 `test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
 arguments, original-task selection, exact reason text, and pre-toggle routing context.
