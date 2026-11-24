@@ -367,7 +367,12 @@ def test_worker_error_does_not_interrupt_other_requests(
         }
     else:
         assert response["result"] == {
-            "content": [{"type": "text", "text": "Responses API request failed: upstream failed"}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Responses API request failed: network error: upstream failed",
+                }
+            ],
             "isError": True,
         }
     server.answer(2, "success")

@@ -55,7 +55,7 @@ class TestToolsCallSuccess:
     def test_unwraps_responses_api_text(self, monkeypatch):
         captured: dict[str, Any] = {}
 
-        def fake_call(query: str) -> dict:
+        def fake_call(query: str, *, call_id: str | None = None) -> dict:
             captured["query"] = query
             return {
                 "output": [
@@ -107,7 +107,7 @@ class TestToolsCallErrors:
         assert "query" in result["content"][0]["text"].lower()
 
     def test_http_failure_surfaces_as_tool_error(self, monkeypatch):
-        def boom(query: str) -> dict:
+        def boom(query: str, *, call_id: str | None = None) -> dict:
             raise RuntimeError("Responses API returned HTTP 500: oops")
 
         monkeypatch.setattr(mcp_web_search, "_call_responses_api", boom)
@@ -126,7 +126,9 @@ class TestToolsCallErrors:
         assert "HTTP 500" in result["content"][0]["text"]
 
     def test_empty_response_text_returns_tool_error(self, monkeypatch):
-        monkeypatch.setattr(mcp_web_search, "_call_responses_api", lambda q: {"output": []})
+        monkeypatch.setattr(
+            mcp_web_search, "_call_responses_api", lambda q, *, call_id=None: {"output": []}
+        )
         responses = _drive(
             [
                 {
@@ -243,6 +245,73 @@ class TestCallResponsesApi:
             v for k, v in captured["headers"].items() if k.lower() == "authorization"
         )
         assert auth_header == "Bearer tok"
+
+    def test_diagnostics_name_phases_without_query_or_token(self, monkeypatch, capsys):
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "databricks-gpt-5")
+        monkeypatch.setenv(mcp_web_search.DIAGNOSTICS_ENV, "1")
+        monkeypatch.setattr(
+            mcp_web_search,
+            "get_databricks_token",
+            lambda ws, profile=None: "secret-token",
+        )
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"output": []}).encode("utf-8")
+
+        monkeypatch.setattr(
+            mcp_web_search.urllib_request, "urlopen", lambda req, timeout: FakeResponse()
+        )
+        mcp_web_search._call_responses_api("sensitive search text", call_id="search-1")
+
+        stderr = capsys.readouterr().err
+        assert "call=search-1" in stderr
+        assert "responses api call started" in stderr
+        assert "token lookup completed" in stderr
+        assert "responses api response read bytes=" in stderr
+        assert "sensitive search text" not in stderr
+        assert "secret-token" not in stderr
+
+    def test_diagnostics_are_opt_in(self, monkeypatch, capsys):
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "databricks-gpt-5")
+        monkeypatch.setattr(mcp_web_search, "get_databricks_token", lambda ws, profile=None: "tok")
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"output": []}).encode("utf-8")
+
+        monkeypatch.setattr(
+            mcp_web_search.urllib_request, "urlopen", lambda req, timeout: FakeResponse()
+        )
+        mcp_web_search._call_responses_api("hello")
+        assert capsys.readouterr().err == ""
+
+    def test_raw_network_errors_use_databricks_reason(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "databricks-gpt-5")
+        monkeypatch.setattr(mcp_web_search, "get_databricks_token", lambda ws, profile=None: "tok")
+        monkeypatch.setattr(
+            mcp_web_search.urllib_request,
+            "urlopen",
+            lambda req, timeout: (_ for _ in ()).throw(TimeoutError("timed out")),
+        )
+
+        with pytest.raises(RuntimeError, match="network error: timed out"):
+            mcp_web_search._call_responses_api("hello")
 
 
 class TestConfiguredSearchAuthentication:
