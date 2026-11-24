@@ -9,7 +9,7 @@ import {
   warnUnsupportedModelList,
   warnValidationFailed,
 } from './smart-routing-status.ts';
-import { routeAgentStream, endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   MODEL_SET_PREFIX,
@@ -481,20 +481,8 @@ export function register(on: On, options: PluginOptions): void {
     const model = routedModels.model(e.agentId)
       ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined)
       ?? (auto ? autoTarget(auto, e.model) : undefined);
-    // The stream router takes the few calls it needs, as the validator follows `$` no further.
-    const routing = {
-      session: {id: () => $.session.id(), model: () => $.session.model()},
-      // A server-side auto-mode verdict covers the call as the model wrote it.
-      serverReview: async () => await $.env.get('CLAUDE_CODE_AUTO_MODE_SERVER') === '1',
-      routingEnabled: async () => isRoutingEnabled({
-        ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
-        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
-      }),
-      process: {run: (command: readonly string[], init: {stdin: string; timeoutMs: number}) => $.process.run(command, init)},
-      clock: {now: () => $.clock.now(), every: (ms: number, tick: () => void) => $.clock.every(ms, tick)},
-      ui: {invalidate: (name: 'ui.render') => $.ui.invalidate(name), log: (text: string) => $.ui.log(text)},
-    };
-    return yield* routeAgentStream(routing, e, next(model ? {...e, model} : e));
+    // Preserve the response stream: auto mode may already have reviewed its tool inputs.
+    return yield* next(model ? {...e, model} : e);
   });
 
   if (auto) {

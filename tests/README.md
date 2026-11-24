@@ -195,14 +195,14 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
-Native routing components check the streamed parent reply: parallel Agent calls are routed
-once, before they are recorded, and only their `description` becomes
-`<animal> · <model> · <task>` while other arguments, chunk order and non-Agent calls are
-unchanged. Spawn receipts are compared with that heading; cards, lone rows, the agent list
-and completed-task notices show the launched model and flag a mismatch, a missing launch model
-is not persisted, and saved receipts are restored per child on resume. The agent-list
-assertions run only where Claude has that row (2.1.328 and later). Native auto-mode cases
-retain their approval/denial and zero fallback-classification assertions.
+Native routing components check that the streamed parent reply preserves all Agent and
+non-Agent arguments and chunk boundaries, whether the server-review environment variable is
+unset or set. Each Agent call is routed at tool execution without rewriting its input. Lone
+rows show the model through rendering only; Claude's collapsed parallel header keeps its native
+description. Cards, the agent list and completed-task notices show the launched model and flag
+a mismatch, a missing launch model is not persisted, and saved receipts are restored per child
+on resume. The agent-list assertions run only where Claude has that row (2.1.328 and later).
+Native auto-mode cases retain their approval/denial and zero fallback-classification assertions.
 The native status command checks old animal-only mappings, model labels with unchanged
 live progress and counters, and identical activity labels without duplication.
 

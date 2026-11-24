@@ -171,15 +171,15 @@ const launchNote = (selected: string, launched?: string): string => {
     ? `⚠ Launched Model: ${shortModel(launched)} (differs from the selected model)`
     : `Launched Model: ${shortModel(launched)}`
 }
-// Flags a launch that is not the model the heading named.
+// Flags a launch that is not the selected model.
 const mismatchNote = (selected: string, launched: string): string =>
-  differs(selected, launched) ? ` ⚠ heading said ${shortModel(selected)}` : ''
+  differs(selected, launched) ? ` ⚠ selected ${shortModel(selected)}` : ''
 const taskLabel = (record: RoutingRecord): string => {
   const launched = record.spawned?.model
   if (!launched) return `${record.name} — ${shortModel(record.model)} (selected, launch pending)`
   return `${record.name} — ${shortModel(launched)}${mismatchNote(record.model, launched)}`
 }
-// The heading the parent's call is given before launch: the predicted model, checked at spawn.
+// The selection label is only a prediction until the spawn receipt arrives.
 const heading = (record: RoutingRecord): string =>
   `${record.name} · ${shortModel(record.model)} · ${record.title}`
 // A neutral task title: the prompt's first sentence, so a description a model wrote around the
@@ -191,7 +191,7 @@ type RoutedDisplay = {
   session_id: string; agent_id: string; name: string; description: string
   animal: string; title: string; selected: string; launched: string
 }
-// The receipt-backed label: the launched model, flagged when the heading predicted another.
+// The receipt-backed label: the launched model, flagged when the selection differs.
 const receiptLabel = (d: Pick<RoutedDisplay, 'animal' | 'title' | 'selected' | 'launched'>): string =>
   `${d.animal} · ${shortModel(d.launched)} · ${d.title}${mismatchNote(d.selected, d.launched)}`
 export const routedDisplays: {
@@ -298,8 +298,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-// Routes one Agent call once. The parent's reply is held until its calls are routed so the
-// heading Claude draws names the model; a call that bypassed that path routes here instead.
+// Route each call once without altering the input auto mode may have reviewed.
 async function routeCall($: any, e: any): Promise<void> {
   const { options, autoModels } = routing
   const command = options!.routeCommand as readonly string[]
@@ -377,65 +376,6 @@ async function routeCall($: any, e: any): Promise<void> {
   }
 }
 
-// The recorded call is what auto mode reviews and what the grouped heading draws, so only
-// the label-only description is rewritten, before either sees it.
-export async function* routeAgentStream($: any, step: any, source: AsyncGenerator<any, any>): AsyncGenerator<any, any> {
-  // Rewriting the reply would void a server-side auto-mode verdict, so that review keeps its input.
-  if (await $.serverReview()) return yield* source
-  // Nothing to head when routing is off, so the reply streams untouched. An Auto launch keeps
-  // the model's heading too: its session model is a picker alias, which cannot stand in as the
-  // fallback reviewer once the server-side verdict is void.
-  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels
-      || routing.options?.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI === '0') {
-    return yield* source
-  }
-  const held: any[] = []
-  const calls = new Map<number, { tool: string; id: string; json: string }>()
-  const release = async function* (): AsyncGenerator<any> {
-    const inputs = new Map<number, Record<string, any>>()
-    for (const [index, call] of calls) {
-      try { inputs.set(index, JSON.parse(call.json || '{}')) } catch { /* leave the call as the model wrote it */ }
-    }
-    // A call that cannot be routed goes on as the model wrote it; it must not cost the reply.
-    await Promise.all([...calls].map(async ([index, call]) => {
-      if (!inputs.has(index)) return
-      try {
-        await routeCall($, { ...inputs.get(index), tool: call.tool, tool_use_id: call.id, agentId: step.agentId })
-      } catch {
-        $.ui.log('Smart Router could not route this subagent; using its original settings.')
-      }
-    }))
-    const written = new Set<number>()
-    for (const chunk of held) {
-      const call = chunk.kind === 'input' ? calls.get(chunk.index) : undefined
-      if (!call) { yield chunk; continue }
-      if (written.has(chunk.index)) continue
-      written.add(chunk.index)
-      const record = records.get(call.id)
-      const input = inputs.get(chunk.index)
-      yield record && input ? { ...chunk, json: JSON.stringify({ ...input, description: heading(record) }) }
-        : { ...chunk, json: call.json }
-    }
-    held.length = 0
-    calls.clear()
-  }
-  // A consumer that stops reading must also stop the reply stream beneath this one.
-  try {
-    while (true) {
-      const next = await source.next()
-      if (next.done) { yield* release(); return next.value }
-      const chunk = next.value
-      if (chunk.kind === 'tool' && (chunk.name === 'Agent' || chunk.name === 'Task')) calls.set(chunk.index, { tool: chunk.name, id: chunk.id, json: '' })
-      if (!calls.size) { yield chunk; continue }
-      if (chunk.kind === 'input' && calls.has(chunk.index)) calls.get(chunk.index)!.json += chunk.json
-      held.push(chunk)
-      if (chunk.kind === 'stop') yield* release()
-    }
-  } finally {
-    await source.return?.(undefined)
-  }
-}
-
 export const registerSubagentRouting = (
   on: On,
   options: PluginOptions,
@@ -509,18 +449,18 @@ export const registerSubagentRouting = (
     return result
   })
 
-  // Claude's own notice already names the heading; a launch that differs from it is called out.
+  // A launch that differs from the selection is called out in the native notice.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || !differs(saved.selected, saved.launched)) return next(e)
     return next({ ...e, props: { ...e.props,
-      text: `${e.props.text}\n⚠ Launched on ${shortModel(saved.launched)}, not the ${shortModel(saved.selected)} in the heading`,
+      text: `${e.props.text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}`,
     } })
   })
 
-  // The agent list reads the launch receipt, so it shows the launched model whatever the heading said.
+  // The agent list reads the launch receipt rather than the prediction.
   on('ui.render', { component: 'AgentRow' }, async ($, e, next) => {
     if (!showModel) return next(e)
     const live = routedModels.record(e.requestId)
@@ -538,9 +478,9 @@ export const registerSubagentRouting = (
       ...e,
       props: { ...e.props, tool: name,
         ...(showModel && record && input !== null && typeof input === 'object' && !Array.isArray(input)
-          && record.spawned?.model && differs(record.model, record.spawned.model)
-          ? { input: { ...input, description: receiptLabel({ animal: record.name, title: record.title,
-            selected: record.model, launched: record.spawned.model }) } } : {}),
+          ? { input: { ...input, description: record.spawned?.model
+            ? receiptLabel({ animal: record.name, title: record.title, selected: record.model, launched: record.spawned.model })
+            : heading(record) } } : {}),
       },
     } : e)
     // The in-progress line names no model, so blind configs still show it; only the
