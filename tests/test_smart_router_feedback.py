@@ -1005,6 +1005,7 @@ FAILED_CHECK = {
     "eligible_route_options": [],
     "ineligible_route_options": [],
     "available_route_options": [],
+    "validation_ms": 4000,
 }
 SUPPORTED_CHECK = {"routing_disabled": False}
 CHECK_RAISES = RuntimeError("token unavailable")
@@ -1101,11 +1102,15 @@ def test_on_checks_the_model_list_before_turning_routing_on(
         assert not result_path.exists()
         assert records == []
         return
-    assert json.loads(result_path.read_text()) == {**published, "logged": True}
+    result = json.loads(result_path.read_text())
+    [row] = records
+    if isinstance(outcome, Exception):
+        published = {**published, "validation_ms": result["validation_ms"]}
+    assert result == {**published, "logged": True}
     # The row is already written, so the first-prompt recorder must not log it again.
     assert session_env.read_unsupported_validation(controls) is None
-    [row] = records
     assert {key: row[key] for key in published} == published
+    assert "Reason:" in session_log.render_validation_detail(row)
 
 
 def test_toggling_clears_the_previous_warning(inline_feedback, session_logs):

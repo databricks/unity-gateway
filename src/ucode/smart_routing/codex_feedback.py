@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from pathlib import Path
@@ -469,10 +470,11 @@ class CodexSmartRouter:
     def _model_list_verdict(self) -> dict[str, Any]:
         if self.validate is None:
             return {ROUTING_DISABLED_KEY: False}
+        started = time.monotonic()
         try:
             return self.validate()
         except Exception:
-            return route_validation.check_failed(routing.configured_router_name())
+            return route_validation.check_failed(routing.configured_router_name(), started)
 
     def _publish_verdict(self, thread_id: str, verdict: dict[str, Any]) -> None:
         with contextlib.suppress(OSError):

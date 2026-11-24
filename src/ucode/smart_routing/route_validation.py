@@ -205,9 +205,13 @@ def _verdict(
     }
 
 
-def check_failed(router_name: str) -> dict[str, Any]:
+def check_failed(router_name: str, started: float) -> dict[str, Any]:
     """Return the verdict for a check that could not run."""
-    return {ROUTING_DISABLED_KEY: True, **_failure_details(CHECK_FAILED_REASON, router_name)}
+    return {
+        ROUTING_DISABLED_KEY: True,
+        **_failure_details(CHECK_FAILED_REASON, router_name),
+        "validation_ms": round((time.monotonic() - started) * 1000),
+    }
 
 
 def validate(
