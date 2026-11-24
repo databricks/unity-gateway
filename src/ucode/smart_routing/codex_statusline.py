@@ -122,9 +122,7 @@ def _validation_indicator(path: Path, enabled: bool) -> dict:
         return _router_indicator(
             ERROR_LABEL, YELLOW, [*([shown] if shown else []), LOGS_DETAILS_HINT]
         )
-    if not enabled:
-        return _router_indicator(OFF_LABEL)
-    return _router_indicator(ON_LABEL, GREEN, [shown, LOGS_DETAILS_HINT] if shown else [])
+    return _router_indicator(ON_LABEL, GREEN) if enabled else _router_indicator(OFF_LABEL)
 
 
 def render(state: dict[str, Any]) -> dict:

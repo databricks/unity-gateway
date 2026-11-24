@@ -180,7 +180,6 @@ def test_unreadable_controls_show_unknown_and_recover(tmp_path, monkeypatch, con
 
 UNSUPPORTED = {"routing_disabled": True, "validation_ms": 120}
 FAILED = {"routing_disabled": True, "validation_failed": True, "validation_ms": 90}
-ON_WITH_WARNING = {"routing_disabled": False, "validation_ms": 120}
 
 
 def _controls(tmp_path, monkeypatch, enabled):
@@ -228,14 +227,6 @@ def _controls(tmp_path, monkeypatch, enabled):
             ("ERROR", LOGS_DETAILS_HINT),
             id="startup-failed-after-turn",
         ),
-        pytest.param(
-            True,
-            ON_WITH_WARNING,
-            False,
-            ("ON", UNSUPPORTED_MODEL_LIST_WARNING, LOGS_DETAILS_HINT),
-            id="on-with-unsupported-warning",
-        ),
-        pytest.param(True, ON_WITH_WARNING, True, ("ON",), id="on-with-warning-after-turn"),
         pytest.param(True, {"routing_disabled": False}, False, ("ON",), id="supported"),
         pytest.param(False, None, False, ("OFF",), id="no-result"),
     ],
