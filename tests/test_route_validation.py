@@ -1,4 +1,4 @@
-"""Startup validation against a loopback Smart Router, through the real HTTP transport."""
+"""Model-list validation against a loopback Smart Router, through the real HTTP transport."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ import pytest
 
 from tests.conftest import metric_observations
 from ucode import databricks, metrics
+from ucode.constants import AGENT_CODEX, ROUTER_HARNESS_CLAUDE_CODE
 from ucode.smart_routing import route_validation as validation
-from ucode.smart_routing.session_env import session_routing_enabled
+from ucode.smart_routing.session_env import session_routing_enabled, validation_result_path
 from ucode.workspace import activate
 
 UNREACHABLE = "unreachable"
@@ -99,7 +100,7 @@ def _wait_for_result(path):
     pytest.fail("validation worker did not publish a result")
 
 
-def _run_check(workspace, tmp_path):
+def _run_check(workspace, tmp_path, available_harness=ROUTER_HARNESS_CLAUDE_CODE):
     controls = tmp_path / "env.json"
     controls.write_text("{}")
     validation.start(
@@ -108,8 +109,9 @@ def _run_check(workspace, tmp_path):
         [("custom.model", "claude")],
         router_name="stable",
         session_controls=controls,
+        available_harness=available_harness,
     )
-    return controls, _wait_for_result(validation.result_path(controls))
+    return controls, _wait_for_result(validation_result_path(controls))
 
 
 def _failed(reason):
@@ -232,7 +234,7 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, route
         session_controls=controls,
         provider="main.default.mps",
     )
-    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    assert _wait_for_result(validation_result_path(controls)) == {"routing_disabled": False}
     [(path, headers)] = router.requests
     assert path == "/ai-gateway/routing/v1/routes:validate"
     assert headers["Authorization"] == "Bearer test-token"
@@ -256,7 +258,7 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     ] == [("route_validation", "timeout")]
     assert len(metric_observations(metrics_recorder, metrics.ROUTE_VALIDATION_DURATION_MS)) == 1
     assert router.answered.wait(3)
-    assert json.loads(validation.result_path(controls).read_text()) == result
+    assert json.loads(validation_result_path(controls).read_text()) == result
     assert isinstance(result.pop("validation_ms"), int)
     assert result == _failed("Smart Router didn't respond in time")
     assert session_routing_enabled(controls) is False
@@ -283,7 +285,7 @@ def test_failed_write_is_isolated_and_keeps_the_result_honest(
     controls = tmp_path / "env.json"
     controls.write_text("{}")
     if failing == "result":
-        validation.result_path(controls).mkdir()
+        validation_result_path(controls).mkdir()
     else:
         controls.unlink()
         controls.mkdir()
@@ -295,16 +297,17 @@ def test_failed_write_is_isolated_and_keeps_the_result_honest(
         session_controls=controls,
     )
     if failing == "result":
-        assert validation.result_path(controls).is_dir()
+        assert validation_result_path(controls).is_dir()
         assert session_routing_enabled(controls) is False
     else:
-        assert json.loads(validation.result_path(controls).read_text()) == {
+        assert json.loads(validation_result_path(controls).read_text()) == {
             "routing_disabled": False
         }
         assert controls.is_dir()
 
 
-def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, router):
+@pytest.mark.parametrize("harness", [ROUTER_HARNESS_CLAUDE_CODE, AGENT_CODEX])
+def test_unsupported_result_carries_the_details_for_the_logs_row(harness, tmp_path, router):
     payload = {
         "is_supported": False,
         "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
@@ -324,7 +327,7 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, route
         ],
     }
     router.body = json.dumps(payload).encode()
-    _, result = _run_check(router.url, tmp_path)
+    _, result = _run_check(router.url, tmp_path, available_harness=harness)
     assert isinstance(result.pop("validation_ms"), int)
     assert result == {
         "routing_disabled": True,
@@ -339,11 +342,11 @@ def test_unsupported_result_carries_the_details_for_the_logs_row(tmp_path, route
             },
             {"model": "custom", "harness": "claude", "reason": None},
         ],
-        "available_route_options": [{"model": "claude-sonnet-5-5", "harness": "claude_code"}],
+        "available_route_options": [{"model": "claude-sonnet-5-5", "harness": harness}],
     }
 
 
-def _validate(response, monkeypatch):
+def _validate(response, monkeypatch, available_harness=ROUTER_HARNESS_CLAUDE_CODE):
     monkeypatch.setattr(
         validation,
         "_http_post_json",
@@ -352,7 +355,11 @@ def _validate(response, monkeypatch):
         else Mock(return_value=response),
     )
     return validation.validate(
-        "https://example.com", "test-token", [("m", "claude")], router_name="stable"
+        "https://example.com",
+        "test-token",
+        [("m", "claude")],
+        router_name="stable",
+        available_harness=available_harness,
     )
 
 

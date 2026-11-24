@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from ucode.agents.claude import _enable_header_mod, _header_mod_files
+from ucode.agents.claude import _enable_header_mod, managed_mod_files
 from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.v2 import (
@@ -21,7 +21,7 @@ from ucode.smart_routing.v2 import (
 
 
 def install_header_mod(root: Path) -> Path:
-    for path, text in _header_mod_files(root).items():
+    for path, text in managed_mod_files(root).items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
     return root

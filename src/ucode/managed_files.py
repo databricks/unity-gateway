@@ -91,6 +91,12 @@ CLAUDE_HEADER_MOD_FILES = (
     "ug-headers/.claude-plugin/plugin.json",
     "ug-headers/hooks/hooks.json",
     "ug-headers/hooks/register.ts",
+    "ug-smart-router-recipe/.claude-plugin/plugin.json",
+    "ug-smart-router-recipe/hooks/hooks.json",
+    "ug-smart-router-recipe/hooks/register.ts",
+    "ug-smart-router-recipe/hooks/constants.ts",
+    "ug-smart-router-recipe/hooks/extra-body.ts",
+    "ug-smart-router-recipe/hooks/routing-state.ts",
 )
 
 CLAUDE_DESKTOP_MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")

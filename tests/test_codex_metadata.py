@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import codex_interposer, session_env
+from ucode.smart_routing import codex_interposer, session_env, session_log
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
     RoutingMetadata,
@@ -154,6 +154,39 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
         assert tui.messages == []
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("validation", "logged"),
+    [
+        (
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+            },
+            1,
+        ),
+        ({"routing_disabled": False}, 0),
+        ({"routing_disabled": True, "router_name": "stable", "logged": True}, 0),
+    ],
+    ids=["unsupported", "supported", "toggle-already-logged"],
+)
+def test_route_validation_is_logged_once_for_the_root_thread(tmp_path, validation, logged):
+    async def run():
+        metadata, _, _ = controller(tmp_path)
+        turn = {"id": "input", "method": "turn/start", "params": {"threadId": "root"}}
+        # The first prompt can precede the startup check's result file.
+        await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+        session_env.validation_result_path(metadata.controls).write_text(json.dumps(validation))
+        for _ in range(2):
+            await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+
+    asyncio.run(run())
+    records = session_log.read_records("codex", "root", session_log.ROUTE_VALIDATION_TYPE)
+    assert [(r["harness"], r["session_id"], r["router_name"]) for r in records] == (
+        [("codex", "root", "stable")] if logged else []
+    )
 
 
 class StreamingWire(Wire):
@@ -954,3 +987,51 @@ def test_native_selector_replies_stay_local_and_cancel_cleanly(
             assert upstream.outgoing.empty()
 
     asyncio.run(run())
+
+
+UNSUPPORTED_WARNING = {"routing_disabled": True, "validation_ms": 120}
+
+
+def _prompt(metadata, turn_id):
+    async def send():
+        await asyncio.wait_for(
+            metadata.before_tui(
+                {"id": turn_id, "method": "turn/start", "params": {"threadId": "root"}}
+            ),
+            2,
+        )
+        metadata.observe(
+            {"method": "turn/started", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+        )
+
+    asyncio.run(send())
+
+
+def _complete(metadata, turn_id):
+    metadata.observe(
+        {"method": "turn/completed", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+    )
+
+
+def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _prompt(metadata, "first")
+    _complete(metadata, "first")
+    assert session_env.validation_dismissed_path(metadata.controls).exists()
+
+
+def test_warning_stays_through_a_turn_already_running_when_it_arrives(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    dismissed = session_env.validation_dismissed_path(metadata.controls)
+    _prompt(metadata, "first")
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _complete(metadata, "first")
+    assert not dismissed.exists()
+    _prompt(metadata, "second")
+    _complete(metadata, "second")
+    assert dismissed.exists()

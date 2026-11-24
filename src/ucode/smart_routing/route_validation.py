@@ -1,8 +1,8 @@
-"""Smart Router model-list check at startup and on `/smart-router on`.
+"""Smart Router model-list check at startup and on `/smart-router on`, shared by both harnesses.
 
 At startup, an unsupported model list or a failed check turns routing off for the session. HTTP 404
 is the flag-off answer from the endpoint, so it leaves routing on and records nothing. On
-`/smart-router on`, only an unsupported result is reported and routing stays on.
+`/smart-router on`, the caller reads the verdict before turning routing on.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from ucode.constants import (
 )
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
+from ucode.smart_routing.session_env import validation_result_path
 from ucode.workspace import WorkspaceSelectionReason
 
 # The Claude mod shows routing ON after 5 s without a result, so the check must publish sooner.
@@ -38,10 +39,6 @@ TIMED_OUT_FAILURE_REASON = "Smart Router didn't respond in time"
 HTTP_ERROR_FAILURE_REASON = "Smart Router returned an error (HTTP {status})"
 UNREACHABLE_FAILURE_REASON = "Smart Router couldn't be reached"
 UNEXPECTED_RESPONSE_FAILURE_REASON = "Smart Router returned an unexpected response"
-
-
-def result_path(session_controls: Path) -> Path:
-    return session_controls.with_suffix(".validation.json")
 
 
 def _text(value: object) -> str | None:
@@ -68,7 +65,9 @@ def _is_unsupported(payload: object) -> bool:
     return isinstance(payload, dict) and payload.get("is_supported") is False
 
 
-def _unsupported_details(payload: dict[str, Any], router_name: str) -> dict[str, Any]:
+def _unsupported_details(
+    payload: dict[str, Any], router_name: str, available_harness: str
+) -> dict[str, Any]:
     metadata = payload.get("metadata")
     return {
         "router_name": router_name,
@@ -80,7 +79,7 @@ def _unsupported_details(payload: dict[str, Any], router_name: str) -> dict[str,
             payload.get("ineligible_route_options"), with_reason=True
         ),
         "available_route_options": _route_options(
-            payload.get("available_route_options"), harness=ROUTER_HARNESS_CLAUDE_CODE
+            payload.get("available_route_options"), harness=available_harness
         ),
     }
 
@@ -179,7 +178,11 @@ def _request_body(route_options: list[tuple[str, str]], router_name: str) -> dic
 
 
 def _verdict(
-    payload: object, reason: str | None, router_name: str, started: float
+    payload: object,
+    reason: str | None,
+    router_name: str,
+    started: float,
+    available_harness: str,
 ) -> dict[str, Any]:
     if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
         return {"routing_disabled": False}
@@ -189,11 +192,20 @@ def _verdict(
     details = (
         _failure_details(failure, router_name)
         if failure is not None
-        else _unsupported_details(cast(dict, payload), router_name)
+        else _unsupported_details(cast(dict, payload), router_name, available_harness)
     )
     return {
         "routing_disabled": True,
         **details,
+        "validation_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
+def check_failed(router_name: str, started: float) -> dict[str, Any]:
+    """Return the verdict for a check that could not run."""
+    return {
+        "routing_disabled": True,
+        **_failure_details(CHECK_FAILED_REASON, router_name),
         "validation_ms": round((time.monotonic() - started) * 1000),
     }
 
@@ -205,6 +217,7 @@ def validate(
     *,
     router_name: str,
     provider: str | None = None,
+    available_harness: str = ROUTER_HARNESS_CLAUDE_CODE,
 ) -> dict[str, Any]:
     """Return the verdict; an unsupported list or a failed check disables routing."""
     started = time.monotonic()
@@ -214,7 +227,7 @@ def validate(
         )
     except Exception:
         payload, reason = None, CHECK_FAILED_REASON
-    return _verdict(payload, reason, router_name, started)
+    return _verdict(payload, reason, router_name, started, available_harness)
 
 
 def start(
@@ -225,19 +238,20 @@ def start(
     router_name: str,
     session_controls: Path,
     provider: str | None = None,
+    available_harness: str = ROUTER_HARNESS_CLAUDE_CODE,
 ) -> None:
     body = _request_body(route_options, router_name)
 
     def check() -> None:
         started = time.monotonic()
         payload, reason = _check_route_options(workspace, token, body, provider)
-        result = _verdict(payload, reason, router_name, started)
+        result = _verdict(payload, reason, router_name, started, available_harness)
         if result["routing_disabled"]:
             try:
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
             except (OSError, RuntimeError):
                 result = {"routing_disabled": False}
-        _publish(result_path(session_controls), result)
+        _publish(validation_result_path(session_controls), result)
 
     with suppress(Exception):
         threading.Thread(target=check, daemon=True).start()
