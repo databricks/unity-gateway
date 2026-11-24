@@ -1,5 +1,16 @@
 # Test suites and user journeys
 
+`hk_hooks.py` is an opt-in, local hook regression suite. With hk 2.13.0, Pkl,
+uv and just installed, run `uv run pytest tests/hk_hooks.py -n 0 -v -s`.
+It installs real Git hooks in disposable repositories and checks partially staged
+success/failure, formatting and lint rejection without writes, filenames with spaces
+(rejected when invalid, accepted when clean), deletions, the full-tree pre-push gate,
+a stale manifest that must not re-resolve `uv.lock`, and forced nine-second timeout
+recovery with a pre-existing user stash left intact.
+Each case compares the index, tracked file bytes (including `uv.lock`), status and
+stash ref before/after. It prints hook wall times. CI's ordinary unit selection does
+not run it, and these local checks do not establish live agent coverage.
+
 CUJ4 covers Codex's native Auto row appearing first, main-model and reasoning-effort
 choices, and completed gateway inference on the selected model and effort. This live
 journey has not been run locally.

@@ -7,15 +7,14 @@ env {
   ["UV_FROZEN"] = "1"
 }
 
-// Same paths and tools as `just lint`, so a commit that passes here passes CI's lint gate.
+// Commit checks use CI's paths and pinned Ruff; pre-push runs the full lint gate.
 local python = new Mapping<String, Step> {
   ["ruff_format"] {
     glob = List("src/**/*.py", "tests/**/*.py")
     check = "uv run ruff format --check {{files}}"
-    fix = "uv run ruff format {{files}}"
   }
-  // Check only: lint fixes can change meaning, and with partially staged files they would also
-  // rewrite the unstaged copy. Run `just fix` to apply them.
+  // Keep both checks read-only: fixing partially staged files can damage unstaged edits.
+  // Run `just fix` explicitly to apply formatting and lint fixes.
   ["ruff"] {
     glob = List("src/**/*.py", "tests/**/*.py")
     depends = List("ruff_format")
@@ -25,7 +24,7 @@ local python = new Mapping<String, Step> {
 
 hooks {
   ["pre-commit"] {
-    fix = true
+    fix = false
     stash = "git"
     timeout = "9s"
     steps = python
