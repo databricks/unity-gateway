@@ -286,8 +286,13 @@ def test_footer_names_auto_main_model_only_for_auto_session(tmp_path, monkeypatc
     controls.write_text("{}")
     controls.with_suffix(".auto.json").write_text('{"model":"gpt-two"}')
     monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
-    state = {"thread": {"model": {"id": "ug-auto-codex", "display_name": "Auto"}}}
+    state = {
+        "thread": {
+            "model": {"id": "ug-auto-codex", "display_name": "Auto", "reasoning_level": "low"}
+        }
+    }
     assert "Auto (gpt-two)" in _labels(statusline.render(state))
+    assert "low" not in _labels(statusline.render(state))
     state["thread"]["model"] = {"id": "gpt-one"}
     assert "Auto (gpt-one)" in _labels(statusline.render(state))
     controls.with_suffix(".auto.json").unlink()

@@ -199,11 +199,7 @@ class CodexAutoPicker:
                             "displayName": "Auto",
                             "description": "Choose your main model; smart-route subagents.",
                             "isDefault": False,
-                            "supportedReasoningEfforts": [
-                                option
-                                for option in base["supportedReasoningEfforts"]
-                                if option["reasoningEffort"] == base["defaultReasoningEffort"]
-                            ],
+                            "supportedReasoningEfforts": [],
                             "defaultReasoningEffort": base["defaultReasoningEffort"],
                         },
                         *rows,

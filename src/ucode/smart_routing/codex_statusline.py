@@ -98,17 +98,19 @@ def render(state: dict[str, Any]) -> dict:
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
+    auto_active = False
     if controls and label == "ON":
         try:
             auto_state = json.loads(auto_state_path(Path(controls)).read_text())
             if isinstance(auto_state, dict):
+                auto_active = True
                 main = model.get("id")
                 if main == AUTO_MODEL:
                     main = auto_state.get("model")
                 model_name = f"Auto ({main})" if isinstance(main, str) and main else "Auto"
         except (OSError, ValueError):
             pass
-    if model.get("reasoning_level"):
+    if model.get("reasoning_level") and not auto_active:
         model_name += " " + model["reasoning_level"]
     children = [_router_indicator(label), _text(model_name, "status-model")]
     cwd = _object(thread.get("workspace")).get("cwd")

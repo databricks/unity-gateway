@@ -387,7 +387,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                     "Auto above all regular models in Codex's picker",
                 )
                 tui.choose("Select", "Auto")
-                tui.choose("Main model", alternate_label)
+                tui.choose("Choose the main model", alternate_label)
                 tui.wait_for(
                     lambda screen: (
                         f"Auto ({alternate})" in screen and "smart router on" in screen.lower()
@@ -418,9 +418,12 @@ class TestCujAutoModelPicker(BaseCujTest):
                 )
                 tui.submit("/model")
                 tui.choose("Select", "Auto")
-                tui.choose("Main model", alternate_label)
+                tui.choose("Choose the main model", alternate_label)
                 tui.wait_for(
-                    lambda screen: "smart router on" in screen.lower(),
+                    lambda screen: (
+                        "smart router on" in screen.lower()
+                        and "Select Reasoning Level" not in screen
+                    ),
                     "Auto selected again with routing on",
                 )
                 tui.exit_normally()
