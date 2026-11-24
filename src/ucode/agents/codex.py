@@ -100,6 +100,7 @@ from ucode.managed_files import (
     reconcile_privileged_files,
     revert_managed_file,
     warn_managed_write_skipped,
+    withdraw_ug_managed_paths,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -1176,8 +1177,8 @@ def _sync_desktop_relay(
         return False
 
 
-def _managed_relayed_conflicts(path: Path) -> list[str]:
-    """Return managed settings that would override a ChatGPT relay launch's ``-c`` provider."""
+def _managed_relayed_conflicts(path: Path, *, withdraw_ug_auth: bool = False) -> list[str]:
+    """Return relay blockers, optionally withdrawing unchanged authentication introduced by ug."""
     text = read_managed_file(path)
     if text is None:
         return []
@@ -1192,12 +1193,29 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
     provider = (doc.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}
     if provider and path.name == CODEX_REQUIREMENTS_FILE:
         # requirements.toml replaces the whole provider entry, dropping the relay's `-c` keys.
-        return [*conflicts, f"model_providers.{CODEX_MODEL_PROVIDER_NAME}"]
-    return conflicts + [
-        f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
-        for key in ("base_url", "auth")
-        if key in provider
-    ]
+        conflicts.append(f"model_providers.{CODEX_MODEL_PROVIDER_NAME}")
+    else:
+        conflicts += [
+            f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
+            for key in ("base_url", "auth")
+            if key in provider
+        ]
+    if (
+        conflicts
+        and withdraw_ug_auth
+        and not managed_settings_skipped()
+        and path == codex_managed_config_path()
+        and withdraw_ug_managed_paths(
+            "codex",
+            path,
+            [key.split(".") for key in conflicts],
+            display="Codex",
+            parser=_parse_managed_config,
+            dumper=tomlkit.dumps,
+        )
+    ):
+        return []
+    return conflicts
 
 
 def _reconcile_managed_config(
@@ -1230,8 +1248,8 @@ def _reconcile_managed_config(
             "regular file or contact your administrator."
         )
     if relayed:
-        # The relay's loopback proxy only runs during `ug codex`, so skip the machine-wide file.
-        conflicts = _managed_relayed_conflicts(path)
+        # Withdraw ug's old auth; the session's loopback URL stays in per-user launch settings.
+        conflicts = _managed_relayed_conflicts(path, withdraw_ug_auth=True)
         if conflicts:
             raise RuntimeError(
                 "Codex ChatGPT relay cannot start because enterprise managed settings define "
@@ -1983,7 +2001,7 @@ def use_model_service_relay(
     path = codex_managed_config_path()
     if path:
         for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
-            conflicts = _managed_relayed_conflicts(policy)
+            conflicts = _managed_relayed_conflicts(policy, withdraw_ug_auth=True)
             if conflicts:
                 if selected_relay:
                     raise RuntimeError(

@@ -1489,6 +1489,8 @@ tests check both the personal-access-token status and the ChatGPT browser-login 
 Component tests in `../test_cli.py` cover selecting a relay model service outside a saved
 discovery schema. `../test_agent_codex.py` checks errors before launch for an explicit relay
 service when ChatGPT login is missing or managed authentication conflicts with the relay.
+They also cover migrating authentication recorded as ug's own, retaining unrelated settings,
+and refusing migration of pre-existing, externally changed, or concurrently changed auth.
 
 This deliberately covers only token login and relay inference. File-tool execution, desktop
 configure/revert, desktop inference, managed-file conflict refusal, and browser sign-in are

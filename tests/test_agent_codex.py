@@ -12,6 +12,7 @@ from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 
 from ucode import custom_oauth, databricks, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
@@ -2589,6 +2590,83 @@ class TestCodexManagedConfig:
         assert "auth" in provider
         assert "codex_relayed" not in state
 
+    @pytest.mark.parametrize("provider", [None, "cat.s.mps"])
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_relayed_withdraws_only_ug_auth(self, tmp_path, monkeypatch, provider, filename):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path = managed_path.with_name(filename)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        managed_path.parent.mkdir(parents=True)
+        baseline = '[mcp_servers.admin]\nurl = "https://admin.example/mcp"\n'
+        managed_path.write_text(baseline)
+        state = codex.write_tool_config({"workspace": WS})
+        assert "auth" in read_toml_safe(managed_path)["model_providers"]["Databricks"]
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+        monkeypatch.setattr(codex, "_launch_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            databricks,
+            "model_service_relay_lookup",
+            lambda *a, **k: databricks.RelayLookup.RELAYED,
+        )
+
+        if provider is None:
+            assert codex.use_model_service_relay(state, "cat.s.seat")
+        codex.write_tool_config(state, provider=provider, relayed=True)
+
+        managed = read_toml_safe(managed_path)
+        assert "model_provider" not in managed
+        assert "auth" not in managed.get("model_providers", {}).get("Databricks", {})
+        assert "base_url" not in managed.get("model_providers", {}).get("Databricks", {})
+        assert managed["mcp_servers"]["admin"]["url"] == "https://admin.example/mcp"
+        assert read_toml_safe(config_path)["model_providers"]["Databricks"]["requires_openai_auth"]
+        codex.revert_managed_config()
+        assert read_toml_safe(managed_path) == tomlkit.parse(baseline)
+
+    @pytest.mark.parametrize(
+        "blocker", ["original", "modified", "opted_out", "missing_record", "incomplete_record"]
+    )
+    def test_relay_migration_preserves_auth_policy(self, tmp_path, monkeypatch, blocker):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        if blocker == "original":
+            managed_path.parent.mkdir(parents=True)
+            managed_path.write_text('model_provider = "enterprise"\n')
+        codex.write_tool_config({"workspace": WS})
+        if blocker == "modified":
+            doc = read_toml_safe(managed_path)
+            doc["model_providers"]["Databricks"]["base_url"] = "https://admin.example"
+            managed_path.write_text(tomlkit.dumps(doc))
+        if blocker == "opted_out":
+            monkeypatch.setattr(codex, "managed_settings_skipped", lambda: True)
+        if blocker == "missing_record":
+            managed_files.MANAGED_BACKUP_MANIFEST_PATH.unlink()
+        if blocker == "incomplete_record":
+            manifest_path = managed_files.MANAGED_BACKUP_MANIFEST_PATH
+            manifest = json.loads(manifest_path.read_text())
+            del manifest["files"]["codex"]["last_applied_file"]
+            manifest_path.write_text(json.dumps(manifest))
+        before = managed_path.read_bytes()
+
+        assert codex._managed_relayed_conflicts(managed_path, withdraw_ug_auth=True)
+
+        assert managed_path.read_bytes() == before
+
+    def test_relay_migration_preserves_concurrent_policy_change(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        codex.write_tool_config({"workspace": WS})
+        reconcile = managed_files.reconcile_managed_file
+        policy = 'model_provider = "enterprise"\n'
+
+        def concurrent_update(*args, **kwargs):
+            managed_path.write_text(policy)
+            return reconcile(*args, **kwargs)
+
+        monkeypatch.setattr(managed_files, "reconcile_managed_file", concurrent_update)
+
+        with pytest.raises(RuntimeError, match="changed while preparing"):
+            codex._managed_relayed_conflicts(managed_path, withdraw_ug_auth=True)
+
+        assert managed_path.read_text() == policy
+
     def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True)
@@ -3178,7 +3256,7 @@ class TestCodexManagedConfig:
         assert "--relay-port" not in unit_path.read_text()
         assert "--port 43199" in unit_path.read_text()
 
-        managed_path.unlink(missing_ok=True)  # a non-relayed run owns it; relay refuses that file
+        managed_path.unlink(missing_ok=True)  # This lifecycle check starts without managed auth.
         codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
         codex.write_tool_config(dict(relayed))
         assert not unit_path.exists()
