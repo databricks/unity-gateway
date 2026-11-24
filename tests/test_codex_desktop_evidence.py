@@ -80,6 +80,35 @@ def test_windows_readiness_recheck_is_visible_and_bounded(state):
     assert clicks == ([] if state == "ready" else [("ControlType.Button", "Try again")])
 
 
+@pytest.mark.parametrize("state", ["banner", "recovers", "stuck"])
+def test_windows_setup_finishes_transient_readiness_errors(state):
+    banner = "Finish Windows setup to continue"
+    error = [["ControlType.Text", "Couldn’t check Windows setup", ""]]
+    ready = [["ControlType.Text", banner, ""]]
+    tree = list(ready if state == "banner" else error if state == "recovers" else [])
+    clicks = []
+
+    def click(role, label):
+        clicks.append((role, label))
+        if state == "recovers":
+            tree[:] = ready
+
+    evidence = {}
+    app = SimpleNamespace(
+        name="chatgpt",
+        read_tree=lambda: tree,
+        click=click,
+        session=SimpleNamespace(record=lambda name, value: evidence.update({name: value})),
+    )
+    if state == "stuck":
+        with pytest.raises(AssertionError, match="never showed"):
+            codex_desktop.wait_for_windows_setup(app, timeout=0)
+        assert evidence["chatgpt-tree.json"]["waiting_for"] == ["ControlType.Text", banner]
+    else:
+        codex_desktop.wait_for_windows_setup(app, timeout=0)
+    assert clicks == ([("ControlType.Button", "Try again")] if state == "recovers" else [])
+
+
 @pytest.mark.parametrize("mode", [None, "unelevated", "elevated"])
 def test_windows_setup_requires_the_native_elevated_mode(tmp_path, mode):
     config = tmp_path / ".codex/config.toml"

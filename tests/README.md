@@ -1652,8 +1652,9 @@ in the rollout before waiting for an answer. Windows first completes its visible
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;
 the tests only read that native setting. Missing or partial TOML is polled until the setup
 deadline; component checks cover recovery and deadline failure. Windows artifacts retain early MCP/setup diagnostics.
-If the app's setup restart leaves a sandbox-readiness error, the journey uses the visible
-Try again control once before sending the prompt; a persistent error fails. No task is resubmitted.
+If a sandbox-readiness error replaces the setup screen or follows the app's setup restart,
+the journey presses its visible Try again control while the wait continues; a persistent
+error fails. No task is resubmitted.
 Offline submission checks reject assistant echoes, unrelated prompts and non-message events.
 The native MCP approval is answered with Allow once only when the dialog names web_search on
 the expected server with the exact hidden query. Offline checks reject other tools, servers,
