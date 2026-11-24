@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_ci_live_contract.py` checks draft and ready scheduling, conversion cancellation,
+unchanged fork and merge-group conditions, security-gate dependencies, and the required
+`e2e` rollup's response to passing, failed, skipped, and cancelled results. These are
+workflow-contract tests; they do not verify GitHub event delivery or live suites.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
