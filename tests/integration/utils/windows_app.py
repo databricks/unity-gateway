@@ -1,6 +1,5 @@
 """Launch a packaged Windows app in the session environment and drive it with UI Automation."""
 
-import json
 import shutil
 import subprocess
 import time
@@ -13,26 +12,44 @@ UIA_CLIENT = Path(__file__).with_name("windows_uia.ps1")
 STEP_TIMEOUT = 60
 
 
+# The per-user AppX repository that Get-AppxPackage reads. Querying it through that cmdlet took
+# over 60 s on hosted Windows runners in 20 of 141 runs; the registry read is immediate.
+APPX_PACKAGES_KEY = (
+    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion"
+    r"\AppModel\Repository\Packages"
+)
+
+
+def _installed_package(package: str) -> tuple[str, str]:
+    """Return the newest installed version of ``package`` and its install folder."""
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, APPX_PACKAGES_KEY) as packages:
+        names = [
+            winreg.EnumKey(packages, index) for index in range(winreg.QueryInfoKey(packages)[0])
+        ]
+        # Full names are <name>_<version>_<architecture>_<resource id>_<publisher id>. Resource and
+        # split packages share the name and version but have a resource id and no executable.
+        matches = [
+            name for name in names if name.split("_")[0] == package and name.split("_")[3:4] == [""]
+        ]
+        assert matches, f"{package} is not installed"
+        full_name = max(
+            matches, key=lambda name: tuple(int(part) for part in name.split("_")[1].split("."))
+        )
+        with winreg.OpenKey(packages, full_name) as key:
+            location, _ = winreg.QueryValueEx(key, "PackageRootFolder")
+    return full_name.split("_")[1], location
+
+
 class WindowsApp:
     def __init__(self, session, package: str, executable: str, name: str):
         self.session = session
         self.name = name
         self.log = session.home.parent / f"{name}.log"
         self.powershell = Path(shutil.which("powershell.exe") or "powershell.exe")
-        found = subprocess.run(
-            [str(self.powershell), "-NoProfile", "-Command"]
-            + [
-                f"Get-AppxPackage -Name {package} | Select-Object InstallLocation, Version | ConvertTo-Json"
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=True,
-        ).stdout
-        assert found.strip(), f"{package} is not installed"
-        installed = json.loads(found)
-        self.version = installed["Version"]
-        self.executable = str(Path(installed["InstallLocation"]) / executable)
+        self.version, location = _installed_package(package)
+        self.executable = str(Path(location) / executable)
 
     def __enter__(self):
         self.session.record(f"{self.name}-app.json", {"version": self.version})
