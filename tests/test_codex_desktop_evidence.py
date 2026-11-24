@@ -80,33 +80,36 @@ def test_windows_readiness_recheck_is_visible_and_bounded(state):
     assert clicks == ([] if state == "ready" else [("ControlType.Button", "Try again")])
 
 
-@pytest.mark.parametrize("state", ["banner", "recovers", "stuck"])
-def test_windows_setup_finishes_transient_readiness_errors(state):
+@pytest.mark.parametrize("state", ["banner", "recovers", "repeats", "stuck"])
+def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch):
+    monkeypatch.setattr(codex_desktop.time, "sleep", lambda seconds: None)
     banner = "Finish Windows setup to continue"
     error = [["ControlType.Text", "Couldn’t check Windows setup", ""]]
     ready = [["ControlType.Text", banner, ""]]
-    tree = list(ready if state == "banner" else error if state == "recovers" else [])
+    # Trees read in order, then the last one forever; Try again clears the error once.
+    first, rest = {
+        "banner": ([], ready),
+        "recovers": ([error, []], ready),
+        "repeats": ([error, []], error),
+        "stuck": ([], []),
+    }[state]
+    trees = iter(first)
     clicks = []
-
-    def click(role, label):
-        clicks.append((role, label))
-        if state == "recovers":
-            tree[:] = ready
-
     evidence = {}
     app = SimpleNamespace(
         name="chatgpt",
-        read_tree=lambda: tree,
-        click=click,
+        read_tree=lambda: next(trees, rest),
+        click=lambda role, label: clicks.append((role, label)),
         session=SimpleNamespace(record=lambda name, value: evidence.update({name: value})),
     )
-    if state == "stuck":
+    if state in ("repeats", "stuck"):
         with pytest.raises(AssertionError, match="never showed"):
-            codex_desktop.wait_for_windows_setup(app, timeout=0)
+            codex_desktop.wait_for_windows_setup(app, timeout=0.05)
         assert evidence["chatgpt-tree.json"]["waiting_for"] == ["ControlType.Text", banner]
+        assert evidence["chatgpt-tree.json"]["tree"] == rest
     else:
-        codex_desktop.wait_for_windows_setup(app, timeout=0)
-    assert clicks == ([("ControlType.Button", "Try again")] if state == "recovers" else [])
+        codex_desktop.wait_for_windows_setup(app, timeout=0.05)
+    assert clicks == ([("ControlType.Button", "Try again")] if first else [])
 
 
 @pytest.mark.parametrize("mode", [None, "unelevated", "elevated"])

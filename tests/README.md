@@ -1653,8 +1653,8 @@ The app's saved elevated sandbox mode proves completion even after its short-liv
 the tests only read that native setting. Missing or partial TOML is polled until the setup
 deadline; component checks cover recovery and deadline failure. Windows artifacts retain early MCP/setup diagnostics.
 If a sandbox-readiness error replaces the setup screen or follows the app's setup restart,
-the journey presses its visible Try again control while the wait continues; a persistent
-error fails. No task is resubmitted.
+the journey presses its visible Try again control once per screen within that screen's
+deadline; a persistent or repeated error fails. No task is resubmitted.
 Offline submission checks reject assistant echoes, unrelated prompts and non-message events.
 The native MCP approval is answered with Allow once only when the dialog names web_search on
 the expected server with the exact hidden query. Offline checks reject other tools, servers,
