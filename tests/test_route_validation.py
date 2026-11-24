@@ -356,12 +356,37 @@ def _validate(response, monkeypatch):
     )
 
 
-@pytest.mark.parametrize("response", [(None, "HTTP 503"), RuntimeError("network down")])
-def test_validate_returns_none_on_failure_so_the_toggle_stays_silent(response, monkeypatch):
-    assert _validate(response, monkeypatch) is None
+@pytest.mark.parametrize(
+    ("response", "failure"),
+    [
+        ((None, "HTTP 503"), "Smart Router returned an error (HTTP 503)"),
+        (RuntimeError("network down"), validation.CHECK_FAILED_REASON),
+    ],
+)
+def test_validate_disables_routing_when_the_toggle_check_fails(response, failure, monkeypatch):
+    result = _validate(response, monkeypatch)
+    assert isinstance(result.pop("validation_ms"), int)
+    assert result == {
+        "routing_disabled": True,
+        "router_name": "stable",
+        "validation_failed": True,
+        "validation_failure_reason": failure,
+        "eligible_route_options": [],
+        "ineligible_route_options": [],
+        "available_route_options": [],
+    }
 
 
-def test_validate_returns_the_unsupported_details(monkeypatch):
+@pytest.mark.parametrize(
+    "response",
+    [({"is_supported": True}, None), (None, "HTTP 404 NOT_FOUND")],
+    ids=["supported", "flag-off-404"],
+)
+def test_validate_keeps_routing_on_for_a_supported_list_or_a_flag_off_404(response, monkeypatch):
+    assert _validate(response, monkeypatch) == {"routing_disabled": False}
+
+
+def test_validate_disables_routing_with_the_unsupported_details(monkeypatch):
     payload = {
         "is_supported": False,
         "metadata": {"routing_unsupported_reason": "insufficient_eligible_options"},
@@ -369,7 +394,7 @@ def test_validate_returns_the_unsupported_details(monkeypatch):
     result = _validate((payload, None), monkeypatch)
     assert isinstance(result.pop("validation_ms"), int)
     assert result == {
-        "is_supported": False,
+        "routing_disabled": True,
         "router_name": "stable",
         "routing_unsupported_reason": "insufficient_eligible_options",
         "eligible_route_options": [],

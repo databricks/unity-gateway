@@ -1,7 +1,7 @@
 import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import {
-  DISABLED_RECIPE, LOGS_DETAILS_HINT, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
+  DISABLED_RECIPE, LOGS_DETAILS_HINT, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, SMART_ROUTER_ON_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
   VALIDATION_FAILED_WARNING,
 } from '../hooks/constants.ts';
 
@@ -243,46 +243,43 @@ for (const disabled of [true, false]) {
 
 const VALIDATE_COMMAND = ['/bin/ug', 'validate'];
 const TOGGLE_VALIDATED = { ...ROUTED, validateCommand: VALIDATE_COMMAND, logsCommand: ['/bin/ug', 'smart-router-logs'] };
-const UNSUPPORTED_RESULT = JSON.stringify({ is_supported: false });
+const UNSUPPORTED_VERDICT = JSON.stringify({ ...FAILED, validation_failed: undefined, validation_failure_reason: undefined });
 const toggleCases = [
-  { name: 'an unsupported result on toggle on warns with routing on', options: TOGGLE_VALIDATED, stdout: UNSUPPORTED_RESULT, off: false, warned: true, validates: true },
-  { name: 'a supported result on toggle on shows no warning', options: TOGGLE_VALIDATED, stdout: '', off: false, warned: false, validates: true },
-  { name: 'toggling off before the result arrives shows no warning', options: TOGGLE_VALIDATED, stdout: UNSUPPORTED_RESULT, off: true, warned: false, validates: true },
-  { name: 'without the validate option toggle on runs no validation', options: ROUTED, stdout: UNSUPPORTED_RESULT, off: false, warned: false, validates: false },
+  { name: 'an unsupported list on toggle on keeps routing off and warns', options: TOGGLE_VALIDATED, stdout: UNSUPPORTED_VERDICT, routed: false, warning: UNSUPPORTED_MODEL_LIST_WARNING, recorded: true },
+  { name: 'a failed check on toggle on keeps routing off and warns', options: TOGGLE_VALIDATED, stdout: JSON.stringify(FAILED), routed: false, warning: VALIDATION_FAILED_WARNING, recorded: true },
+  { name: 'unreadable validation output on toggle on keeps routing off without a logs row', options: TOGGLE_VALIDATED, stdout: '', routed: false, warning: VALIDATION_FAILED_WARNING, recorded: false },
+  { name: 'a supported list on toggle on turns routing on without a warning', options: TOGGLE_VALIDATED, stdout: '{"routing_disabled":false}', routed: true, warning: undefined, recorded: false },
+  { name: 'without the validate option toggle on runs no validation', options: ROUTED, stdout: '', routed: true, warning: undefined, recorded: false },
 ];
 
-for (const { name, options, stdout, off, warned, validates } of toggleCases) {
+for (const { name, options, stdout, routed, warning, recorded } of toggleCases) {
   test(name, { options }, async ($, on) => {
     const { env } = engine(on);
     env.UCODE_SMART_ROUTER_PYTHON = '/bin/python';
     env.ISAAC_LAUNCH_MODE = 'omni';
     const logs: string[] = [];
     const validations: string[][] = [];
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => { release = resolve; });
     on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
     const records: { argv: string[]; stdin?: string }[] = [];
-    on('process.run', async ($, e) => {
+    on('process.run', ($, e) => {
       if (e.argv[1] === 'smart-router-logs') records.push({ argv: e.argv, stdin: e.init?.stdin });
       if (e.argv[1] !== VALIDATE_COMMAND[1]) return { value: { exitCode: 0, stderr: '', stdout: '' } };
       validations.push(e.argv);
-      await gate;
       return { value: { exitCode: 0, stderr: '', stdout } };
     });
     const ui = await $.ui.mount(abovePrompt);
     await $.session.start(start);
-    expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBeTruthy();
-    if (off) await $.command.run({ command: 'smart-router', args: 'off' });
-    release();
+    expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBe(routed ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const shown = JSON.stringify(await ui.drawn());
-    expect(validations.length).toBe(validates ? 1 : 0);
-    expect(shown.includes(WARNING)).toBe(warned);
-    expect(shown.includes(LOGS_DETAILS_HINT)).toBe(warned);
-    expect(shown.includes(' ON ')).toBe(!off);
-    expect(logs.includes(UNSUPPORTED_MODEL_LIST_WARNING)).toBe(warned);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(records.map(({ argv, stdin }) => [argv.slice(-2), stdin])).toEqual(warned ? [[['--record-route-validation', '-'], stdout]] : []);
+    expect(validations.length).toBe(options === ROUTED ? 0 : 1);
+    expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
+    expect(shown.includes(' ON ')).toBe(routed);
+    for (const text of [UNSUPPORTED_MODEL_LIST_WARNING, VALIDATION_FAILED_WARNING]) {
+      expect(shown.includes(text)).toBe(text === warning);
+      expect(logs.includes(text)).toBe(text === warning);
+    }
+    expect(records.map(({ argv, stdin }) => [argv.slice(-2), stdin])).toEqual(recorded ? [[['--record-route-validation', '-'], stdout]] : []);
     await ui.unmount();
   });
 }

@@ -646,18 +646,15 @@ def validate_claude_model_list(
     token: str,
     available_models: list[str],
     provider: str | None = None,
-) -> dict | None:
-    """Return an unsupported result as a route validation record that left routing on."""
-    result = route_validation.validate(
+) -> dict:
+    """Return the toggle's route validation verdict, which keeps routing off when disabled."""
+    return route_validation.validate(
         workspace,
         token,
         _claude_route_options(available_models),
         router_name=routing.configured_router_name(),
         provider=provider,
     )
-    if not result or result["is_supported"] is not False:
-        return None
-    return {**result, "routing_disabled": False}
 
 
 def route_claude_subagent(

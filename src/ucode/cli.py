@@ -3738,8 +3738,7 @@ def claude_router_hook_cmd(
             available_models=model or [],
             provider=provider,
         )
-        if result is not None:
-            sys.stdout.write(json.dumps(result))
+        sys.stdout.write(json.dumps(result))
         return
     output = smart_routing_v2.route_claude_subagent(
         payload,

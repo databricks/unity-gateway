@@ -2231,15 +2231,14 @@ class TestSubcommandRouting:
             route.assert_not_called()
 
     @pytest.mark.parametrize(
-        ("validation", "recorded"),
+        "validation",
         [
-            ({"is_supported": False, "router_name": "stable"}, True),
-            ({"is_supported": True}, False),
-            (None, False),
+            {"routing_disabled": True, "router_name": "stable"},
+            {"routing_disabled": False},
         ],
     )
-    def test_claude_mod_validation_prints_unsupported_without_recording_it(
-        self, tmp_path, monkeypatch, validation, recorded
+    def test_claude_mod_validation_prints_the_verdict_without_recording_it(
+        self, tmp_path, monkeypatch, validation
     ):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
@@ -2261,10 +2260,8 @@ class TestSubcommandRouting:
             )
         assert result.exit_code == 0, result.output
         assert validate.call_args.args[2] == [("system.ai.claude-opus-4-8", "claude")]
-        records = session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE)
-        expected = {**validation, "routing_disabled": False} if recorded else None
-        assert result.output == (json.dumps(expected) if recorded else "")
-        assert records == []
+        assert result.output == json.dumps(validation)
+        assert session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE) == []
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")

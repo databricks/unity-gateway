@@ -301,24 +301,22 @@ async function recordRouteValidation($: EngineInterface, options: PluginOptions,
   if (result.exitCode !== 0) $.ui.log(`Smart Router logs: route validation not recorded (exit ${result.exitCode})`, { to: 'debug' });
 }
 
-// Returns the unsupported result to record, or undefined when the list is supported or the check failed.
-async function unsupportedModelList($: EngineInterface, command: string[]): Promise<string | undefined> {
-  const result = await $.process.run(command, {
-    stdin: JSON.stringify({ session_id: await $.session.id() }),
-    timeoutMs: VALIDATE_COMMAND_TIMEOUT_MS,
-  });
-  const stdout = result.stdout.trim();
-  return result.exitCode === 0 && stdout && JSON.parse(stdout).is_supported === false ? stdout : undefined;
-}
+interface ToggleVerdict { disabled: boolean; failed: boolean; record?: string }
 
-// Routing stays on; the warning and its logs row appear only while this toggle is still the latest.
-async function warnIfModelListUnsupported($: EngineInterface, options: PluginOptions, command: string[], isLatest: () => boolean): Promise<void> {
-  const unsupported = await unsupportedModelList($, command);
-  if (!unsupported || !isLatest() || !isRoutingEnabled(await readEnvironment($))) return;
-  warnUnsupportedModelList();
-  $.ui.invalidate('ui.render');
-  void recordRouteValidation($, options, '-', unsupported).catch(() => {});
-  if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) $.ui.log(UNSUPPORTED_MODEL_LIST_WARNING);
+// An unreadable verdict fails closed without a logs row.
+async function validateToggle($: EngineInterface, command: string[]): Promise<ToggleVerdict> {
+  try {
+    const result = await $.process.run(command, {
+      stdin: JSON.stringify({ session_id: await $.session.id() }),
+      timeoutMs: VALIDATE_COMMAND_TIMEOUT_MS,
+    });
+    const stdout = result.stdout.trim();
+    const verdict = result.exitCode === 0 && stdout ? JSON.parse(stdout) : undefined;
+    if (typeof verdict?.routing_disabled === 'boolean') {
+      return { disabled: verdict.routing_disabled, failed: verdict.validation_failed === true, record: verdict.routing_disabled ? stdout : undefined };
+    }
+  } catch {}
+  return { disabled: true, failed: true };
 }
 
 async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
@@ -405,7 +403,6 @@ export function register(on: On, options: PluginOptions): void {
   let switchingAuto = false;
   const internalModels: string[] = [];
   let sessionActive = true;
-  let toggleGeneration = 0;
   let manualOffRequest: ManualOffRequest | undefined;
   let autoSave: AutoSaveRequest | undefined;
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
@@ -981,17 +978,24 @@ export function register(on: On, options: PluginOptions): void {
   // External integrations match the "smart-router" command name exactly.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
-    const generation = ++toggleGeneration;
+    const validateCommand = options.validateCommand as string[] | undefined;
+    let enabled = action === 'on';
     try {
-      await setRouting($, options, action === 'on', true);
+      const verdict = enabled && validateCommand?.length ? await validateToggle($, validateCommand) : undefined;
+      enabled &&= !verdict?.disabled;
+      await setRouting($, options, enabled, true);
       showStatusBand();
+      if (verdict?.disabled) {
+        if (verdict.failed) warnValidationFailed();
+        else warnUnsupportedModelList();
+        if (verdict.record) void recordRouteValidation($, options, '-', verdict.record).catch(() => {});
+        if (await $.env.get('ISAAC_LAUNCH_MODE') === OMNI_LAUNCH_MODE) $.ui.log(verdict.failed ? VALIDATION_FAILED_WARNING : UNSUPPORTED_MODEL_LIST_WARNING);
+      }
       $.ui.invalidate('ui.render');
-      const validateCommand = options.validateCommand as string[] | undefined;
-      if (action === 'on' && validateCommand?.length) void warnIfModelListUnsupported($, options, validateCommand, () => generation === toggleGeneration).catch(() => {});
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
-    return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
+    return {text: enabled ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
   registerStatusBand(on, auto);
   registerSubagentRouting(on, options, auto?.models.map(row => row.autoModel));
