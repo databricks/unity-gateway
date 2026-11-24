@@ -688,6 +688,9 @@ class TestLaunchCodex:
         monkeypatch.setattr(
             v2.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("started another process")
         )
+        monkeypatch.setattr(
+            v2.route_validation, "start", lambda *_args, **_kw: pytest.fail("started validation")
+        )
 
         def hand_off(argv):
             launches.append(argv)
