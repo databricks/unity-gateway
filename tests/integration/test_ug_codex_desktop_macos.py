@@ -9,6 +9,7 @@ from utils.codex_desktop import (
     SKILL_NAME,
     assert_desktop_skill_mcp_session,
     configure_databricks_token_profile,
+    finish_macos_onboarding,
     wait_for_skill_answer,
     wait_for_submitted_prompt,
     write_search_skill,
@@ -49,10 +50,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
     )
 
     with MacApp(session, CHATGPT_APP, "chatgpt") as app:
-        app.click("AXRadioButton", "Engineering", timeout=180)
-        app.click("AXButton", "Continue")
-        app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
+        finish_macos_onboarding(app)
         # Click the composer so the keystrokes cannot land in another control.
         app.click("AXTextArea", None, timeout=120)
         prompt = f"Reply with exactly {marker} and nothing else."
@@ -141,10 +139,7 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
     session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
 
     with MacApp(session, CHATGPT_APP, "chatgpt") as app:
-        app.click("AXRadioButton", "Engineering", timeout=180)
-        app.click("AXButton", "Continue")
-        app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
+        finish_macos_onboarding(app)
         try:
             app.click("AXTextArea", None, timeout=120)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."

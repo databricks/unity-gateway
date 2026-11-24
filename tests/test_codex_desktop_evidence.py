@@ -80,6 +80,51 @@ def test_windows_readiness_recheck_is_visible_and_bounded(state):
     assert clicks == ([] if state == "ready" else [("ControlType.Button", "Try again")])
 
 
+def test_macos_onboarding_retries_until_the_composer_is_visible():
+    trees = [
+        [["AXButton", "Go to ChatGPT", "", ""]],
+        [["AXButton", "Go to ChatGPT", "", ""]],
+        [["AXTextArea", "Work with Codex", "Work with Codex", ""]],
+    ]
+    clicks = []
+
+    def click(role, label, timeout=60):
+        clicks.append((role, label, timeout))
+
+    app = SimpleNamespace(
+        read_tree=lambda: trees.pop(0),
+        click=click,
+        session=SimpleNamespace(record=lambda *args: None),
+    )
+    codex_desktop.finish_macos_onboarding(app)
+    assert clicks == [
+        ("AXRadioButton", "Engineering", 180),
+        ("AXButton", "Continue", 60),
+        ("AXButton", "Skip", 60),
+        ("AXButton", "Go to ChatGPT", 10),
+        ("AXButton", "Go to ChatGPT", 10),
+    ]
+
+
+def test_macos_onboarding_keeps_polling_after_a_stale_go_button():
+    trees = [
+        [["AXButton", "Go to ChatGPT", "", ""]],
+        [["AXTextArea", "Work with Codex", "Work with Codex", ""]],
+    ]
+
+    def click(role, label, timeout=60):
+        if label == "Go to ChatGPT":
+            raise AssertionError("chatgpt never showed AXButton 'Go to ChatGPT'")
+
+    app = SimpleNamespace(
+        read_tree=lambda: trees.pop(0),
+        click=click,
+        session=SimpleNamespace(record=lambda *args: None),
+    )
+    codex_desktop.finish_macos_onboarding(app)
+    assert not trees
+
+
 @pytest.mark.parametrize("mode", [None, "unelevated", "elevated"])
 def test_windows_setup_requires_the_native_elevated_mode(tmp_path, mode):
     config = tmp_path / ".codex/config.toml"

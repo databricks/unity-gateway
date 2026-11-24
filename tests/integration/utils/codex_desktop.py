@@ -57,6 +57,27 @@ def finish_windows_readiness_check(app, timeout: float = 60) -> None:
         time.sleep(2)
 
 
+def finish_macos_onboarding(app, timeout: float = 120) -> None:
+    """Dismiss first-run setup only after the Codex composer is visible."""
+    app.click("AXRadioButton", "Engineering", timeout=180)
+    app.click("AXButton", "Continue")
+    app.click("AXButton", "Skip")
+    deadline = time.monotonic() + timeout
+    while True:
+        tree = app.read_tree()
+        if any(row[0] == "AXTextArea" for row in tree):
+            return
+        if time.monotonic() >= deadline:
+            app.session.record("chatgpt-tree.json", {"waiting_for": "Codex composer", "tree": tree})
+            raise AssertionError("The ChatGPT app never showed the Codex composer")
+        if any(row[0] == "AXButton" and "Go to ChatGPT" in row[1:] for row in tree):
+            try:
+                app.click("AXButton", "Go to ChatGPT", timeout=10)
+            except AssertionError:
+                pass
+        time.sleep(2)
+
+
 def wait_for_windows_sandbox(app, timeout: float = 180) -> None:
     """The app saves this mode after successful setup; its success banner is transient."""
     deadline = time.monotonic() + timeout
