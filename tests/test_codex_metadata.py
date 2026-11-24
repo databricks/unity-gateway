@@ -1013,25 +1013,25 @@ def _complete(metadata, turn_id):
     )
 
 
-@pytest.mark.parametrize(
-    ("warning_before_prompt", "hidden_after_first_turn"),
-    [(True, True), (False, False)],
-    ids=["prompt-sent-while-warning-shows", "turn-running-when-warning-arrives"],
-)
-def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(
-    tmp_path, warning_before_prompt, hidden_after_first_turn
-):
+def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _prompt(metadata, "first")
+    _complete(metadata, "first")
+    assert session_env.validation_dismissed_path(metadata.controls).exists()
+
+
+def test_warning_stays_through_a_turn_already_running_when_it_arrives(tmp_path):
     metadata, _, _ = controller(tmp_path)
     dismissed = session_env.validation_dismissed_path(metadata.controls)
-    result = session_env.validation_result_path(metadata.controls)
-    if warning_before_prompt:
-        result.write_text(json.dumps(UNSUPPORTED_WARNING))
     _prompt(metadata, "first")
-    if not warning_before_prompt:
-        result.write_text(json.dumps(UNSUPPORTED_WARNING))
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
     _complete(metadata, "first")
-    assert dismissed.exists() is hidden_after_first_turn
-    if not hidden_after_first_turn:
-        _prompt(metadata, "second")
-        _complete(metadata, "second")
-        assert dismissed.exists()
+    assert not dismissed.exists()
+    _prompt(metadata, "second")
+    _complete(metadata, "second")
+    assert dismissed.exists()

@@ -1113,23 +1113,18 @@ def test_on_checks_the_model_list_before_turning_routing_on(
     assert "Reason:" in session_log.render_validation_detail(row)
 
 
-def test_toggling_clears_the_previous_warning(inline_feedback, session_logs):
+@pytest.mark.parametrize(
+    ("initial", "action"),
+    [("{}", "on"), (json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")), "off")],
+    ids=["on", "off-while-already-off"],
+)
+def test_toggling_clears_the_previous_warning(inline_feedback, session_logs, initial, action):
     controls, *_ = inline_feedback
-    controls.write_text("{}")
+    controls.write_text(initial)
     result_path = session_env.validation_result_path(controls)
     result_path.write_text(json.dumps(UNSUPPORTED_CHECK))
     session_env.validation_dismissed_path(controls).touch()
     router = toggle_router(controls, lambda: SUPPORTED_CHECK)
-    native_call(router, "on")
+    native_call(router, action)
     assert not result_path.exists()
     assert not session_env.validation_dismissed_path(controls).exists()
-
-
-def test_off_clears_the_previous_warning_while_already_off(inline_feedback, session_logs):
-    controls, *_ = inline_feedback
-    controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
-    result_path = session_env.validation_result_path(controls)
-    result_path.write_text(json.dumps(UNSUPPORTED_CHECK))
-    router = toggle_router(controls, lambda: SUPPORTED_CHECK)
-    native_call(router, "off")
-    assert not result_path.exists()
