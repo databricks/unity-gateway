@@ -2215,30 +2215,31 @@ def _fake_shard(root, name, report, cases):
     (directory / "junit.xml").write_text(JUNIT_CASE.format(count=len(cases), cases=body))
 
 
-def test_live_shard_times_verifies_coverage_and_records(tmp_path):
-    def report(shard, units, expected):
-        return {
-            "lane": "demo-lane",
-            "os": "Linux",
-            "shard": shard,
-            "units": units,
-            "files": {"test_x.py": 2},
-            "expected": expected,
-            "marker_deselected": {},
-        }
+def _fake_lane_artifacts(root, lane, system, total):
+    """One case per shard: disjoint units, agreeing collected files, no marker drops."""
+    for index in range(1, total + 1):
+        _fake_shard(
+            root,
+            f"{lane}-{system}-shard{index}",
+            {
+                "lane": lane,
+                "os": system,
+                "shard": f"{index}/{total}",
+                "units": [["test", f"test_x.py::c{index}"]],
+                "files": {"test_x.py": total},
+                "expected": {"test_x.py": 1},
+                "marker_deselected": {},
+            },
+            [("test_x", f"c{index}", "3.0")],
+        )
 
-    _fake_shard(
-        tmp_path,
-        "demo-shard1",
-        report("1/2", [["test", "test_x.py::test_a"]], {"test_x.py": 1}),
-        [("test_x", "test_a", "3.5")],
-    )
-    _fake_shard(
-        tmp_path,
-        "demo-shard2",
-        report("2/2", [["chunk", "test_x.py", 1, 1]], {"test_x.py": 1}),
-        [("test_x", "test_b", "5.0")],
-    )
+
+def test_live_shard_times_verifies_coverage_and_records(tmp_path):
+    from tests import live_shard
+
+    lanes = live_shard.expected_shards()
+    for lane, (system, total) in sorted(lanes.items()):
+        _fake_lane_artifacts(tmp_path, lane, system, total)
     recorded = tmp_path / "recorded.json"
     result = subprocess.run(
         [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
@@ -2248,17 +2249,18 @@ def test_live_shard_times_verifies_coverage_and_records(tmp_path):
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(recorded.read_text()) == {
-        "demo-lane": {
-            "Linux": {
-                "shards": 2,
-                "files": {"test_x.py": [8.5, 2]},
-                "slow": {"test_x.py::test_a": 3.5, "test_x.py::test_b": 5.0},
-            }
+    output = json.loads(recorded.read_text())
+    assert set(output) == set(lanes)
+    total = lanes["full-claude"][1]
+    assert output["full-claude"] == {
+        "Windows": {
+            "shards": total,
+            "files": {"test_x.py": [round(3.0 * total, 2), total]},
+            "slow": {f"test_x.py::c{index}": 3.0 for index in range(1, total + 1)},
         }
     }
-    # A shard that never uploaded its artifact fails the coverage proof.
-    shutil.rmtree(tmp_path / "demo-shard2")
+    # A shard that never uploaded its artifact fails the proof for its whole lane.
+    shutil.rmtree(tmp_path / f"full-claude-Windows-shard{total}")
     result = subprocess.run(
         [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
         cwd=Path(__file__).parent.parent,
@@ -2267,7 +2269,7 @@ def test_live_shard_times_verifies_coverage_and_records(tmp_path):
         timeout=30,
     )
     assert result.returncode != 0
-    assert "::error::Live shards did not cover their lanes" in result.stderr + result.stdout
+    assert "full-claude/Windows: shard set is" in result.stderr + result.stdout
 
 
 def test_checks_run_exactly_the_just_lint_commands():

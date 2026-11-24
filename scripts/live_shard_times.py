@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests import shard  # noqa: E402
+from tests import live_shard, shard  # noqa: E402
 
 
 def nodeid(case: ElementTree.Element) -> str:
@@ -31,20 +31,38 @@ def nodeid(case: ElementTree.Element) -> str:
 def main() -> None:
     artifacts, output = Path(sys.argv[1]), Path(sys.argv[2])
     lanes: dict[tuple[str, str], list[tuple]] = {}
-    for artifact in sorted(path for path in artifacts.iterdir() if path.is_dir()):
+    problems = []
+    # download-artifact makes one directory per artifact; dot-directories are harness noise.
+    for artifact in sorted(
+        path for path in artifacts.iterdir() if path.is_dir() and not path.name.startswith(".")
+    ):
         reports = sorted(artifact.glob("*shard-report*.json"))
         junits = sorted(artifact.glob("*junit*.xml"))
         if not reports or not junits:
+            problems.append(f"{artifact.name}: missing its shard report or JUnit XML")
             continue
         report = json.loads(reports[0].read_text(encoding="utf-8"))
         cases = list(ElementTree.parse(junits[0]).getroot().iter("testcase"))
         lanes.setdefault((report["lane"], report["os"]), []).append((report, cases))
-    problems = []
+    # The downloads fail open (an unmatched pattern downloads nothing), so the recorded shard
+    # counts define the lanes this proof must see; a missing or renamed artifact fails it.
+    expected = live_shard.expected_shards()
+    for lane, (system, total) in sorted(expected.items()):
+        shard_reports = lanes.get((lane, system))
+        if not shard_reports:
+            problems.append(f"{lane}/{system}: no shard artifacts downloaded")
+            continue
+        specs = sorted(shard.parse(report["shard"]) for report, _ in shard_reports)
+        if specs != [(index, total) for index in range(1, total + 1)]:
+            problems.append(
+                f"{lane}/{system}: shard set is {[r['shard'] for r, _ in shard_reports]}"
+            )
     times = {}
     for (lane, system), shard_reports in sorted(lanes.items()):
         label = f"{lane}/{system}"
+        total = expected.get(lane, (system, len(shard_reports)))[1]
         specs = sorted(shard.parse(report["shard"]) for report, _ in shard_reports)
-        if specs != [(index, specs[0][1]) for index in range(1, len(specs) + 1)]:
+        if specs != [(index, total) for index in range(1, total + 1)]:
             problems.append(f"{label}: shard set is {[r['shard'] for r, _ in shard_reports]}")
         collected = [json.dumps(report["files"], sort_keys=True) for report, _ in shard_reports]
         if any(value != collected[0] for value in collected):
