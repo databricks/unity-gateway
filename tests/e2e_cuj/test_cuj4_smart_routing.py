@@ -348,6 +348,7 @@ class TestCujAutoModelPicker(BaseCujTest):
         """Scenario: select Auto in Codex's native picker and choose another main model.
 
         Expected: the chosen model completes a file task while subagent routing stays on.
+        After switching to a manual model, selecting Auto opens the main-model chooser again.
         The synthetic Auto ID never reaches gateway inference.
         """
         with smart_router_preset(cuj, SUBAGENT_AUTO_V0) as (session, _, recorder, configs):
@@ -400,6 +401,27 @@ class TestCujAutoModelPicker(BaseCujTest):
                 assert_inference_evidence(recorder, checkpoint, CODEX, task, alternate)
                 assert not any(
                     request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+                tui.submit("/model")
+                tui.choose("Select", alternate_label)
+                tui.wait_for(
+                    lambda screen: (
+                        "Select Reasoning Level" in screen or "smart router off" in screen.lower()
+                    ),
+                    "manual model selection",
+                )
+                if "Select Reasoning Level" in tui.visible:
+                    tui.send("\r", "accept the default reasoning level")
+                tui.wait_for(
+                    lambda screen: "smart router off" in screen.lower(),
+                    "manual model with routing off",
+                )
+                tui.submit("/model")
+                tui.choose("Select", "Auto")
+                tui.choose("Main model", alternate_label)
+                tui.wait_for(
+                    lambda screen: "smart router on" in screen.lower(),
+                    "Auto selected again with routing on",
                 )
                 tui.exit_normally()
 

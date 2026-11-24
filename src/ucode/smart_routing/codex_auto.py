@@ -83,8 +83,6 @@ class CodexAutoPicker:
         if not isinstance(params, dict) or not isinstance(request_id, (str, int)):
             return False
         if method in ("model/list", "thread/start", "thread/resume"):
-            if method == "model/list" and params.get("cursor") is None:
-                self.models.clear()
             self.requests[request_id] = method
         if method == "turn/start" and params.get("threadId") == self.thread_id:
             if self.busy:
@@ -143,6 +141,15 @@ class CodexAutoPicker:
             edits = [params]
         for edit in edits:
             if isinstance(edit, dict):
+                if (
+                    edit.get("keyPath") == "model"
+                    and edit.get("value") == AUTO_MODEL
+                    and not self.busy
+                    and self.thread_id
+                    and self.main_model
+                ):
+                    self.busy = True
+                    self.selections[request_id] = AUTO_MODEL
                 if edit.get("keyPath") == "model" and (
                     edit.get("value") == AUTO_MODEL or self.busy
                 ):
