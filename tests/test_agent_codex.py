@@ -1854,7 +1854,10 @@ class TestCodexLaunch:
         assert argv[-2:] == ["exec", "hi"]
 
     @pytest.mark.parametrize("signed_in", [True, False])
-    def test_static_relay_uses_developers_chatgpt_login(self, tmp_path, monkeypatch, signed_in):
+    @pytest.mark.parametrize("selection", [None, "system.ai.gpt"])
+    def test_static_relay_uses_developers_chatgpt_login(
+        self, tmp_path, monkeypatch, signed_in, selection
+    ):
         self._patch(tmp_path, monkeypatch)
         monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
         monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: signed_in)
@@ -1862,15 +1865,35 @@ class TestCodexLaunch:
         detect = Mock(return_value=databricks.RelayLookup.RELAYED)
         monkeypatch.setattr(databricks, "model_service_relay_lookup", detect)
         state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
-        assert codex.use_model_service_relay(state) is signed_in
-        assert codex.use_model_service_relay(state) is signed_in
+        assert codex.use_model_service_relay(state, selection) is signed_in
+        assert codex.use_model_service_relay(state, selection) is signed_in
         detect.assert_called_once_with(
             WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True
         )
 
+    @pytest.mark.parametrize("configuring", [False, True])
+    def test_selected_relay_requires_chatgpt_login(self, tmp_path, monkeypatch, configuring):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: False)
+        monkeypatch.setattr(
+            databricks,
+            "model_service_relay_lookup",
+            lambda *args, **kwargs: databricks.RelayLookup.RELAYED,
+        )
+
+        if configuring:
+            assert not codex.use_model_service_relay(
+                {"workspace": WS}, "cat.s.seat", configuring=True
+            )
+        else:
+            with pytest.raises(RuntimeError, match="codex login"):
+                codex.use_model_service_relay({"workspace": WS}, "cat.s.seat")
+
+    @pytest.mark.parametrize("selected", [False, True])
     @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
     def test_enforced_auth_keeps_gateway_even_when_writes_are_skipped(
-        self, tmp_path, monkeypatch, filename
+        self, tmp_path, monkeypatch, filename, selected
     ):
         self._patch(tmp_path, monkeypatch)
         monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
@@ -1884,7 +1907,12 @@ class TestCodexLaunch:
             "model_service_relay_lookup",
             lambda *args, **kwargs: databricks.RelayLookup.RELAYED,
         )
-        assert not codex.use_model_service_relay({"workspace": WS}, "cat.s.seat")
+        state = {"workspace": WS, "codex_static_models": ["cat.s.seat"]}
+        if selected:
+            with pytest.raises(RuntimeError, match="model_provider.*" + re.escape(str(tmp_path))):
+                codex.use_model_service_relay(state, "cat.s.seat")
+        else:
+            assert not codex.use_model_service_relay(state)
 
     @pytest.mark.parametrize(
         ("provider", "checked"), [(None, True), (None, False), ("cat.s.mps", False)]
@@ -1949,6 +1977,14 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
         assert codex._has_chatgpt_login("codex") is False
         run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using ChatGPT")
+        assert codex._has_chatgpt_login("codex") is True
+        run.return_value = Mock(
+            returncode=0, stdout="", stderr="Logged in using personal access token"
+        )
+        assert codex._has_chatgpt_login("codex") is True
+        codex._ensure_chatgpt_login("codex")
+        assert run.call_args.args[0][1:] == ["login", "status"]
+        run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using access token")
         assert codex._has_chatgpt_login("codex") is True
         run.side_effect = [Mock(returncode=1, stdout="", stderr="Not logged in"), Mock()]
         codex._ensure_chatgpt_login("codex")

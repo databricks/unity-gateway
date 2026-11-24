@@ -1479,9 +1479,16 @@ remains uncovered.
 
 The Codex relay check (`test_ug_codex_relayed.py`) uses a fresh home to run
 `codex login --with-access-token`, passing the credential on stdin. It then launches
-`ug codex --provider <relayed OpenAI MPS>` with the same access token and asks `gpt-6-luna`
+`ug codex --provider <relayed OpenAI MPS>` using the saved token, with `CODEX_ACCESS_TOKEN`
+removed from its environment, and asks `gpt-6-luna`
 for a short random reply without tools. It requires a completed turn with exactly that answer
 and a forwarded `/v1/responses` request that completes with HTTP 200.
+
+The saved token must appear in native `codex login status` as an access token. Component
+tests check both the personal-access-token status and the ChatGPT browser-login status.
+Component tests in `../test_cli.py` cover selecting a relay model service outside a saved
+discovery schema. `../test_agent_codex.py` checks errors before launch for an explicit relay
+service when ChatGPT login is missing or managed authentication conflicts with the relay.
 
 This deliberately covers only token login and relay inference. File-tool execution, desktop
 configure/revert, desktop inference, managed-file conflict refusal, and browser sign-in are

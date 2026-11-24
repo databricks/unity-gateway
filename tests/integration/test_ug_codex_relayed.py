@@ -15,7 +15,8 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
 ):
     """Scenario: log in with an access token and ask Codex for a short reply through a relay MPS.
 
-    Expected: native login succeeds, Codex completes a turn with the requested answer, and
+    Expected: native login succeeds, its saved token works without CODEX_ACCESS_TOKEN,
+    Codex completes a turn with the requested answer, and
     the loopback proxy forwards /v1/responses with HTTP 200. File tools, desktop configuration,
     and browser sign-in are outside this check.
     """
@@ -32,6 +33,9 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
         timeout=60,
     )
     assert "Successfully logged in" in login.stdout + login.stderr
+    session.env.pop("CODEX_ACCESS_TOKEN")
+    status = session.run("login", "status", binary=session.which("codex"), timeout=30)
+    assert "access token" in status.stdout + status.stderr
     model_service = os.getenv("UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE")
     model = model_service or CODEX_RELAYED_MODEL
     session.record("model.json", {"model": model})

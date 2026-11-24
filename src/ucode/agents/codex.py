@@ -1930,7 +1930,7 @@ def _launch_codex_with_otel_proxy(
 
 
 def _has_chatgpt_login(binary: str) -> bool:
-    """True when Codex holds a ChatGPT login (not an API key) that a relayed launch will use."""
+    """True when Codex holds a ChatGPT login or personal access token for the relay."""
     try:
         result = subprocess_cross_os.run(
             [shutil.which(binary) or binary, "login", "status"],
@@ -1941,7 +1941,8 @@ def _has_chatgpt_login(binary: str) -> bool:
         )
     except (OSError, TimeoutExpired):
         return False
-    return result.returncode == 0 and "ChatGPT" in f"{result.stdout}{result.stderr}"
+    status = f"{result.stdout}{result.stderr}"
+    return result.returncode == 0 and any(mode in status for mode in ("ChatGPT", "access token"))
 
 
 def use_model_service_relay(
@@ -1959,7 +1960,7 @@ def use_model_service_relay(
         candidates.extend(custom_model_services([selection]))
     if machine_wide_only():
         return False
-    if not relay_backed_model_services(
+    relay_backed = relay_backed_model_services(
         state,
         candidates,
         agent=AGENT_CODEX,
@@ -1967,15 +1968,30 @@ def use_model_service_relay(
         include_fallbacks=True,
         configuring=configuring,
         token_provider=lambda: _launch_token(state, state["workspace"]),
-    ):
+    )
+    if not relay_backed:
         return False
+    selected_relay = selected_model in relay_backed and not configuring
     if not (os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])):
+        if selected_relay:
+            raise RuntimeError(
+                f"Model service {selected_model} needs your ChatGPT subscription. "
+                "Run `codex login`, then retry this command."
+            )
         print_note("Sign in with `codex login` to use the ChatGPT subscription model service.")
         return False
     path = codex_managed_config_path()
     if path:
         for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
-            if _managed_relayed_conflicts(policy):
+            conflicts = _managed_relayed_conflicts(policy)
+            if conflicts:
+                if selected_relay:
+                    raise RuntimeError(
+                        f"Model service {selected_model} needs your ChatGPT subscription, but "
+                        f"Codex managed settings define {', '.join(conflicts)} at {policy}. "
+                        "If ug created these settings, run `ug revert` before configuring the "
+                        "relay. Otherwise ask your administrator to update the authentication policy."
+                    )
                 print_note(
                     f"Codex managed authentication at {policy} takes precedence over your ChatGPT seat."
                 )

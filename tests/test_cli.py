@@ -2402,13 +2402,23 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
         assert "Running without smart routing." in _strip_ansi(result.output)
 
 
-def test_codex_location_uses_explicitly_selected_seat_service():
+@pytest.mark.parametrize("location", ["main.team", "system.ai"])
+@pytest.mark.parametrize("saved_location", [False, True])
+def test_codex_location_uses_explicitly_selected_seat_service(location, saved_location):
     with (
         _launch_policy_patches(None) as calls,
         patch.object(cli_mod.codex_agent, "use_model_service_relay", return_value=True) as detect,
     ):
+        if saved_location:
+            calls["state"]["model_locations"] = {"codex": location}
         result = runner.invoke(
-            app, ["codex", "--model-location", "main.team", "--model", "main.team.seat"]
+            app,
+            [
+                "codex",
+                *([] if saved_location else ["--model-location", location]),
+                "--model",
+                "main.team.seat",
+            ],
         )
     assert result.exit_code == 0, result.output
     assert detect.call_args.args[1] == "main.team.seat"

@@ -4686,14 +4686,7 @@ def _launch_tool(
                 managed_smart_routing_applies = False
                 previous = {**smart_routing_v2.disable_smart_routing(), **previous}
         selected_service = model or forwarded_model
-        if (
-            tool == AGENT_CODEX
-            and not provider
-            and (
-                not parent_schema
-                or (selected_service and selected_service.startswith(f"{parent_schema}."))
-            )
-        ):
+        if tool == AGENT_CODEX and not provider and (not parent_schema or selected_service):
             routed = _routes_launch(
                 tool,
                 ctx.args,

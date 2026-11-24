@@ -95,6 +95,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(config_io_mod, "_dry_run", False)
     monkeypatch.setattr(claude_mod, "_explicit_configure", False)
+    monkeypatch.setattr(codex_mod, "_explicit_configure", False)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     # Bound from APP_DIR at import; creating a log also prunes old ones in that directory.
