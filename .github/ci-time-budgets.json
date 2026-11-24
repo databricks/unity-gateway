@@ -63,7 +63,7 @@
         "total": 210
       },
       "Agent launch tests · OpenCode · Linux": {
-        "setup": 25,
+        "setup": 30,
         "run": 170,
         "total": 185
       },
@@ -84,11 +84,11 @@
       },
       "Gateway API tests · Linux": {
         "setup": 15,
-        "run": 40,
-        "total": 50
+        "run": 50,
+        "total": 55
       },
       "Gateway API tests · Windows": {
-        "setup": 35,
+        "setup": 45,
         "run": 50,
         "total": 80
       }
@@ -109,124 +109,124 @@
     },
     "unit-linux": {
       "Unit tests · Linux · 1/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 10/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 11/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 12/24": {
-        "setup": 10,
-        "run": 35,
-        "total": 40
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 13/24": {
-        "setup": 10,
-        "run": 20,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 14/24": {
-        "setup": 10,
-        "run": 35,
+        "setup": 20,
+        "run": 40,
         "total": 45
       },
       "Unit tests · Linux · 15/24": {
-        "setup": 10,
-        "run": 30,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 16/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 17/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 18/24": {
-        "setup": 10,
-        "run": 30,
-        "total": 40
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 19/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 2/24": {
-        "setup": 10,
-        "run": 20,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 20/24": {
-        "setup": 10,
-        "run": 30,
-        "total": 35
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 21/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 22/24": {
-        "setup": 10,
-        "run": 20,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 23/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 24/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 3/24": {
-        "setup": 10,
-        "run": 20,
-        "total": 25
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 4/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 5/24": {
-        "setup": 5,
-        "run": 20,
-        "total": 25
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 6/24": {
-        "setup": 10,
-        "run": 25,
-        "total": 35
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 7/24": {
-        "setup": 10,
-        "run": 30,
-        "total": 35
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 8/24": {
-        "setup": 10,
-        "run": 30,
-        "total": 30
+        "setup": 20,
+        "run": 40,
+        "total": 45
       },
       "Unit tests · Linux · 9/24": {
-        "setup": 10,
-        "run": 30,
-        "total": 40
+        "setup": 20,
+        "run": 40,
+        "total": 45
       }
     },
     "unit-test-times": {
@@ -238,324 +238,324 @@
     },
     "unit-windows": {
       "Unit tests · Windows · 1/64": {
-        "setup": 15,
-        "run": 20,
-        "total": 30
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 10/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 11/64": {
-        "setup": 20,
-        "run": 45,
-        "total": 65
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 12/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 13/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 14/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 15/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 50
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 16/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 17/64": {
-        "setup": 30,
-        "run": 30,
-        "total": 55
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 18/64": {
-        "setup": 25,
-        "run": 30,
-        "total": 55
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 19/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 2/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 20/64": {
-        "setup": 25,
-        "run": 30,
-        "total": 50
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 21/64": {
-        "setup": 20,
-        "run": 15,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 22/64": {
-        "setup": 25,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 23/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 24/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 25/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 26/64": {
-        "setup": 15,
-        "run": 20,
-        "total": 30
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 27/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 28/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 29/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 3/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 30/64": {
-        "setup": 25,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 31/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 30
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 32/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 33/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 34/64": {
-        "setup": 25,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 35/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 36/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 37/64": {
-        "setup": 25,
-        "run": 30,
-        "total": 50
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 38/64": {
-        "setup": 15,
-        "run": 25,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 39/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 4/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 40/64": {
-        "setup": 25,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 41/64": {
-        "setup": 25,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 42/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 43/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 44/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 45/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 46/64": {
-        "setup": 20,
-        "run": 15,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 47/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 48/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 49/64": {
-        "setup": 25,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 5/64": {
-        "setup": 20,
-        "run": 15,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 50/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 51/64": {
-        "setup": 25,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 52/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 53/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 54/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 55/64": {
-        "setup": 15,
-        "run": 15,
-        "total": 30
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 56/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 57/64": {
-        "setup": 25,
-        "run": 25,
-        "total": 50
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 58/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 59/64": {
-        "setup": 20,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 6/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 60/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 61/64": {
-        "setup": 15,
-        "run": 20,
-        "total": 35
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 62/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 63/64": {
-        "setup": 25,
-        "run": 30,
-        "total": 50
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 64/64": {
-        "setup": 20,
-        "run": 25,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 7/64": {
-        "setup": 30,
-        "run": 30,
-        "total": 50
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 8/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 45
+        "setup": 55,
+        "run": 40,
+        "total": 75
       },
       "Unit tests · Windows · 9/64": {
-        "setup": 20,
-        "run": 30,
-        "total": 40
+        "setup": 55,
+        "run": 40,
+        "total": 75
       }
     },
     "vscode-extension": {
@@ -568,7 +568,7 @@
     "windows-provisioning": {
       "Windows provisioning helpers": {
         "setup": 10,
-        "run": 5,
+        "run": 10,
         "total": 15
       }
     }
@@ -592,15 +592,15 @@
       },
       "Anthropic MPS - Staging workspace · Copilot · Windows (non-blocking)": {
         "setup": 145,
-        "run": 105,
+        "run": 110,
         "total": 245
       }
     },
     "antigravity": {
       "Full journeys · Antigravity · Linux": {
         "setup": 20,
-        "run": 345,
-        "total": 360
+        "run": 375,
+        "total": 390
       }
     },
     "codex-desktop-macos": {
@@ -719,9 +719,9 @@
         "total": 685
       },
       "E2E CUJs · CUJ 7 · Unmanaged model discovery": {
-        "setup": 35,
+        "setup": 135,
         "run": 300,
-        "total": 340
+        "total": 370
       },
       "E2E CUJs · CUJ 8 · Second managed-settings writer": {
         "setup": 30,
@@ -743,7 +743,7 @@
     },
     "full": {
       "Full journeys · Claude · Linux": {
-        "setup": 25,
+        "setup": 35,
         "run": 685,
         "total": 695
       },
@@ -753,14 +753,14 @@
         "total": 1330
       },
       "Full journeys · Codex · Linux": {
-        "setup": 20,
+        "setup": 25,
         "run": 595,
         "total": 605
       },
       "Full journeys · Codex · Linux · Smart routing": {
         "setup": 25,
-        "run": 570,
-        "total": 580
+        "run": 700,
+        "total": 710
       },
       "Full journeys · Codex · Windows": {
         "setup": 40,
@@ -769,8 +769,8 @@
       },
       "Full journeys · Codex · Windows · Smart routing": {
         "setup": 45,
-        "run": 270,
-        "total": 310
+        "run": 390,
+        "total": 430
       }
     },
     "headless-windows": {
@@ -837,9 +837,9 @@
         "total": 90
       },
       "Smoke journeys · Claude · Windows": {
-        "setup": 40,
+        "setup": 75,
         "run": 150,
-        "total": 185
+        "total": 200
       },
       "Smoke journeys · Codex · Linux": {
         "setup": 20,
@@ -908,8 +908,8 @@
   "user-journey-test-required": {
     "require-user-journey-test": {
       "User Journey Test Required": {
-        "setup": 5,
-        "run": 15,
+        "setup": 20,
+        "run": 20,
         "total": 20
       }
     }
@@ -920,6 +920,63 @@
         "setup": 5,
         "run": 10,
         "total": 15
+      }
+    }
+  },
+  "_unit_calibration": {
+    "run_ids": [
+      "45470171048",
+      "45473197271",
+      "45476004939",
+      "45476989409",
+      "45477820335",
+      "45478065254",
+      "45478548077",
+      "45479521505",
+      "45480569959",
+      "45483896653",
+      "45484170882",
+      "45484475823",
+      "45484509818",
+      "45488875247",
+      "45489911402",
+      "45489927708",
+      "45495030385",
+      "45496311846",
+      "45496500170",
+      "45498695619",
+      "45501052413",
+      "45502129590",
+      "45502423723",
+      "45503676630",
+      "45504068496",
+      "45504126297",
+      "45504479075",
+      "45504632977",
+      "45504733835",
+      "45504831005",
+      "45504842000",
+      "45505469977",
+      "45505547983",
+      "45505738861",
+      "45505947239",
+      "45506553887",
+      "45506840840"
+    ],
+    "linux": {
+      "samples": 936,
+      "p99": {
+        "setup": 7.0,
+        "run": 29.0,
+        "total": 33.0
+      }
+    },
+    "windows": {
+      "samples": 2496,
+      "p99": {
+        "setup": 22.0,
+        "run": 29.0,
+        "total": 44.0
       }
     }
   }

@@ -616,3 +616,24 @@ def test_trusted_gate_accounts_for_budget_checkout_in_setup():
     assert workflow.index("name: Mark setup done") < workflow.index(
         "name: Require meaningful user-journey coverage"
     )
+
+
+def test_shards_share_one_budget_per_operating_system():
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))["ci"]
+    for job in ("unit-linux", "unit-windows"):
+        values = list(budgets[job].values())
+        assert values
+        assert all(value == values[0] for value in values), job
+
+
+def test_enforced_shard_limits_have_a_sufficient_pooled_sample():
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
+    calibration = budgets["_unit_calibration"]
+    assert len(set(calibration["run_ids"])) >= 20
+    for job, os_name in (("unit-linux", "linux"), ("unit-windows", "windows")):
+        data = calibration[os_name]
+        assert data["samples"] >= 20
+        for budget in budgets["ci"][job].values():
+            for phase in ("setup", "run", "total"):
+                p99 = data["p99"][phase]
+                assert budget[phase] >= max(1.25 * p99, p99 + 10)
