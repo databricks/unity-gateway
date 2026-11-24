@@ -686,7 +686,7 @@ jobs:
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
     if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
-    needs: [workspace, smoke]
+    needs: workspace
     runs-on: ${{ matrix.os }}
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
@@ -712,7 +712,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || inputs.codex_version || '0.156.0' }}
-      # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
+      # Smoke cases run separately on this OS; don't repeat them here.
       TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and not codex_relay and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}
     steps: *live-steps

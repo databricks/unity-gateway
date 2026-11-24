@@ -1604,7 +1604,7 @@ than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the arch
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
-journeys for both agents, in two parallel jobs. After smoke finishes, the full
+journeys for both agents, in two parallel jobs. In parallel with smoke, the full
 suite runs the remaining live cases in separate agent and OS jobs, with cases
 serial inside each VM. Codex smoke and general full/managed coverage retain
 0.156.0. Separate required full and managed matrix rows use 0.171.0 only for
@@ -1658,8 +1658,9 @@ Offline submission checks reject assistant echoes, unrelated prompts and non-mes
 The native MCP approval is answered with Allow once only when the dialog names web_search on
 the expected server with the exact hidden query. Offline checks reject other tools, servers,
 queries and ambiguous approval controls.
-The `All integration tests` check requires every selected integration job to pass, including
-both managed-config lanes for full/live runs; full coverage does not depend on a label or
+The `All integration tests` check requires every blocking integration job to pass, including
+all managed-config lanes. Advisory lanes run separately after the blocking integration call;
+the required `e2e` check does not wait for them. Full coverage does not depend on a label or
 a manual request.
 
 CUJ8's one journey (`tests/e2e_cuj/test_cuj8_second_managed_settings_writer.py`, shard

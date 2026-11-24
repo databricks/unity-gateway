@@ -413,6 +413,9 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     assert "concurrency:" not in jobs["smoke"]
     assert "concurrency:" not in jobs["full"]
     assert "max-parallel:" not in jobs["full"]
+    assert "needs: workspace" in jobs["full"]
+    assert "not smoke" in _ci_marker_expression(jobs["full"], "claude")
+    assert "not smoke" in _ci_marker_expression(jobs["full"], "codex")
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in jobs["full"]
     assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in jobs["full"]
     assert "E2E_ADMIN_SP_CLIENT_ID" not in jobs["full"]

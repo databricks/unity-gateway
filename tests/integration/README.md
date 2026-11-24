@@ -1911,11 +1911,10 @@ separate CI model-selection job; the full agent lanes include scoped model
 discovery. Real `ug configure` performs its normal workspace discovery inside
 each test; only explicit-model scenarios choose and record a discovered
 `system.ai` model as a test argument.
-Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
-**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
-headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
-on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
+Every same-repository PR and push to `main` runs **Smoke journeys** and **Full journeys**
+in parallel. Smoke runs the Hosted configure/TUI, headless argument, and custom OAuth CLI TUI
+journeys for each agent (six cases, two agent jobs per OS). Full excludes the smoke cases,
+which run separately on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
 full/managed journeys, and dedicated CUJs. Routing cases run in separate required
 matrix rows with Codex 0.171.0; dedicated CUJ4 and CUJ7 runners use that newer pin too.
 The full selections are disjoint within each agent and OS:
