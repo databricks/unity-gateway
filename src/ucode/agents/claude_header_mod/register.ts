@@ -74,9 +74,74 @@ async function responseLanguage($: EngineInterface): Promise<string> {
   return instruction + ' Use the requested target language for translations. Preserve technical terms, code identifiers and quoted source text. Source files and tool output in other languages do not change this language preference. Use natural grammar in the response language even when progress-summary examples use English verb endings.';
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function preserveGptCacheBoundary(path: string, body: string): string {
+  if (!['/messages', '/v1/messages', '/ai-gateway/anthropic/v1/messages'].includes(path.split('?', 1)[0])) return body;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (!isRecord(payload) || 'cache_control' in payload || typeof payload.model !== 'string') return body;
+  // Match UG's GPT model forms, including discovery aliases; gpt-oss uses a different provider.
+  const model = payload.model.replace(/\[1m\]$/, '');
+  if (!/^(?:anthropic-aigw-[0-9a-fA-F]{7,8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$/.test(model)) return body;
+  if (!Array.isArray(payload.messages) || !payload.messages.length) return body;
+  const latest = payload.messages[payload.messages.length - 1];
+  if (!isRecord(latest) || (latest.role !== 'user' && latest.role !== 'system') ||
+      !Array.isArray(latest.content) || !latest.content.length) return body;
+  const content = latest.content;
+  if (!content.every(isRecord)) return body;
+  // Check raw number tokens before serialization loses precision; ignore tokens inside strings.
+  for (const match of body.matchAll(/"(?:\\.|[^"\\])*"|(-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/g)) {
+    if (match[1] === undefined) continue;
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || Object.is(value, -0) ||
+        (Number.isInteger(value) && !Number.isSafeInteger(value)) ||
+        JSON.stringify(value) !== match[1]) return body;
+  }
+  for (let i = content.length - 1; i >= 0; i--) {
+    const control = content[i].cache_control;
+    if (isRecord(control) && control.type === 'ephemeral' &&
+        (control.ttl === undefined || control.ttl === '5m' || control.ttl === '1h')) {
+      // The gateway resolves root markers after sorting tool results, including trailing system context.
+      payload.cache_control = control;
+      delete content[i].cache_control;
+      return JSON.stringify(payload);
+    }
+  }
+  return body;
+}
+
 export function register(on: On): void {
   let submittedLanguage: string | undefined;
   let routingActive: boolean | undefined;
+  on('http.fetch', async ($, e, next) => {
+    // Engine-origin HTTP events require Claude 2.1.321+, including direct configured launches.
+    if (next.origin.plugin !== 'engine' || e.init?.method?.toUpperCase() !== 'POST' ||
+        typeof e.init.body !== 'string' || await $.env.get('UG_CLAUDE_GPT_CACHE_BOUNDARY') === '0') return next(e);
+    // Claude 2.1.325 refuses edited authenticated requests in this network-policy mode.
+    const nonessentialDisabled = await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
+    if (nonessentialDisabled) return next(e);
+    // External provider services pass Messages through rather than using the GPT translator.
+    const customHeaders = await $.env.get('ANTHROPIC_CUSTOM_HEADERS');
+    if (customHeaders?.split(/\r?\n/).some((line) =>
+      line.split(':', 1)[0].trim().toLowerCase() === 'databricks-model-provider-service')) return next(e);
+    let base = await $.env.get('UG_CLAUDE_GPT_CACHE_BOUNDARY_BASE_URL');
+    if (base === undefined) {
+      // A configured Claude launch can use the managed mod without the ug launcher.
+      base = await $.env.get('ANTHROPIC_BASE_URL');
+      if (await $.env.get('CLAUDE_CODE_USE_GATEWAY') !== '1' ||
+          !base?.replace(/\/+$/, '').endsWith('/ai-gateway/anthropic')) return next(e);
+    }
+    if (!base || e.url.split('?', 1)[0] !== base.replace(/\/+$/, '') + '/v1/messages') return next(e);
+    const body = preserveGptCacheBoundary('/v1/messages', e.init.body);
+    return next(body === e.init.body ? e : { ...e, init: { ...e.init, body } });
+  });
   on('session.start', async ($, e, next) => {
     submittedLanguage = undefined;
     routingActive = await routingEnabled($);

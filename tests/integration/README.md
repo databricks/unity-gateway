@@ -201,6 +201,10 @@ Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct 
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
 and parallel calls as cards above the parent's next reply in call order.
+The same suite exercises GPT cache-boundary rewriting through the real Claude engine
+against a controlled HTTP endpoint. Naturally generated parent, ordinary-child and routed-child
+requests exercise automatic activation for GPT models beyond Terra/Sol. Separate explicit Messages
+fixtures retain cache-marker and pass-through controls without starting a gateway proxy. This is component coverage; live cache reuse and benchmark savings are not measured.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
@@ -1832,7 +1836,9 @@ still supports explicitly selecting it once the requested package is available.
 The required **Codex desktop inference · macOS** job installs the ChatGPT desktop app from
 OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml`, and runs the
 `macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
-Accessibility to the runner's shell, so no permission prompt is needed. It uploads
+Accessibility to the runner's shell, so no permission prompt is needed. Isolated sessions set
+`CODEX_SPARKLE_ENABLED=false` so the app's native updater cannot replace the pinned build
+between cases. This does not seed onboarding or change the UI interactions. The job uploads
 `integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journeys against the newest appcast build, so it shows

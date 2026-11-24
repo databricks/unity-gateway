@@ -29,6 +29,11 @@ starts with code-mode tools disabled in the user's catalog, then verifies the ex
 assignment reaches the router and child, and that same child completes on the routed model.
 Encrypted or missing assignments must never
 route on a task name: the hook leaves the caller's model unchanged and writes no decision.
+The remote TUI receives the launch's feature overrides together with the footer selection:
+its thread-start features table must preserve plaintext child tools and routing hooks.
+Native Codex 0.171.0 request capture covers a catalog without a code-mode override:
+the footer-only table exposes encrypted child messages, while the complete feature table
+preserves plaintext assignments. This offline protocol check does not prove live routing.
 Component checks also cover catalog precedence, authenticated model-service metadata,
 and a warning with continued launch if the optional session catalog cannot be built or written.
 Catalog construction preserves native collaboration settings for ordinary launches. Without
@@ -433,7 +438,8 @@ from the file. They also check malformed config errors and stale client choices.
 They use temporary files; real desktop apps remain untested.
 
 `test_integration_contract.py` checks that isolated test sessions set Antigravity's
-`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true`, overriding an inherited `1`.
+`AGY_CLI_DISABLE_AUTO_UPDATE` to the required literal `true` and the desktop app's
+`CODEX_SPARKLE_ENABLED` to `false`, overriding inherited values.
 This component check does not run the native updater; the integration runner retains its
 before/after agent-version check.
 
@@ -496,6 +502,37 @@ without `--user` or `UG_SKIP_OS_SETTINGS`. Launches do not elevate or update man
 A missing, outdated or unverified third-party mod produces a routing-launch warning; routing
 continues unchanged.
 These controlled-provider checks establish instruction delivery, not generated-language compliance.
+
+The same managed mod enables GPT cache-boundary preservation automatically on supported
+UG-backed launches with Claude Code 2.1.321 or newer. Smart Router is not required;
+`UG_CLAUDE_GPT_CACHE_BOUNDARY=0` is the emergency opt-out (`=1` remains compatible).
+It moves one eligible Messages cache marker to the request root through native `http.fetch`,
+without a local proxy. The model gate follows UG's GPT identifier forms: bare, `databricks-`,
+`system.ai.`, discovery aliases, and the `[1m]` context hint. The outgoing model is unchanged.
+GPT-OSS, non-GPT models, custom model-service names and external-provider pass-through routes
+are outside the GPT translator contract and remain unchanged.
+
+Launch tests cover ordinary and routed launches, version, installed-source and relay guards,
+and preservation of activation when routing setup falls back to an ordinary launch. Hook tests
+also cover direct Claude launches using the effective UG gateway configuration, explicit opt-out,
+and disabled-launch overrides that prevent that configuration fallback. Native tests capture
+parent, ordinary-child and routed-child requests without overriding their Messages payload,
+including GPT models beyond Terra/Sol. Separate controlled payload cases retain deterministic
+out-of-order tool-result checks, disabled/untrusted mods, origin guards and explicit root controls.
+
+The gateway resolves a root marker after translating and ordering tool results. Native requests
+ending in system context therefore qualify alongside user-ending requests; their content and
+order remain unchanged, and exactly one marker is moved with its original TTL. Existing root
+controls win. Hook tests retain the original transport fields and cancellation signal.
+The managed-mod test uses Linux bubblewrap to isolate `/etc/claude-code`; the host policy is untouched.
+It skips before 2.1.321, where the launcher unit tests cover the unsupported-version guard.
+CI retains the 2.1.290 compatibility lane and runs the native suite on 2.1.325 with bubblewrap.
+The latter lane checks user-namespace support before testing; a failed prerequisite fails the job.
+Claude 2.1.325 rejects rewritten authenticated requests when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+is nonempty (including `0`); the optimization passes through in that mode, retaining the policy.
+Inactive launch reasons are recorded with `UCODE_DEBUG=1` rather than warning on every launch.
+These checks establish payload transformation and native activation, not gateway cache hits,
+benchmark quality or dollar savings.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
