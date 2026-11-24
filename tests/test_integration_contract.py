@@ -1894,3 +1894,19 @@ def test_required_tests_requires_unit_shard_coverage(coverage):
         check=False,
     )
     assert (result.returncode == 0) is (coverage == "success"), result.stderr
+
+
+@pytest.mark.parametrize(
+    ("job_name", "needs"),
+    [
+        ("codex-desktop-macos", "managed"),
+        ("codex-desktop-windows", "[managed, codex-desktop-macos]"),
+    ],
+)
+def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
+    # These lanes share one model quota; 429s appeared only when ten or more overlapped across
+    # runs, and the merge queue builds up to five entries at once.
+    jobs = _integration_jobs()
+    assert f"\n    needs: {needs}\n" in jobs[job_name]
+    assert "    if: ${{ !cancelled() && " in jobs[job_name]
+    assert "      max-parallel: 1\n" in jobs["managed"]
