@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -70,6 +71,7 @@ from ucode.skills import (
 )
 from ucode.smart_routing import (
     claude_routing,
+    codex_routing,
     codex_statusline,
     orchestrator,
     route_validation,
@@ -93,7 +95,12 @@ from ucode.smart_routing.config import (
     resolve_environment,
     selected_version,
 )
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    start_session,
+    validation_result_path,
+)
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -1275,6 +1282,19 @@ def launch_codex(
             f"Could not enable plaintext Codex task routing: {exc} "
             "Encrypted subagent assignments will keep their requested model."
         )
+    if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+        # The footer shows a pending state until the check publishes its result.
+        with suppress(OSError):
+            config_io.atomic_write_json(validation_result_path(session_env_path), {"pending": True})
+        route_validation.start(
+            workspace,
+            os.environ[OAUTH_TOKEN_ENV_VAR],
+            codex_routing.codex_route_options(available_models),
+            router_name=routing.configured_router_name(),
+            session_controls=session_env_path,
+            provider=state.get("_codex_launch_provider"),
+            available_harness=AGENT_CODEX,
+        )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
@@ -1319,6 +1339,18 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            validate_model_list=(
+                (
+                    lambda: codex_routing.validate_codex_model_list(
+                        workspace,
+                        launch_token(state, workspace),
+                        available_models,
+                        provider=state.get("_codex_launch_provider"),
+                    )
+                )
+                if env_bool(UG_ROUTE_VALIDATION_ENV_VAR)
+                else None
+            ),
             **(
                 {"provider": state["_codex_launch_provider"]}
                 if state.get("_codex_launch_provider")

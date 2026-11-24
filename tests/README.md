@@ -2090,12 +2090,16 @@ recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malfor
 responses, and exceptions; a result past the 4 s deadline counts as a timeout, recorded at the
 deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
 flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
-check reports only an unsupported list and leaves routing on after a failure. The smart-routing
-launch tests cover the resolved Claude model/harness list and provider.
+check turns routing on only for a supported list or a 404; an unsupported list or a failed check
+keeps it off and records a logs row. The smart-routing launch tests cover the resolved Claude and
+Codex model/harness list and provider; the Codex test checks them at the HTTP call. The Codex toggle uses the same verdict and is covered in
+`test_smart_router_feedback.py`; its footer shows the warning and hint in `test_codex_statusline.py`,
+and `test_codex_smart_routing_v2.py` checks the check is wired even when the first prompt is not routed.
 Claude's native mod tests cover the band hold, the result handling, the unsupported and
 validation-failed warnings and their one-turn hide, the failed logs row and detail, the 5 s fallback,
-and the transcript log lines (`Smart Router is off` and the warning) logged only when
+and the two transcript log lines (`Smart Router is off` and the warning) logged only when
 `ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
-The Claude back-on TUI journey in `tests/integration/test_ug_smart_routing_hooks.py` checks the live
-validate request that `/smart-router on` sends (HTTP 200, `is_supported: true`). These component tests
+The Claude and Codex back-on TUI journeys in `tests/integration/test_ug_smart_routing_hooks.py` check
+the live validate request that turning routing on sends (HTTP 200, `is_supported: true`), and CUJ 4
+checks the live startup request for both agents. These component tests
 do not establish live Gateway or classifier compatibility.
