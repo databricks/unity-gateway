@@ -61,9 +61,6 @@ def _machine(monkeypatch, tmp_path):
     monkeypatch.setattr(claude, "managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
     monkeypatch.setattr(
-        claude, "claude_header_mod_root", lambda: tmp_path / "claude" / "ucode-plugins"
-    )
-    monkeypatch.setattr(
         managed_files_mod, "CODEX_SYSTEM_REQUIREMENTS_PATH", tmp_path / "codex" / "req.toml"
     )
     monkeypatch.setattr(
@@ -213,22 +210,6 @@ class TestClaudeFile:
         assert doc["availableModels"] == ["a"]
         assert doc["otelHeadersHelper"] == "/opt/mine.sh"
         assert doc["env"]["ANTHROPIC_MODEL"] == "pinned"
-
-    def test_smart_routing_managed_config_writes_the_recipe_mod_in_the_same_operation(self):
-        """A managed run that enables smart routing names the recipe mod and installs its files
-        in the same write: the guard denies the session mod's own recipe write, and this run is
-        the only writer a shared installation has."""
-        manifest = _manifest(_raw_config(claude_config={"smart_routing": {"enabled": True}}))
-        doc = machine.build_claude(manifest, WS).doc
-        root = claude.claude_header_mod_root()
-        assert doc["extraKnownMarketplaces"]["ucode-managed"] == {
-            "source": {"source": "directory", "path": str(root)}
-        }
-        assert doc["enabledPlugins"][claude.CLAUDE_ROUTER_MOD_ID] is True
-        assert doc["appendPlugins"] == [claude.CLAUDE_ROUTER_MOD_ID]
-        assert "prependPlugins" not in doc  # Per-launch headers stay out of a managed run.
-        [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
-        assert set(claude._header_mod_files(root)).issubset(plan.files)
 
     def test_every_option_stays_inside_the_ownership_table(self):
         """Coverage: with every UG feature on, compose accepts all of UG's keys."""

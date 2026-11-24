@@ -5,9 +5,11 @@ import { isRoutingEnabled } from './routing-state.ts';
 
 // Writes the launch's smart-router recipe into `CLAUDE_CODE_EXTRA_BODY`, which Claude's security
 // default reserves to policy-tier mods and denies to the user-tier session mod. ug installs it
-// beside ug-headers as the organization's mod and lists it in the managed append tier, so it runs
-// after the session mod's own environment writes. Only the recipe field is managed: every other
-// request field is preserved, and a session ug did not route is left untouched.
+// beside ug-headers as the organization's mod and lists it with it in the managed prepend tier.
+// A `/smart-router` toggle lands in the environment during its command, and this mod re-reads
+// the flags on every turn step, so the next request carries it whatever the order of the mods.
+// Only the recipe field is managed: every other request field is preserved, and a session ug did
+// not route is left untouched.
 
 async function routingEnabled($: EngineInterface): Promise<boolean> {
   // Claude's capability scanner requires literal environment-variable names.

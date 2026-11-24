@@ -75,10 +75,12 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
         "ug-headers@ucode-managed": True,
         "ug-smart-router-recipe@ucode-managed": True,
     }
-    # The guard is the default `prependPlugins` list, which naming the header mod there must
-    # keep; `appendPlugins` replaces no default, so an unset one carries only ug's mod.
-    assert doc["prependPlugins"] == ["ug-headers@ucode-managed", "sec-default@builtin"]
-    assert doc["appendPlugins"] == ["ug-smart-router-recipe@ucode-managed"]
+    # The guard is the default `prependPlugins` list, which naming the mods there must keep.
+    assert doc["prependPlugins"] == [
+        "ug-headers@ucode-managed",
+        "ug-smart-router-recipe@ucode-managed",
+        "sec-default@builtin",
+    ]
     assert claude.header_mod_active()
     assert claude.header_mod_active(require_current=True)
 
@@ -97,7 +99,11 @@ def test_smart_routing_configure_writes_the_recipe_mod_in_the_same_operation(tmp
 
     doc = json.loads(managed_path.read_text())
     assert doc["enabledPlugins"][claude.CLAUDE_ROUTER_MOD_ID] is True
-    assert doc["appendPlugins"] == [claude.CLAUDE_ROUTER_MOD_ID]
+    assert doc["prependPlugins"] == [
+        claude.CLAUDE_HEADER_MOD_ID,
+        claude.CLAUDE_ROUTER_MOD_ID,
+        "sec-default@builtin",
+    ]
     for path, content in claude._header_mod_files(root).items():
         assert path.read_text(encoding="utf-8") == content
 
@@ -152,26 +158,12 @@ def test_admin_prepend_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert json.loads(managed_path.read_text())["prependPlugins"] == [
         "ug-headers@ucode-managed",
+        "ug-smart-router-recipe@ucode-managed",
         "acme-guard@acme",
     ]
 
     claude.revert_managed_settings()
     assert json.loads(managed_path.read_text()) == {"prependPlugins": ["acme-guard@acme"]}
-
-
-def test_admin_append_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch):
-    managed_path, _root, _writes = _managed_env(
-        tmp_path, monkeypatch, {"appendPlugins": ["acme-audit@acme"]}
-    )
-
-    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
-    assert json.loads(managed_path.read_text())["appendPlugins"] == [
-        "ug-smart-router-recipe@ucode-managed",
-        "acme-audit@acme",
-    ]
-
-    claude.revert_managed_settings()
-    assert json.loads(managed_path.read_text()) == {"appendPlugins": ["acme-audit@acme"]}
 
 
 def test_mod_entries_never_count_as_conflicts():
@@ -225,12 +217,7 @@ def test_failed_install_never_enables_a_missing_plugin(tmp_path, monkeypatch):
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
 
     doc = json.loads(managed_path.read_text())
-    assert not {
-        "extraKnownMarketplaces",
-        "enabledPlugins",
-        "prependPlugins",
-        "appendPlugins",
-    } & set(doc)
+    assert not {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"} & set(doc)
     assert not claude.header_mod_active()
 
 
@@ -250,18 +237,16 @@ def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkey
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     doc = json.loads(managed_path.read_text())
     doc["prependPlugins"].append("acme-guard@acme")
-    doc["appendPlugins"].append("acme-audit@acme")
     managed_path.write_text(json.dumps(doc), encoding="utf-8")
 
     claude.revert_managed_settings()
 
-    # A non-empty list without the guard would turn it off, so revert keeps it there.
+    # A non-empty list without the guard would turn it off, so revert keeps it there; both of
+    # ug's mods left the list the same way.
     assert json.loads(managed_path.read_text())["prependPlugins"] == [
         "sec-default@builtin",
         "acme-guard@acme",
     ]
-    # `appendPlugins` never holds the guard by default, so revert never re-adds it there.
-    assert json.loads(managed_path.read_text())["appendPlugins"] == ["acme-audit@acme"]
 
 
 def test_header_mod_active_needs_every_file(tmp_path, monkeypatch):
@@ -295,12 +280,7 @@ def test_headless_configure_installs_and_enables_beside_an_existing_managed_file
         "ug-smart-router-recipe@ucode-managed": True,
     }
     # Only the mods' entries: a headless run still leaves the rest of ug's settings out.
-    assert set(doc) == {
-        "extraKnownMarketplaces",
-        "enabledPlugins",
-        "prependPlugins",
-        "appendPlugins",
-    }
+    assert set(doc) == {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"}
     assert claude.header_mod_active()
 
 

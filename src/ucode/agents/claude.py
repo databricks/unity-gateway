@@ -483,8 +483,7 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 def revert_managed_settings() -> str:
     # ug lists the built-in guard to keep it when it creates `prependPlugins`, so revert takes it
     # out with ug's entries. When an admin has since added to the list, put the guard back: a
-    # non-empty list without it turns the guard off. `appendPlugins` replaces no default, so an
-    # unset one never held the guard and revert never re-adds it there.
+    # non-empty list without it turns the guard off.
     guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
     removes_parent_settings_merge = _ug_added_parent_settings_merge()
 
@@ -2356,7 +2355,6 @@ CLAUDE_HEADER_MOD_PATHS = [
     ["enabledPlugins", CLAUDE_HEADER_MOD_ID],
     ["enabledPlugins", CLAUDE_ROUTER_MOD_ID],
     ["prependPlugins"],
-    ["appendPlugins"],
 ]
 
 
@@ -2402,14 +2400,10 @@ def _header_mod_files(root: Path) -> dict[Path, str]:
     return files
 
 
-def _enable_managed_mods(settings: dict, root: Path | None, tier_mods: dict[str, str]) -> dict:
-    """Enable ug's managed mods in the managed file.
-
-    ``tier_mods`` maps each tier list (``prependPlugins``/``appendPlugins``) to the mod that owns
-    it. An unset ``prependPlugins`` list means the built-in guard alone, which a set list has to
-    name to keep it; ``appendPlugins`` replaces no default, so an unset one holds nothing.
-    """
-    if root is None or not tier_mods:
+def _enable_header_mod(settings: dict, root: Path | None) -> dict:
+    """Enable ug's managed mods in the managed file and run them ahead of every user's mod: the
+    header mod first, then the recipe mod, which re-applies the recipe before each request."""
+    if root is None:
         return settings
     marketplaces = settings.setdefault("extraKnownMarketplaces", {})
     plugins = settings.setdefault("enabledPlugins", {})
@@ -2418,23 +2412,17 @@ def _enable_managed_mods(settings: dict, root: Path | None, tier_mods: dict[str,
     marketplaces[CLAUDE_HEADER_MOD_MARKETPLACE] = {
         "source": {"source": "directory", "path": str(root)}
     }
-    for key, mod_id in tier_mods.items():
+    mods = (CLAUDE_HEADER_MOD_ID, CLAUDE_ROUTER_MOD_ID)
+    for mod_id in mods:
         plugins[mod_id] = True
-        tier = settings.get(key)
-        default = [_CLAUDE_GUARD_MOD_ID] if key == "prependPlugins" else []
-        tier = tier if isinstance(tier, list) else default
-        settings[key] = [mod_id, *(entry for entry in tier if entry != mod_id)]
+    # An unset list means the built-in guard alone, which a set list has to name to keep it.
+    prepend = settings.get("prependPlugins")
+    prepend = prepend if isinstance(prepend, list) else [_CLAUDE_GUARD_MOD_ID]
+    settings["prependPlugins"] = [
+        *mods,
+        *(entry for entry in prepend if entry not in mods),
+    ]
     return settings
-
-
-def _enable_header_mod(settings: dict, root: Path | None) -> dict:
-    """Enable ug's managed mods: the header mod ahead of every user's mod, the recipe mod after
-    them (it re-applies the recipe once the session mod has settled the routing flags)."""
-    return _enable_managed_mods(
-        settings,
-        root,
-        {"prependPlugins": CLAUDE_HEADER_MOD_ID, "appendPlugins": CLAUDE_ROUTER_MOD_ID},
-    )
 
 
 _explicit_configure = False
