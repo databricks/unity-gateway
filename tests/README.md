@@ -1288,7 +1288,7 @@ verify that valid reasons work without Isaac and that repeated off calls collect
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
 `ISAAC_LAUNCH_MODE=omni` exemption from that reason rule, and native Codex uses the same
-rule. In an Omnigent session (`OMNIGENT=1`), the Codex CLI also keeps routing on for an
+rule. In those Omnigent launches, the Codex CLI also keeps routing on for an
 off without `--feedback-collected`, which the launcher adds after collecting the reason,
 whether or not the feedback rule is on; Claude's mod checks that marker before it runs its
 plain CLI off. A marked off turns routing off without opening a prompt, preparing evidence,

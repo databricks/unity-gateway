@@ -241,7 +241,7 @@ Web UI is the caller. Those sessions also skip the CLI's reason rule. To support
 another launch mode, widen both checks: the one in `isaac-feedback.ts` and the one in
 `_toggle_current_smart_routing_session` in `cli.py`.
 
-The Codex CLI takes the same flag. In an Omnigent session (`OMNIGENT=1`),
+The Codex CLI takes the same flag. With `ISAAC_LAUNCH_MODE=omni`,
 `ucode.cli codex --disable-smart-routing` keeps routing on unless the flag is passed, whether
 or not the feedback rule is on.
 

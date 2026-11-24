@@ -74,8 +74,8 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ISAAC_LAUNCH_MODE_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
-    OMNIGENT_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
 )
@@ -3838,7 +3838,7 @@ def _toggle_current_smart_routing_session(
         agent == AGENT_CODEX
         and not enabled
         and not feedback_collected
-        and os.environ.get(OMNIGENT_ENV_VAR) == "1"
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
     ):
         print_err(
             "Turn Smart Router off with this session's Smart Routing switch, which collects "

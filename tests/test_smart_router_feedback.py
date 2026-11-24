@@ -70,7 +70,7 @@ def off(reason=None, *, agent="codex", feedback_collected=False):
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("mode", ["omni", "direct", "", None])
-def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, agent, mode):
+def test_cli_feedback_rule_by_agent_and_launch_mode(inline_feedback, monkeypatch, agent, mode):
     controls, run, popen, _ = inline_feedback
     if mode is None:
         monkeypatch.delenv("ISAAC_LAUNCH_MODE")
@@ -82,6 +82,13 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     run.assert_not_called()
     popen.assert_not_called()
     assert not controls.with_name("feedback-target.json").exists()
+    if mode == "omni" and agent == "codex":
+        assert result.exit_code == 2, result.output
+        text = " ".join(result.output.split())
+        assert "Smart Routing switch" in text
+        assert "reason" not in text
+        assert json.loads(controls.read_text()) == {}
+        return
     if mode == "omni":
         assert result.exit_code == 0, result.output
         assert "Smart Router is off" in result.output
@@ -96,44 +103,22 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
 
 
 @pytest.mark.parametrize(
-    "omnigent,launch_mode,feedback_rule,reason,feedback_collected,expected_text",
+    "mode,feedback_rule,reason,feedback_collected,expected_text",
     [
-        pytest.param(True, "omni", "1", None, True, None, id="omnigent-marked"),
-        pytest.param(
-            True, "omni", "1", REASON, False, "Smart Routing switch", id="omnigent-reason-unmarked"
-        ),
-        pytest.param(
-            True, "omni", "0", None, False, "Smart Routing switch", id="omnigent-feedback-rule-off"
-        ),
-        pytest.param(True, None, None, None, True, None, id="omnigent-without-isaac-marked"),
-        pytest.param(
-            True, None, None, None, False, "Smart Routing switch", id="omnigent-without-isaac"
-        ),
-        pytest.param(False, "omni", "1", None, False, None, id="isaac-omni-mode-only"),
-        pytest.param(False, "direct", "1", None, True, "16 characters", id="direct-marker-ignored"),
-        pytest.param(False, "direct", "1", REASON, True, None, id="direct-reason"),
+        pytest.param("omni", "1", None, True, None, id="omni-marked"),
+        pytest.param("omni", "1", REASON, False, "Smart Routing switch", id="omni-reason-unmarked"),
+        pytest.param("omni", "0", None, False, "Smart Routing switch", id="omni-feedback-rule-off"),
+        pytest.param("direct", "1", None, True, "16 characters", id="direct-marker-ignored"),
+        pytest.param("direct", "1", REASON, True, None, id="direct-reason"),
+        pytest.param("direct", "0", None, False, None, id="direct-feedback-rule-off"),
     ],
 )
 def test_codex_cli_off_needs_the_marker_in_omnigent(
-    inline_feedback,
-    monkeypatch,
-    omnigent,
-    launch_mode,
-    feedback_rule,
-    reason,
-    feedback_collected,
-    expected_text,
+    inline_feedback, monkeypatch, mode, feedback_rule, reason, feedback_collected, expected_text
 ):
     controls, run, popen, _ = inline_feedback
-    for name, value in (
-        ("OMNIGENT", "1" if omnigent else None),
-        ("ISAAC_LAUNCH_MODE", launch_mode),
-        ("ISAAC_SMART_ROUTER_FEEDBACK", feedback_rule),
-    ):
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
+    monkeypatch.setenv("ISAAC_LAUNCH_MODE", mode)
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", feedback_rule)
 
     result = off(reason, feedback_collected=feedback_collected)
 
@@ -151,7 +136,6 @@ def test_codex_cli_off_needs_the_marker_in_omnigent(
 
 def test_codex_cli_on_and_repeated_off_need_no_marker(inline_feedback, monkeypatch):
     controls, _, _, _ = inline_feedback
-    monkeypatch.setenv("OMNIGENT", "1")
     monkeypatch.setenv("ISAAC_LAUNCH_MODE", "omni")
     assert off(feedback_collected=True).exit_code == 0
 
