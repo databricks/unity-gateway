@@ -6,6 +6,7 @@ import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -299,7 +300,8 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             )
         assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
         for name in ("full", "managed"):
-            assert "smart_routing: [false]" in jobs[name]
+            if name == "managed":
+                assert "smart_routing: [false]" in jobs[name]
             assert (
                 "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
                 "inputs.codex_version || '0.156.0' }}"
@@ -320,7 +322,9 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         full |= relay
     # Full skips smoke cases only because smoke runs them on the same OS matrix.
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
-    assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
+    for platform in ("ubuntu-22.04", "windows-latest"):
+        for lane_agent in ("claude", "codex"):
+            assert f"- os: {platform}\n            agent: {lane_agent}" in jobs["full"]
     assert not smoke & full
     selected = smoke | full
     if agent == "claude":
@@ -357,10 +361,11 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
     assert "DATABRICKS_BEARER:" not in job
-    assert "os: [ubuntu-22.04, windows-latest]" in job
-    assert "'required' && '[\"claude\"]'" in job
-    assert "'advisory' && '[\"copilot\"]'" in job
-    assert '\'["claude", "copilot"]\'' in job
+    # The blocking caller runs the sharded Claude legs; the advisory caller the Copilot legs.
+    assert "inputs.mode == 'required' &&" in job
+    assert "inputs.mode == 'advisory' &&" in job
+    assert '"agent":"claude","shard":"1/3"' in job
+    assert '"agent":"copilot"' in job
     assert "fail-fast: false" in job
     assert "group: databricks-protected-runner-group" in job
     assert (
@@ -376,7 +381,10 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
         "matrix.os == 'windows-latest' && 85 || 40 }}"
     ) in job
     assert "AGENT: ${{ matrix.agent }}" in job
-    assert "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}" in job
+    assert (
+        "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}"
+        "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in job
+    )
     selected = set()
     for agent in ("claude", "copilot"):
         cases = _collect_integration_cases(_ci_marker_expression(job, agent))
@@ -428,7 +436,8 @@ def test_full_claude_lane_includes_both_desktop_journeys():
         "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
         "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
     } <= cases
-    assert "os: [ubuntu-22.04, windows-latest]" in full
+    for platform in ("ubuntu-22.04", "windows-latest"):
+        assert f"- os: {platform}\n            agent: claude" in full
     assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
 
 
@@ -644,15 +653,28 @@ def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     entries, stderr = _discover_cujs(root, tmp_path / "github-output")
 
     assert entries is not None, stderr
-    assert [entry["test"] for entry in entries] == sorted(
-        path.name for path in (root / "tests/e2e_cuj").glob("test_*.py")
+    files = sorted(path.name for path in (root / "tests/e2e_cuj").glob("test_*.py"))
+    assert sorted({entry["test"] for entry in entries}) == files
+    assert len({entry["name"] for entry in entries}) == len(files), (
+        f"Duplicate CUJ_NAME values: {[entry['name'] for entry in entries]}"
     )
-    names = [entry["name"] for entry in entries]
-    assert len(set(names)) == len(names), f"Duplicate CUJ_NAME values: {names}"
     for entry in entries:
         number = re.fullmatch(r"test_cuj(\d+)_[a-z0-9_]+\.py", entry["test"])
         assert number, f"Name CUJ files test_cuj<N>_<topic>.py: {entry['test']}"
         assert entry["name"].startswith(f"CUJ {number.group(1)} · "), entry
+    # A file recorded with several shards expands to that many matrix entries, 1/N through N/N.
+    recorded = json.loads((root / "tests/live_test_times.json").read_text())
+    for path in files:
+        shards = recorded.get(f"cuj-{path}", {}).get("Linux", {}).get("shards", 1)
+        legs = [entry for entry in entries if entry["test"] == path]
+        assert len(legs) == shards
+        for entry in legs:
+            if shards > 1:
+                index, _, total = entry["shard"].partition("/")
+                assert (int(index), int(total)) == (legs.index(entry) + 1, shards)
+                assert entry["shard_index"] == legs.index(entry) + 1
+            else:
+                assert "shard" not in entry and "shard_index" not in entry
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -693,6 +715,7 @@ SKIPPED_ON_FORK_PRS = {
     "codex-desktop-windows",
     "dedicated-cuj-plan",
     "dedicated-cuj",
+    "live-shard-times",
     "cujs",
 }
 
@@ -1271,6 +1294,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "codex-desktop-windows",
         "dedicated-cuj-plan",
         "dedicated-cuj",
+        "live-shard-times",
     ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
@@ -1297,6 +1321,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "codex-desktop-windows",
             "dedicated-cuj-plan",
             "dedicated-cuj",
+            "live-shard-times",
         )
     }
     results[failed_job]["result"] = job_result
@@ -1577,7 +1602,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     job = jobs["anthropic-mps"]
     assert (
         "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+        "matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}\n"
     ) in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
@@ -1994,6 +2019,257 @@ def test_unit_test_times_rejects_incomplete_shard_runs(defect, tmp_path):
         assert "Windows: no unit shard artifacts" in result.stderr
 
 
+LIVE_SHARD_LANES = (
+    # (job, lane, agent) for the integration lanes CI splits by test file and case.
+    ("full", "full-claude", "claude"),
+    ("anthropic-mps", "anthropic-mps-claude", "claude"),
+)
+
+
+@pytest.mark.parametrize(("job_name", "lane", "agent"), LIVE_SHARD_LANES)
+def test_live_shards_run_every_case_exactly_once(job_name, lane, agent):
+    from tests import live_shard, shard
+
+    jobs = _integration_jobs()
+    times = live_shard.lane_times(lane, "Windows")
+    cases = sorted(_collect_integration_cases(_ci_marker_expression(jobs[job_name], agent)))
+    assert cases
+    files = sorted({shard.file_of(case) for case in cases})
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", files, "Windows")
+        owned = shard.owned_tests(units, cases, set(times["slow"]))
+        owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
+    # Every case of the lane runs in exactly one shard, whatever files CI collects on the lane.
+    assert sorted(case for owned in owners for case in owned) == cases
+
+
+@pytest.mark.parametrize("lane", [entry[1] for entry in LIVE_SHARD_LANES])
+def test_live_shard_loads_stay_balanced(lane):
+    from tests import live_shard, shard
+
+    times = live_shard.lane_times(lane, "Windows")
+    assert times["files"], "record fresh times from the live-test-times artifact"
+    files = sorted(times["files"])
+    total = times["shards"]
+    plan = [
+        live_shard.units_for(lane, f"{index}/{total}", files, "Windows")
+        for index in range(1, total + 1)
+    ]
+    units = sorted(unit for owned in plan for unit in owned)
+    assert len(units) == len(set(units))
+    weights = []
+    for owned in plan:
+        load = 0.0
+        for unit in owned:
+            if unit[0] == "test":
+                load += times["slow"][unit[1]]
+            else:
+                slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+        weights.append(load)
+    assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+@pytest.mark.parametrize(("lane", "job_name"), [(entry[1], entry[0]) for entry in LIVE_SHARD_LANES])
+def test_live_shard_matrix_matches_the_recorded_shard_count(lane, job_name):
+    from tests import live_shard
+
+    jobs = _integration_jobs()
+    total = live_shard.lane_times(lane, "Windows")["shards"]
+    legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', jobs[job_name])
+    if legs:  # full: the shard legs are plain matrix entries.
+        assert sorted(legs, key=lambda leg: int(leg[0])) == [
+            (str(index), str(total)) for index in range(1, total + 1)
+        ]
+    else:  # anthropic-mps: the mode input selects the legs, so the shards live in its JSON.
+        for index in range(1, total + 1):
+            assert f'"shard":"{index}/{total}"' in jobs[job_name]
+        assert "inputs.mode == 'advisory' &&" in jobs[job_name]
+    # Sharded lanes feed the spec to the shared runner step; every leg uploads its own artifact.
+    assert "LIVE_SHARD: ${{ matrix.shard || '' }}" in jobs[job_name]
+    assert f"LIVE_SHARD_LANE: {lane}" in jobs[job_name]
+    assert "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in jobs[job_name]
+
+
+def test_cuj_shards_run_every_case_exactly_once():
+    from tests import live_shard, shard
+
+    test = "test_cuj4_smart_routing.py"
+    lane = f"cuj-{test}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--confcutdir=tests/e2e_cuj",
+            f"tests/e2e_cuj/{test}",
+            "--collect-only",
+            "-q",
+        ],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    cases = sorted(line for line in result.stdout.splitlines() if line.startswith("test_"))
+    assert cases
+    times = live_shard.lane_times(lane, "Linux")
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", [test], "Linux")
+        owned = shard.owned_tests(units, cases, set(times["slow"]))
+        owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
+    assert sorted(case for owned in owners for case in owned) == cases
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the CUJ lanes run on Linux")
+def test_cuj_shards_deselect_through_a_real_pytest_run(tmp_path):
+    # Drive the real collection hooks: each shard keeps only its cases, writes its report, and
+    # the shards together keep every case exactly once.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    shards = []
+    for index in (1, 2, 3):
+        report = tmp_path / f"shard-{index}.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "--confcutdir=tests/e2e_cuj",
+                "tests/e2e_cuj/test_cuj4_smart_routing.py",
+                "--collect-only",
+                "-q",
+            ],
+            cwd=Path(__file__).parent.parent,
+            env={
+                **{key: value for key, value in os.environ.items() if key not in skip},
+                "UG_LIVE_SHARD": f"{index}/3",
+                "UG_LIVE_SHARD_LANE": "cuj-test_cuj4_smart_routing.py",
+                "UG_LIVE_SHARD_REPORT": str(report),
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        kept = {line for line in result.stdout.splitlines() if line.startswith("test_")}
+        assert kept
+        written = json.loads(report.read_text())
+        assert written["shard"] == f"{index}/3"
+        assert written["expected"]["test_cuj4_smart_routing.py"] == len(kept)
+        shards.append(kept)
+    assert len(set().union(*shards)) == sum(len(kept) for kept in shards)
+    baseline = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "--confcutdir=tests/e2e_cuj",
+            "tests/e2e_cuj/test_cuj4_smart_routing.py",
+            "--collect-only",
+            "-q",
+        ],
+        cwd=Path(__file__).parent.parent,
+        env={key: value for key, value in os.environ.items() if key not in skip},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert set().union(*shards) == {
+        line for line in baseline.stdout.splitlines() if line.startswith("test_")
+    }
+
+
+def test_live_shard_coverage_gate_downloads_every_shard_artifact():
+    job = _workflow_job("live-shard-times", "cujs")
+    for pattern in (
+        "integration-full-claude-windows-latest-shard*",
+        "integration-anthropic-mps-claude-windows-latest-shard*",
+        "e2e-cujs-*shard*",
+    ):
+        assert f"pattern: {pattern}" in job
+    assert "python3 scripts/live_shard_times.py" in job
+    gate = _workflow_job("cujs", "codex-desktop-macos")
+    assert "live-shard-times" in re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate).group(1)
+
+
+JUNIT_CASE = (
+    '<?xml version="1.0" encoding="utf-8"?><testsuite name="x" tests="{count}">{cases}</testsuite>'
+)
+
+
+def _fake_shard(root, name, report, cases):
+    directory = root / name
+    directory.mkdir(parents=True)
+    (directory / "shard-report.json").write_text(json.dumps(report), encoding="utf-8")
+    body = "".join(
+        f'<testcase classname="{classname}" name="{case}" time="{seconds}"/>'
+        for classname, case, seconds in cases
+    )
+    (directory / "junit.xml").write_text(JUNIT_CASE.format(count=len(cases), cases=body))
+
+
+def test_live_shard_times_verifies_coverage_and_records(tmp_path):
+    def report(shard, units, expected):
+        return {
+            "lane": "demo-lane",
+            "os": "Linux",
+            "shard": shard,
+            "units": units,
+            "files": {"test_x.py": 2},
+            "expected": expected,
+            "marker_deselected": {},
+        }
+
+    _fake_shard(
+        tmp_path,
+        "demo-shard1",
+        report("1/2", [["test", "test_x.py::test_a"]], {"test_x.py": 1}),
+        [("test_x", "test_a", "3.5")],
+    )
+    _fake_shard(
+        tmp_path,
+        "demo-shard2",
+        report("2/2", [["chunk", "test_x.py", 1, 1]], {"test_x.py": 1}),
+        [("test_x", "test_b", "5.0")],
+    )
+    recorded = tmp_path / "recorded.json"
+    result = subprocess.run(
+        [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(recorded.read_text()) == {
+        "demo-lane": {
+            "Linux": {
+                "shards": 2,
+                "files": {"test_x.py": [8.5, 2]},
+                "slow": {"test_x.py::test_a": 3.5, "test_x.py::test_b": 5.0},
+            }
+        }
+    }
+    # A shard that never uploaded its artifact fails the coverage proof.
+    shutil.rmtree(tmp_path / "demo-shard2")
+    result = subprocess.run(
+        [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "::error::Live shards did not cover their lanes" in result.stderr + result.stdout
+
+
 def test_checks_run_exactly_the_just_lint_commands():
     """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
     justfile = (Path(__file__).parent.parent / "justfile").read_text()
@@ -2116,6 +2392,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "codex-desktop-windows",
         "dedicated-cuj-plan",
         "dedicated-cuj",
+        "live-shard-times",
     }
     for name in required | advisory:
         condition = re.search(r"(?m)^    if: (.*)$", jobs[name]).group(1)

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -36,8 +37,52 @@ def pytest_collection_modifyitems(config, items):
             deselected.append(item)
         else:
             selected.append(item)
-    items[:] = selected
+    kept = selected
+    if os.environ.get("UG_LIVE_SHARD"):
+        # The suite runs with only this directory on sys.path; the live shard planner lives
+        # beside the unit one at the repository root.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tests import live_shard
+
+        kept, dropped, report = live_shard.plan_items(
+            os.environ["UG_LIVE_SHARD_LANE"], os.environ["UG_LIVE_SHARD"], selected
+        )
+        deselected.extend(dropped)
+        _live_shard_state.update(
+            report=report,
+            mine={item.nodeid for item in deselected},
+            marker_deselected={},
+        )
+    items[:] = kept
     config.hook.pytest_deselected(items=deselected)
+
+
+# Under UG_LIVE_SHARD, the marker filter (and --deselect) still runs after this conftest, so the
+# observer records those drops per file for the coverage proof.
+_live_shard_state: dict = {}
+
+
+def pytest_deselected(items):
+    if not _live_shard_state or not os.environ.get("UG_LIVE_SHARD_REPORT"):
+        return
+    marker_deselected = _live_shard_state["marker_deselected"]
+    for item in items:
+        if item.nodeid in _live_shard_state["mine"]:
+            continue
+        path = item.nodeid.split("::", 1)[0]
+        marker_deselected[path] = marker_deselected.get(path, 0) + 1
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _live_shard_state or not os.environ.get("UG_LIVE_SHARD_REPORT"):
+        return
+    from tests import live_shard
+
+    live_shard.write_report(
+        os.environ["UG_LIVE_SHARD_REPORT"],
+        _live_shard_state["report"],
+        _live_shard_state["marker_deselected"],
+    )
 
 
 @pytest.fixture(scope="session")
