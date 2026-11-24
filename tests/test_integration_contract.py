@@ -221,7 +221,7 @@ def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     assert "needs: [workspace, full, managed]" in job
     assert "!cancelled() && needs.workspace.result == 'success'" in job
     assert "fail-fast: false" in job
-    assert "max-parallel: 1" in job
+    assert "max-parallel:" not in job
     assert "agent: [claude]" in job
     assert "AGENT: ${{ matrix.agent }}" in job
     assert "ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}" in job

@@ -739,7 +739,6 @@ jobs:
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         os: [ubuntu-22.04, windows-latest]
         agent: [claude]

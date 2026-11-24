@@ -1982,7 +1982,7 @@ Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claud
 `test_smart_router_skill_turns_claude_subagent_routing_back_on`) carry `soft_fail`: six variants
 each, plus the launch test's `subagent_only_v0-glm` case. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
-Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
+Full and Managed config finish, with both OSes in parallel.
 They use `continue-on-error`, stay outside `All integration tests`, and upload separate
 `integration-soft-fail-claude-<os>` artifacts even when tests fail.
 No skip, xfail, task retry, weaker assertion, or production routing change is involved.
