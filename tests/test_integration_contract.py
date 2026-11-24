@@ -2356,6 +2356,18 @@ def test_live_shard_times_verifies_coverage_and_records(tmp_path):
     assert "full-claude/Windows: shard set is" in result.stderr + result.stdout
 
 
+def test_windows_unit_shards_check_out_their_required_sources():
+    windows = (
+        _workflow("ci.yml")
+        .split("\n  unit-windows:\n", 1)[1]
+        .split("\n  windows-provisioning:\n", 1)[0]
+    )
+    assert "uses: actions/checkout@" in windows
+    assert "persist-credentials: false" in windows
+    sparse = windows.split("          sparse-checkout: |\n", 1)[1].split("\n      - ", 1)[0]
+    assert {".github", "docs", "scripts", "skills", "src", "tests"} <= set(sparse.split())
+
+
 def test_checks_run_exactly_the_just_lint_commands():
     """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
     justfile = (Path(__file__).parent.parent / "justfile").read_text()
