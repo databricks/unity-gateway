@@ -369,10 +369,12 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.wait_for(
                     lambda screen: (
                         "select model" in screen.lower()
-                        and re.search(r"(?m)^\s*[❯›>]\s*\d+[.)]", screen)
                         and re.search(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+Auto\b", screen)
+                        and "All models" not in screen
+                        and len(re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+\S", screen))
+                        >= len(configs[CODEX]["models"]["model_services"]) + 1
                     ),
-                    "Auto in Codex's native model picker",
+                    "Auto above all regular models in Codex's picker",
                 )
                 tui.choose("Select", "Auto")
                 tui.choose("Main model", alternate)

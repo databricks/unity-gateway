@@ -23,7 +23,7 @@ from ucode.smart_routing.session_env import (
     set_session_environment,
 )
 
-AUTO_MODEL = "codex-auto-ug"
+AUTO_MODEL = "ug-auto-codex"
 
 
 class CodexAutoPicker:
