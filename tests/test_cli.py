@@ -2237,10 +2237,14 @@ class TestSubcommandRouting:
             {"routing_disabled": False},
         ],
     )
+    @pytest.mark.parametrize("session_routing", ["1", "0"])
     def test_claude_mod_validation_prints_the_verdict_without_recording_it(
-        self, tmp_path, monkeypatch, validation
+        self, tmp_path, monkeypatch, validation, session_routing
     ):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        controls = tmp_path / "env.json"
+        controls.write_text(json.dumps({"ENABLE_SMART_ROUTING_V2": session_routing}))
+        monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(controls))
         monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
         with patch(
             "ucode.smart_routing.route_validation.validate", return_value=validation
