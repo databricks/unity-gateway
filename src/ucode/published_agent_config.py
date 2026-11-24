@@ -205,7 +205,7 @@ def claude_ug_values(
     # merges the admin's own `prependPlugins` entries in ahead of these without duplicating either.
     root = claude_agent.claude_header_mod_root()
     if root is not None:
-        claude_agent._enable_managed_mods(overlay, root, (claude_agent.CLAUDE_ROUTER_MOD_ID,))
+        claude_agent.enable_managed_mods(overlay, root, (claude_agent.CLAUDE_ROUTER_MOD_ID,))
     return overlay
 
 
@@ -488,7 +488,7 @@ def plan_agents(
             # recipe write on Claude releases that seat it.
             mod_root = claude_agent.claude_header_mod_root()
             if mod_root is not None:
-                plan.files.update(claude_agent._header_mod_files(mod_root))
+                plan.files.update(claude_agent.managed_mod_files(mod_root))
             plan.files[path] = claude_agent._dump_managed_settings(composed.doc)
             plan.reports.append((path, composed))
             tracing_paths = {

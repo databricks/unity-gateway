@@ -68,7 +68,7 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
 
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
-    for path, text in claude._header_mod_files(root).items():
+    for path, text in claude.managed_mod_files(root).items():
         assert path.read_text() == text
     doc = json.loads(managed_path.read_text())
     assert doc["extraKnownMarketplaces"]["ucode-managed"] == {
@@ -160,7 +160,7 @@ def test_mod_entries_never_count_as_conflicts():
 
 def test_mod_files_are_on_the_sudo_allowlist():
     for os_family, root in CLAUDE_HEADER_MOD_ROOTS.items():
-        files = set(claude._header_mod_files(root))
+        files = set(claude.managed_mod_files(root))
         assert files == {root / name for name in CLAUDE_HEADER_MOD_FILES}
         assert files <= managed_files._SUDO_REPLACE_TARGETS[os_family]
 
@@ -311,7 +311,7 @@ def windows(tmp_path, monkeypatch):
 
 def test_windows_installs_and_removes_the_mod_beside_the_managed_file(windows, monkeypatch):
     assert managed_files.claude_header_mod_root() == windows
-    files = claude._header_mod_files(windows)
+    files = claude.managed_mod_files(windows)
 
     managed_files.reconcile_privileged_files(files, display="Claude Code")
     for path, text in files.items():
@@ -333,7 +333,7 @@ def test_windows_writes_only_the_mod_files_and_needs_an_administrator(windows, m
     monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
     with pytest.raises(PermissionError):
         managed_files.reconcile_privileged_files(
-            claude._header_mod_files(windows), display="Claude Code"
+            claude.managed_mod_files(windows), display="Claude Code"
         )
 
 
@@ -375,7 +375,7 @@ def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path
         ("missing", False),
     ],
 )
-def test_routed_launch_warns_without_current_language_mod_and_keeps_launching(
+def test_routed_launch_warns_without_current_managed_mods_and_keeps_launching(
     tmp_path, monkeypatch, installed, routed
 ):
     managed_path, root, writes = _managed_env(tmp_path, monkeypatch, {})
@@ -392,6 +392,7 @@ def test_routed_launch_warns_without_current_language_mod_and_keeps_launching(
 
     assert claude.header_mod_active() == (installed in {"current", "other", "stale-other"})
     assert claude.header_mod_active(require_current=True) == (installed == "current")
+    assert claude.recipe_mod_active() == (installed in {"current", "stale", "stale-other"})
     monkeypatch.setattr(claude, "_explicit_configure", False)
     writes.clear()
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
@@ -421,10 +422,15 @@ def test_routed_launch_warns_without_current_language_mod_and_keeps_launching(
         routed_launch.assert_not_called()
         plain_launch.assert_called_once_with(["native-claude", *args])
     if routed and installed != "current":
+        # A stale header mod leaves the recipe mod verifiable, so the warning names only it.
+        unverifiable = (
+            "Smart Router language inheritance and the request recipe"
+            if installed in {"missing", "other"}
+            else "Smart Router language inheritance"
+        )
         warning.assert_called_once_with(
-            "Cannot verify Smart Router language inheritance: it requires the current UG "
-            "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
-            "Routing continues."
+            f"Cannot verify {unverifiable}: it requires the current UG managed mods. Run "
+            "`ug configure` without `--user` or UG_SKIP_OS_SETTINGS. Routing continues."
         )
     else:
         warning.assert_not_called()

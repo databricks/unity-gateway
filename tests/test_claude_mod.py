@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import config, v2
+from ucode.smart_routing import config, routing, v2
 
 
 def test_plugin_contains_mod_entry_point(tmp_path):
@@ -46,6 +46,16 @@ def test_plugin_contains_mod_entry_point(tmp_path):
             ),
         }
     }
+
+
+def test_the_mods_default_recipe_matches_the_launch_default():
+    """The recipe mod bundles these constants, and it is the only extra-body writer: its fallback
+    recipe must not drift from the launch-side default in ``routing.ROUTER_NAME``."""
+    constants = (
+        Path(v2.__file__).parents[1] / "agents" / "claude_mods" / "constants.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"export const DEFAULT_RECIPE = '([^']+)'", constants)
+    assert match and match.group(1) == routing.ROUTER_NAME
 
 
 def test_native_subagent_statusline_command(tmp_path):

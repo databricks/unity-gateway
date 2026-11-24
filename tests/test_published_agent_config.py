@@ -227,7 +227,7 @@ class TestClaudeFile:
         assert doc["enabledPlugins"][claude.CLAUDE_ROUTER_MOD_ID] is True
         assert doc["prependPlugins"] == [claude.CLAUDE_ROUTER_MOD_ID, "sec-default@builtin"]
         assert claude.CLAUDE_HEADER_MOD_ID not in doc["enabledPlugins"]
-        mod_files = list(claude._header_mod_files(root))
+        mod_files = list(claude.managed_mod_files(root))
         assert set(mod_files).issubset(plan.files)
         assert list(plan.files).index(mod_files[0]) < list(plan.files).index(settings)
         recorded = machine._written_paths(plan)
