@@ -24,8 +24,6 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     ROUTER_HARNESS_CLAUDE_CODE,
     SMART_ROUTING_ENV_KEYS,
-    TRUE_ENV_VALUES,
-    UG_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.databricks import _http_post_json, workspace_origin
 from ucode.smart_routing import routing
@@ -48,10 +46,7 @@ UNEXPECTED_RESPONSE_FAILURE_REASON = "Smart Router returned an unexpected respon
 
 def is_route_validation_enabled(source: Mapping[str, str]) -> bool:
     """Omnigent launches skip route validation until Omnigent shows its result."""
-    return (
-        source.get(UG_ROUTE_VALIDATION_ENV_VAR, "").strip().lower() in TRUE_ENV_VALUES
-        and source.get(ISAAC_LAUNCH_MODE_ENV_VAR) != ISAAC_OMNI_LAUNCH_MODE
-    )
+    return source.get(ISAAC_LAUNCH_MODE_ENV_VAR) != ISAAC_OMNI_LAUNCH_MODE
 
 
 def _text(value: object) -> str | None:
