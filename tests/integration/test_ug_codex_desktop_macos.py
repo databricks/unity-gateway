@@ -9,6 +9,7 @@ from utils.codex_desktop import (
     SKILL_NAME,
     assert_desktop_skill_mcp_session,
     configure_databricks_token_profile,
+    wait_for_macos_composer,
     wait_for_skill_answer,
     wait_for_submitted_prompt,
     write_search_skill,
@@ -53,6 +54,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
         app.click("AXButton", "Go to ChatGPT")
+        wait_for_macos_composer(app)
         # Click the composer so the keystrokes cannot land in another control.
         app.click("AXTextArea", None, timeout=120)
         prompt = f"Reply with exactly {marker} and nothing else."
@@ -146,6 +148,7 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
         app.click("AXButton", "Skip")
         app.click("AXButton", "Go to ChatGPT")
         try:
+            wait_for_macos_composer(app)
             app.click("AXTextArea", None, timeout=120)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
             app.type_line(prompt, submit=False)

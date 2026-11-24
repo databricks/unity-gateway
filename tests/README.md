@@ -110,6 +110,9 @@ The shared integration redactor masks both original and stripped credentials, ev
 removal from the session environment. Component checks cover padded bearer and Codex tokens
 in stdin/stdout/stderr artifacts and leave ordinary whitespace intact for blank credentials.
 
+Codex desktop component checks cover one macOS skip-dialog recheck, including an obscured
+composer, an ambiguous confirmation, and failure to reach the composer. Native CI verifies the journey.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.

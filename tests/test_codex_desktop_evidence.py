@@ -18,6 +18,44 @@ MARKER = "b39c21"
 MODEL = "system.ai.gpt-5-6-sol"
 
 
+@pytest.mark.parametrize("state", ["ready", "recovers", "stuck", "other", "covered", "ambiguous"])
+def test_macos_composer_rechecks_only_the_skip_dialog(monkeypatch, state):
+    now = [0]
+    monkeypatch.setattr(codex_desktop.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        codex_desktop.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+    dialog = [["AXHeading", "Skip setup?", "", ""], ["AXButton", "Go to ChatGPT", "", ""]]
+    tree = [["AXTextArea", "", "", ""]] if state == "ready" else dialog.copy()
+    if state == "other":
+        tree = [["AXHeading", "Other screen", "", ""], dialog[1]]
+    elif state == "covered":
+        tree.append(["AXTextArea", "", "", ""])
+    elif state == "ambiguous":
+        tree.append(dialog[1])
+    clicks, evidence = [], {}
+
+    def click(role, label):
+        clicks.append((role, label))
+        if state == "recovers":
+            tree[:] = [["AXTextArea", "", "", ""]]
+
+    app = SimpleNamespace(
+        read_tree=lambda: tree,
+        click=click,
+        session=SimpleNamespace(record=lambda name, value: evidence.update({name: value})),
+    )
+    if state in {"stuck", "other", "covered", "ambiguous"}:
+        with pytest.raises(AssertionError, match="never showed AXTextArea"):
+            codex_desktop.wait_for_macos_composer(app, timeout=14)
+        assert "chatgpt-tree.json" in evidence
+    else:
+        codex_desktop.wait_for_macos_composer(app, timeout=14)
+    assert clicks == (
+        [("AXButton", "Go to ChatGPT")] if state in {"recovers", "stuck", "covered"} else []
+    )
+
+
 @pytest.mark.parametrize("failure", [None, "configure", "identity"])
 def test_token_profile_removes_bypasses_and_stops_on_failure(tmp_path, failure):
     calls = []
