@@ -200,6 +200,20 @@ def claude_ug_values(
     env.pop("ANTHROPIC_MODEL", None)
     if mcp_entries:
         overlay[claude_agent.MANAGED_MCP_SETTINGS_KEY] = dict(mcp_entries)
+    # The recipe mod carries the smart-router recipe from the policy tier, which Claude's guard
+    # reserves the extra body to on releases that seat it; per-launch headers stay out. A set
+    # `prependPlugins` list has to name the built-in guard to keep it; compose merges the admin's
+    # own entries in ahead of these without duplicating either.
+    root = claude_agent.claude_header_mod_root()
+    if root is not None:
+        overlay.setdefault("extraKnownMarketplaces", {})[
+            claude_agent.CLAUDE_HEADER_MOD_MARKETPLACE
+        ] = {"source": {"source": "directory", "path": str(root)}}
+        overlay.setdefault("enabledPlugins", {})[claude_agent.CLAUDE_ROUTER_MOD_ID] = True
+        overlay["prependPlugins"] = [
+            claude_agent.CLAUDE_ROUTER_MOD_ID,
+            claude_agent._CLAUDE_GUARD_MOD_ID,
+        ]
     return overlay
 
 
@@ -470,6 +484,12 @@ def plan_agents(
                 manifest, workspace, mcp_entries.get("claude"), claude_mcp_names
             )
             path = agent_paths("claude")[0]
+            # The recipe mod's files, installed before the settings that name them: the managed
+            # run is the only writer this machine has, and the guard denies the session mod's own
+            # recipe write on Claude releases that seat it.
+            mod_root = claude_agent.claude_header_mod_root()
+            if mod_root is not None:
+                plan.files.update(claude_agent._header_mod_files(mod_root))
             plan.files[path] = claude_agent._dump_managed_settings(composed.doc)
             plan.reports.append((path, composed))
             tracing_paths = {

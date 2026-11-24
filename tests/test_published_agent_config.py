@@ -61,6 +61,9 @@ def _machine(monkeypatch, tmp_path):
     monkeypatch.setattr(claude, "managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
     monkeypatch.setattr(
+        claude, "claude_header_mod_root", lambda: tmp_path / "claude" / "ucode-plugins"
+    )
+    monkeypatch.setattr(
         managed_files_mod, "CODEX_SYSTEM_REQUIREMENTS_PATH", tmp_path / "codex" / "req.toml"
     )
     monkeypatch.setattr(
@@ -210,6 +213,49 @@ class TestClaudeFile:
         assert doc["availableModels"] == ["a"]
         assert doc["otelHeadersHelper"] == "/opt/mine.sh"
         assert doc["env"]["ANTHROPIC_MODEL"] == "pinned"
+
+    def test_smart_routing_managed_config_writes_the_recipe_mod_in_the_same_operation(self):
+        """A managed run that enables smart routing names the recipe mod and installs its files
+        in the same write: the guard denies the session mod's own recipe write, and this run is
+        the only writer a shared installation has."""
+        manifest = _manifest(_raw_config(claude_config={"smart_routing": {"enabled": True}}))
+        doc = machine.build_claude(manifest, WS).doc
+        root = claude.claude_header_mod_root()
+        assert doc["extraKnownMarketplaces"]["ucode-managed"] == {
+            "source": {"source": "directory", "path": str(root)}
+        }
+        assert doc["enabledPlugins"][claude.CLAUDE_ROUTER_MOD_ID] is True
+        # The recipe mod rides `prependPlugins`, ahead of the built-in guard it keeps; the
+        # header mod stays out: a managed run doesn't support per-launch headers.
+        assert doc["prependPlugins"] == [claude.CLAUDE_ROUTER_MOD_ID, "sec-default@builtin"]
+        assert claude.CLAUDE_HEADER_MOD_ID not in doc["enabledPlugins"]
+        [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
+        assert set(claude._header_mod_files(root)).issubset(plan.files)
+
+    def test_an_admin_prepend_list_keeps_its_entries_the_guard_and_no_duplicates(self):
+        """The recipe mod joins an administrator's `prependPlugins` without displacing it, and a
+        set list still names the built-in guard, which an admin's list may omit."""
+        cases = (
+            # The admin's entries stay ahead of ug's, and the guard ug adds is no duplicate.
+            (
+                ["acme-guard@acme"],
+                ["acme-guard@acme", claude.CLAUDE_ROUTER_MOD_ID, "sec-default@builtin"],
+            ),
+            (
+                ["sec-default@builtin", "acme-guard@acme"],
+                ["sec-default@builtin", "acme-guard@acme", claude.CLAUDE_ROUTER_MOD_ID],
+            ),
+        )
+        for admin_list, expected in cases:
+            manifest = _manifest(
+                _raw_config(
+                    claude_config={
+                        "claude_code": {"managed_settings": {"prependPlugins": admin_list}}
+                    }
+                )
+            )
+            doc = machine.build_claude(manifest, WS).doc
+            assert doc["prependPlugins"] == expected
 
     def test_every_option_stays_inside_the_ownership_table(self):
         """Coverage: with every UG feature on, compose accepts all of UG's keys."""

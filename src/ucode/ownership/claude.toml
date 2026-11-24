@@ -247,3 +247,18 @@ note = "Loads MCP tools on demand."
 path = "permissions.deny"
 class = "shared_list"
 note = "Unity Gateway adds `WebSearch`, because the gateway rejects Claude's hosted web search."
+
+[[managed_settings]]
+path = "extraKnownMarketplaces.ucode-managed"
+class = "reserved"
+note = "Unity Gateway's managed marketplace: the directory its recipe mod loads from."
+
+[[managed_settings]]
+path = "enabledPlugins.ug-smart-router-recipe@ucode-managed"
+class = "reserved"
+note = "Unity Gateway's recipe mod, which writes the smart-router recipe from the policy tier."
+
+[[managed_settings]]
+path = "prependPlugins"
+class = "shared_list"
+note = "Unity Gateway prepends its recipe mod, which runs ahead of every mod a user installs; the built-in guard stays in the list."
