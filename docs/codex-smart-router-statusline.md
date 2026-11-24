@@ -16,7 +16,7 @@ or bold black `OFF` on gray. Claude keeps an ON/OFF hint below the prompt after 
 temporary banner disappears; disabling routing does not hide that hint. Codex keeps
 the badge in its persistent footer, since this API only controls the footer.
 
-While the startup check runs (up to 5 s), the footer shows `smart router` without a badge.
+While the startup check runs (up to 11 s), the footer shows `smart router` without a badge.
 When the check turns routing off, the badge is bold black `ERROR` on yellow, followed by
 Claude's unsupported-list warning or, after a failed check, `⚠ Smart Router couldn't validate
 this session's model list`, and then `($smart-router logs for details)`. The warning hides
