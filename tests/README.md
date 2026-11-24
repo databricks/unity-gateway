@@ -1647,6 +1647,8 @@ turns/queries/servers, wrong origins/models and echoed or incomplete answers. Sk
 selects the single root rollout and retains any child rollouts in the artifacts. Missing or
 ambiguous roots fail, and successful child evidence cannot satisfy a failed or incomplete root.
 These are offline parser checks; live desktop coverage requires the native CI jobs.
+macOS presses visible buttons and radio buttons through Accessibility and fails on a rejected
+press; composer focus still uses the mouse and prompt entry uses real keystrokes.
 Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
 in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;

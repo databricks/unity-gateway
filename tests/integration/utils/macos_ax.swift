@@ -1,5 +1,5 @@
 // An Accessibility client for one app: `tree PID` prints its UI elements, `click PID ROLE LABEL`
-// clicks the centre of the first matching element (any label if LABEL is empty) with the mouse.
+// presses buttons or clicks other elements with the mouse (any label if LABEL is empty).
 import AppKit
 
 func attribute(_ element: AXUIElement, _ name: String) -> String {
@@ -36,6 +36,11 @@ case "click" where arguments.count == 5:
         }.joined(separator: "\n")
         FileHandle.standardError.write(Data("Accessibility tree at failed click (PID \(pid)):\n\(tree)\n".utf8))
         fatalError("No \(arguments[3]) labelled \(arguments[4])")
+    }
+    if ["AXButton", "AXRadioButton"].contains(arguments[3]) {
+        let result = AXUIElementPerformAction(target, kAXPressAction as CFString)
+        guard result == .success else { fatalError("AXPress failed for \(arguments[3]) labelled \(arguments[4]): \(result.rawValue)") }
+        break
     }
     var position = CGPoint.zero, size = CGSize.zero
     var value: CFTypeRef?
