@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
@@ -49,7 +48,7 @@ class CodexAutoPicker:
     def main_model(self) -> str | None:
         return self.settings.get("model")
 
-    async def request(self, method: str, params: dict) -> dict:
+    async def request(self, method: str, params: dict) -> None:
         request_id = f"ug-auto-{uuid4().hex}"
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
@@ -58,7 +57,6 @@ class CodexAutoPicker:
             response = await asyncio.wait_for(future, timeout=10)
             if "error" in response:
                 raise ValueError("Codex rejected the model change. Reopen /model to retry.")
-            return response.get("result", {})
         finally:
             self.pending.pop(request_id, None)
 
@@ -156,12 +154,12 @@ class CodexAutoPicker:
                         and not row.get("hidden")
                         and row["model"] != AUTO_MODEL
                     ):
-                        self.models[row["model"]] = copy.deepcopy(row)
+                        self.models[row["model"]] = row
                 if self.models and not any(row.get("model") == AUTO_MODEL for row in rows):
                     base = self.models.get(self.main_model) or next(iter(self.models.values()))
                     result["data"] = [
                         {
-                            **copy.deepcopy(base),
+                            **base,
                             "id": AUTO_MODEL,
                             "model": AUTO_MODEL,
                             "displayName": "Auto",
@@ -194,7 +192,7 @@ class CodexAutoPicker:
             if message.get("method") == "thread/settings/updated":
                 settings = params.get("threadSettings")
                 if isinstance(settings, dict):
-                    self.settings = copy.deepcopy(settings)
+                    self.settings = settings.copy()
                     if self.enabled:
                         settings["model"] = AUTO_MODEL
         if self.main_model and (
@@ -216,7 +214,7 @@ class CodexAutoPicker:
         return await self.inputs.ask(self.thread_id, "", question)
 
     async def choose(self, selection: str) -> None:
-        old_settings = copy.deepcopy(self.settings)
+        old_settings = self.settings.copy()
         old_controls = json.loads(self.router.controls.read_text())
         try:
             model = selection
@@ -325,7 +323,7 @@ class CodexAutoPicker:
             )
         finally:
             self.busy = False
-            settings = copy.deepcopy(self.settings)
+            settings = self.settings.copy()
             if self.enabled:
                 settings["model"] = AUTO_MODEL
             if {
