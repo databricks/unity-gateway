@@ -1266,6 +1266,8 @@ class TestV2Launch:
             assert env[key] == os.environ[key]
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
+        # The managed recipe mod reads its recipe from the environment, not pluginConfigs.
+        assert env[routing.ROUTER_NAME_ENV_VAR] == routing.ROUTER_NAME
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert ("UserPromptSubmit" in settings["hooks"]) is auto_picker
         assert "PreToolUse" not in settings["hooks"]

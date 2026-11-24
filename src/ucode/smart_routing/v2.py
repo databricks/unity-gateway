@@ -412,7 +412,6 @@ def _claude_mod_launch_options(
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
-        "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
         "logsCommand": [],
         "orchestratorInstructions": (
@@ -506,12 +505,6 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": [],
                     "title": "Absent flags",
                     "description": "Flags absent at launch",
-                },
-                "recipe": {
-                    "type": "string",
-                    "default": routing.ROUTER_NAME,
-                    "title": "Recipe",
-                    "description": "Original routing recipe",
                 },
             },
         },
@@ -1039,14 +1032,17 @@ def launch_claude(
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
+            launch_source = {**resolve_environment(agent=AGENT_CLAUDE), **env}
             mod_options = {
-                **_claude_mod_launch_options(
-                    {**resolve_environment(agent=AGENT_CLAUDE), **env},
-                    config_version=selected_version(),
-                ),
+                **_claude_mod_launch_options(launch_source, config_version=selected_version()),
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
+            # The managed recipe mod, which alone writes the extra body, reads its recipe here:
+            # pluginConfigs are the user tier's options and need not reach a policy-tier mod.
+            env[routing.ROUTER_NAME_ENV_VAR] = (
+                launch_source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME
+            )
             if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
                 mod_options["validateCommand"] = routing_hook_argv(
                     routing_state, ROUTE_VALIDATION_MOD_EVENT

@@ -340,7 +340,7 @@ class TestSecondManagedSettingsWriter(BaseCujTest):
 
         Expected: the first session makes at most two privileged writes (the writer's initial
         file and one ug write, counted from ug's per-write password notices); later sessions make
-        none. ug warns only that the writer omits its language mod, and `/model` shows the writer's picker.
+        none. ug warns only that the writer omits its managed mods, and `/model` shows the writer's picker.
         Every field the writer set survives unchanged except the ones ug owns (`apiKeyHelper`,
         its TTL, and ug's own header lines), so neither settings file gains a discovered default
         such as fable. The orchestrator stays on, each task's recorded gateway inference is
@@ -399,9 +399,9 @@ class TestSecondManagedSettingsWriter(BaseCujTest):
                 warnings = list(UG_WARNING_OR_ERROR.finditer(output))
                 assert len(warnings) == 1, output
                 assert " ".join(output[warnings[0].start() :].split()).startswith(
-                    "! Cannot verify Smart Router language inheritance: it requires the current UG "
-                    "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
-                    "Routing continues."
+                    "! Cannot verify Smart Router language inheritance and the request recipe: "
+                    "it requires the current UG managed mods. Run `ug configure` without "
+                    "`--user` or UG_SKIP_OS_SETTINGS. Routing continues."
                 ), output
                 ug_writes = max(
                     len(UG_WRITE_NOTICE.findall(output)),
