@@ -709,7 +709,7 @@ class AgentTerminal(TerminalProcess):
                 filename = getattr(task, "filename", None)
                 safe_find = filename is not None and re.search(
                     rf'(?m)^\s*find {project_root} -name ["\']{re.escape(filename)}["\']'
-                    r' 2>/dev/null\s*$',
+                    r" 2>/dev/null\s*$",
                     screen,
                 )
                 first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes\s*$", screen)

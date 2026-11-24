@@ -305,7 +305,9 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
                     session.send("Reply OK without tools.", expect_error=True)
                 observed = session.observe()
                 assert observed["environment"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
-                assert observed["body"]["smart_router_recipe_name"] == "DISABLED"
+                # The managed mod only replaces a recipe that is already there; a caller body
+                # without one (the fixture's) is left alone, so nothing names a recipe.
+                assert "smart_router_recipe_name" not in observed["body"]
                 assert not session_env.session_routing_enabled(controls)
     finally:
         shutil.rmtree(controls.parent)
