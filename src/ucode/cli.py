@@ -3814,7 +3814,8 @@ def _toggle_current_smart_routing_session(
     enabled: bool | None,
     reason: str | None = None,
     *,
-    feedback_collected: bool | None = None,
+    agent: str,
+    feedback_collected: bool = False,
 ) -> bool:
     if enabled is None:
         return False
@@ -3835,8 +3836,9 @@ def _toggle_current_smart_routing_session(
         return True
     # Claude's mod checks this marker itself before it runs a plain off.
     if (
-        not enabled
-        and feedback_collected is False
+        agent == AGENT_CODEX
+        and not enabled
+        and not feedback_collected
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
         and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
     ):
@@ -5241,6 +5243,7 @@ def codex_cmd(
     if _toggle_current_smart_routing_session(
         enable_smart_routing_flag,
         smart_router_feedback,
+        agent=AGENT_CODEX,
         feedback_collected=feedback_collected,
     ):
         return
@@ -5345,7 +5348,9 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CLAUDE
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

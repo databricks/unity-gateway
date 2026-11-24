@@ -243,7 +243,7 @@ class TestHelp:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        toggle.assert_called_once_with(True, None)
+        toggle.assert_called_once_with(True, None, agent="codex", feedback_collected=False)
         launch.assert_not_called()
 
     @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])
