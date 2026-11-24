@@ -5,6 +5,11 @@ unchanged fork and merge-group conditions, security-gate dependencies, and the r
 `e2e` rollup's response to passing, failed, skipped, and cancelled results. These are
 workflow-contract tests; they do not verify GitHub event delivery or live suites.
 
+`test_ci_time_budgets.py` checks that PR CI jobs have setup, run and total budgets,
+that each phase can fail a blocking job, and that dependency changes produce a notice.
+The budgets are in `.github/ci-time-budgets.json`; the Security Gate's budget is inline
+because the gate never checks out PR code. Budget checks do not run in the merge queue.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.

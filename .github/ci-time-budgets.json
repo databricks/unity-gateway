@@ -1,0 +1,926 @@
+{
+  "ci": {
+    "checks": {
+      "Checks": {
+        "setup": 10,
+        "run": 5,
+        "total": 10
+      }
+    },
+    "claude-mod": {
+      "Claude mod · 2.1.290": {
+        "setup": 15,
+        "run": 165,
+        "total": 180
+      }
+    },
+    "e2e": {
+      "All agent tests": {
+        "setup": 5,
+        "run": 5,
+        "total": 5
+      }
+    },
+    "e2e-shards": {
+      "Agent launch tests · Claude · Linux": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Agent launch tests · Claude · Windows": {
+        "setup": 80,
+        "run": 50,
+        "total": 120
+      },
+      "Agent launch tests · Codex · Linux": {
+        "setup": 25,
+        "run": 120,
+        "total": 140
+      },
+      "Agent launch tests · Codex · Windows": {
+        "setup": 70,
+        "run": 345,
+        "total": 415
+      },
+      "Agent launch tests · Copilot · Linux": {
+        "setup": 20,
+        "run": 110,
+        "total": 120
+      },
+      "Agent launch tests · Copilot · Windows": {
+        "setup": 95,
+        "run": 150,
+        "total": 235
+      },
+      "Agent launch tests · Gemini · Linux": {
+        "setup": 25,
+        "run": 20,
+        "total": 40
+      },
+      "Agent launch tests · Gemini · Windows": {
+        "setup": 130,
+        "run": 100,
+        "total": 210
+      },
+      "Agent launch tests · OpenCode · Linux": {
+        "setup": 25,
+        "run": 170,
+        "total": 185
+      },
+      "Agent launch tests · OpenCode · Windows": {
+        "setup": 85,
+        "run": 570,
+        "total": 625
+      },
+      "Agent launch tests · Pi · Linux": {
+        "setup": 25,
+        "run": 320,
+        "total": 335
+      },
+      "Agent launch tests · Pi · Windows": {
+        "setup": 210,
+        "run": 210,
+        "total": 390
+      },
+      "Gateway API tests · Linux": {
+        "setup": 15,
+        "run": 40,
+        "total": 50
+      },
+      "Gateway API tests · Windows": {
+        "setup": 35,
+        "run": 50,
+        "total": 80
+      }
+    },
+    "required-e2e": {
+      "e2e": {
+        "setup": 5,
+        "run": 5,
+        "total": 5
+      }
+    },
+    "required-tests": {
+      "test": {
+        "setup": 5,
+        "run": 5,
+        "total": 5
+      }
+    },
+    "unit-linux": {
+      "Unit tests · Linux · 1/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 10/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 11/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 12/24": {
+        "setup": 10,
+        "run": 35,
+        "total": 40
+      },
+      "Unit tests · Linux · 13/24": {
+        "setup": 10,
+        "run": 20,
+        "total": 30
+      },
+      "Unit tests · Linux · 14/24": {
+        "setup": 10,
+        "run": 35,
+        "total": 45
+      },
+      "Unit tests · Linux · 15/24": {
+        "setup": 10,
+        "run": 30,
+        "total": 30
+      },
+      "Unit tests · Linux · 16/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 17/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 18/24": {
+        "setup": 10,
+        "run": 30,
+        "total": 40
+      },
+      "Unit tests · Linux · 19/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 2/24": {
+        "setup": 10,
+        "run": 20,
+        "total": 30
+      },
+      "Unit tests · Linux · 20/24": {
+        "setup": 10,
+        "run": 30,
+        "total": 35
+      },
+      "Unit tests · Linux · 21/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 22/24": {
+        "setup": 10,
+        "run": 20,
+        "total": 30
+      },
+      "Unit tests · Linux · 23/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 24/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 3/24": {
+        "setup": 10,
+        "run": 20,
+        "total": 25
+      },
+      "Unit tests · Linux · 4/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 30
+      },
+      "Unit tests · Linux · 5/24": {
+        "setup": 5,
+        "run": 20,
+        "total": 25
+      },
+      "Unit tests · Linux · 6/24": {
+        "setup": 10,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Linux · 7/24": {
+        "setup": 10,
+        "run": 30,
+        "total": 35
+      },
+      "Unit tests · Linux · 8/24": {
+        "setup": 10,
+        "run": 30,
+        "total": 30
+      },
+      "Unit tests · Linux · 9/24": {
+        "setup": 10,
+        "run": 30,
+        "total": 40
+      }
+    },
+    "unit-test-times": {
+      "Unit test times": {
+        "setup": 5,
+        "run": 5,
+        "total": 10
+      }
+    },
+    "unit-windows": {
+      "Unit tests · Windows · 1/64": {
+        "setup": 15,
+        "run": 20,
+        "total": 30
+      },
+      "Unit tests · Windows · 10/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 11/64": {
+        "setup": 20,
+        "run": 45,
+        "total": 65
+      },
+      "Unit tests · Windows · 12/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 40
+      },
+      "Unit tests · Windows · 13/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 14/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 15/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 50
+      },
+      "Unit tests · Windows · 16/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 45
+      },
+      "Unit tests · Windows · 17/64": {
+        "setup": 30,
+        "run": 30,
+        "total": 55
+      },
+      "Unit tests · Windows · 18/64": {
+        "setup": 25,
+        "run": 30,
+        "total": 55
+      },
+      "Unit tests · Windows · 19/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Windows · 2/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 20/64": {
+        "setup": 25,
+        "run": 30,
+        "total": 50
+      },
+      "Unit tests · Windows · 21/64": {
+        "setup": 20,
+        "run": 15,
+        "total": 35
+      },
+      "Unit tests · Windows · 22/64": {
+        "setup": 25,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 23/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Windows · 24/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 25/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Windows · 26/64": {
+        "setup": 15,
+        "run": 20,
+        "total": 30
+      },
+      "Unit tests · Windows · 27/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 28/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 29/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 3/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 30/64": {
+        "setup": 25,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 31/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 30
+      },
+      "Unit tests · Windows · 32/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 33/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 34/64": {
+        "setup": 25,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 35/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 36/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 37/64": {
+        "setup": 25,
+        "run": 30,
+        "total": 50
+      },
+      "Unit tests · Windows · 38/64": {
+        "setup": 15,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Windows · 39/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 45
+      },
+      "Unit tests · Windows · 4/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 40/64": {
+        "setup": 25,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 41/64": {
+        "setup": 25,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 42/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 43/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 45
+      },
+      "Unit tests · Windows · 44/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 45/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 46/64": {
+        "setup": 20,
+        "run": 15,
+        "total": 35
+      },
+      "Unit tests · Windows · 47/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Windows · 48/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 49/64": {
+        "setup": 25,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 5/64": {
+        "setup": 20,
+        "run": 15,
+        "total": 35
+      },
+      "Unit tests · Windows · 50/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 51/64": {
+        "setup": 25,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 52/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 53/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 40
+      },
+      "Unit tests · Windows · 54/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 40
+      },
+      "Unit tests · Windows · 55/64": {
+        "setup": 15,
+        "run": 15,
+        "total": 30
+      },
+      "Unit tests · Windows · 56/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 35
+      },
+      "Unit tests · Windows · 57/64": {
+        "setup": 25,
+        "run": 25,
+        "total": 50
+      },
+      "Unit tests · Windows · 58/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 59/64": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 6/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 60/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 45
+      },
+      "Unit tests · Windows · 61/64": {
+        "setup": 15,
+        "run": 20,
+        "total": 35
+      },
+      "Unit tests · Windows · 62/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 63/64": {
+        "setup": 25,
+        "run": 30,
+        "total": 50
+      },
+      "Unit tests · Windows · 64/64": {
+        "setup": 20,
+        "run": 25,
+        "total": 40
+      },
+      "Unit tests · Windows · 7/64": {
+        "setup": 30,
+        "run": 30,
+        "total": 50
+      },
+      "Unit tests · Windows · 8/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 45
+      },
+      "Unit tests · Windows · 9/64": {
+        "setup": 20,
+        "run": 30,
+        "total": 40
+      }
+    },
+    "vscode-extension": {
+      "VS Code extension": {
+        "setup": 10,
+        "run": 15,
+        "total": 20
+      }
+    },
+    "windows-provisioning": {
+      "Windows provisioning helpers": {
+        "setup": 10,
+        "run": 5,
+        "total": 15
+      }
+    }
+  },
+  "integration": {
+    "anthropic-mps": {
+      "Anthropic MPS - Staging workspace · Claude · Linux": {
+        "setup": 35,
+        "run": 160,
+        "total": 185
+      },
+      "Anthropic MPS - Staging workspace · Claude · Windows": {
+        "setup": 140,
+        "run": 1025,
+        "total": 1105
+      },
+      "Anthropic MPS - Staging workspace · Copilot · Linux (non-blocking)": {
+        "setup": 30,
+        "run": 60,
+        "total": 80
+      },
+      "Anthropic MPS - Staging workspace · Copilot · Windows (non-blocking)": {
+        "setup": 145,
+        "run": 105,
+        "total": 245
+      }
+    },
+    "antigravity": {
+      "Full journeys · Antigravity · Linux": {
+        "setup": 20,
+        "run": 345,
+        "total": 360
+      }
+    },
+    "codex-desktop-macos": {
+      "Codex desktop inference · macOS": {
+        "setup": 55,
+        "run": 395,
+        "total": 445
+      }
+    },
+    "codex-desktop-windows": {
+      "Codex desktop inference · Windows": {
+        "setup": 105,
+        "run": 1755,
+        "total": 1845
+      }
+    },
+    "codex-relay": {
+      "Codex relay login and inference": {
+        "setup": 30,
+        "run": 65,
+        "total": 90
+      }
+    },
+    "copilot": {
+      "Full journeys · Copilot · Linux (non-blocking)": {
+        "setup": 20,
+        "run": 550,
+        "total": 565
+      },
+      "Full journeys · Copilot · Windows (non-blocking)": {
+        "setup": 40,
+        "run": 720,
+        "total": 750
+      }
+    },
+    "cowork-inference-macos": {
+      "Cowork desktop tasks · macOS · Anthropic MPS": {
+        "setup": 460,
+        "run": 425,
+        "total": 850
+      },
+      "Cowork desktop tasks · macOS · Anthropic relay MPS": {
+        "setup": 475,
+        "run": 425,
+        "total": 890
+      },
+      "Cowork desktop tasks · macOS · Databricks Hosted": {
+        "setup": 425,
+        "run": 390,
+        "total": 810
+      }
+    },
+    "cowork-inference-windows": {
+      "Cowork desktop tasks · Windows · Anthropic relay MPS": {
+        "setup": 140,
+        "run": 355,
+        "total": 485
+      },
+      "Cowork desktop tasks · Windows · Databricks Hosted": {
+        "setup": 145,
+        "run": 350,
+        "total": 445
+      }
+    },
+    "cujs": {
+      "All integration tests": {
+        "setup": 5,
+        "run": 5,
+        "total": 5
+      }
+    },
+    "dedicated-cuj": {
+      "E2E CUJs · CUJ 1 · Explicit models, tracing, headers": {
+        "setup": 30,
+        "run": 275,
+        "total": 300
+      },
+      "E2E CUJs · CUJ 2 · MPS and named MCP": {
+        "setup": 30,
+        "run": 275,
+        "total": 300
+      },
+      "E2E CUJs · CUJ 2 · Named skills": {
+        "setup": 40,
+        "run": 185,
+        "total": 220
+      },
+      "E2E CUJs · CUJ 3 · UC MCP discovery": {
+        "setup": 30,
+        "run": 225,
+        "total": 245
+      },
+      "E2E CUJs · CUJ 3 · UC model discovery": {
+        "setup": 30,
+        "run": 400,
+        "total": 425
+      },
+      "E2E CUJs · CUJ 3 · UC skill discovery": {
+        "setup": 30,
+        "run": 175,
+        "total": 205
+      },
+      "E2E CUJs · CUJ 4 · Smart routing": {
+        "setup": 30,
+        "run": 1135,
+        "total": 1165
+      },
+      "E2E CUJs · CUJ 5 · Budget-driven defaults": {
+        "setup": 30,
+        "run": 180,
+        "total": 210
+      },
+      "E2E CUJs · CUJ 6 · Repeated config and removal": {
+        "setup": 35,
+        "run": 660,
+        "total": 685
+      },
+      "E2E CUJs · CUJ 7 · Unmanaged model discovery": {
+        "setup": 35,
+        "run": 300,
+        "total": 340
+      },
+      "E2E CUJs · CUJ 8 · Second managed-settings writer": {
+        "setup": 30,
+        "run": 175,
+        "total": 200
+      },
+      "E2E CUJs · CUJ 9 · Model sources": {
+        "setup": 30,
+        "run": 400,
+        "total": 425
+      }
+    },
+    "dedicated-cuj-plan": {
+      "Plan E2E CUJs": {
+        "setup": 5,
+        "run": 5,
+        "total": 5
+      }
+    },
+    "full": {
+      "Full journeys · Claude · Linux": {
+        "setup": 25,
+        "run": 685,
+        "total": 695
+      },
+      "Full journeys · Claude · Windows": {
+        "setup": 35,
+        "run": 1290,
+        "total": 1330
+      },
+      "Full journeys · Codex · Linux": {
+        "setup": 20,
+        "run": 595,
+        "total": 605
+      },
+      "Full journeys · Codex · Linux · Smart routing": {
+        "setup": 25,
+        "run": 570,
+        "total": 580
+      },
+      "Full journeys · Codex · Windows": {
+        "setup": 40,
+        "run": 760,
+        "total": 795
+      },
+      "Full journeys · Codex · Windows · Smart routing": {
+        "setup": 45,
+        "run": 270,
+        "total": 310
+      }
+    },
+    "headless-windows": {
+      "Windows headless journey · Claude": {
+        "setup": 50,
+        "run": 85,
+        "total": 125
+      }
+    },
+    "installation": {
+      "Installation tests": {
+        "setup": 20,
+        "run": 30,
+        "total": 45
+      }
+    },
+    "installation-windows": {
+      "Windows installation tests": {
+        "setup": 35,
+        "run": 40,
+        "total": 70
+      }
+    },
+    "managed": {
+      "Managed config · Claude": {
+        "setup": 20,
+        "run": 265,
+        "total": 280
+      },
+      "Managed config · Codex": {
+        "setup": 25,
+        "run": 120,
+        "total": 140
+      },
+      "Managed config · Codex · Smart routing": {
+        "setup": 20,
+        "run": 580,
+        "total": 595
+      }
+    },
+    "managed-opencode": {
+      "Managed OpenCode self-managed (non-blocking)": {
+        "setup": 25,
+        "run": 70,
+        "total": 90
+      }
+    },
+    "opencode": {
+      "Full journeys · OpenCode · Linux (non-blocking)": {
+        "setup": 25,
+        "run": 55,
+        "total": 70
+      },
+      "Full journeys · OpenCode · Windows (non-blocking)": {
+        "setup": 40,
+        "run": 85,
+        "total": 120
+      }
+    },
+    "smoke": {
+      "Smoke journeys · Claude · Linux": {
+        "setup": 20,
+        "run": 75,
+        "total": 90
+      },
+      "Smoke journeys · Claude · Windows": {
+        "setup": 40,
+        "run": 150,
+        "total": 185
+      },
+      "Smoke journeys · Codex · Linux": {
+        "setup": 20,
+        "run": 65,
+        "total": 80
+      },
+      "Smoke journeys · Codex · Windows": {
+        "setup": 45,
+        "run": 110,
+        "total": 150
+      }
+    },
+    "soft-fail": {
+      "Soft-fail journeys · claude · Linux (non-blocking)": {
+        "setup": 20,
+        "run": 785,
+        "total": 800
+      },
+      "Soft-fail journeys · claude · Windows (non-blocking)": {
+        "setup": 40,
+        "run": 1555,
+        "total": 1585
+      }
+    },
+    "vscode": {
+      "Full journeys · VS Code Copilot Chat · Linux (non-blocking)": {
+        "setup": 35,
+        "run": 240,
+        "total": 270
+      },
+      "Full journeys · VS Code Copilot Chat · Windows (non-blocking)": {
+        "setup": 45,
+        "run": 265,
+        "total": 300
+      }
+    },
+    "workspace": {
+      "Workspace validation": {
+        "setup": 5,
+        "run": 5,
+        "total": 5
+      }
+    }
+  },
+  "publish-skills-test": {
+    "smoke": {
+      "Publisher composite action": {
+        "setup": 20,
+        "run": 20,
+        "total": 35
+      }
+    },
+    "tests": {
+      "Publisher tests (Python 3.12)": {
+        "setup": 15,
+        "run": 35,
+        "total": 50
+      },
+      "Publisher tests (Python 3.13)": {
+        "setup": 30,
+        "run": 35,
+        "total": 60
+      }
+    }
+  },
+  "user-journey-test-required": {
+    "require-user-journey-test": {
+      "User Journey Test Required": {
+        "setup": 5,
+        "run": 15,
+        "total": 20
+      }
+    }
+  },
+  "zizmor": {
+    "zizmor": {
+      "zizmor": {
+        "setup": 5,
+        "run": 10,
+        "total": 15
+      }
+    }
+  }
+}

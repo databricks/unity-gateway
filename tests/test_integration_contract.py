@@ -484,7 +484,7 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing
 
 def _discover_cujs(root, output):
     plan = _workflow_job("dedicated-cuj-plan", "dedicated-cuj")
-    script = textwrap.dedent(plan.split("        run: |\n", 1)[1])
+    script = textwrap.dedent(plan.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=root,
@@ -978,8 +978,8 @@ def _run_security_gate(
     request_change=None,
     api_error=None,
 ):
-    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
-    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
+    body = _workflow("security-gate.yml").split("        run: |\n", 1)[1].split("\n      - ", 1)[0]
+    script = textwrap.dedent(body).removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
     for key, value in {
         "REPO": "databricks/unity-gateway",
         "PR_NUMBER": pr,
@@ -1145,7 +1145,8 @@ def test_security_gate_runner_and_token_respect_event_trust(event_name, head_rep
     workflow = _workflow("security-gate.yml")
     runner = re.search(r"runs-on: >-\n(.*?)\n    timeout-minutes:", workflow, re.S)[1]
     token = re.search(r"GH_TOKEN: (.*)", workflow)[1]
-    condition = re.search(r"        if: (.*)", workflow)[1]
+    wait_step = workflow.split("      - name: Wait for the shared Security Scan\n", 1)[1]
+    condition = re.search(r"        if: (.*)", wait_step)[1]
     github = SimpleNamespace(
         event_name=event_name,
         repository="databricks/unity-gateway",
@@ -1673,7 +1674,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 )
 def test_required_e2e_enforces_integration_result(event, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    script = required.split("        run: ", 1)[1].strip()
+    script = required.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
@@ -1750,7 +1751,7 @@ def test_required_tests_enforces_lint_result(failing, bad):
         "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
         "vscode-extension]\n" in required
     )
-    script = required.split("        run: |", 1)[1]
+    script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
     names = [
         "LINT_RESULT",
         "RESULT",
@@ -2332,7 +2333,7 @@ def test_required_tests_requires_unit_shard_coverage(coverage):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
-    script = required.split("        run: |", 1)[1]
+    script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
     names = [
         "LINT_RESULT",
         "RESULT",
