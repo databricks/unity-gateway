@@ -98,6 +98,7 @@ for (const { name, result, routed, warning } of cases) {
     for (const text of [UNSUPPORTED_MODEL_LIST_WARNING, VALIDATION_FAILED_WARNING]) {
       expect(shown.includes(text)).toBe(text === warning);
     }
+    if (warning) expect(shown).toContain(`${warning} ${LOGS_DETAILS_HINT}`);
     expect(await hint($)).toBe(`smart router ${routed ? 'ON' : UNSUPPORTED_ROUTER_STATE}`);
     expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
     expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
@@ -196,9 +197,8 @@ for (const { name, endsBeforeResult, routed, failed = false } of turnCases) {
     if (!routed) files['/session/env.json'] = OFF;
     files['/session/env.validation.json'] = JSON.stringify(failed ? FAILED : { routing_disabled: !routed });
     await clock.advance(100);
-    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : failed ? VALIDATION_FAILED_WARNING : WARNING);
+    expect(JSON.stringify(await ui.drawn())).toContain(routed ? 'unity gateway smart router' : `${failed ? VALIDATION_FAILED_WARNING : WARNING} ${LOGS_DETAILS_HINT}`);
     if (!routed) {
-      expect(JSON.stringify(await ui.drawn())).not.toContain(LOGS_DETAILS_HINT);
       await $.prompt.submit({ text: 'next prompt' });
       await $.turn.complete({ answer: 'done' });
       expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
@@ -279,6 +279,7 @@ for (const { name, options, stdout, routed, warning, recorded } of toggleCases) 
       expect(shown.includes(text)).toBe(text === warning);
       expect(logs.includes(text)).toBe(text === warning);
     }
+    expect(shown.includes(LOGS_DETAILS_HINT)).toBe(warning !== undefined);
     expect(records.map(({ argv, stdin }) => [argv.slice(-2), stdin])).toEqual(recorded ? [[['--record-route-validation', '-'], stdout]] : []);
     await ui.unmount();
   });

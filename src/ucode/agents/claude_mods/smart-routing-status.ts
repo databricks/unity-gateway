@@ -136,7 +136,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
       : Text({ bold: true, color: 'black', backgroundColor: warning ? 'yellow' : 'gray', children: [' OFF '] })
     const trailer = warning
-      ? Text({ color: 'yellow', children: [enabled ? `${warning} ${LOGS_DETAILS_HINT}` : warning] })
+      ? Text({ color: 'yellow', children: [`${warning} ${LOGS_DETAILS_HINT}`] })
       : enabled
       ? Text({
           dimColor: true,
