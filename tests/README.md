@@ -75,6 +75,10 @@ It covers shared Node/npm reuse and installation, checksum rejection, configure'
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,
 and idempotent aliases.
 It does not install real packages, contact Databricks, or establish a macOS/Jamf integration pass.
+`test_linux_provision.py` does the same for `scripts/mdm/linux-provision.sh` on Linux. It also
+covers Node older than 22, http workspace URLs, non-root runs and missing arguments, unsupported CPU
+architectures, an alias block with no END line, and token parsing that ignores modules in the
+working directory. It does not establish a Linux MDM integration pass.
 
 `test_security_scan_request.py` verifies the default-branch Security Scan's request
 validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
