@@ -101,6 +101,11 @@ class CodexAutoPicker:
                 return True
         if method == "thread/settings/update" and params.get("threadId") == self.thread_id:
             model = params.get("model")
+            collaboration = params.get("collaborationMode")
+            settings = collaboration.get("settings") if isinstance(collaboration, dict) else None
+            if model is None and isinstance(settings, dict) and settings.get("model") == AUTO_MODEL:
+                # Codex omits model when the chosen menu row already matches its visible model.
+                model = AUTO_MODEL
             if isinstance(model, str) and self.main_model and not self.busy:
                 if model == AUTO_MODEL or model in self.models:
                     self.busy = True

@@ -359,6 +359,12 @@ class TestCujAutoModelPicker(BaseCujTest):
             recorder.prepare_launch()
             with Terminal(session, "codex-auto-picker", [CODEX]) as tui:
                 tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({default})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto selected at launch",
+                )
                 tui.submit("/model")
                 tui.wait_for(
                     lambda screen: (
