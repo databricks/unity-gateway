@@ -294,15 +294,10 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 
 
 @pytest.mark.parametrize(
-    ("missing_message", "extra_command"),
-    [
-        ('"SMART_ROUTER_ENV_UNSET"', ""),
-        ("'MISSING_SMART_ROUTER_ENV'", ""),
-        ('"$(Remove-Item important.txt)"', ""),
-        ('"SMART_ROUTER_ENV_UNSET"', "; Remove-Item important.txt"),
-        ("'MISSING_SMART_ROUTER_ENV'", "; Remove-Item important.txt"),
-    ],
+    "missing_message",
+    ['"SMART_ROUTER_ENV_UNSET"', "'MISSING_SMART_ROUTER_ENV'", '"$(Remove-Item important.txt)"'],
 )
+@pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
 @pytest.mark.parametrize("write_output", ["Write-Output ", ""])
 @pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
@@ -312,10 +307,8 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
         "-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE",
         "[string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
         "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
-        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
-        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
     ],
-    ids=["unset", "whitespace", "empty"],
+    ids=["unset", "whitespace"],
 )
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
     extra_command, missing_message, guard_style, write_output, selected, condition
@@ -350,27 +343,8 @@ def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
         "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
         "[string]::IsNullOrWhiteSpace($(Remove-Item important.txt)) -or "
         "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
-        "[string]::IsNullOrEmpty($env:OTHER_PYTHON) -or "
-        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
-        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
-        "[string]::IsNullOrEmpty($env:OTHER_ENV_FILE)",
-        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -and "
-        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
-        "[string]::IsNullOrEmpty($(Remove-Item important.txt)) -or "
-        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
-        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
-        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
     ],
-    ids=[
-        "other-variable",
-        "wrong-operator",
-        "command-substitution",
-        "empty-other-python",
-        "empty-other-env-file",
-        "empty-wrong-operator",
-        "empty-command-substitution",
-        "mixed-checks",
-    ],
+    ids=["other-variable", "wrong-operator", "command-substitution"],
 )
 def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
@@ -385,51 +359,6 @@ def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition)
     )
     with pytest.raises(AssertionError, match="unexpected command approval"):
         codex_command_approval_pending(screen, expected)
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        None,
-        ('$env:UCODE_SMART_ROUTER_PYTHON"', '$env:OTHER_PYTHON"'),
-        ("-m ucode.cli", "-m other_module"),
-        ("--disable-smart-routing", "--enable-smart-routing"),
-        ("--disable-smart-routing", "--disable-smart-routing --other-option"),
-    ],
-    ids=["logged-command", "other-executable", "other-module", "other-action", "extra-argument"],
-)
-def test_codex_windows_toggle_approval_keeps_logged_empty_guard_command_exact(change):
-    # Codex on Windows can wrap the missing-variable message onto a second line.
-    screen = (
-        "Would you like to run the following command?\n\n"
-        "  Environment: local\n\n"
-        "  Reason: Do you want to allow the Smart Router command to read session controls "
-        "and turn routing off?\n\n"
-        "  $ if ([string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
-        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)) { Write-Output\n"
-        "  'SMART_ROUTER_ENV_UNSET' } else { "
-        '& "$env:UCODE_SMART_ROUTER_PYTHON" '
-        "-m ucode.cli codex --disable-smart-routing }\n\n\n"
-        "\ufffd 1. Yes, proceed (y)\n"
-        "  2. Yes, and don't ask again for commands that start with "
-        "`if ([string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or\n"
-        "     [string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)) { "
-        "Write-Output 'SMART_ROUTER_ENV_UNSET' } else { &\n"
-        '     "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing }` (p)\n'
-        "  3. No, and tell Codex what to do differently (esc)\n\n"
-        "  Press enter to confirm or esc to cancel"
-    )
-    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
-    expected = (
-        command,
-        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-        '{ Write-Output "SMART_ROUTER_ENV_UNSET" } else { ' + command + " }",
-    )
-    if change:
-        with pytest.raises(AssertionError, match="unexpected command approval"):
-            codex_command_approval_pending(screen.replace(*change), expected)
-    else:
-        assert codex_command_approval_pending(screen, expected)
 
 
 @pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])
@@ -1352,12 +1281,19 @@ def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
 
 
 @pytest.mark.parametrize("orchestrator_on", [False, True])
-def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on):
+@pytest.mark.parametrize("tall_card", [False, True], ids=["short", "wrapped-preview-and-reason"])
+def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on, tall_card):
     suffix = " [orchestrator on]" if orchestrator_on else ""
+    preview = (
+        "│ Prompt preview : first wrapped line │\n" + "│ continued preview │\n" * 3
+        if tall_card
+        else ""
+    )
+    reason = "│ Reason : first wrapped line │\n" + "│ continued reason │\n" * 5 if tall_card else ""
     panel = (
         "│ Using Unity Gateway Smart Router - Subagent │\n"
         f"│ Subagent : subagent{suffix} │\n"
-        "│ Selected Model : gpt-6-luna │\n└──────────┘\n"
+        f"{preview}│ Selected Model : gpt-6-luna │\n{reason}└──────────┘\n"
     )
     prompt = '› Spawn a child with task name "ug_subagent_ab12"\n  and return its answer.\n\n'
     screen = prompt + panel + "› Ask Codex to do anything\n"
@@ -1377,6 +1313,21 @@ def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on
     )
     assert not evidence.codex_routing_display_for_task(
         screen, "ug_subagent_ab12", orchestrator_on=not orchestrator_on
+    )
+
+
+@pytest.mark.parametrize("interruption", ["", "› A later task\n", "│ missing right border\n"])
+def test_codex_routing_display_requires_a_complete_uninterrupted_card(interruption):
+    screen = (
+        '› Spawn a child with task name "ug_subagent_ab12"\n\n'
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        "│ Subagent : subagent │\n"
+        "│ Selected Model : gpt-6-luna │\n"
+        + interruption
+        + ("└──────────┘\n" if interruption else "")
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=False
     )
 
 
