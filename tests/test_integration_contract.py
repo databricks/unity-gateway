@@ -85,7 +85,7 @@ def test_managed_integration_ci_is_blocking():
     assert needs is not None
     assert "managed" in {job.strip() for job in needs.group(1).split(",")}
     assert (
-        "if: ${{ always() && (github.event_name != 'pull_request' || "
+        "if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     ) in gate
     baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
@@ -358,7 +358,9 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
     assert "DATABRICKS_BEARER:" not in job
     assert "os: [ubuntu-22.04, windows-latest]" in job
-    assert "agent: [claude, copilot]" in job
+    assert "'required' && '[\"claude\"]'" in job
+    assert "'advisory' && '[\"copilot\"]'" in job
+    assert '\'["claude", "copilot"]\'' in job
     assert "fail-fast: false" in job
     assert "group: databricks-protected-runner-group" in job
     assert (
@@ -702,8 +704,9 @@ def _skips_fork_prs(jobs, name):
         return True
     needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
     for need in [need.strip() for need in needs.group(1).split(",")] if needs else []:
-        requires_success = (
-            condition is None or f"needs.{need}.result == 'success'" in condition.group(1)
+        expression = condition.group(1) if condition else ""
+        requires_success = f"needs.{need}.result == 'success'" in expression or not re.search(
+            r"\b(?:always|cancelled|failure|success)\(\)", expression
         )
         if requires_success and _skips_fork_prs(jobs, need):
             return True
@@ -1494,7 +1497,7 @@ def test_cowork_ci_permissions_and_required_gate(job_name):
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert condition.group(1) == (
-        "${{ github.event_name != 'merge_group' && "
+        "${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && "
         "(github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     )
@@ -1910,3 +1913,73 @@ def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
     assert f"\n    needs: {needs}\n" in jobs[job_name]
     assert "    if: ${{ !cancelled() && " in jobs[job_name]
     assert "      max-parallel: 1\n" in jobs["managed"]
+
+
+def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
+    workflow = _workflow("ci.yml")
+    jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", workflow))
+    required = jobs["integration"]
+    advisory = jobs["integration-advisory"]
+    for job in (required, advisory):
+        assert "needs.security-gate.result == 'success'" in job
+        assert "github.event_name != 'merge_group'" in job
+        assert "uses: ./.github/workflows/integration.yml" in job
+    assert "needs: security-gate" in required
+    assert "mode: required" in required
+    assert "needs: [security-gate, integration]" in advisory
+    assert "mode: advisory" in advisory
+    assert "needs: [e2e, integration]" in jobs["required-e2e"]
+
+
+def test_integration_modes_preserve_blocking_and_advisory_lanes():
+    jobs = _integration_jobs()
+    required = {
+        "installation",
+        "installation-windows",
+        "cowork-inference-windows",
+        "cowork-inference-macos",
+        "smoke",
+        "headless-windows",
+        "full",
+        "codex-relay",
+        "antigravity",
+        "managed",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+        "cujs",
+        "codex-desktop-macos",
+        "codex-desktop-windows",
+    }
+    advisory = {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"}
+    for name in required:
+        assert "inputs.mode != 'advisory'" in jobs[name], name
+    for name in advisory:
+        assert "inputs.mode != 'required'" in jobs[name], name
+    assert "inputs.mode == 'required'" in jobs["anthropic-mps"]
+    assert "inputs.mode == 'advisory'" in jobs["anthropic-mps"]
+    assert "needs: [workspace, full, managed]" in jobs["soft-fail"]
+    cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert cujs_needs is not None
+    assert {name.strip() for name in cujs_needs.group(1).split(",")} == {
+        "installation",
+        "installation-windows",
+        "headless-windows",
+        "cowork-inference-windows",
+        "cowork-inference-macos",
+        "workspace",
+        "smoke",
+        "full",
+        "codex-relay",
+        "anthropic-mps",
+        "antigravity",
+        "managed",
+        "codex-desktop-macos",
+        "codex-desktop-windows",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+    }
+    for name in required | advisory:
+        condition = re.search(r"(?m)^    if: (.*)$", jobs[name]).group(1)
+        if FORK_GUARD in condition:
+            assert f"({FORK_GUARD})" in condition, name
+    assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]

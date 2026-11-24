@@ -1961,9 +1961,10 @@ all full rows, and all **Managed config** rows to pass for full/live runs. Each 
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
-The advisory Windows installation and headless lanes are not yet included in that aggregate check.
-The existing required `e2e` context also waits for the complete integration workflow, so integration
-cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+The required `e2e` context waits for the blocking integration jobs. Advisory jobs run in a
+separate gated workflow call after the blocking call, so their checks remain visible without
+holding up `e2e`. Manual and authorized fork runs retain both sets in one call. Full coverage
+on PRs needs no label or opt-in.
 
 ### Soft-fail tests
 
