@@ -80,6 +80,10 @@ test('an Auto flag without a launch picker leaves model and effort commands nati
 
 test('a toggle moves the flags and never the protected body', { options: ROUTED }, async ($, on) => {
   const { env, writes } = setup(on);
+  // A routed launch supplies the session controls the toggle must also reach.
+  env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
+  env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
   on('session.start', ($, e) => ({ cwd: e.cwd }));
   await $.session.start(start);
 

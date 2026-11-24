@@ -445,6 +445,13 @@ def _written_paths(plan: AgentPlan) -> list[Path]:
     """The files ``plan`` writes, references before the files they name, so removing them in this
     order never leaves a dangling reference."""
     paths = [path for path, text in plan.files.items() if text is not None]
+    if plan.agent == "claude":
+        # The settings name the mods' plugins, so they leave first: a removal that fails partway
+        # leaves settings referencing files still on disk, never settings without their plugins.
+        settings = next((path for path in agent_paths("claude") if path in paths), None)
+        if settings is not None:
+            paths.remove(settings)
+            paths.insert(0, settings)
     if CODEX_MANAGED_CATALOG_PATH in paths:
         paths.remove(CODEX_MANAGED_CATALOG_PATH)
         paths.append(CODEX_MANAGED_CATALOG_PATH)

@@ -232,6 +232,18 @@ class TestClaudeFile:
         [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
         assert set(claude._header_mod_files(root)).issubset(plan.files)
 
+    def test_revert_removes_the_settings_before_the_mod_files_they_name(self):
+        """The mods install before the settings that reference them, but revert removes the
+        settings first: a removal that fails partway never leaves settings naming missing
+        plugins."""
+        manifest = _manifest(_raw_config(claude_config={"smart_routing": {"enabled": True}}))
+        [plan] = machine.plan_agents(manifest, WS, ["claude"], {}, None)
+        settings = claude.managed_settings_path()
+        mod_files = list(claude._header_mod_files(claude.claude_header_mod_root()))
+        assert list(plan.files).index(mod_files[0]) < list(plan.files).index(settings)
+        recorded = machine._written_paths(plan)
+        assert recorded.index(settings) < min(recorded.index(path) for path in mod_files)
+
     def test_an_admin_prepend_list_keeps_its_entries_the_guard_and_no_duplicates(self):
         """The recipe mod joins an administrator's `prependPlugins` without displacing it, and a
         set list still names the built-in guard, which an admin's list may omit."""

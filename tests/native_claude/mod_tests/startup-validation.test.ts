@@ -1,7 +1,7 @@
 import type { On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import {
-  DISABLED_RECIPE, RECIPE_FIELD, SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
+  SMART_ROUTER_OFF_REPLY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
   VALIDATION_FAILED_WARNING,
 } from '../hooks/constants.ts';
 
@@ -10,7 +10,6 @@ const ROUTED = {
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
   ENABLE_SMART_ROUTER_ORCHESTRATOR: '0',
   unset: [],
-  recipe: 'task_v3',
 };
 const VALIDATED = { ...ROUTED, startupValidation: '1' };
 const OFF = '{"ENABLE_SMART_ROUTING_V2":"0","ENABLE_SMART_ROUTING_SUBAGENT_ONLY":"0","ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}';
@@ -100,8 +99,9 @@ for (const { name, result, routed, warning } of cases) {
     }
     expect(await hint($)).toBe(`smart router ${routed ? 'ON' : UNSUPPORTED_ROUTER_STATE}`);
     expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
-    expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
-      .toBe(routed ? 'task_v3' : DISABLED_RECIPE);
+    // No recipe writer runs here: only the session mod is loaded, and ug's managed
+    // policy-tier mod owns the extra body.
+    expect(env.CLAUDE_CODE_EXTRA_BODY).toBe('{}');
     expect(state.opened).toBe(0);
     expect(state.notices).toEqual([]);
 
