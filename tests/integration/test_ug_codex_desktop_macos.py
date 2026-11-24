@@ -20,7 +20,7 @@ from utils.evidence import (
     completed_task_models,
     fresh_id,
 )
-from utils.macos_app import MacApp
+from utils.macos_app import OSASCRIPT, MacApp
 from utils.managed import use_managed_config_fixture
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.macos_desktop, pytest.mark.codex]
@@ -29,6 +29,48 @@ pytestmark = [pytest.mark.managed_fixture, pytest.mark.macos_desktop, pytest.mar
 CHATGPT_APP = Path("/Applications/ChatGPT.app")
 # The managed_workspace_default fixture's Codex default model.
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
+
+
+def dismiss_skip_setup_dialog(app: MacApp) -> None:
+    app.click("AXButton", "Go to ChatGPT")
+    deadline = time.monotonic() + 120
+    while any(row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()):
+        assert time.monotonic() < deadline, "Skip setup? dialog never dismissed"
+        time.sleep(2)
+        try:
+            app.click("AXButton", "Go to ChatGPT", timeout=1)
+        except AssertionError as error:
+            missing = (
+                str(error) == f"{app.name} never showed AXButton 'Go to ChatGPT'"
+                or "Fatal error: No AXButton labelled Go to ChatGPT" in str(error)
+            )
+            if not missing or any(
+                row[0] == "AXButton" and row[1] == "Go to ChatGPT" for row in app.read_tree()
+            ):
+                raise
+
+
+def type_prompt(app: MacApp, prompt: str) -> None:
+    deadline = time.monotonic() + 180
+    while True:
+        assert time.monotonic() < deadline, "ChatGPT never accepted the prompt"
+        app.click("AXTextArea", None, timeout=120)
+        app.session.run(
+            "-e",
+            'on run argv\ntell application "System Events"\n'
+            "set frontmost of (first process whose unix id is (item 1 of argv as integer)) to true\n"
+            'keystroke "a" using command down\nkey code 51\nend tell\nend run',
+            str(app.proc.pid),
+            binary=OSASCRIPT,
+            timeout=60,
+        )
+        app.type_line(prompt, submit=False)
+        try:
+            app.wait_for("AXTextArea", prompt, 10)
+            return
+        except AssertionError as error:
+            if str(error) != f"{app.name} never showed AXTextArea {prompt!r}":
+                raise
 
 
 def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace):
@@ -52,12 +94,9 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
-        # Click the composer so the keystrokes cannot land in another control.
-        app.click("AXTextArea", None, timeout=120)
+        dismiss_skip_setup_dialog(app)
         prompt = f"Reply with exactly {marker} and nothing else."
-        app.type_line(prompt, submit=False)
-        app.wait_for("AXTextArea", prompt, 60)
+        type_prompt(app, prompt)
         app.click("AXButton", "Send")
         try:
             wait_for_submitted_prompt(session, prompt)
@@ -144,12 +183,10 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
+        dismiss_skip_setup_dialog(app)
         try:
-            app.click("AXTextArea", None, timeout=120)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
-            app.type_line(prompt, submit=False)
-            app.wait_for("AXTextArea", prompt, 60)
+            type_prompt(app, prompt)
             app.click("AXButton", "Send")
             wait_for_submitted_prompt(session, prompt)
             wait_for_skill_answer(app, query, marker, "AXStaticText", "AXButton", 300)
