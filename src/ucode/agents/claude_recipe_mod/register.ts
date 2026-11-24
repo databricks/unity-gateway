@@ -11,12 +11,14 @@ import { isRoutingEnabled } from './routing-state.ts';
 // Only the recipe field is managed: every other request field is preserved, and a session ug did
 // not route is left untouched.
 
-async function routingEnabled($: EngineInterface): Promise<boolean> {
+async function routingFlags($: EngineInterface): Promise<Record<string, unknown> | null> {
   // Claude's capability scanner requires literal environment-variable names.
   const environment: Record<string, unknown> = {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
   };
+  // No routing flags in the environment: not a ug-routed launch, so the body is not ours.
+  if (!Object.values(environment).some((value) => typeof value === 'string')) return null;
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (sessionFile) {
     try {
@@ -28,18 +30,15 @@ async function routingEnabled($: EngineInterface): Promise<boolean> {
       // Match the routing hooks' inherited-environment fallback for unreadable controls.
     }
   }
-  return isRoutingEnabled(environment);
+  return environment;
 }
 
 async function apply($: EngineInterface): Promise<void> {
-  // Claude's capability scanner requires literal environment-variable names.
-  const smartRouting = await $.env.get('ENABLE_SMART_ROUTING_V2');
-  const subagentOnly = await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY');
-  // No routing flags in the environment: not a ug-routed launch, so the body is not ours.
-  if (typeof smartRouting !== 'string' && typeof subagentOnly !== 'string') return;
+  const flags = await routingFlags($);
+  if (flags === null) return;
   const current = await $.env.get('CLAUDE_CODE_EXTRA_BODY');
   let recipe: string;
-  if (await routingEnabled($)) {
+  if (isRoutingEnabled(flags)) {
     const configured = await $.env.get('SMART_ROUTER_NAME');
     recipe = typeof configured === 'string' && configured.trim() ? configured : DEFAULT_RECIPE;
   } else {

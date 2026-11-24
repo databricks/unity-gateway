@@ -2400,11 +2400,8 @@ def _header_mod_files(root: Path) -> dict[Path, str]:
     return files
 
 
-def _enable_header_mod(settings: dict, root: Path | None) -> dict:
-    """Enable ug's managed mods in the managed file and run them ahead of every user's mod: the
-    header mod first, then the recipe mod, which re-applies the recipe before each request."""
-    if root is None:
-        return settings
+def _enable_managed_mods(settings: dict, root: Path, mod_ids: tuple[str, ...]) -> dict:
+    """Enable ug's managed mods from ``root`` and run them ahead of every user's mod, in order."""
     marketplaces = settings.setdefault("extraKnownMarketplaces", {})
     plugins = settings.setdefault("enabledPlugins", {})
     if not isinstance(marketplaces, dict) or not isinstance(plugins, dict):
@@ -2412,17 +2409,24 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     marketplaces[CLAUDE_HEADER_MOD_MARKETPLACE] = {
         "source": {"source": "directory", "path": str(root)}
     }
-    mods = (CLAUDE_HEADER_MOD_ID, CLAUDE_ROUTER_MOD_ID)
-    for mod_id in mods:
+    for mod_id in mod_ids:
         plugins[mod_id] = True
     # An unset list means the built-in guard alone, which a set list has to name to keep it.
     prepend = settings.get("prependPlugins")
     prepend = prepend if isinstance(prepend, list) else [_CLAUDE_GUARD_MOD_ID]
     settings["prependPlugins"] = [
-        *mods,
-        *(entry for entry in prepend if entry not in mods),
+        *mod_ids,
+        *(entry for entry in prepend if entry not in mod_ids),
     ]
     return settings
+
+
+def _enable_header_mod(settings: dict, root: Path | None) -> dict:
+    """Enable ug's managed mods in the managed file and run them ahead of every user's mod: the
+    header mod first, then the recipe mod, which re-applies the recipe before each request."""
+    if root is None:
+        return settings
+    return _enable_managed_mods(settings, root, (CLAUDE_HEADER_MOD_ID, CLAUDE_ROUTER_MOD_ID))
 
 
 _explicit_configure = False

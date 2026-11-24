@@ -201,19 +201,11 @@ def claude_ug_values(
     if mcp_entries:
         overlay[claude_agent.MANAGED_MCP_SETTINGS_KEY] = dict(mcp_entries)
     # The recipe mod carries the smart-router recipe from the policy tier, which Claude's guard
-    # reserves the extra body to on releases that seat it; per-launch headers stay out. A set
-    # `prependPlugins` list has to name the built-in guard to keep it; compose merges the admin's
-    # own entries in ahead of these without duplicating either.
+    # reserves the extra body to on releases that seat it; per-launch headers stay out. Compose
+    # merges the admin's own `prependPlugins` entries in ahead of these without duplicating either.
     root = claude_agent.claude_header_mod_root()
     if root is not None:
-        overlay.setdefault("extraKnownMarketplaces", {})[
-            claude_agent.CLAUDE_HEADER_MOD_MARKETPLACE
-        ] = {"source": {"source": "directory", "path": str(root)}}
-        overlay.setdefault("enabledPlugins", {})[claude_agent.CLAUDE_ROUTER_MOD_ID] = True
-        overlay["prependPlugins"] = [
-            claude_agent.CLAUDE_ROUTER_MOD_ID,
-            claude_agent._CLAUDE_GUARD_MOD_ID,
-        ]
+        claude_agent._enable_managed_mods(overlay, root, (claude_agent.CLAUDE_ROUTER_MOD_ID,))
     return overlay
 
 
