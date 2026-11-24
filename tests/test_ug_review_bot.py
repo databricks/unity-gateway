@@ -27,6 +27,7 @@ assert RECOMMENDATION_SPEC is not None and RECOMMENDATION_SPEC.loader is not Non
 recommendation = importlib.util.module_from_spec(RECOMMENDATION_SPEC)
 RECOMMENDATION_SPEC.loader.exec_module(recommendation)
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ug-review.yml"
+RUBRIC_PATH = ROOT / ".github" / "ug-review-instructions.md"
 
 
 def test_oauth_access_token_reuses_service_principal_exchange(monkeypatch):
@@ -263,6 +264,20 @@ def test_workflow_uses_existing_authenticated_npm_proxy():
     assert "BUN_CONFIG_TOKEN" not in workflow
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in workflow
     assert "strict-ssl=false" not in workflow
+
+
+def test_rubric_includes_recent_human_feedback_themes():
+    rubric = RUBRIC_PATH.read_text()
+    for theme in (
+        "gateway proxy added",
+        "When conventions change",
+        "bind, record, and extend metrics",
+        "merge-queue changes",
+        "Secret-bearing CI decisions should fail closed",
+        "selected workspace headers",
+        "Malformed optional config",
+    ):
+        assert theme in rubric
 
 
 def test_workflow_passes_trusted_rubric_as_background_and_checks_completeness():
