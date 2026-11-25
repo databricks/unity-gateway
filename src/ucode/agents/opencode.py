@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import signal
 
 from ucode import metrics
@@ -54,30 +53,26 @@ SPEC: ToolSpec = {
 PROVIDER_KEYS: list[list[str]] = opencode_family.provider_keys()
 
 
-def _parse_version(value: str) -> tuple[int, int, int] | None:
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value)
-    if match is None:
-        return None
-    major, minor, patch = match.groups()
-    return int(major), int(minor), int(patch)
+_SETTINGS = opencode_family.FamilySettings(
+    display="OpenCode",
+    default_model_state_key="opencode_default_model",
+    empty_models_hint=None,
+)
+
+_parse_version = opencode_family.parse_version
 
 
 def _minimum_version_message() -> str | None:
-    installed = agent_version(SPEC["binary"])
-    parsed = _parse_version(installed)
-    if parsed is None or parsed >= MINIMUM_OPENCODE_VERSION:
-        return None
-    return (
-        f"OpenCode {installed} is too old. ucode requires OpenCode "
-        f"{MINIMUM_OPENCODE_VERSION_TEXT} or newer for renewable Databricks authentication."
+    return opencode_family.minimum_version_message(
+        _SETTINGS,
+        agent_version(SPEC["binary"]),
+        MINIMUM_OPENCODE_VERSION,
+        MINIMUM_OPENCODE_VERSION_TEXT,
     )
 
 
 def minimum_version_error() -> str | None:
-    message = _minimum_version_message()
-    if message is None:
-        return None
-    return f"{message} Update it with `npm install -g {SPEC['package']}`."
+    return opencode_family.minimum_version_error(_minimum_version_message(), SPEC["package"])
 
 
 def _uses_v2_plugin_api() -> bool:
@@ -98,59 +93,12 @@ def write_auth_plugin(state: dict) -> None:
     write_text_file(path, render_auth_plugin(state, v2=_uses_v2_plugin_api()))
 
 
-def _resolve_model_selector(model: str, opencode_models: dict[str, list[str]]) -> str:
-    """Return an OpenCode model selector in provider/model form when possible."""
-    if model.startswith(("databricks-anthropic/", "databricks-google/", "databricks-oss/")):
-        return model
-
-    anthropic_models = opencode_models.get("anthropic") or []
-    if model in anthropic_models:
-        return f"databricks-anthropic/{model}"
-
-    gemini_models = opencode_models.get("gemini") or []
-    if model in gemini_models:
-        return f"databricks-google/{model}"
-
-    oss_models = opencode_models.get("oss") or []
-    if model in oss_models:
-        return f"databricks-oss/{model}"
-
-    return model
+_resolve_model_selector = opencode_family.resolve_model_selector
 
 
 def resolve_explicit_model(model: str, state: dict) -> str:
-    """Resolve and validate a model explicitly selected for an OpenCode launch.
-
-    Databricks model ids are exposed in family buckets in ucode state, while
-    OpenCode addresses those models through managed provider ids. Other
-    provider/model selectors belong to OpenCode and are passed through.
-    """
-    selector = model.strip()
-    if not selector:
-        raise RuntimeError("OpenCode model must not be empty.")
-
-    opencode_models = state.get("opencode_models") or {}
-    resolved = _resolve_model_selector(selector, opencode_models)
-    if "/" not in selector:
-        if resolved != selector:
-            return resolved
-        raise RuntimeError(
-            f"OpenCode model '{selector}' is not configured. "
-            "Choose a discovered model id or pass a provider/model selector."
-        )
-
-    provider, _, model_id = selector.partition("/")
-    if not provider or not model_id:
-        raise RuntimeError("OpenCode model selector must use provider/model form.")
-    managed_providers = {path[-1] for path in PROVIDER_KEYS}
-    if provider not in managed_providers:
-        return selector
-
-    if _resolve_model_selector(model_id, opencode_models) == selector:
-        return selector
-    raise RuntimeError(
-        f"OpenCode model '{selector}' is not configured for managed provider '{provider}'."
-    )
+    """Resolve and validate a model explicitly selected for an OpenCode launch."""
+    return opencode_family.resolve_explicit_model(_SETTINGS, model, state)
 
 
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
@@ -326,17 +274,7 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
 
 def default_model(state: dict) -> str | None:
-    if isinstance(state.get("opencode_default_model"), str):
-        return state.get("opencode_default_model")
-    opencode_models = state.get("opencode_models") or {}
-    anthropic = opencode_models.get("anthropic") or []
-    if anthropic:
-        return anthropic[0]
-    gemini = opencode_models.get("gemini") or []
-    if gemini:
-        return gemini[0]
-    oss = opencode_models.get("oss") or []
-    return oss[0] if oss else None
+    return opencode_family.default_model(_SETTINGS, state)
 
 
 def _configure_launch(state: dict, model: str | None = None) -> str:

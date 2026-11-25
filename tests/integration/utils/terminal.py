@@ -20,6 +20,7 @@ from pathlib import PurePath
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
+from .agents import antigravity
 from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
 SELECTED = "[›❯>]"
@@ -319,6 +320,10 @@ class TerminalProcess:
 
     def __exit__(self, exc_type, exc, traceback):
         self.child.kill()
+        if self.agent == "antigravity":
+            # Optional evidence must not replace the test's original failure.
+            with contextlib.suppress(OSError):
+                antigravity.requested_urls(self.session)
         routing_log = (
             self.session.home
             / ".ucode"
