@@ -636,4 +636,58 @@ def test_enforced_shard_limits_have_a_sufficient_pooled_sample():
         for budget in budgets["ci"][job].values():
             for phase in ("setup", "run", "total"):
                 p99 = data["p99"][phase]
-                assert budget[phase] >= max(1.25 * p99, p99 + 10)
+                assert budget[phase] >= max(1.25 * p99, p99 + 10, data["observed_max"][phase])
+
+
+def test_every_enforced_nonshard_budget_cites_samples_and_headroom():
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
+    calibration = budgets["_job_calibration"]
+    for workflow, jobs in budgets.items():
+        if workflow.startswith("_"):
+            continue
+        for job, variants in jobs.items():
+            if workflow == "ci" and job in ("unit-linux", "unit-windows"):
+                continue
+            for name, budget in variants.items():
+                entry = calibration["jobs"][f"{workflow}/{job}/{name}"]
+                assert re.fullmatch(r"C\d+", entry["source_set"])
+                assert 1 <= entry["distinct_runs"] <= entry["samples"]
+                assert entry["limited_sample"] == (entry["samples"] < 20)
+                for phase in ("setup", "run", "total"):
+                    p99 = entry["p99"][phase]
+                    assert budget[phase] >= max(1.25 * p99, p99 + 10, entry["observed_max"][phase])
+
+    gate = calibration["gate"]
+    assert gate["samples"] >= 20
+    assert re.fullmatch(r"C\d+", gate["source_set"])
+    assert 20 <= gate["distinct_runs"] <= gate["samples"]
+    source = (WORKFLOWS / "security-gate.yml").read_text(encoding="utf-8")
+    limit = int(re.search(r'\[ "\$elapsed" -gt (\d+) \]', source).group(1))
+    assert limit >= max(1.25 * gate["p99"], gate["p99"] + 10, gate["observed_max"])
+
+
+def test_artifact_audit_budget_allows_observed_download_latency():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--budgets",
+            str(BUDGETS),
+            "--workflow",
+            "ci",
+            "--job",
+            "unit-test-times",
+            "--name",
+            "Unit test times",
+            "--started",
+            "100",
+            "--run-started",
+            "232",
+            "--ended",
+            "234",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

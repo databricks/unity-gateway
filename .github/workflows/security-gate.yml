@@ -131,8 +131,8 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         run: |
           elapsed=$(( $(date +%s) - BUDGET_GATE_STARTED ))
-          echo "Security Gate setup: 0s / 5s, run: ${elapsed}s / 300s, total: ${elapsed}s / 300s"
-          if [ "$elapsed" -gt 300 ]; then
-            echo "::error::Security Gate exceeded its 300s budget."
+          echo "Security Gate setup: 0s / 10s, run: ${elapsed}s / 1060s, total: ${elapsed}s / 1060s"
+          if [ "$elapsed" -gt 1060 ]; then
+            echo "::error::Security Gate exceeded its 1060s budget."
             exit 1
           fi
