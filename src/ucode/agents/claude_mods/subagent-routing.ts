@@ -455,8 +455,9 @@ export const registerSubagentRouting = (
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || typeof e.props.text !== 'string') return next(e)
-    const text = e.props.text.replace(/^Agent "[\s\S]*?"(?= (?:finished|failed|stopped|killed|completed)\b)/,
-      `Agent "${receiptLabel(saved)}"`)
+    const heading = /^Agent "([\s\S]*?)" /.exec(e.props.text)
+    const text = heading && safeText(heading[1], 1000) === saved.description
+      ? `Agent "${receiptLabel(saved)}" ${e.props.text.slice(heading[0].length)}` : e.props.text
     const flagged = differs(saved.selected, saved.launched)
       ? `${text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}` : text
     return flagged === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text: flagged } })
@@ -505,6 +506,7 @@ export const registerSubagentRouting = (
       })] })
     }
     if (grouped.has(e.requestId)) return original
+    // Grouped cards need a task line; lone rows already show the title in their label.
     return Box({ flexDirection: 'column', children: [original,
       ...selection($, e, record, '  ↳ ', 4),
     ] })

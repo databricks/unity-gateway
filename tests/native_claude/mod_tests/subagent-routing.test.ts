@@ -934,6 +934,16 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   expect(displayed.get('notice-child-joke-0').text)
     .toMatch(/^Agent "[A-Z][a-z]+(?: 2)? · routed-model · inspect the parser" finished\nSummary: Joke from Sonnet$/);
   await reported.unmount();
+  const otherVerb = await $.ui.mount({ ...notice, props: { ...notice.props,
+    text: notice.props.text.replace('finished', 'concluded') } });
+  expect(displayed.get('notice-child-joke-0').text)
+    .toMatch(/^Agent "[A-Z][a-z]+(?: 2)? · routed-model · inspect the parser" concluded\nSummary: Joke from Sonnet$/);
+  await otherVerb.unmount();
+  for (const text of [42, 'Agent "other task" finished\nSummary: Joke from Sonnet']) {
+    const untouched = await $.ui.mount({ ...notice, props: { ...notice.props, text: text as any } });
+    expect(displayed.get('notice-child-joke-0').text).toBe(text);
+    await untouched.unmount();
+  }
   for (const input of [undefined, null, false, 42, 'native input', []]) {
     const event = row(calls[0].tool_use_id);
     const ui = await $.ui.mount({ ...event, props: { ...event.props, input } });
