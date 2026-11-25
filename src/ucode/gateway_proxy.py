@@ -1026,7 +1026,7 @@ def start_codex_model_service_proxy(
     token_provider: Callable[[bool], str],
     *,
     session_secret: str,
-    default_provider: str | None = None,
+    default_provider: str | None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     from ucode.databricks import OPENAI_PROVIDER_TYPE, RelayLookup, model_service_relay_lookup
 

@@ -3702,7 +3702,7 @@ def model_service_backing_model(service: dict) -> str | None:
     return None
 
 
-def model_service_providers(service: dict, *, include_fallbacks: bool = False) -> list[str]:
+def model_service_providers(service: dict, *, include_fallbacks: bool) -> list[str]:
     """Model providers that can receive traffic from this service."""
     providers: list[str] = []
     destinations = _model_service_primary_destinations(service, strict=False) or []
@@ -3837,7 +3837,7 @@ def relay_backed_model_services(
     *,
     agent: str,
     provider_type: str,
-    include_fallbacks: bool = False,
+    include_fallbacks: bool,
     configuring: bool,
     token_provider: Callable[[], str],
 ) -> list[str]:
@@ -3895,8 +3895,8 @@ def model_service_relay_lookup(
     token: str,
     model: str,
     *,
-    provider_type: str = ANTHROPIC_PROVIDER_TYPE,
-    include_fallbacks: bool = False,
+    provider_type: str,
+    include_fallbacks: bool,
 ) -> RelayLookup:
     """Check the eligible destinations for the selected subscription provider."""
     if not custom_model_services([model]):
@@ -3914,12 +3914,14 @@ def model_service_relay_lookup(
 
 
 def model_services_need_subscription_relay(
-    workspace: str, token: str, models: list[str], *, provider_type: str = ANTHROPIC_PROVIDER_TYPE
+    workspace: str, token: str, models: list[str], *, provider_type: str
 ) -> bool:
     """True when any model in ``models`` routes to the requested subscription provider. An unknown answer
     counts as not relayed, which keeps the gateway-auth behavior."""
     return any(
-        model_service_relay_lookup(workspace, token, model, provider_type=provider_type)
+        model_service_relay_lookup(
+            workspace, token, model, provider_type=provider_type, include_fallbacks=False
+        )
         is RelayLookup.RELAYED
         for model in models
     )

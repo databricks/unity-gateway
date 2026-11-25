@@ -1871,8 +1871,14 @@ class TestCodexLaunch:
         detect = Mock(return_value=databricks.RelayLookup.RELAYED)
         monkeypatch.setattr(databricks, "model_service_relay_lookup", detect)
         state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
-        assert codex.use_model_service_relay(state, selection) is signed_in
-        assert codex.use_model_service_relay(state, selection) is signed_in
+        assert (
+            codex.use_model_service_relay(state, selection, configuring=False, selected_only=False)
+            is signed_in
+        )
+        assert (
+            codex.use_model_service_relay(state, selection, configuring=False, selected_only=False)
+            is signed_in
+        )
         detect.assert_called_once_with(
             WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True
         )
@@ -1892,7 +1898,7 @@ class TestCodexLaunch:
 
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
         assert codex.use_model_service_relay(
-            {"workspace": WS}, "cat.s.seat", configuring=configuring
+            {"workspace": WS}, "cat.s.seat", configuring=configuring, selected_only=False
         ) is (not configuring)
 
     @pytest.mark.parametrize("selected", [False, True])
@@ -1910,9 +1916,13 @@ class TestCodexLaunch:
         state = {"workspace": WS, "codex_static_models": ["cat.s.seat"]}
         if selected:
             with pytest.raises(RuntimeError, match="changed while preparing"):
-                codex.use_model_service_relay(state, "cat.s.seat")
+                codex.use_model_service_relay(
+                    state, "cat.s.seat", configuring=False, selected_only=False
+                )
         else:
-            assert not codex.use_model_service_relay(state)
+            assert not codex.use_model_service_relay(
+                state, selected_model=None, configuring=False, selected_only=False
+            )
 
     @pytest.mark.parametrize("selected", [False, True])
     @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
@@ -1934,9 +1944,13 @@ class TestCodexLaunch:
         state = {"workspace": WS, "codex_static_models": ["cat.s.seat"]}
         if selected:
             with pytest.raises(RuntimeError, match="model_provider.*" + re.escape(str(tmp_path))):
-                codex.use_model_service_relay(state, "cat.s.seat")
+                codex.use_model_service_relay(
+                    state, "cat.s.seat", configuring=False, selected_only=False
+                )
         else:
-            assert not codex.use_model_service_relay(state)
+            assert not codex.use_model_service_relay(
+                state, selected_model=None, configuring=False, selected_only=False
+            )
 
     @pytest.mark.parametrize(
         ("provider", "checked", "saved"),
@@ -2652,7 +2666,9 @@ class TestCodexManagedConfig:
         )
 
         if provider is None:
-            assert codex.use_model_service_relay(state, "cat.s.seat")
+            assert codex.use_model_service_relay(
+                state, "cat.s.seat", configuring=False, selected_only=False
+            )
         codex.write_tool_config(state, provider=provider, relayed=True)
 
         managed = read_toml_safe(managed_path)
@@ -3326,7 +3342,10 @@ class TestCodexManagedConfig:
 
         # Removal writes the config first, so a failed write keeps the relay served.
         monkeypatch.setattr(codex, "write_toml_file", Mock(side_effect=OSError("denied")))
-        assert codex._sync_desktop_relay({}, WS, None) is False
+        assert (
+            codex._sync_desktop_relay({}, WS, None, tracing=False, model_service_relay=False)
+            is False
+        )
         assert f"--relay-port {port} " in unit_path.read_text()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
@@ -3347,7 +3366,10 @@ class TestCodexManagedConfig:
 
         app_path.write_text("")
         monkeypatch.setattr(codex, "is_dry_run", lambda: True)
-        assert codex._sync_desktop_relay({}, WS, "cat.s.mps") is False
+        assert (
+            codex._sync_desktop_relay({}, WS, "cat.s.mps", tracing=False, model_service_relay=False)
+            is False
+        )
         assert app_path.read_text() == ""
 
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
@@ -3579,7 +3601,9 @@ class TestCodexReconcileManagedMcp:
         monkeypatch.setattr(codex, "read_managed_file", lambda path: existing_text)
         monkeypatch.setattr(codex, "mark_managed_file_verified", lambda *a, **k: None)
 
-        def fake_reconcile(path, desired_text, *, tool, display, owned_paths, parser=None):
+        def fake_reconcile(
+            path, desired_text, *, tool, display, owned_paths, parser, expected_current_text
+        ):
             captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
 
         monkeypatch.setattr(codex, "reconcile_managed_file", fake_reconcile)

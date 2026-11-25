@@ -860,7 +860,11 @@ def _configure_one(
         )
     if tool == "codex":
         return configure_tool(
-            "codex", state, relayed=codex.use_model_service_relay(state, configuring=True)
+            "codex",
+            state,
+            relayed=codex.use_model_service_relay(
+                state, configuring=True, selected_model=None, selected_only=False
+            ),
         )
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:

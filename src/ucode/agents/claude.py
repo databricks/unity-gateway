@@ -1384,6 +1384,7 @@ def reconcile_managed_mcp(
             display="Claude Code",
             owned_paths=owned_paths,
             parser=_parse_managed_settings,
+            expected_current_text=None,
         )
     except ManagedFileWriteUnavailable:
         # Without --global the caller falls back to user scope; `--global` has no fallback, so a
@@ -1716,6 +1717,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
         provider_type=ANTHROPIC_PROVIDER_TYPE,
         configuring=configuring,
         token_provider=lambda: get_databricks_token(state["workspace"], state.get("profile")),
+        include_fallbacks=False,
     )
     if not relay_backed:
         return False
@@ -2650,6 +2652,7 @@ def _reconcile_managed_settings(
                     display="Claude Code",
                     owned_paths=owned_paths,
                     parser=_parse_managed_settings,
+                    expected_current_text=None,
                 )
             except ManagedFileWriteUnavailable as exc:
                 print_warning(str(exc))
@@ -2662,6 +2665,7 @@ def _reconcile_managed_settings(
             display="Claude Code",
             owned_paths=owned_paths,
             parser=_parse_managed_settings,
+            expected_current_text=None,
         )
     except ManagedFileWriteUnavailable:
         # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
@@ -3181,7 +3185,9 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     from ucode import gateway_proxy
 
     def routes_to_subscription_relay(model: str, token: str) -> bool:
-        return model_services_need_subscription_relay(workspace, token, [model])
+        return model_services_need_subscription_relay(
+            workspace, token, [model], provider_type=ANTHROPIC_PROVIDER_TYPE
+        )
 
     server, cache, client = gateway_proxy.start_relay_proxy(
         workspace, token_provider, port, routes_to_subscription_relay=routes_to_subscription_relay

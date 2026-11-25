@@ -4697,7 +4697,10 @@ def _launch_tool(
             )
             if not routed or selected_service:
                 relayed = codex_agent.use_model_service_relay(
-                    state, selected_service, selected_only=routed or bool(parent_schema)
+                    state,
+                    selected_service,
+                    selected_only=routed or bool(parent_schema),
+                    configuring=False,
                 )
                 if routed and relayed:
                     routing_unavailable = (

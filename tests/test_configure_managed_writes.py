@@ -104,7 +104,13 @@ def test_unelevated_windows_configure_asks_for_an_elevated_rerun(tmp_path, monke
 
     with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="requires administrator"):
         managed_files.reconcile_managed_file(
-            path, "{}", tool="claude", display="Claude Code", owned_paths=[], parser=json.loads
+            path,
+            "{}",
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[],
+            parser=json.loads,
+            expected_current_text=None,
         )
 
 
@@ -146,7 +152,13 @@ def _write_policy_env(tmp_path, monkeypatch):
 
 def _reconcile(path):
     managed_files.reconcile_managed_file(
-        path, '{"a": 1}', tool="claude", display="Claude Code", owned_paths=[], parser=json.loads
+        path,
+        '{"a": 1}',
+        tool="claude",
+        display="Claude Code",
+        owned_paths=[],
+        parser=json.loads,
+        expected_current_text=None,
     )
 
 
@@ -217,6 +229,7 @@ def test_revert_cli_reports_managed_file_deletion_failure(
         display=display,
         owned_paths=[],
         parser=json.loads if tool == "claude" else tomllib.loads,
+        expected_current_text=None,
     )
     backup_dir = managed_files.MANAGED_BACKUP_DIR
     backup = {file.name: file.read_bytes() for file in backup_dir.iterdir()}
@@ -348,6 +361,7 @@ def test_revert_cli_does_not_warn_for_a_restored_managed_file(
         display=display,
         owned_paths=[],
         parser=json.loads if tool == "claude" else tomllib.loads,
+        expected_current_text=None,
     )
 
     result = CliRunner().invoke(cli_mod.app, ["revert"])

@@ -5343,7 +5343,9 @@ class TestClaudeReconcileManagedMcp:
         monkeypatch.setattr(claude, "read_managed_file", lambda path: existing_text)
         monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **k: None)
 
-        def fake_reconcile(path, desired_text, *, tool, display, owned_paths, parser=None):
+        def fake_reconcile(
+            path, desired_text, *, tool, display, owned_paths, parser, expected_current_text
+        ):
             captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
 
         monkeypatch.setattr(claude, "reconcile_managed_file", fake_reconcile)

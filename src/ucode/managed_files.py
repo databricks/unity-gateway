@@ -944,7 +944,7 @@ def reconcile_managed_file(
     display: str,
     owned_paths: list[list[str]],
     parser: ManagedParser,
-    expected_current_text: str | None = None,
+    expected_current_text: str | None,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 

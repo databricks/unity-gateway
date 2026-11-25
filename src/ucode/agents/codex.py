@@ -483,7 +483,9 @@ def revert_legacy_shared_config() -> bool:
     # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
     for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
         path.unlink(missing_ok=True)
-    desktop_changed = _sync_desktop_tracing(None) | _sync_desktop_relay({}, None, None)
+    desktop_changed = _sync_desktop_tracing(None) | _sync_desktop_relay(
+        {}, None, None, tracing=False, model_service_relay=False
+    )
     return legacy_changed or app_catalog_changed or desktop_changed
 
 
@@ -1100,8 +1102,8 @@ def _sync_desktop_relay(
     workspace: str | None,
     provider: str | None,
     *,
-    tracing: bool = False,
-    model_service_relay: bool = False,
+    tracing: bool,
+    model_service_relay: bool,
 ) -> bool:
     """Point the Codex app at ug's login service as a ChatGPT relay for ``provider``; None removes.
 
@@ -1177,7 +1179,7 @@ def _sync_desktop_relay(
         return False
 
 
-def _managed_relayed_conflicts(path: Path, *, withdraw_ug_auth: bool = False) -> list[str]:
+def _managed_relayed_conflicts(path: Path, *, withdraw_ug_auth: bool) -> list[str]:
     """Return relay blockers, optionally withdrawing unchanged authentication introduced by ug."""
     text = read_managed_file(path)
     if text is None:
@@ -1295,6 +1297,7 @@ def _reconcile_managed_config(
                 display="Codex",
                 owned_paths=[*MANAGED_KEYS, ["model_catalog_json"]],
                 parser=_parse_managed_config,
+                expected_current_text=None,
             )
     except ManagedFileWriteUnavailable:
         # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
@@ -1520,6 +1523,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             display="Codex",
             owned_paths=[[MANAGED_MCP_CONFIG_KEY]],
             parser=_parse_managed_config,
+            expected_current_text=None,
         )
     except ManagedFileWriteUnavailable:
         # Without --global the caller falls back to user scope; `--global` has no fallback, so a
@@ -1963,7 +1967,7 @@ def _has_chatgpt_login(binary: str) -> bool:
     return result.returncode == 0 and any(mode in status for mode in ("ChatGPT", "access token"))
 
 
-def relay_model_services(state: dict, models: list[str], *, configuring: bool = False) -> list[str]:
+def relay_model_services(state: dict, models: list[str], *, configuring: bool) -> list[str]:
     """Return the selected UC services with a ChatGPT relay destination."""
     if machine_wide_only():
         return []
@@ -1986,16 +1990,16 @@ def selected_service_overrides_saved_provider(
         provider
         and not explicit_provider
         and selected_service
-        and relay_model_services(state, [selected_service])
+        and relay_model_services(state, [selected_service], configuring=False)
     )
 
 
 def use_model_service_relay(
     state: dict,
-    selected_model: str | None = None,
+    selected_model: str | None,
     *,
-    configuring: bool = False,
-    selected_only: bool = False,
+    configuring: bool,
+    selected_only: bool,
 ) -> bool:
     """Select per-user relay auth for a static list or an explicitly selected model service."""
     models = [] if selected_only else state.get("codex_static_models")

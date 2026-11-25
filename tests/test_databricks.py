@@ -7198,7 +7198,9 @@ class TestModelServiceDestinationModels:
             }
         }
 
-        assert db_mod.model_service_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_providers(service, include_fallbacks=False) == [
+            "main.team.provider"
+        ]
         assert db_mod.model_service_destination_models(service) is None
 
     def test_single_primary_without_traffic_is_live_for_both_consumers(self):
@@ -7217,7 +7219,9 @@ class TestModelServiceDestinationModels:
             }
         }
 
-        assert db_mod.model_service_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_providers(service, include_fallbacks=False) == [
+            "main.team.provider"
+        ]
         assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
 
     @pytest.mark.parametrize(
@@ -7293,6 +7297,16 @@ class TestModelServiceDestinationModels:
 
 class TestModelServicesNeedSubscriptionRelay:
     """A static model-service list launches relayed when a service routes to a relayed MPS."""
+
+    @staticmethod
+    def _lookup_anthropic_primary(name):
+        return db_mod.model_service_relay_lookup(
+            "https://ws",
+            "tok",
+            name,
+            provider_type=db_mod.ANTHROPIC_PROVIDER_TYPE,
+            include_fallbacks=False,
+        )
 
     @pytest.fixture(autouse=True)
     def _fresh_cache(self):
@@ -7370,7 +7384,10 @@ class TestModelServicesNeedSubscriptionRelay:
             {"main.default.anthropic"},
         )
         assert db_mod.model_services_need_subscription_relay(
-            "https://ws", "tok", ["main.default.oss", "main.default.sonnet[1m]"]
+            "https://ws",
+            "tok",
+            ["main.default.oss", "main.default.sonnet[1m]"],
+            provider_type=db_mod.ANTHROPIC_PROVIDER_TYPE,
         )
         # Lookups use the short relay timeout, not the 30s default.
         assert {timeout for _name, timeout in calls} == {db_mod._RELAY_LOOKUP_TIMEOUT_S}
@@ -7389,15 +7406,16 @@ class TestModelServicesNeedSubscriptionRelay:
             },
             {"main.default.anthropic"},
         )
-        lookup = db_mod.model_service_relay_lookup
         assert (
-            lookup("https://ws", "tok", "system.ai.claude-sonnet-5-5")
+            self._lookup_anthropic_primary("system.ai.claude-sonnet-5-5")
             is db_mod.RelayLookup.NOT_RELAYED
         )
-        assert lookup("https://ws", "tok", "main.default.keyed") is db_mod.RelayLookup.NOT_RELAYED
-        assert lookup("https://ws", "tok", "main.default.gone") is db_mod.RelayLookup.UNKNOWN
+        assert (
+            self._lookup_anthropic_primary("main.default.keyed") is db_mod.RelayLookup.NOT_RELAYED
+        )
+        assert self._lookup_anthropic_primary("main.default.gone") is db_mod.RelayLookup.UNKNOWN
         # system.* ids are never looked up, and a confirmed answer is cached.
-        lookup("https://ws", "tok", "main.default.keyed")
+        self._lookup_anthropic_primary("main.default.keyed")
         assert [name for name, _timeout in calls] == ["main.default.keyed", "main.default.gone"]
 
     def test_relayed_openai_provider_does_not_need_the_claude_relay(self, monkeypatch):
@@ -7412,7 +7430,7 @@ class TestModelServicesNeedSubscriptionRelay:
             openai=frozenset({"main.default.chatgpt"}),
         )
         assert not db_mod.model_services_need_subscription_relay(
-            "https://ws", "tok", ["main.default.gpt"]
+            "https://ws", "tok", ["main.default.gpt"], provider_type=db_mod.ANTHROPIC_PROVIDER_TYPE
         )
 
         assert db_mod.model_services_need_subscription_relay(
@@ -7462,14 +7480,13 @@ class TestModelServicesNeedSubscriptionRelay:
             "get_model_provider_service",
             lambda name, *_a, timeout: (self._mps(name, relayed=True), None),
         )
-        lookup = db_mod.model_service_relay_lookup
-        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        assert self._lookup_anthropic_primary("main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
         # Within the retry window the failure is reused, so a per-request caller isn't stalled.
         now[0] += db_mod._RELAY_LOOKUP_RETRY_AFTER_S - 1
-        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        assert self._lookup_anthropic_primary("main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
         assert calls == ["main.default.sonnet"]
         now[0] += 2
-        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.RELAYED
+        assert self._lookup_anthropic_primary("main.default.sonnet") is db_mod.RelayLookup.RELAYED
         assert calls == ["main.default.sonnet", "main.default.sonnet"]
 
     def test_failed_provider_lookup_is_unknown(self, monkeypatch):
@@ -7478,10 +7495,7 @@ class TestModelServicesNeedSubscriptionRelay:
         monkeypatch.setattr(
             db_mod, "get_model_provider_service", lambda *_a, timeout: (None, "timeout")
         )
-        assert (
-            db_mod.model_service_relay_lookup("https://ws", "tok", "main.default.sonnet")
-            is db_mod.RelayLookup.UNKNOWN
-        )
+        assert self._lookup_anthropic_primary("main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
 
     def test_relay_candidates_are_custom_three_part_names(self):
         models = [
