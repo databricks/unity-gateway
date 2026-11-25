@@ -22,6 +22,12 @@ function Save-CoworkLogTail {
     Protect-DiagnosticText $text | Set-Content -LiteralPath $OutputPath -Encoding utf8
 }
 
+function Get-CoworkProxyLogs {
+    param([string]$Root)
+    Get-ChildItem $Root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('backend.log', 'transport.log', 'transport.log.1') }
+}
+
 function Get-CoworkLogPrefixHash {
     param([IO.Stream]$Stream, [long]$Length)
     [void]$Stream.Seek(0, [IO.SeekOrigin]::Begin)
@@ -86,6 +92,12 @@ function Wait-CoworkVmReady {
     } while ($true)
 }
 
+function Invoke-CoworkToolPermission {
+    param([bool]$VmReady, [scriptblock]$Approve)
+    if (-not $VmReady) { throw 'Cowork VM must be ready before granting tool permission' }
+    & $Approve
+}
+
 function Convert-CoworkUiControl {
     param($Current, $Value, [scriptblock]$GetClass)
     $id = [string]$Current.AutomationId
@@ -113,6 +125,7 @@ function Set-CoworkFolderInput {
     param([scriptblock]$ReadEdit, [scriptblock]$WriteAndRead, [string]$Folder, [DateTime]$Deadline)
     do {
         try { $state = & $ReadEdit }
+        catch [Windows.Automation.ElementNotAvailableException] { $state = $null }
         catch [ComponentModel.Win32Exception] {
             if ($_.Exception.NativeErrorCode -ne 1400) { throw }
             $state = $null

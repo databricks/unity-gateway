@@ -324,6 +324,19 @@ def test_validation_probe_does_not_install_a_global_profiler(router, monkeypatch
     assert outcome["response"] == ({"is_supported": True}, None)
 
 
+def test_validation_probe_preserves_response_when_diagnostics_raise(router, monkeypatch):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    timings = validation._NetworkTimings()
+
+    def broken_trace(_event, _info):
+        raise RuntimeError("synthetic diagnostic failure")
+
+    monkeypatch.setattr(timings, "trace", broken_trace)
+    outcome = {}
+    validation._probe(router.url, "test-token", {"route_options": []}, None, outcome, timings)
+    assert outcome["response"] == ({"is_supported": True}, None)
+
+
 def test_validation_probe_restores_request_trace_after_success_and_failure(router, monkeypatch):
     monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
     events = []

@@ -2022,7 +2022,9 @@ sessions and headers, credential separation, one agent closing while another kee
 working, backend crash/restart, EOF/reset reconnect diagnostics, local authentication,
 idle shutdown, and live login diagnostics with native line endings. Timestamped transport diagnostics
 use generated proxy-connection and request IDs and record only phases, status and error type, never
-credentials or request contents. Multi-workspace selectors use separate backends, and session headers
+credentials or request contents. A bounded queue drops and counts excess events without blocking the
+relay; `transport.log` retains at most one size-capped backup while existing `backend.log` stderr is
+unchanged. Multi-workspace selectors use separate backends, and session headers
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
 check. On Windows, an observer uses the native console and window APIs to verify

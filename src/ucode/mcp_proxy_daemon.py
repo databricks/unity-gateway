@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
+import logging.handlers
 import os
 import queue
 import secrets
@@ -33,9 +35,34 @@ from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_loc
 from ucode.ug_headers import scoped_ug_headers
 from ucode.workspace import pin
 
+_DIAGNOSTIC_QUEUE_SIZE = 1024
+_TRACE_LOG_MAX_BYTES = 1_000_000
+
+
+class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def _open(self):
+        fd = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        return os.fdopen(fd, "a", encoding="utf-8", newline="")
+
+
+def _trace_logger(path: Path) -> logging.Logger:
+    logger = logging.Logger("ucode.mcp_proxy.transport", level=logging.INFO)
+    logger.addHandler(
+        _PrivateRotatingFileHandler(
+            path, maxBytes=_TRACE_LOG_MAX_BYTES, backupCount=1, encoding="utf-8", delay=True
+        )
+    )
+    logger.propagate = False
+    return logger
+
 
 def _log_diagnostic(
-    session_id: str, event: str, fields: dict, *, timestamp_ms: int | None = None
+    logger: logging.Logger,
+    session_id: str,
+    event: str,
+    fields: dict,
+    *,
+    timestamp_ms: int | None = None,
 ) -> None:
     payload = {
         "timestamp_ms": timestamp_ms if timestamp_ms is not None else int(time.time() * 1000),
@@ -43,26 +70,61 @@ def _log_diagnostic(
         "event": event,
         **fields,
     }
+    line = "mcp-diagnostic " + json.dumps(payload, separators=(",", ":"))
+    if len(line) + 1 > _TRACE_LOG_MAX_BYTES:
+        line = "mcp-diagnostic " + json.dumps(
+            {
+                "timestamp_ms": payload["timestamp_ms"],
+                "session_id": "backend",
+                "event": "diagnostic_dropped",
+                "dropped_count": 1,
+            },
+            separators=(",", ":"),
+        )
     with suppress(OSError, ValueError):
-        sys.stderr.write("mcp-diagnostic " + json.dumps(payload, separators=(",", ":")) + "\n")
-        sys.stderr.flush()
+        logger.info("%s", line)
 
 
 class _DiagnosticWriter:
-    def __init__(self) -> None:
-        self._events: queue.SimpleQueue[tuple[str, str, dict, int] | None] = queue.SimpleQueue()
-        threading.Thread(target=self._write, daemon=True).start()
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+        self._events: queue.Queue[tuple[str, str, dict, int] | None] = queue.Queue(
+            maxsize=_DIAGNOSTIC_QUEUE_SIZE
+        )
+        self._drop_lock = threading.Lock()
+        self._dropped = 0
+        self._closed = threading.Event()
+        self._thread = threading.Thread(target=self._write, daemon=True)
+        self._thread.start()
 
     def record(self, session_id: str, event: str, fields: dict) -> None:
-        self._events.put((session_id, event, fields, int(time.time() * 1000)))
+        try:
+            self._events.put_nowait((session_id, event, fields, int(time.time() * 1000)))
+        except queue.Full:
+            with self._drop_lock:
+                self._dropped += 1
 
     def _write(self) -> None:
-        while (entry := self._events.get()) is not None:
-            session_id, event, fields, timestamp_ms = entry
-            _log_diagnostic(session_id, event, fields, timestamp_ms=timestamp_ms)
+        try:
+            while (entry := self._events.get()) is not None:
+                session_id, event, fields, timestamp_ms = entry
+                _log_diagnostic(self._logger, session_id, event, fields, timestamp_ms=timestamp_ms)
+                with self._drop_lock:
+                    dropped, self._dropped = self._dropped, 0
+                if dropped:
+                    _log_diagnostic(
+                        self._logger, "backend", "diagnostic_dropped", {"dropped_count": dropped}
+                    )
+                if self._closed.is_set() and self._events.empty():
+                    return
+        finally:
+            for handler in self._logger.handlers:
+                handler.close()
 
     def close(self) -> None:
-        self._events.put(None)
+        self._closed.set()
+        with suppress(queue.Full):
+            self._events.put_nowait(None)
 
 
 def session_token_provider(workspace: str, profile: str | None, use_pat: bool) -> Callable[[], str]:
@@ -227,7 +289,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
             last_disconnect = asyncio.get_running_loop().time()
 
     server = await asyncio.start_server(accept, "127.0.0.1", 0, limit=MAX_FRAME_BYTES)
-    diagnostics = _DiagnosticWriter()
+    diagnostics = _DiagnosticWriter(_trace_logger(directory / "transport.log"))
     metadata = {
         "protocol": PROTOCOL_VERSION,
         "port": server.sockets[0].getsockname()[1],

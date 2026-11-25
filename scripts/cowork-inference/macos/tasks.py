@@ -326,9 +326,16 @@ DESKTOP_LOG_TAIL_BYTES = 200_000
 
 
 def capture_desktop_logs(desktop, started):
-    """Save Desktop's logs and UG's MCP proxy backend log, which explain a closed connector."""
+    """Save Desktop and MCP proxy logs that explain a closed connector."""
     paths = sorted((Path.home() / "Library/Logs").glob("Claude*/**/*.log"))
-    paths += sorted((Path.home() / ".ucode/mcp-proxy").glob("*/backend.log"))
+    proxy = Path.home() / ".ucode/mcp-proxy"
+    paths += sorted(
+        [
+            *proxy.glob("*/backend.log"),
+            *proxy.glob("*/transport.log"),
+            *proxy.glob("*/transport.log.1"),
+        ]
+    )
     for path in paths:
         try:
             if path.stat().st_mtime < started:

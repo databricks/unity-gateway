@@ -356,12 +356,22 @@ class TerminalProcess:
                         }
                     )
         mcp_diagnostics = []
-        for path in sorted((self.session.home / ".ucode/mcp-proxy").glob("*/backend.log")):
+        mcp_root = self.session.home / ".ucode/mcp-proxy"
+        paths = [
+            *mcp_root.glob("*/backend.log"),
+            *mcp_root.glob("*/transport.log"),
+            *mcp_root.glob("*/transport.log.1"),
+        ]
+        for path in sorted(paths):
             try:
                 lines = self.session.redact(path.read_text(encoding="utf-8", errors="replace"))
             except OSError as error:
                 mcp_diagnostics.append(
-                    {"backend": path.parent.name, "read_error": type(error).__name__}
+                    {
+                        "backend": path.parent.name,
+                        "file": path.name,
+                        "read_error": type(error).__name__,
+                    }
                 )
                 continue
             events = []
@@ -386,11 +396,14 @@ class TerminalProcess:
                                 "elapsed_ms",
                                 "status",
                                 "error_type",
+                                "dropped_count",
                             )
                             if key in record
                         }
                     )
-            mcp_diagnostics.append({"backend": path.parent.name, "events": events})
+            mcp_diagnostics.append(
+                {"backend": path.parent.name, "file": path.name, "events": events}
+            )
         self.session.record(
             f"{self.name}.json",
             {

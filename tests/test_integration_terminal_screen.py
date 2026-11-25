@@ -69,9 +69,24 @@ def test_terminal_preserves_redacted_mcp_transport_diagnostics_on_failure(tmp_pa
         "request_id": 'synthetic-"secret',
         "private_data": "private-prompt",
     }
+    dropped = {
+        "timestamp_ms": 124,
+        "session_id": "backend",
+        "event": "diagnostic_dropped",
+        "dropped_count": 3,
+    }
     (log_dir / "backend.log").write_text(
-        "private backend message\n" + "mcp-diagnostic " + json.dumps(event) + "\n"
+        "private backend message\n"
+        + "mcp-diagnostic "
+        + json.dumps(event)
+        + "\n"
+        + "mcp-diagnostic "
+        + json.dumps(dropped)
+        + "\n"
     )
+    (log_dir / "transport.log").write_text("mcp-diagnostic " + json.dumps(event) + "\n")
+    (log_dir / "transport.log.1").write_text("mcp-diagnostic " + json.dumps(dropped) + "\n")
+    (log_dir / "transport.log.2").write_text("mcp-diagnostic " + json.dumps(dropped) + "\n")
     command = [str(session.binary), "-c", "print('ready', flush=True); input()"]
     with pytest.raises(RuntimeError, match="simulated failure"):
         with TerminalProcess(session, "ug", command, "mcp-diagnostics") as terminal:
@@ -80,7 +95,11 @@ def test_terminal_preserves_redacted_mcp_transport_diagnostics_on_failure(tmp_pa
     recorded = json.loads((session.artifacts / "mcp-diagnostics.json").read_text())
     expected = {key: value for key, value in event.items() if key != "private_data"}
     expected["request_id"] = "<redacted>"
-    assert recorded["mcp_transport_diagnostics"] == [{"backend": "component", "events": [expected]}]
+    assert recorded["mcp_transport_diagnostics"] == [
+        {"backend": "component", "file": "backend.log", "events": [expected, dropped]},
+        {"backend": "component", "file": "transport.log", "events": [expected]},
+        {"backend": "component", "file": "transport.log.1", "events": [dropped]},
+    ]
     assert 'synthetic-\\"secret' not in json.dumps(recorded)
     assert "private backend message" not in json.dumps(recorded)
     assert "private-prompt" not in json.dumps(recorded)

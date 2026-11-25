@@ -160,6 +160,32 @@ def harness(monkeypatch, tmp_path):
     return SimpleNamespace(**modules, root=tmp_path)
 
 
+def test_configure_reads_profile_from_current_home(harness, monkeypatch):
+    monkeypatch.setattr(harness.probe.Path, "home", lambda: harness.root)
+    monkeypatch.setattr(harness.probe, "MCP_SERVICE", "")
+    monkeypatch.setattr(harness.probe, "RELAY", False)
+    monkeypatch.setattr(harness.probe, "PROVIDER", "")
+    profile = (
+        harness.root / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    )
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        json.dumps(
+            {"inferenceProvider": "gateway", "inferenceModels": [{"name": harness.probe.MODEL}]}
+        )
+    )
+    monkeypatch.setattr(
+        harness.probe,
+        "process",
+        SimpleNamespace(
+            run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        ),
+    )
+    assert harness.probe.configure() == harness.probe.MODEL
+    assert (harness.root / ".databrickscfg").is_file()
+
+
 @pytest.mark.parametrize(
     ("layout", "missing_control"),
     [
@@ -1029,11 +1055,20 @@ def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
     old = logs / "main.log"
     old.write_text("stale")
     os.utime(old, (0, 0))
+    proxy = tmp_path / ".ucode/mcp-proxy/session"
+    proxy.mkdir(parents=True)
+    (proxy / "backend.log").write_text("backend error")
+    (proxy / "transport.log").write_text("current trace")
+    (proxy / "transport.log.1").write_text("previous trace")
+    (proxy / "transport.log.2").write_text("unrelated trace")
     saved = {}
     tasks.capture_desktop_logs(SimpleNamespace(save=saved.__setitem__), started=1)
     assert saved == {
         "desktop-log-Library-Logs-Claude-3p-mcp-server-web_search.log": "x" * 10
-        + "connector started"
+        + "connector started",
+        "desktop-log-.ucode-mcp-proxy-session-backend.log": "backend error",
+        "desktop-log-.ucode-mcp-proxy-session-transport.log": "current trace",
+        "desktop-log-.ucode-mcp-proxy-session-transport.log.1": "previous trace",
     }
 
 

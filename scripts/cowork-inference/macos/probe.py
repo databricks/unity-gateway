@@ -20,6 +20,9 @@ MCP_SERVICE = (
     if os.environ.get("UG_COWORK_MCP") == "true"
     else ""
 )
+DESKTOP_PROFILE = Path(
+    "Library/Application Support/Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+)
 MODEL_LABEL_SUFFIXES = ("", " Extended", " Low", " Medium", " High", " Max")
 PROMPT = (
     "Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools."
@@ -197,12 +200,7 @@ def configure():
     save("configure.txt", result.stdout + result.stderr)
     if result.returncode:
         raise RuntimeError("UG configure failed; see configure.txt")
-    profile = json.loads(
-        (
-            Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
-            "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
-        ).read_text()
-    )
+    profile = json.loads((Path.home() / DESKTOP_PROFILE).read_text())
     check_model_source(profile)
     label = configured_model_label(profile)
     save(
@@ -241,10 +239,7 @@ def main(private, capability="inference"):
     app = None
     task = None
     policy_backup = private / "desktop-profile.backup"
-    profile_path = (
-        Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
-        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
-    )
+    profile_path = Path.home() / DESKTOP_PROFILE
     policy_script = Path(__file__).parents[1] / "desktop-policy.py"
     raw_log = private / "native.log"
     handlers = {sig: signal.signal(sig, stop_probe) for sig in (signal.SIGTERM, signal.SIGALRM)}

@@ -283,6 +283,51 @@ def _endpoints(tmp_path):
     ]
 
 
+def _wait_for_diagnostic_events(path, ready, deadline):
+    text = ""
+    while time.monotonic() < deadline:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        events = [
+            json.loads(line.removeprefix("mcp-diagnostic "))
+            for line in text.splitlines(keepends=True)
+            if line.startswith("mcp-diagnostic ") and line.endswith("\n")
+        ]
+        if ready(events):
+            return text, events
+        time.sleep(0.01)
+    pytest.fail("MCP diagnostic events did not become ready before the existing deadline")
+
+
+def _failed_connection_diagnostics_ready(events):
+    starts = {event["session_id"] for event in events if event["event"] == "session_start"}
+    failed = {
+        event["session_id"]
+        for event in events
+        if event.get("phase", "").endswith("connect_tcp.failed")
+    }
+    errors = {event["session_id"] for event in events if event["event"] == "session_error"}
+    ends = {event["session_id"] for event in events if event["event"] == "session_end"}
+    successful = {
+        event["session_id"]
+        for event in events
+        if event.get("phase", "").endswith("receive_response_headers.complete")
+        and event.get("status") == 200
+    }
+    failed_session = starts & failed & errors & ends
+    return (
+        len(starts) == 2 and bool(failed_session) and bool((starts & successful) - failed_session)
+    )
+
+
+def _concurrent_diagnostics_ready(events):
+    starts = {event["session_id"] for event in events if event["event"] == "session_start"}
+    requests = {event["session_id"] for event in events if event["event"] == "request_start"}
+    return len(starts) == 2 and starts <= requests
+
+
 @pytest.fixture
 def bearer_helper(tmp_path):
     helper = tmp_path / "external bearer.py"
@@ -319,34 +364,28 @@ print(bearer)
 
 
 @pytest.mark.parametrize("error", [OSError, ValueError])
-def test_backend_diagnostics_do_not_break_when_stderr_is_unavailable(monkeypatch, error):
+def test_backend_diagnostics_do_not_break_when_output_is_unavailable(error):
     class Unavailable:
-        def write(self, _value):
+        def info(self, *_args):
             raise error("diagnostic output unavailable")
 
-        def flush(self):
-            raise error("diagnostic output unavailable")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(mcp_proxy_daemon.sys, "stderr", Unavailable())
-        mcp_proxy_daemon._log_diagnostic("synthetic-session", "session_start", {})
+    mcp_proxy_daemon._log_diagnostic(Unavailable(), "synthetic-session", "session_start", {})
 
 
-def test_backend_diagnostics_do_not_block_session_when_output_stalls(monkeypatch):
+def test_backend_diagnostics_do_not_block_session_when_output_stalls():
     entered = threading.Event()
     release = threading.Event()
     finished = threading.Event()
 
-    class BlockingStream:
-        def write(self, _value):
+    class BlockingLogger:
+        handlers = ()
+
+        def info(self, *_args):
             entered.set()
             release.wait()
-
-        def flush(self):
             finished.set()
 
-    monkeypatch.setattr(mcp_proxy_daemon.sys, "stderr", BlockingStream())
-    writer = mcp_proxy_daemon._DiagnosticWriter()
+    writer = mcp_proxy_daemon._DiagnosticWriter(BlockingLogger())
     record = writer.record
     returned = threading.Event()
     thread = threading.Thread(
@@ -363,21 +402,159 @@ def test_backend_diagnostics_do_not_block_session_when_output_stalls(monkeypatch
         writer.close()
 
 
+def test_transport_diagnostics_rotate_with_one_size_capped_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_proxy_daemon, "_TRACE_LOG_MAX_BYTES", 1024)
+    backend = tmp_path / "backend.log"
+    backend.write_text("existing traceback\n")
+    path = tmp_path / "transport.log"
+    logger = mcp_proxy_daemon._trace_logger(path)
+    writer = mcp_proxy_daemon._DiagnosticWriter(logger)
+    for i in range(40):
+        writer.record("session", "transport", {"phase": f"event-{i}-" + "x" * 60})
+    writer.record("session", "transport", {"phase": "x" * 2000})
+    writer.close()
+    writer._thread.join(timeout=5)
+    assert not writer._thread.is_alive()
+    logs = sorted(tmp_path.glob("transport.log*"))
+    assert [p.name for p in logs] == ["transport.log", "transport.log.1"]
+    assert all(p.stat().st_size <= 1024 for p in logs)
+    assert sum(p.stat().st_size for p in logs) <= 2048
+    assert backend.read_text() == "existing traceback\n"
+    assert any('"event":"diagnostic_dropped"' in p.read_text() for p in logs)
+    if os.name != "nt":
+        assert all(p.stat().st_mode & 0o077 == 0 for p in logs)
+
+
+def test_backend_diagnostics_bound_the_queue_and_report_drops(monkeypatch):
+    entered, release, reported = threading.Event(), threading.Event(), threading.Event()
+    lines = []
+
+    class BlockingLogger:
+        handlers = ()
+
+        def info(self, _format, value):
+            if not entered.is_set():
+                entered.set()
+                release.wait()
+            lines.append(value)
+            if '"event":"diagnostic_dropped"' in value:
+                reported.set()
+
+    monkeypatch.setattr(mcp_proxy_daemon, "_DIAGNOSTIC_QUEUE_SIZE", 1)
+    writer = mcp_proxy_daemon._DiagnosticWriter(BlockingLogger())
+    try:
+        writer.record("first", "session_start", {})
+        assert entered.wait(2)
+        writer.record("second", "session_start", {})
+        returned = threading.Event()
+
+        def record_two_dropped_events():
+            writer.record("third", "session_start", {})
+            writer.record("fourth", "session_start", {})
+            returned.set()
+
+        thread = threading.Thread(target=record_two_dropped_events)
+        thread.start()
+        assert returned.wait(2), "a full diagnostic queue blocked the session"
+        thread.join()
+        release.set()
+        assert reported.wait(2), "dropped events were not reported"
+    finally:
+        release.set()
+        writer.close()
+    parsed = [json.loads(line.removeprefix("mcp-diagnostic ")) for line in lines]
+    drops = [event for event in parsed if event["event"] == "diagnostic_dropped"]
+    assert sum(event["dropped_count"] for event in drops) == 2
+
+
+def test_diagnostic_readiness_waits_for_the_failed_session_end(tmp_path):
+    path = tmp_path / "backend.log"
+    events = [
+        {"event": "session_start", "session_id": "good"},
+        {"event": "session_start", "session_id": "bad"},
+        {
+            "event": "transport",
+            "session_id": "good",
+            "phase": "http11.receive_response_headers.complete",
+            "status": 200,
+        },
+        {"event": "transport", "session_id": "bad", "phase": "connection.connect_tcp.failed"},
+        {"event": "session_error", "session_id": "bad"},
+        {"event": "session_end", "session_id": "good"},
+    ]
+    path.write_text("".join("mcp-diagnostic " + json.dumps(event) + "\n" for event in events))
+    observed = threading.Event()
+
+    def delayed_sink():
+        assert observed.wait(2)
+        with path.open("a", encoding="utf-8") as output:
+            output.write(
+                "mcp-diagnostic " + json.dumps({"event": "session_end", "session_id": "bad"}) + "\n"
+            )
+
+    def ready(records):
+        observed.set()
+        return _failed_connection_diagnostics_ready(records)
+
+    thread = threading.Thread(target=delayed_sink)
+    thread.start()
+    try:
+        _, records = _wait_for_diagnostic_events(path, ready, time.monotonic() + 2)
+    finally:
+        observed.set()
+        thread.join()
+    assert any(
+        event["event"] == "session_end" and event["session_id"] == "bad" for event in records
+    )
+
+
+def test_diagnostic_readiness_waits_for_both_concurrent_requests(tmp_path):
+    path = tmp_path / "backend.log"
+    events = [
+        {"event": "session_start", "session_id": "first"},
+        {"event": "session_start", "session_id": "second"},
+        {"event": "request_start", "session_id": "first"},
+    ]
+    path.write_text("".join("mcp-diagnostic " + json.dumps(event) + "\n" for event in events))
+    observed = threading.Event()
+
+    def delayed_sink():
+        assert observed.wait(2)
+        with path.open("a", encoding="utf-8") as output:
+            output.write(
+                "mcp-diagnostic "
+                + json.dumps({"event": "request_start", "session_id": "second"})
+                + "\n"
+            )
+
+    def ready(records):
+        observed.set()
+        return _concurrent_diagnostics_ready(records)
+
+    thread = threading.Thread(target=delayed_sink)
+    thread.start()
+    try:
+        _, records = _wait_for_diagnostic_events(path, ready, time.monotonic() + 2)
+    finally:
+        observed.set()
+        thread.join()
+    assert any(
+        event["event"] == "request_start" and event["session_id"] == "second" for event in records
+    )
+
+
 def test_backend_logs_session_scoped_transport_events_without_secrets(clients, peer, tmp_path):
     good = clients(peer[0] + "/mcp")
     good.initialize()
     assert good.call("sensitive-query")["value"] == "sensitive-query"
     bad = clients("http://127.0.0.1:1/unreachable")
     bad.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    deadline = time.monotonic() + 8
     assert bad.process.wait(timeout=8) == 2
 
-    (path,) = list((tmp_path / ".ucode" / "mcp-proxy").glob("*/backend.log"))
-    text = path.read_text(encoding="utf-8")
-    events = [
-        json.loads(line.removeprefix("mcp-diagnostic "))
-        for line in text.splitlines()
-        if line.startswith("mcp-diagnostic ")
-    ]
+    (endpoint,) = list((tmp_path / ".ucode" / "mcp-proxy").glob("*/endpoint.json"))
+    path = endpoint.parent / "transport.log"
+    text, events = _wait_for_diagnostic_events(path, _failed_connection_diagnostics_ready, deadline)
     assert all(isinstance(event["timestamp_ms"], int) for event in events)
     starts = [event for event in events if event["event"] == "session_start"]
     assert len(starts) == 2 and len({event["session_id"] for event in starts}) == 2
@@ -389,7 +566,9 @@ def test_backend_logs_session_scoped_transport_events_without_secrets(clients, p
         and event.get("status") == 200
         for event in events
     )
-    assert "component-bearer" not in text and "sensitive-query" not in text
+    backend_text = (endpoint.parent / "backend.log").read_text(encoding="utf-8")
+    assert "component-bearer" not in text + backend_text
+    assert "sensitive-query" not in text + backend_text
 
 
 def test_backend_fetches_external_bearer_for_each_request(clients, peer, bearer_helper):
@@ -515,12 +694,10 @@ def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, t
         ("/second", "β", "second"),
     ]
     assert all(r["authorization"] == "Bearer component-bearer" for r in responses)
-    (backend_log,) = list((tmp_path / ".ucode" / "mcp-proxy").glob("*/backend.log"))
-    events = [
-        json.loads(line.removeprefix("mcp-diagnostic "))
-        for line in backend_log.read_text(encoding="utf-8").splitlines()
-        if line.startswith("mcp-diagnostic ")
-    ]
+    (endpoint,) = list((tmp_path / ".ucode" / "mcp-proxy").glob("*/endpoint.json"))
+    _, events = _wait_for_diagnostic_events(
+        endpoint.parent / "transport.log", _concurrent_diagnostics_ready, time.monotonic() + 15
+    )
     session_ids = {event["session_id"] for event in events if event["event"] == "session_start"}
     assert len(session_ids) == 2
     for session_id in session_ids:

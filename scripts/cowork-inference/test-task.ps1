@@ -262,7 +262,7 @@ try {
             $allow = Find-Control -Names $toolPermissionLabels
             if ($allow) {
                 $report.toolPermission = $allow.Current.Name
-                Invoke-Control $allow
+                Invoke-CoworkToolPermission -VmReady $report.vmReady -Approve { Invoke-Control $allow }
             }
         }
         $sessionEvidence = Get-SessionEvidence
@@ -325,9 +325,10 @@ try {
             } | Where-Object { $_.FullName -match '[\\/]logs[\\/]' -and $_.LastWriteTime -ge $started })
             # UG's MCP proxy backend explains a connector that Desktop reports as closed.
             $backendRoot = Join-Path $env:USERPROFILE '.ucode/mcp-proxy'
-            $backendLogs = @(Get-ChildItem $backendRoot -Recurse -File -Filter 'backend.log' -ErrorAction SilentlyContinue)
+            $backendLogs = @(Get-CoworkProxyLogs -Root $backendRoot)
             $report.mcpBackendRootExists = Test-Path -LiteralPath $backendRoot
-            $report.mcpBackendLogs = $backendLogs.Count
+            $report.mcpBackendLogs = @($backendLogs | Where-Object { $_.Name -eq 'backend.log' }).Count
+            $report.mcpTransportLogs = @($backendLogs | Where-Object { $_.Name -in @('transport.log', 'transport.log.1') }).Count
             $logs += $backendLogs
             $logDirectory = Join-Path $evidence 'desktop-logs'
             New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null

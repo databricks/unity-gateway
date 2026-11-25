@@ -79,6 +79,18 @@ try {
             throw 'VM log evidence must preserve state while redacting credentials'
         }
     } finally { Remove-Item -LiteralPath $sourceLog, $savedLog -Force }
+    $proxyRoot = Join-Path ([IO.Path]::GetTempPath()) ('cowork-proxy-' + [Guid]::NewGuid().ToString())
+    $proxyDir = Join-Path $proxyRoot 'session'
+    New-Item -ItemType Directory -Path $proxyDir -Force | Out-Null
+    try {
+        foreach ($name in @('backend.log', 'transport.log', 'transport.log.1', 'unrelated.log')) {
+            Set-Content -LiteralPath (Join-Path $proxyDir $name) -Value $name
+        }
+        $names = @((Get-CoworkProxyLogs -Root $proxyRoot | ForEach-Object Name) | Sort-Object)
+        if (($names -join ',') -cne 'backend.log,transport.log,transport.log.1') {
+            throw 'Proxy evidence must retain backend, current transport and one rotated log only'
+        }
+    } finally { Remove-Item -LiteralPath $proxyRoot -Recurse -Force }
     $raceLog = [IO.Path]::GetTempFileName()
     function Test-Path {
         param([string]$LiteralPath)
@@ -132,6 +144,18 @@ try {
         if ($_.Exception.Message -notmatch 'task deadline') { throw }
     }
     if ($expiredReleased) { throw 'VM readiness cannot release an expired task deadline' }
+    $script:approvalCount = 0
+    try {
+        Invoke-CoworkToolPermission -VmReady $false -Approve { $script:approvalCount++ }
+        throw 'Permission approval before readiness must fail'
+    } catch {
+        if ($_.Exception.Message -notmatch 'VM.*ready') { throw }
+    }
+    if ($script:approvalCount -ne 0) { throw 'An early prompt must never be approved' }
+    $script:readyObserved = $false
+    Wait-CoworkVmReady -Deadline ([DateTime]::UtcNow.AddSeconds(3)) -IsReady { $script:readyObserved = $true; return $true }
+    Invoke-CoworkToolPermission -VmReady $script:readyObserved -Approve { $script:approvalCount++ }
+    if ($script:approvalCount -ne 1) { throw 'A ready VM must permit exactly one approval' }
     $script:classReads = 0
     $controls = @(
         [pscustomobject]@{ Name = 'Project'; AutomationId = ''; NativeWindowHandle = $null; ControlType = [pscustomobject]@{ ProgrammaticName = 'ControlType.Pane' }; IsEnabled = $true; IsOffscreen = $false; HasKeyboardFocus = $false },
@@ -150,6 +174,24 @@ try {
     }
     if ($stale.nativeHandle -ne 66102 -or $stale.handleClassError -ne 1400) {
         throw 'A stale folder handle must remain visible in the UI snapshot'
+    }
+    if (-not ('Windows.Automation.ElementNotAvailableException' -as [type])) {
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+            Add-Type -AssemblyName UIAutomationClient
+        } else {
+            Add-Type 'namespace Windows.Automation { public class ElementNotAvailableException : System.Exception {} }'
+        }
+    }
+    $script:uiaReads = 0
+    $script:uiaWrites = 0
+    $uiaField = Set-CoworkFolderInput -ReadEdit {
+        $script:uiaReads++
+        if ($script:uiaReads -eq 1) { throw [Windows.Automation.ElementNotAvailableException]::new() }
+        return @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Edit' }
+    } -WriteAndRead { param($State, $Value, $Deadline) $script:uiaWrites++; return $Value } `
+        -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3))
+    if ($script:uiaReads -ne 2 -or $script:uiaWrites -ne 1 -or $uiaField.value -ne '/tmp/CoworkProbe') {
+        throw 'A stale UI Automation element must be re-observed before writing once'
     }
     $script:staleReads = 0
     $script:staleWrites = 0
@@ -170,6 +212,16 @@ try {
     } catch [ComponentModel.Win32Exception] {
         if ($_.Exception.NativeErrorCode -ne 5) { throw }
     }
+    $script:failedWrites = 0
+    try {
+        Set-CoworkFolderInput -ReadEdit { @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Edit' } } `
+            -WriteAndRead { param($State, $Value, $Deadline) $script:failedWrites++; throw [ComponentModel.Win32Exception]::new(1400) } `
+            -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3)) | Out-Null
+        throw 'A failed write must not be repeated'
+    } catch [ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1400) { throw }
+    }
+    if ($script:failedWrites -ne 1) { throw 'A stale handle during a write must fail after one write' }
     $script:pickerReads = 0
     $script:fieldWrites = 0
     $picker = {

@@ -170,6 +170,70 @@ def test_opencode_dependency_version_uses_native_probe_without_npm_metadata(tmp_
     assert _opencode_dependency_version(str(binary)) == "2.0.0"
 
 
+@pytest.mark.parametrize(
+    ("prefix", "expected_code"),
+    [
+        ("npm ERR!", "E401"),
+        ("npm error", "E401"),
+        ("unexpected", "unavailable"),
+        ("timeout", "timed out"),
+    ],
+)
+def test_opencode_dependency_setup_reports_safe_npm_failure(
+    tmp_path, monkeypatch, prefix, expected_code
+):
+    package = tmp_path / "node_modules" / "opencode-ai"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": "opencode-ai", "version": "1.2.3"}))
+    opencode = package / "bin" / "opencode"
+    opencode.touch()
+    npm = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
+    if os.name == "nt":
+        npm.write_text(
+            f"@echo {prefix} code E401 1>&2\r\n@echo private-npm-value 1>&2\r\n@exit /b 1\r\n"
+        )
+    else:
+        npm.write_text(
+            f"#!/bin/sh\necho '{prefix} code E401' >&2\necho private-npm-value >&2\nexit 1\n"
+        )
+        npm.chmod(0o755)
+    original_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *args, **kwargs: (
+            str(npm)
+            if name == "npm"
+            else str(opencode)
+            if name == "opencode"
+            else original_which(name, *args, **kwargs)
+        ),
+    )
+    base = tmp_path / "worker"
+    base.mkdir()
+    if prefix == "timeout":
+
+        def timed_out(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess_cross_os, "run", timed_out)
+
+    class Factory:
+        def getbasetemp(self):
+            return base
+
+    with pytest.raises(RuntimeError, match=expected_code) as failure:
+        opencode_dependencies.__wrapped__(Factory(), "master")
+    detail = str(failure.value)
+    marker = (base / "opencode-dependencies" / "setup-result").read_text()
+    assert expected_code in detail and expected_code in marker
+    assert "private-npm-value" not in detail + marker
+    npm.unlink()
+    with pytest.raises(AssertionError, match=expected_code) as repeated:
+        opencode_dependencies.__wrapped__(Factory(), "master")
+    assert "private-npm-value" not in str(repeated.value)
+
+
 @pytest.fixture(scope="session")
 def opencode_dependencies(tmp_path_factory, worker_id):
     _require_binary("opencode")
@@ -189,24 +253,36 @@ def opencode_dependencies(tmp_path_factory, worker_id):
         try:
             if not marker.exists():
                 marker.write_text("failed")
-                subprocess_cross_os.run(
-                    [
-                        npm,
-                        "install",
-                        "--prefix",
-                        str(directory),
-                        "--no-audit",
-                        "--no-fund",
-                        "--fetch-retries=0",
-                        f"@opencode-ai/plugin@{version}",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    stdin=subprocess.DEVNULL,
-                    timeout=20,
-                )
+                try:
+                    subprocess_cross_os.run(
+                        [
+                            npm,
+                            "install",
+                            "--prefix",
+                            str(directory),
+                            "--no-audit",
+                            "--no-fund",
+                            "--fetch-retries=0",
+                            f"@opencode-ai/plugin@{version}",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        stdin=subprocess.DEVNULL,
+                        timeout=20,
+                    )
+                except subprocess.TimeoutExpired as error:
+                    detail = f"OpenCode dependency setup timed out after {error.timeout}s"
+                    marker.write_text(detail)
+                    raise RuntimeError(detail) from None
+                except subprocess.CalledProcessError as error:
+                    stderr = (error.stderr or b"").decode("utf-8", errors="replace")
+                    code = re.search(r"(?m)^npm (?:ERR!|error) code ([A-Z0-9_]{1,40})\s*$", stderr)
+                    detail = f"OpenCode dependency setup failed: exit={error.returncode}, npm_code={code.group(1) if code else 'unavailable'}"
+                    marker.write_text(detail)
+                    raise RuntimeError(detail) from None
                 marker.write_text("ok")
-            assert marker.read_text() == "ok", "OpenCode dependency setup failed in another worker"
+            result = marker.read_text()
+            assert result == "ok", f"OpenCode dependency setup failed in another worker: {result}"
         finally:
             release_file_lock(lock)
     return directory

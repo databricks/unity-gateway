@@ -246,7 +246,12 @@ def _probe(
     outcome: dict[str, Any],
     timings: _NetworkTimings,
 ) -> None:
-    trace_token = _HTTP_TRACE.set(timings.trace)
+    def trace(event: str, info: dict[str, Any]) -> None:
+        # Diagnostic failures must not turn a successful validation into a failure.
+        with suppress(Exception):
+            timings.trace(event, info)
+
+    trace_token = _HTTP_TRACE.set(trace)
     try:
         outcome["response"] = _validate_route_options(workspace, token, body, provider)
     except Exception:
