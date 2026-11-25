@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -859,11 +860,15 @@ def test_native_language_reload_updates_parent_context_once(native_binary, tmp_p
         thread.join(timeout=5)
 
 
-def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
+@pytest.mark.parametrize(
+    "tools", [("Agent",), ("Agent", "Read")], ids=["inline-output", "readable-output"]
+)
+def test_native_background_429_excludes_failed_model(native_binary, tmp_path, tools):
     """Scenario: a routed background child receives an HTTP 429 from a local fixture.
 
-    Expected: Claude creates the failure notice itself. The next native Agent call
-    excludes that model and completes the replacement. This is offline contract coverage,
+    Expected: Claude creates the inline or readable-output failure notice itself.
+    The next native Agent call excludes that model and completes the replacement.
+    This is offline contract coverage,
     not evidence of live provider quotas or an end-to-end gateway recording.
     """
     failed_model = "claude-opus-4-6"
@@ -1010,6 +1015,7 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
                 "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
             },
             api=f"http://127.0.0.1:{server.server_port}",
+            tools=tools,
             # Keep the scenario independent of native Auto Mode's classifier protocol.
             user_settings={"permissions": {"defaultMode": "manual"}},
             route_command=[
@@ -1030,7 +1036,16 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
                 "stderr": session.errors,
                 "requests": server.requests,
             }
-            assert "<result>Fixture response.</result>" in server.completion_notice
+            if "Read" in tools:
+                output_file = re.search(
+                    r"<output-file>([^<]+)</output-file>", server.completion_notice
+                )
+                assert output_file, server.completion_notice
+                output = Path(output_file[1]).read_text()
+                assert "Fixture response." in output
+                (tmp_path / "native-completion-output.txt").write_text(output)
+            else:
+                assert "<result>Fixture response.</result>" in server.completion_notice
             (tmp_path / "native-completion-notice.txt").write_text(server.completion_notice)
             routed = [json.loads(line) for line in requests.read_text().splitlines()]
             assert len(routed) == 2, routed
@@ -1041,6 +1056,7 @@ def test_native_background_429_excludes_failed_model(native_binary, tmp_path):
             notice = json.dumps(server.failure_notice_request["messages"])
             (tmp_path / "native-notification.json").write_text(notice)
             assert "<task-notification>" in notice
+            assert ("<output-file>" in notice) == ("Read" in tools)
             assert "HTTP 429" in notice
             assert f"model sent to the API: {failed_model}" in notice
             assert any(request["model"] == replacement_model for request in server.requests)

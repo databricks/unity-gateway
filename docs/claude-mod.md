@@ -134,7 +134,8 @@ verification message, without changing the model injected into the spawn request
 A confirmed native background-task 429 excludes that model and its aliases from new
 router requests for 60 seconds. The router can select another candidate; if it cannot
 confirm an available model, the new spawn is denied. A new failure restarts the cooldown,
-which survives `/clear`. If expiry cannot be confirmed, the exclusion remains.
+which survives `/clear`. If expiry cannot be confirmed, restart Claude Code to clear the
+exclusion, or use `/smart-router off` to continue without Smart Router.
 The failed child is not retried. Resumes and explicitly disabled routing keep native
 behavior; re-enabling routing restores active exclusions. Outside cooldown, routing
 failures preserve the original call and log a diagnostic when it executes.

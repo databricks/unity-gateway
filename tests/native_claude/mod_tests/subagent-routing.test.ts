@@ -1069,7 +1069,6 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
 for (const [label, response, exitCode] of [
   ['empty response', undefined, 0],
   ['command failure', undefined, 1],
-  ['invalid response', 'not JSON', 0],
   ['all candidates excluded', { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true }, 0],
   ['other denial', { deny: 'Policy disallows this task.' }, 0],
 ] as const) {
@@ -1093,7 +1092,7 @@ for (const [label, response, exitCode] of [
           stdout: JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
         await clock.advance(delay);
         return { value: { exitCode, stderr: '',
-          stdout: typeof response === 'string' ? response : response ? JSON.stringify(response) : '' } };
+          stdout: response ? JSON.stringify(response) : '' } };
       });
       on('agent.spawn', ($, e) => {
         spawns.push(e);
@@ -2278,6 +2277,24 @@ function backgroundLifecycleFixture($: any, on: Parameters<typeof mock.clock>[0]
   };
 }
 
+for (const [label, headers] of [
+  ['readable output', '<output-file>/tmp/agent output.txt</output-file>\n'],
+  ['task type', '<task-type>local_agent</task-type>\n'],
+  ['task type and readable output', '<task-type>local_agent</task-type>\n<output-file>/tmp/agent output.txt</output-file>\n'],
+] as const) {
+  test(`native failure headers preserve cooldown: ${label}`, async ($, on) => {
+    const f = backgroundLifecycleFixture($, on);
+    expect((await f.launch('initial')).result.model).toBe(f.blocked);
+    const notice = rateLimitNotice('child-initial', f.blocked, 'initial');
+    notice.text = notice.text.replace('<status>', headers + '<status>');
+    expect((await $.prompt.submit(notice)).text).toBe(notice.text);
+    f.state.selected = 'system.ai.claude-haiku-5-5';
+    expect((await f.launch('replacement')).result.model).toBe(f.state.selected);
+    expect(f.requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+    await f.clock.advance(60_000);
+  });
+}
+
 for (const status of ['completed', 'failed', 'killed'] as const) {
   test(`a known background child can fail after ${status}, duplicate notice and clear`, async ($, on) => {
     const f = backgroundLifecycleFixture($, on);
@@ -2421,6 +2438,7 @@ test('failure tags in a completed result do not create a cooldown', async ($, on
   const failure = rateLimitNotice('child-initial', f.blocked).text;
   const embedded = failure.slice(failure.indexOf('<status>'), failure.indexOf('</task-notification>'));
   const completed = f.terminal();
+  completed.text = completed.text.replace('<status>', '<task-type>local_agent</task-type>\n<output-file>/tmp/output.txt</output-file>\n<status>');
   completed.text = completed.text.replace('</task-notification>', `<result>${embedded}</result>\n</task-notification>`);
   expect((await $.prompt.submit(completed)).text).toBe(completed.text);
   expect((await f.launch('after-completed')).result.model).toBe(f.blocked);

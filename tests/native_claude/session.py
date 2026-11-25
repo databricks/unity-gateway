@@ -40,6 +40,7 @@ class Session:
         user_settings=None,
         launch_settings=None,
         model="claude-sonnet-4-6",
+        tools=("Agent",),
     ):
         assert not {"env", "pluginConfigs"}.intersection(launch_settings or {}), (
             "Use env and auto_picker to configure the native session fixture"
@@ -108,9 +109,9 @@ class Session:
                 json.dumps(settings),
                 *(["--model", model] if model else []),
                 "--tools",
-                "Agent",
+                ",".join(tools),
                 "--allowedTools",
-                "Agent",
+                ",".join(tools),
                 "--plugin-dir",
                 str(self.plugin),
             ],

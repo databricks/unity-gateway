@@ -347,7 +347,8 @@ export function recordSubagentRateLimit(
   text: string, schedule: (delay: number, expire: () => void) => CooldownTimer,
 ): void {
   for (const [, notification] of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
-    const task = notification.match(/^\s*<task-id>([^<\s]+)<\/task-id>\s*(?:<tool-use-id>([^<\s]+)<\/tool-use-id>)?/)
+    // Native headers precede status; never search the result body for failure fields.
+    const task = notification.match(/^\s*<task-id>([^<\s]+)<\/task-id>\s*(?:<tool-use-id>([^<\s]+)<\/tool-use-id>)?\s*(?:<task-type>[^<]*<\/task-type>)?\s*(?:<output-file>[^<]*<\/output-file>)?/)
     if (!task) continue
     const failure = notification.slice(task[0].length).match(/^\s*<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
     if (!failure) continue
