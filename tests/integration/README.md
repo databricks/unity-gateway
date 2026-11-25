@@ -2099,7 +2099,7 @@ executable links recreated by version checks. The links can point to hundreds of
 are excluded before reading file contents. Persistent agent files stay compared byte for byte.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
-workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
+workspace on the valid default model `system.ai.gpt-5-6-terra`, with `system.ai.gpt-6-luna` as a second model so route validation has two supported options. With legacy smart routing off and
 on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
 to be listed. The fixture itself has no managed smart-routing setting.
 

@@ -20,7 +20,8 @@ from utils.terminal import AgentTerminal, TerminalProcess
 
 # The picker fixture lists sonnet-5 but not haiku-4-5, which the managed workspace's own list has.
 LIVE_ONLY = "haiku-4-5"
-CODEX_DEFAULT = "system.ai.gpt-5-6-sol"
+CODEX_DEFAULT = "system.ai.gpt-5-6-terra"
+CODEX_SECOND_MODEL = "system.ai.gpt-6-luna"
 CODEX_WITHOUT_BUNDLED_METADATA = "system.ai.gpt-99"
 MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_fable_model": "ANTHROPIC_DEFAULT_FABLE_MODEL",
@@ -214,7 +215,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     models = catalog.get("models", [])
     listed = [model.get("slug") for model in models if model.get("visibility") == "list"]
-    assert listed == [CODEX_DEFAULT, CODEX_WITHOUT_BUNDLED_METADATA], catalog
+    assert listed == [CODEX_DEFAULT, CODEX_SECOND_MODEL, CODEX_WITHOUT_BUNDLED_METADATA], catalog
     fallback = next(
         model for model in models if model.get("slug") == CODEX_WITHOUT_BUNDLED_METADATA
     )

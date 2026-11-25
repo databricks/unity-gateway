@@ -31,8 +31,8 @@ pytestmark = [
     pytest.mark.codex_smart_routing,
 ]
 
-CODEX_NATIVE_START_MODEL = "gpt-5.6-sol"
-CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra"]
+CODEX_NATIVE_START_MODEL = "gpt-5.6-terra"
+CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-terra", "gpt-6-luna"]
 
 
 def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]:
@@ -117,7 +117,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(
     )
     catalog, original_config, original_catalog = _seed_user_owned_native_codex_settings(session)
     if managed_catalog:
-        use_managed_config_fixture(session, "codex_lifecycle_a")
+        use_managed_config_fixture(session, "codex_routing")
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     with TuiRequestRecorder(workspace) as recorder:
@@ -147,11 +147,11 @@ def test_ug_codex_native_v2_plain_assignment_routing(
             managed_before = configured_catalog.read_bytes()
             models = json.loads(managed_before)["models"]
             assert [m["slug"] for m in models if m["visibility"] == "list"] == [
-                "system.ai.gpt-5-6-sol",
+                "system.ai.gpt-5-6-terra",
                 "system.ai.gpt-6-luna",
             ]
             assert all(m.get("multi_agent_tools_in_code_mode") is not False for m in models)
-            start_model = "system.ai.gpt-5-6-sol"
+            start_model = "system.ai.gpt-5-6-terra"
         launch_args = []
         if model_args:
             start_model = model_args[-1].removeprefix("--model=")
