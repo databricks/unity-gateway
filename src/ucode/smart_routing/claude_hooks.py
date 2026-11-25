@@ -16,6 +16,8 @@ from ucode.workspace import workspace_id_args
 ROUTING_HOOK_COMMAND_MARKER = "claude-router-hook"
 ROUTE_FIRST_PROMPT_EVENT = "route-first-prompt"
 ROUTE_SUBAGENT_MOD_EVENT = "route-subagent-mod"
+ROUTE_VALIDATION_MOD_EVENT = "route-validation-mod"
+MOD_EVENTS = frozenset({ROUTE_SUBAGENT_MOD_EVENT, ROUTE_VALIDATION_MOD_EVENT})
 FIRST_PROMPT_HOOK_MARKER = f"{ROUTING_HOOK_COMMAND_MARKER} {ROUTE_FIRST_PROMPT_EVENT}"
 FIRST_PROMPT_SOCKET_ENV = "UCODE_CLAUDE_V2_SOCKET"
 
@@ -76,7 +78,7 @@ def routing_hook_argv(state: dict, event: str) -> list[str]:
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
-    if event != ROUTE_SUBAGENT_MOD_EVENT:
+    if event not in MOD_EVENTS:
         return argv
     argv += ["--host", workspace, *workspace_id_args(workspace)]
     profile = state.get("profile")

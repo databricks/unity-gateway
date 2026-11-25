@@ -40,13 +40,19 @@ from utils.managed import (
     use_managed_config_fixture,
     use_smart_routing_fixture,
 )
-from utils.request_recorder import record_claude_response_protocol, served_inference_request
+from utils.request_recorder import (
+    TuiRequestRecorder,
+    record_claude_response_protocol,
+    served_inference_request,
+)
 from utils.terminal import AgentTerminal
 
 pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
+ROUTE_VALIDATION_ENV_VAR = "UG_ROUTE_VALIDATION"
+ROUTE_VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
 # No selector or legacy flag: the managed config's smart_routing.enabled alone turns routing on.
 MANAGED_DEFAULT = "managed-default"
 
@@ -61,7 +67,7 @@ def _fixture_routing_models(agent: str) -> list[str]:
 CLAUDE_MODELS = _fixture_routing_models("claude")
 CODEX_MODELS = _fixture_routing_models("codex")
 # Expected native Codex slugs, independently of the application's model mapper.
-CODEX_MODEL_SLUGS = {"gpt-6-sol", "gpt-6-luna"}
+CODEX_MODEL_SLUGS = {"gpt-6-sol", "gpt-6-1-sol", "gpt-6-luna"}
 SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 
 
@@ -585,6 +591,17 @@ def _assert_claude_session_finished(session, tui) -> str:
     return "".join(tui.output)
 
 
+def _assert_route_validation_on_toggle(recorder, checkpoint, agent: str) -> None:
+    """The /smart-router on toggle sends one routes:validate request that the Gateway supports."""
+    recorder.expect_request(path=ROUTE_VALIDATION_PATH, after=checkpoint)
+    [request] = [r for r in recorder.requests_after(checkpoint) if r.path == ROUTE_VALIDATION_PATH]
+    options = request.payload["route_options"]
+    assert options and {option["harness"] for option in options} == {agent}, options
+    response = recorder.response_for(request)
+    assert response.status_code == 200, response.status_code
+    assert response.payload["is_supported"] is True, response.payload
+
+
 def _assert_claude_not_wrapped(session, transcript: str) -> None:
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
@@ -808,76 +825,91 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
     real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. All
-    uniquely tagged calculations complete in native parent and child sessions. The second
-    child's recorded inference payloads carry smart_router_recipe_name DISABLED, with no
-    native model/rationale row and no live gateway decision. The first and third children show
-    native model/rationale rows with live gateway decisions correlated with them; the third is
-    routed again with the same recipe as the first, and both carry that recipe. All payloads
-    omit a recipe header and receive non-empty HTTP 200 responses (including verified native
-    compatibility retries). Claude's native task view reports no running tasks before /exit.
-    No first-prompt routing wrapper starts.
+    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. With
+    UG_ROUTE_VALIDATION=1, turning routing on sends one routes:validate request that the Gateway
+    answers with HTTP 200 and is_supported true. All uniquely tagged calculations complete in
+    native parent and child sessions. The second child's recorded inference payloads carry
+    smart_router_recipe_name DISABLED, with no native model/rationale row and no live gateway
+    decision. The first and third children show native model/rationale rows with live gateway
+    decisions correlated with them; the third is routed again with the same recipe as the first,
+    and both carry that recipe. All payloads omit a recipe header and receive non-empty HTTP 200
+    responses (including verified native compatibility retries). Claude's native task view
+    reports no running tasks before /exit. No first-prompt routing wrapper starts.
     """
     session = live_session
     _select_smart_router_version(
         session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
     )
-    with record_claude_response_protocol(session, workspace) as recorder:
-        session.run(
-            "configure",
-            "--workspace",
-            recorder.url,
-            "--skip-validate",
-            "--skip-upgrade",
-            "--disable-databricks-ai-tools",
-        )
-        with AgentTerminal(
-            session, "claude", [str(session.binary), "claude"], "smart-router-skill-back-on"
-        ) as tui:
-            tui.boot()
-            checkpoint = recorder.checkpoint()
-            launch_task = _run_calculation(
-                tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True
+    session.env[ROUTE_VALIDATION_ENV_VAR] = "1"
+    try:
+        with record_claude_response_protocol(session, workspace) as recorder:
+            session.run(
+                "configure",
+                "--workspace",
+                recorder.url,
+                "--skip-validate",
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
             )
-            launch_recipe = _assert_claude_calculation_requests(
-                recorder,
-                checkpoint,
-                launch_task,
-                routed=True,
-                launch_recipe=None,
-                orchestration_enabled=orchestration_enabled,
-            )
-            _toggle_with_skill(
-                tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
-            )
-            # Prove "off" takes effect after a routed child before turning routing back on.
-            checkpoint = recorder.checkpoint()
-            off_task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
-            recipe = _assert_claude_calculation_requests(
-                recorder,
-                checkpoint,
-                off_task,
-                routed=False,
-                launch_recipe=None,
-                orchestration_enabled=orchestration_enabled,
-            )
-            assert recipe == "DISABLED", recipe
-            _toggle_with_skill(
-                tui, session, "claude", enabled=True, orchestration_enabled=orchestration_enabled
-            )
-            checkpoint = recorder.checkpoint()
-            task = _run_calculation(
-                tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True
-            )
-            _assert_claude_calculation_requests(
-                recorder,
-                checkpoint,
-                task,
-                routed=True,
-                launch_recipe=launch_recipe,
-                orchestration_enabled=orchestration_enabled,
-            )
-            transcript = _assert_claude_session_finished(session, tui)
+            with AgentTerminal(
+                session, "claude", [str(session.binary), "claude"], "smart-router-skill-back-on"
+            ) as tui:
+                tui.boot()
+                checkpoint = recorder.checkpoint()
+                launch_task = _run_calculation(
+                    tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True
+                )
+                launch_recipe = _assert_claude_calculation_requests(
+                    recorder,
+                    checkpoint,
+                    launch_task,
+                    routed=True,
+                    launch_recipe=None,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                _toggle_with_skill(
+                    tui,
+                    session,
+                    "claude",
+                    enabled=False,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                # Prove "off" takes effect after a routed child before turning routing back on.
+                checkpoint = recorder.checkpoint()
+                off_task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
+                recipe = _assert_claude_calculation_requests(
+                    recorder,
+                    checkpoint,
+                    off_task,
+                    routed=False,
+                    launch_recipe=None,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                assert recipe == "DISABLED", recipe
+                validation_checkpoint = recorder.checkpoint()
+                _toggle_with_skill(
+                    tui,
+                    session,
+                    "claude",
+                    enabled=True,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                _assert_route_validation_on_toggle(recorder, validation_checkpoint, "claude")
+                checkpoint = recorder.checkpoint()
+                task = _run_calculation(
+                    tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True
+                )
+                _assert_claude_calculation_requests(
+                    recorder,
+                    checkpoint,
+                    task,
+                    routed=True,
+                    launch_recipe=launch_recipe,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                transcript = _assert_claude_session_finished(session, tui)
+    finally:
+        session.env.pop(ROUTE_VALIDATION_ENV_VAR, None)
     _assert_claude_not_wrapped(session, transcript)
 
 
@@ -943,37 +975,58 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     terminal output. Each uniquely tagged calculation completes in a native child session. The
     first and third show the subagent-routing banner (including [orchestrator on] when
     orchestration is enabled) and produce one live gateway decision correlated with that child;
-    the second shows no banner and produces no decision. First-prompt model selection
-    stays disabled; the metadata interposer remains active.
+    the second shows no banner and produces no decision. With UG_ROUTE_VALIDATION=1, turning
+    routing on sends one routes:validate request that the Gateway answers with HTTP 200 and
+    is_supported true. First-prompt model selection stays disabled; the metadata interposer
+    remains active.
     """
     session = live_session
     _select_smart_router_version(
         session, "codex", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
     )
-    session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-validate",
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    )
-    with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
-    ) as tui:
-        tui.boot()
-        _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
-        _toggle_with_skill(
-            tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
-        )
-        # Prove "off" takes effect after a routed child before turning routing back on.
-        _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
-        _toggle_with_skill(
-            tui, session, "codex", enabled=True, orchestration_enabled=orchestration_enabled
-        )
-        _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
-        tui.exit_normally()
-        transcript = "".join(tui.output)
+    session.env[ROUTE_VALIDATION_ENV_VAR] = "1"
+    try:
+        with TuiRequestRecorder(workspace) as recorder:
+            session.run(
+                "configure",
+                "--workspace",
+                recorder.url,
+                "--skip-validate",
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            )
+            with AgentTerminal(
+                session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
+            ) as tui:
+                tui.boot()
+                _run_calculation(
+                    tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True
+                )
+                _toggle_with_skill(
+                    tui,
+                    session,
+                    "codex",
+                    enabled=False,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                # Prove "off" takes effect after a routed child before turning routing back on.
+                _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
+                validation_checkpoint = recorder.checkpoint()
+                _toggle_with_skill(
+                    tui,
+                    session,
+                    "codex",
+                    enabled=True,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                _assert_route_validation_on_toggle(recorder, validation_checkpoint, "codex")
+                _run_calculation(
+                    tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True
+                )
+                tui.exit_normally()
+                transcript = "".join(tui.output)
+    finally:
+        session.env.pop(ROUTE_VALIDATION_ENV_VAR, None)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     assert "[ROUTE]" not in session.routing_log("codex")
 

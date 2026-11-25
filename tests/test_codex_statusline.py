@@ -7,12 +7,21 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
 from ucode.constants import ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR
 from ucode.smart_routing import codex_statusline as statusline
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, set_session_environment, start_session
+from ucode.smart_routing.codex_statusline import LOGS_DETAILS_HINT
+from ucode.smart_routing.route_validation import VALIDATION_TIMEOUT_SECONDS
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    set_session_environment,
+    start_session,
+    validation_dismissed_path,
+    validation_result_path,
+)
 
 
 def _labels(tree):
@@ -163,6 +172,99 @@ def test_unreadable_controls_show_unknown_and_recover(tmp_path, monkeypatch, con
     assert "smart router UNKNOWN" in _labels(statusline.render({}))
     controls.write_text("{}")
     assert "smart router ON" in _labels(statusline.render({}))
+
+
+UNSUPPORTED = {"routing_disabled": True, "validation_ms": 120}
+FAILED = {"routing_disabled": True, "validation_failed": True, "validation_ms": 90}
+
+
+def _controls(tmp_path, monkeypatch, enabled):
+    controls = tmp_path / "controls.json"
+    controls.write_text(
+        json.dumps(
+            {
+                ENABLE_SMART_ROUTING_ENV_VAR: "0",
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1" if enabled else "0",
+            }
+        )
+    )
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    return controls
+
+
+@pytest.mark.parametrize(
+    ("enabled", "validation", "dismissed", "expected"),
+    [
+        pytest.param(
+            False,
+            UNSUPPORTED,
+            False,
+            (
+                "ERROR",
+                "⚠ smart routing unsupported",
+                LOGS_DETAILS_HINT,
+            ),
+            id="startup-unsupported",
+        ),
+        pytest.param(
+            False,
+            UNSUPPORTED,
+            True,
+            ("ERROR", LOGS_DETAILS_HINT),
+            id="startup-unsupported-after-turn",
+        ),
+        pytest.param(
+            False,
+            FAILED,
+            False,
+            (
+                "ERROR",
+                "⚠ Smart Router couldn't validate this session's model list",
+                LOGS_DETAILS_HINT,
+            ),
+            id="startup-failed",
+        ),
+        pytest.param(
+            False,
+            FAILED,
+            True,
+            ("ERROR", LOGS_DETAILS_HINT),
+            id="startup-failed-after-turn",
+        ),
+        pytest.param(True, {"routing_disabled": False}, False, ("ON",), id="supported"),
+        pytest.param(False, None, False, ("OFF",), id="no-result"),
+    ],
+)
+def test_footer_shows_the_validation_state(
+    tmp_path, monkeypatch, enabled, validation, dismissed, expected
+):
+    controls = _controls(tmp_path, monkeypatch, enabled)
+    if validation is not None:
+        validation_result_path(controls).write_text(json.dumps(validation))
+    if dismissed:
+        validation_dismissed_path(controls).touch()
+    labels = _labels(statusline.render({}))
+    assert labels.startswith(" ".join(("smart router", *expected)))
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "expected"),
+    [
+        (1, "smart router · Codex"),
+        (VALIDATION_TIMEOUT_SECONDS + 0.5, "smart router · Codex"),
+        (statusline.VALIDATION_PENDING_SECONDS + 1, "smart router ON · Codex"),
+    ],
+    ids=["pending", "pending-past-the-check-deadline", "timed-out"],
+)
+def test_footer_has_no_badge_while_the_startup_check_is_pending(
+    tmp_path, monkeypatch, age_seconds, expected
+):
+    controls = _controls(tmp_path, monkeypatch, True)
+    result = validation_result_path(controls)
+    result.write_text(json.dumps({"pending": True}))
+    past = time.time() - age_seconds
+    os.utime(result, (past, past))
+    assert _labels(statusline.render({})) == expected
 
 
 def test_footer_does_not_retry_blocked_file_reads(tmp_path, monkeypatch):

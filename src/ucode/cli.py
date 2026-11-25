@@ -47,6 +47,7 @@ from ucode.agents import (
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
+    request_vscode_code,
     request_vscode_with_copilot,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -74,6 +75,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ISAAC_LAUNCH_MODE_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -212,8 +214,9 @@ from ucode.smart_routing import config as smart_routing_config
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
+    MOD_EVENTS,
     ROUTE_FIRST_PROMPT_EVENT,
-    ROUTE_SUBAGENT_MOD_EVENT,
+    ROUTE_VALIDATION_MOD_EVENT,
 )
 from ucode.smart_routing.session_env import (
     effective_environment,
@@ -359,20 +362,18 @@ def _print_managed_summary(
         return
     lines = [f"[bold]Workspace:[/bold] [cyan]{state.get('workspace', '?')}[/cyan]"]
     if tool is not None:
-        lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
+        lines.append(f"[bold]Agent:[/bold] [green]{_agent_label(tool)}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
     failed: list[str] = []
     if configured_tools is not None:
         failed = [t for t in enabled if t not in configured_tools]
         enabled = [t for t in enabled if t in configured_tools]
     if enabled:
-        lines.append(
-            f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
-        )
+        lines.append(f"[bold]Coding Agents:[/bold] {', '.join(_agent_label(t) for t in enabled)}")
     if failed:
         lines.append(
             f"[bold]Failed to configure:[/bold] "
-            f"[yellow]{', '.join(TOOL_SPECS[t]['display'] for t in failed)}[/yellow]"
+            f"[yellow]{', '.join(_agent_label(t) for t in failed)}[/yellow]"
         )
     if tool is not None:
         provider = managed_provider_service(managed, tool)
@@ -2022,6 +2023,8 @@ def status() -> int:
                 rows.append(("GitHub Copilot app", app_status.row))
                 for warning in app_status.warnings:
                     print_warning(warning)
+                for note in app_status.notes:
+                    print_note(note)
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -2131,7 +2134,7 @@ def revert() -> int:
     from ucode.agents import vscode
 
     try:
-        vscode_result = vscode.revert()
+        vscode_result = vscode.revert(state)
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
         # VS Code's revert looks at the installed extension, not ug state, so a later run still finds it.
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
@@ -3599,7 +3602,12 @@ def smart_router_logs_cmd(
         raise fail(f"unknown format {output_format!r}; expected json or table")
     if record_route_validation is not None:
         try:
-            result = json.loads(record_route_validation.read_text(encoding="utf-8"))
+            text = (
+                sys.stdin.read()
+                if str(record_route_validation) == "-"
+                else record_route_validation.read_text(encoding="utf-8")
+            )
+            result = json.loads(text)
             if not isinstance(result, dict):
                 raise ValueError("expected a JSON object")
             session_log.append_route_validation(harness, session, result)
@@ -3608,7 +3616,7 @@ def smart_router_logs_cmd(
         sys.stdout.write(json.dumps({"v": 1}) + "\n")
         return
     try:
-        records = session_log.read_decisions(harness, session)
+        records = session_log.read_history(harness, session)
     except OSError as exc:
         raise fail(
             f"cannot read session log at "
@@ -3616,7 +3624,13 @@ def smart_router_logs_cmd(
         ) from exc
     if as_table and decision is not None:
         try:
-            output = session_log.render_detail(session_log.find_decision(records, decision))
+            record = session_log.find_decision(records, decision)
+            render = (
+                session_log.render_validation_detail
+                if record.get("type") == session_log.ROUTE_VALIDATION_TYPE
+                else session_log.render_detail
+            )
+            output = render(record)
         except (LookupError, ValueError) as exc:
             raise fail(str(exc)) from exc
         sys.stdout.write(output + "\n")
@@ -3625,13 +3639,18 @@ def smart_router_logs_cmd(
         sys.stdout.write(session_log.render_table(records) + "\n")
         return
     if decision is None:
-        validations = session_log.read_records(harness, session, session_log.ROUTE_VALIDATION_TYPE)
         sys.stdout.write(
             json.dumps(
                 {
                     "v": 1,
-                    "decisions": [session_log.overview(r) for r in records],
-                    "route_validations": validations,
+                    "decisions": [
+                        session_log.overview(r)
+                        for r in records
+                        if r.get("type") == session_log.DECISION_TYPE
+                    ],
+                    "route_validations": [
+                        r for r in records if r.get("type") == session_log.ROUTE_VALIDATION_TYPE
+                    ],
                 }
             )
             + "\n"
@@ -3661,7 +3680,10 @@ def claude_router_hook_cmd(
     import sys
 
     environment = effective_environment(agent=AGENT_CLAUDE)
-    if not smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CLAUDE):
+    # The toggle validates while the session controls still keep routing off.
+    if event != ROUTE_VALIDATION_MOD_EVENT and not smart_routing_v2.smart_routing_enabled(
+        environment, default=False, agent=AGENT_CLAUDE
+    ):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -3720,10 +3742,19 @@ def claude_router_hook_cmd(
         # When matched is None the harness didn't report the subagent model —
         # routing already injected the selected model, so emit nothing.
         return
-    if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT} or not host:
+    if (event != "route-subagent" and event not in MOD_EVENTS) or not host:
         return
     token = _router_hook_token(host, profile, use_pat)
     if not token:
+        return
+    if event == ROUTE_VALIDATION_MOD_EVENT:
+        result = smart_routing_v2.validate_claude_model_list(
+            workspace=host,
+            token=token,
+            available_models=model or [],
+            provider=provider,
+        )
+        sys.stdout.write(json.dumps(result))
         return
     output = smart_routing_v2.route_claude_subagent(
         payload,
@@ -3808,7 +3839,13 @@ _SMART_ROUTER_STATE_REPLY = "Smart Router is {state} for this session"
 _SMART_ROUTER_UNCHANGED_REPLY = "Smart Router is already {state} for this session"
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(
+    enabled: bool | None,
+    reason: str | None = None,
+    *,
+    agent: str,
+    feedback_collected: bool = False,
+) -> bool:
     if enabled is None:
         return False
     try:
@@ -3826,6 +3863,18 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if unchanged:
         print_success(_SMART_ROUTER_UNCHANGED_REPLY.format(state=state))
         return True
+    # Claude's mod checks this marker itself before it runs a plain off.
+    if (
+        agent == AGENT_CODEX
+        and not enabled
+        and not feedback_collected
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
+    ):
+        print_err(
+            "Smart Router is still on. To turn it off, open Omnigent's model menu in this "
+            "session's message composer and switch off Smart Routing."
+        )
+        raise typer.Exit(2)
     feedback_required = not enabled and smart_router_feedback_required()
     if feedback_required and len((reason or "").strip()) < 16:
         print_err(
@@ -5209,13 +5258,22 @@ def codex_cmd(
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
+    feedback_collected: Annotated[
+        bool,
+        typer.Option("--feedback-collected", hidden=True),
+    ] = False,
 ) -> None:
     """Launch Codex via Databricks."""
     # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag,
+        smart_router_feedback,
+        agent=AGENT_CODEX,
+        feedback_collected=feedback_collected,
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -5318,7 +5376,9 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CLAUDE
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -5705,6 +5765,15 @@ def configure(
             "Copilot Chat in VS Code.",
         ),
     ] = False,
+    vscode_code: Annotated[
+        str | None,
+        typer.Option(
+            "--vscode-code",
+            hidden=True,
+            help="The desktop VS Code's `code` command to set up, when the one ug finds is "
+            "another product's. `UG_VSCODE_CODE` does the same for every run.",
+        ),
+    ] = None,
     mcp: Annotated[
         str | None,
         typer.Option(
@@ -5826,6 +5895,7 @@ def configure(
             claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
+        request_vscode_code(vscode_code)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

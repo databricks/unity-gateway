@@ -16,7 +16,7 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
-from ucode.constants import UG_STARTUP_ROUTE_VALIDATION_ENV_VAR
+from ucode.constants import UG_ROUTE_VALIDATION_ENV_VAR
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
@@ -950,36 +950,52 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                 tui.exit_normally()
 
-    def test_supported_model_list_passes_startup_route_validation_and_routing_stays_on(self, cuj):
-        """Scenario: launch Claude with startup route validation on and the published model list.
+    @pytest.mark.parametrize(
+        ("agent", "version"), [(CLAUDE, SUBAGENT_ORCH_V0_CLAUDE_ONLY), (CODEX, SUBAGENT_ORCH_V0)]
+    )
+    def test_supported_model_list_passes_startup_route_validation_and_routing_stays_on(
+        self, cuj, agent, version
+    ):
+        """Scenario: launch the agent with startup route validation on and the published model list.
 
-        Expected: ug sends one routes:validate request with the session's Claude route options,
-        the Gateway answers HTTP 200 with is_supported true, and the band shows ON without the
-        unsupported warning while the prompt hint row keeps smart router ON.
+        Expected: ug sends one routes:validate request with the session's route options for that
+        agent, the Gateway answers HTTP 200 with is_supported true, and Smart Router stays ON
+        without the unsupported warning (Claude's band and prompt hint row, Codex's footer).
         """
-        with smart_router_preset(cuj, SUBAGENT_ORCH_V0_CLAUDE_ONLY) as (session, _, recorder, _):
-            session.env[UG_STARTUP_ROUTE_VALIDATION_ENV_VAR] = "1"
+        with smart_router_preset(cuj, version) as (session, _, recorder, _):
+            session.env[UG_ROUTE_VALIDATION_ENV_VAR] = "1"
             try:
                 checkpoint = recorder.checkpoint()
                 recorder.prepare_launch()
-                with Terminal(session, "startup-route-validation-supported", [CLAUDE]) as tui:
+                with Terminal(
+                    session, f"startup-route-validation-supported-{agent}", [agent]
+                ) as tui:
                     tui.boot(timeout=150)
-                    tui.wait_for(
-                        lambda _: (
-                            _smart_router_band_shown(tui, enabled=True, first_prompt=False)
-                            and _smart_router_hint_shown(tui, enabled=True)
-                        ),
-                        "the ON Smart Router band and smart router ON in the prompt hint row",
-                    )
+                    if agent == CLAUDE:
+                        tui.wait_for(
+                            lambda _: (
+                                _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                                and _smart_router_hint_shown(tui, enabled=True)
+                            ),
+                            "the ON Smart Router band and smart router ON in the prompt hint row",
+                        )
+                    else:
+                        tui.wait_for(
+                            lambda _: any(
+                                re.search(r"smart router\s+ON\b", line)
+                                for line in tui.screen.display
+                            ),
+                            "smart router ON in the Codex footer",
+                        )
                     assert not any("isn't supported" in line for line in tui.screen.display)
                     tui.exit_normally()
             finally:
-                session.env.pop(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, None)
+                session.env.pop(UG_ROUTE_VALIDATION_ENV_VAR, None)
             [request] = [
                 r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
             ]
             options = request.payload["route_options"]
-            assert options and {option["harness"] for option in options} == {CLAUDE}
+            assert options and {option["harness"] for option in options} == {agent}
             response = recorder.response_for(request)
             assert response.status_code == 200
             assert response.payload["is_supported"] is True

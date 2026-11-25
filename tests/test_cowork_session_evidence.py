@@ -289,6 +289,46 @@ def test_mcp_search_requires_a_shared_official_databricks_url(mcp_evidence):
     assert result["url"] == "https://www.databricks.com"
 
 
+def test_mcp_search_ignores_utm_source_attribution(mcp_evidence):
+    records, task = mcp_evidence
+    _search_result(records)["content"] = [
+        {"type": "text", "text": "https://www.databricks.com/?utm_source=openai"}
+    ]
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["url"] == "https://www.databricks.com"
+
+
+@pytest.mark.parametrize(
+    "search_url, answer_url, expected_status",
+    [
+        (
+            "https://www.databricks.com/product?category=ai&utm_source=openai#overview",
+            "https://www.databricks.com/product?category=ai#overview",
+            "passed",
+        ),
+        (
+            "https://www.databricks.com/product?category=ai&utm_source=openai#overview",
+            "https://www.databricks.com/product?category=data#overview",
+            "failed",
+        ),
+        (
+            "https://www.databricks.com/product?category=ai&utm_source=openai#overview",
+            "https://www.databricks.com/product?category=ai#details",
+            "failed",
+        ),
+    ],
+)
+def test_mcp_search_preserves_other_query_parameters_and_fragments(
+    mcp_evidence, search_url, answer_url, expected_status
+):
+    records, task = mcp_evidence
+    _search_result(records)["content"] = [{"type": "text", "text": search_url}]
+    records[3]["message"]["content"][0]["text"] = answer_url
+    result = evaluate(records, task)
+    assert result["status"] == expected_status
+
+
 def test_mcp_search_ignores_malformed_urls_beside_an_official_one(mcp_evidence):
     records, task = mcp_evidence
     _search_result(records)["content"] = [

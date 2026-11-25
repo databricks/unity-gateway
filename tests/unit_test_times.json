@@ -1,0 +1,1285 @@
+{
+ "Linux": {
+  "files": {
+   "tests/test_agent_antigravity.py": [
+    0.09,
+    72
+   ],
+   "tests/test_agent_claude.py": [
+    1.22,
+    535
+   ],
+   "tests/test_agent_codex.py": [
+    1.0,
+    256
+   ],
+   "tests/test_agent_copilot.py": [
+    11.25,
+    258
+   ],
+   "tests/test_agent_cursor.py": [
+    0.04,
+    11
+   ],
+   "tests/test_agent_gemini.py": [
+    0.02,
+    39
+   ],
+   "tests/test_agent_kilo.py": [
+    0.18,
+    64
+   ],
+   "tests/test_agent_opencode.py": [
+    0.09,
+    68
+   ],
+   "tests/test_agent_pi.py": [
+    0.06,
+    56
+   ],
+   "tests/test_agent_updates.py": [
+    0.0,
+    8
+   ],
+   "tests/test_agent_vscode.py": [
+    0.6,
+    96
+   ],
+   "tests/test_agents_commands.py": [
+    1.41,
+    48
+   ],
+   "tests/test_agents_init.py": [
+    1.32,
+    206
+   ],
+   "tests/test_browser_cross_os.py": [
+    0.02,
+    8
+   ],
+   "tests/test_budget.py": [
+    0.0,
+    78
+   ],
+   "tests/test_catalog_browsing.py": [
+    0.8,
+    20
+   ],
+   "tests/test_claude_answer_delivery.py": [
+    0.17,
+    33
+   ],
+   "tests/test_claude_auto_cleanup.py": [
+    0.05,
+    32
+   ],
+   "tests/test_claude_credential_blanks.py": [
+    0.13,
+    13
+   ],
+   "tests/test_claude_desktop.py": [
+    1.87,
+    273
+   ],
+   "tests/test_claude_header_mod.py": [
+    0.27,
+    28
+   ],
+   "tests/test_claude_launch_settings.py": [
+    0.1,
+    16
+   ],
+   "tests/test_claude_managed_headers.py": [
+    0.0,
+    18
+   ],
+   "tests/test_claude_mod.py": [
+    0.13,
+    22
+   ],
+   "tests/test_claude_parent_settings_behavior.py": [
+    0.23,
+    7
+   ],
+   "tests/test_claude_pty_replay.py": [
+    7.7,
+    13
+   ],
+   "tests/test_claude_routing.py": [
+    0.04,
+    20
+   ],
+   "tests/test_claude_search_discovery.py": [
+    0.11,
+    10
+   ],
+   "tests/test_claude_search_provider.py": [
+    5.34,
+    43
+   ],
+   "tests/test_claude_smart_routing_v2.py": [
+    1.99,
+    70
+   ],
+   "tests/test_claude_windows_smart_routing.py": [
+    0.01,
+    1
+   ],
+   "tests/test_cli.py": [
+    43.51,
+    969
+   ],
+   "tests/test_code_plugin.py": [
+    0.02,
+    12
+   ],
+   "tests/test_codex_catalog.py": [
+    0.06,
+    67
+   ],
+   "tests/test_codex_config.py": [
+    0.0,
+    45
+   ],
+   "tests/test_codex_desktop_evidence.py": [
+    0.0,
+    55
+   ],
+   "tests/test_codex_interaction_evidence.py": [
+    0.0,
+    16
+   ],
+   "tests/test_codex_metadata.py": [
+    1.43,
+    51
+   ],
+   "tests/test_codex_routing.py": [
+    0.0,
+    24
+   ],
+   "tests/test_codex_smart_routing_v2.py": [
+    0.01,
+    90
+   ],
+   "tests/test_comment_command_authorization.py": [
+    0.01,
+    66
+   ],
+   "tests/test_config_io.py": [
+    0.0,
+    52
+   ],
+   "tests/test_configure_managed_writes.py": [
+    0.62,
+    29
+   ],
+   "tests/test_constants.py": [
+    0.0,
+    1
+   ],
+   "tests/test_copilot_app.py": [
+    0.91,
+    36
+   ],
+   "tests/test_copilot_app_plugin.py": [
+    3.5,
+    75
+   ],
+   "tests/test_copilot_relay.py": [
+    89.8,
+    92
+   ],
+   "tests/test_cowork_hooks.py": [
+    0.15,
+    23
+   ],
+   "tests/test_cowork_plugin.py": [
+    0.1,
+    42
+   ],
+   "tests/test_cowork_session_evidence.py": [
+    0.04,
+    57
+   ],
+   "tests/test_cowork_skills.py": [
+    0.84,
+    9
+   ],
+   "tests/test_cuj_evidence.py": [
+    0.0,
+    105
+   ],
+   "tests/test_cuj_session.py": [
+    0.04,
+    9
+   ],
+   "tests/test_cuj_workspace.py": [
+    0.0,
+    6
+   ],
+   "tests/test_custom_oauth.py": [
+    0.59,
+    27
+   ],
+   "tests/test_databricks.py": [
+    5.53,
+    633
+   ],
+   "tests/test_desktop_auth.py": [
+    0.0,
+    65
+   ],
+   "tests/test_desktop_auth_cli.py": [
+    0.29,
+    14
+   ],
+   "tests/test_desktop_bundle.py": [
+    0.61,
+    12
+   ],
+   "tests/test_desktop_configure_cli.py": [
+    0.28,
+    41
+   ],
+   "tests/test_desktop_marketplace.py": [
+    0.76,
+    39
+   ],
+   "tests/test_desktop_mdm.py": [
+    3.94,
+    68
+   ],
+   "tests/test_desktop_scope.py": [
+    2.06,
+    29
+   ],
+   "tests/test_desktop_setup.py": [
+    0.69,
+    251
+   ],
+   "tests/test_doctor.py": [
+    0.0,
+    33
+   ],
+   "tests/test_e2e_cuj_helpers.py": [
+    89.71,
+    216
+   ],
+   "tests/test_e2e_uc.py": [
+    0.0,
+    6
+   ],
+   "tests/test_e2e_user_agent.py": [
+    3.5,
+    7
+   ],
+   "tests/test_entry_points.py": [
+    0.54,
+    4
+   ],
+   "tests/test_file_lock_cross_os.py": [
+    0.02,
+    9
+   ],
+   "tests/test_gateway_proxy.py": [
+    0.3,
+    69
+   ],
+   "tests/test_gateway_proxy_integration.py": [
+    42.07,
+    48
+   ],
+   "tests/test_integration_contract.py": [
+    49.74,
+    239
+   ],
+   "tests/test_integration_evidence.py": [
+    0.0,
+    271
+   ],
+   "tests/test_integration_managed.py": [
+    0.0,
+    8
+   ],
+   "tests/test_integration_model_discovery.py": [
+    0.0,
+    74
+   ],
+   "tests/test_integration_provider_catalog.py": [
+    0.0,
+    32
+   ],
+   "tests/test_integration_runner.py": [
+    0.03,
+    41
+   ],
+   "tests/test_integration_terminal_screen.py": [
+    22.84,
+    28
+   ],
+   "tests/test_interactive_picker.py": [
+    0.0,
+    11
+   ],
+   "tests/test_jsonc.py": [
+    0.0,
+    25
+   ],
+   "tests/test_launcher.py": [
+    0.0,
+    6
+   ],
+   "tests/test_macos_cowork_harness.py": [
+    2.13,
+    110
+   ],
+   "tests/test_macos_provision.py": [
+    0.37,
+    6
+   ],
+   "tests/test_managed_budget.py": [
+    0.0,
+    29
+   ],
+   "tests/test_managed_config.py": [
+    0.13,
+    239
+   ],
+   "tests/test_managed_export.py": [
+    0.12,
+    28
+   ],
+   "tests/test_managed_files.py": [
+    0.28,
+    198
+   ],
+   "tests/test_managed_model_lifecycle.py": [
+    0.04,
+    8
+   ],
+   "tests/test_managed_resolve.py": [
+    0.0,
+    96
+   ],
+   "tests/test_managed_setup.py": [
+    0.0,
+    104
+   ],
+   "tests/test_mcp.py": [
+    3.06,
+    306
+   ],
+   "tests/test_mcp_connection_login.py": [
+    0.0,
+    56
+   ],
+   "tests/test_mcp_oauth.py": [
+    0.0,
+    3
+   ],
+   "tests/test_mcp_proxy.py": [
+    0.02,
+    128
+   ],
+   "tests/test_mcp_proxy_cli.py": [
+    0.65,
+    6
+   ],
+   "tests/test_mcp_proxy_shared.py": [
+    15.11,
+    20
+   ],
+   "tests/test_mcp_web_search.py": [
+    0.0,
+    20
+   ],
+   "tests/test_mcp_web_search_concurrency.py": [
+    0.0,
+    13
+   ],
+   "tests/test_metrics.py": [
+    0.14,
+    45
+   ],
+   "tests/test_metrics_commands.py": [
+    0.0,
+    3
+   ],
+   "tests/test_metrics_delivery.py": [
+    1.66,
+    4
+   ],
+   "tests/test_metrics_isolation.py": [
+    0.06,
+    11
+   ],
+   "tests/test_model_sources.py": [
+    0.0,
+    4
+   ],
+   "tests/test_ownership.py": [
+    0.01,
+    24
+   ],
+   "tests/test_polly_review.py": [
+    0.0,
+    25
+   ],
+   "tests/test_published_agent_config.py": [
+    1.12,
+    89
+   ],
+   "tests/test_repro_claude_relayed.py": [
+    0.03,
+    10
+   ],
+   "tests/test_repro_custom_oauth_storm.py": [
+    6.6,
+    2
+   ],
+   "tests/test_request_tags.py": [
+    0.0,
+    9
+   ],
+   "tests/test_routing_rationale.py": [
+    0.0,
+    2
+   ],
+   "tests/test_security_scan.py": [
+    0.11,
+    33
+   ],
+   "tests/test_security_scan_request.py": [
+    0.0,
+    44
+   ],
+   "tests/test_skills.py": [
+    0.0,
+    17
+   ],
+   "tests/test_skills_api.py": [
+    0.03,
+    47
+   ],
+   "tests/test_skills_download.py": [
+    0.51,
+    97
+   ],
+   "tests/test_skills_list.py": [
+    0.0,
+    13
+   ],
+   "tests/test_skills_state.py": [
+    0.07,
+    35
+   ],
+   "tests/test_skills_usage.py": [
+    0.56,
+    9
+   ],
+   "tests/test_smart_router.py": [
+    4.36,
+    20
+   ],
+   "tests/test_smart_router_feedback.py": [
+    1.46,
+    97
+   ],
+   "tests/test_smart_router_logs_cli.py": [
+    1.12,
+    24
+   ],
+   "tests/test_smart_router_session_log.py": [
+    0.0,
+    30
+   ],
+   "tests/test_smart_routing_attribution_headers.py": [
+    0.0,
+    21
+   ],
+   "tests/test_smart_routing_config.py": [
+    0.0,
+    266
+   ],
+   "tests/test_startup_imports.py": [
+    0.64,
+    34
+   ],
+   "tests/test_state.py": [
+    0.0,
+    58
+   ],
+   "tests/test_string_utils.py": [
+    0.0,
+    36
+   ],
+   "tests/test_subprocess_cross_os.py": [
+    0.04,
+    35
+   ],
+   "tests/test_system_cross_os.py": [
+    0.03,
+    17
+   ],
+   "tests/test_telemetry.py": [
+    0.0,
+    59
+   ],
+   "tests/test_time_utils.py": [
+    0.0,
+    5
+   ],
+   "tests/test_tls.py": [
+    0.01,
+    31
+   ],
+   "tests/test_tls_https.py": [
+    17.39,
+    5
+   ],
+   "tests/test_tui_request_recorder.py": [
+    29.47,
+    48
+   ],
+   "tests/test_ug_headers.py": [
+    0.38,
+    18
+   ],
+   "tests/test_ug_review_bot.py": [
+    0.0,
+    43
+   ],
+   "tests/test_ui.py": [
+    0.38,
+    83
+   ],
+   "tests/test_usage.py": [
+    0.0,
+    55
+   ],
+   "tests/test_user_journey_gate.py": [
+    0.0,
+    14
+   ],
+   "tests/test_workspace.py": [
+    0.0,
+    38
+   ],
+   "tests/test_workspace_selection.py": [
+    1.17,
+    52
+   ]
+  },
+  "slow": {
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[completed]": 3.24,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[completed_empty_history]": 3.23,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[completed_latest]": 3.22,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[detail]": 3.2,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[detail_running]": 2.85,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[detail_transcript]": 2.86,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[empty]": 3.21,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[empty_latest]": 2.86,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[mixed]": 2.93,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[mixed_empty_history]": 2.93,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[mixed_latest]": 2.84,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[nonempty_history]": 3.22,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[partial]": 2.86,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[partial_empty_history]": 2.84,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[partial_latest]": 2.84,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[resumed]": 4.03,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[routed_detail]": 3.23,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[routed_detail_running]": 2.94,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[running]": 2.86,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[running_latest]": 2.9,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[scheduled]": 2.85,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[scheduled_latest]": 2.86,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[transcript]": 2.84,
+   "tests/test_e2e_cuj_helpers.py::test_claude_waits_for_background_task_completion_before_exit[transcript_latest]": 2.85,
+   "tests/test_e2e_cuj_helpers.py::test_codex_boot_waits_for_session_after_startup_draft[0.154.0-False]": 3.4,
+   "tests/test_e2e_cuj_helpers.py::test_codex_boot_waits_for_session_after_startup_draft[0.165.0-False]": 3.44,
+   "tests/test_e2e_cuj_helpers.py::test_codex_boot_waits_for_session_after_startup_draft[0.165.0-True]": 5.14,
+   "tests/test_e2e_cuj_helpers.py::test_wait_until_acknowledges_ready_billing_notices_and_observes_dismissal": 3.92,
+   "tests/test_integration_contract.py::test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage": 7.18,
+   "tests/test_integration_contract.py::test_live_ci_lanes_together_cover_every_blocking_live_case[claude]": 4.56,
+   "tests/test_integration_contract.py::test_live_ci_lanes_together_cover_every_blocking_live_case[codex]": 8.72,
+   "tests/test_integration_contract.py::test_managed_integration_ci_is_blocking": 6.62,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_bounds_input_echo_by_the_remaining_budget[10-True]": 3.42,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_bounds_input_echo_by_the_remaining_budget[60-False]": 3.47,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_requires_fresh_echo_despite_visible_history[1-121]": 2.24,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_stops_submitting_once_the_budget_expires[echo-settles-at-deadline]": 2.54,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_stops_submitting_once_the_budget_expires[snapshot-just-before-deadline]": 2.96,
+   "tests/test_macos_cowork_harness.py::test_terminal_timeout_stops_process_and_preserves_final_evidence": 2.12,
+   "tests/test_mcp_proxy_shared.py::test_default_schema_server_count_initializes_within_startup_budget": 3.02,
+   "tests/test_repro_custom_oauth_storm.py::test_concurrent_helpers_share_one_login": 2.98,
+   "tests/test_repro_custom_oauth_storm.py::test_killed_helper_releases_lock_for_next_login": 3.62,
+   "tests/test_tls_https.py::test_python_chain_with_ssl_cert_file_leaves_requests_clients_failing": 4.91,
+   "tests/test_tls_https.py::test_untrusted_ca_fails_every_client_with_an_actionable_reason[os]": 4.36,
+   "tests/test_tls_https.py::test_untrusted_ca_fails_every_client_with_an_actionable_reason[python]": 4.88
+  }
+ },
+ "Windows": {
+  "files": {
+   "tests/test_agent_antigravity.py": [
+    0.96,
+    72
+   ],
+   "tests/test_agent_claude.py": [
+    11.28,
+    535
+   ],
+   "tests/test_agent_codex.py": [
+    2.92,
+    256
+   ],
+   "tests/test_agent_copilot.py": [
+    23.67,
+    258
+   ],
+   "tests/test_agent_cursor.py": [
+    0.52,
+    11
+   ],
+   "tests/test_agent_gemini.py": [
+    0.39,
+    39
+   ],
+   "tests/test_agent_kilo.py": [
+    0.54,
+    64
+   ],
+   "tests/test_agent_opencode.py": [
+    0.96,
+    68
+   ],
+   "tests/test_agent_pi.py": [
+    0.46,
+    56
+   ],
+   "tests/test_agent_updates.py": [
+    0.0,
+    8
+   ],
+   "tests/test_agent_vscode.py": [
+    7.58,
+    96
+   ],
+   "tests/test_agents_commands.py": [
+    7.29,
+    48
+   ],
+   "tests/test_agents_init.py": [
+    5.94,
+    206
+   ],
+   "tests/test_browser_cross_os.py": [
+    0.15,
+    8
+   ],
+   "tests/test_budget.py": [
+    1.81,
+    78
+   ],
+   "tests/test_catalog_browsing.py": [
+    1.16,
+    20
+   ],
+   "tests/test_claude_answer_delivery.py": [
+    2.81,
+    33
+   ],
+   "tests/test_claude_auto_cleanup.py": [
+    0.11,
+    32
+   ],
+   "tests/test_claude_credential_blanks.py": [
+    0.38,
+    13
+   ],
+   "tests/test_claude_desktop.py": [
+    11.49,
+    273
+   ],
+   "tests/test_claude_header_mod.py": [
+    2.4,
+    28
+   ],
+   "tests/test_claude_launch_settings.py": [
+    0.98,
+    16
+   ],
+   "tests/test_claude_managed_headers.py": [
+    0.59,
+    18
+   ],
+   "tests/test_claude_mod.py": [
+    0.94,
+    22
+   ],
+   "tests/test_claude_parent_settings_behavior.py": [
+    0.34,
+    7
+   ],
+   "tests/test_claude_pty_replay.py": [
+    0.0,
+    13
+   ],
+   "tests/test_claude_routing.py": [
+    0.14,
+    20
+   ],
+   "tests/test_claude_search_discovery.py": [
+    0.34,
+    10
+   ],
+   "tests/test_claude_search_provider.py": [
+    22.14,
+    43
+   ],
+   "tests/test_claude_smart_routing_v2.py": [
+    3.39,
+    70
+   ],
+   "tests/test_claude_windows_smart_routing.py": [
+    0.04,
+    1
+   ],
+   "tests/test_cli.py": [
+    194.4,
+    969
+   ],
+   "tests/test_code_plugin.py": [
+    0.85,
+    12
+   ],
+   "tests/test_codex_catalog.py": [
+    0.13,
+    67
+   ],
+   "tests/test_codex_config.py": [
+    1.85,
+    45
+   ],
+   "tests/test_codex_desktop_evidence.py": [
+    0.29,
+    55
+   ],
+   "tests/test_codex_interaction_evidence.py": [
+    0.0,
+    16
+   ],
+   "tests/test_codex_metadata.py": [
+    2.1,
+    51
+   ],
+   "tests/test_codex_routing.py": [
+    0.16,
+    24
+   ],
+   "tests/test_codex_smart_routing_v2.py": [
+    1.07,
+    90
+   ],
+   "tests/test_comment_command_authorization.py": [
+    2.38,
+    66
+   ],
+   "tests/test_config_io.py": [
+    0.49,
+    52
+   ],
+   "tests/test_configure_managed_writes.py": [
+    1.86,
+    29
+   ],
+   "tests/test_constants.py": [
+    0.0,
+    1
+   ],
+   "tests/test_copilot_app.py": [
+    1.62,
+    36
+   ],
+   "tests/test_copilot_app_plugin.py": [
+    35.24,
+    75
+   ],
+   "tests/test_copilot_relay.py": [
+    118.59,
+    92
+   ],
+   "tests/test_cowork_hooks.py": [
+    0.28,
+    23
+   ],
+   "tests/test_cowork_plugin.py": [
+    0.85,
+    42
+   ],
+   "tests/test_cowork_session_evidence.py": [
+    0.15,
+    57
+   ],
+   "tests/test_cowork_skills.py": [
+    0.85,
+    9
+   ],
+   "tests/test_cuj_evidence.py": [
+    0.62,
+    105
+   ],
+   "tests/test_cuj_session.py": [
+    0.56,
+    9
+   ],
+   "tests/test_cuj_workspace.py": [
+    0.04,
+    6
+   ],
+   "tests/test_custom_oauth.py": [
+    2.34,
+    27
+   ],
+   "tests/test_databricks.py": [
+    17.41,
+    633
+   ],
+   "tests/test_desktop_auth.py": [
+    0.03,
+    65
+   ],
+   "tests/test_desktop_auth_cli.py": [
+    0.55,
+    14
+   ],
+   "tests/test_desktop_bundle.py": [
+    0.0,
+    12
+   ],
+   "tests/test_desktop_configure_cli.py": [
+    0.74,
+    41
+   ],
+   "tests/test_desktop_marketplace.py": [
+    2.7,
+    39
+   ],
+   "tests/test_desktop_mdm.py": [
+    0.75,
+    68
+   ],
+   "tests/test_desktop_scope.py": [
+    0.0,
+    29
+   ],
+   "tests/test_desktop_setup.py": [
+    13.49,
+    251
+   ],
+   "tests/test_doctor.py": [
+    0.16,
+    33
+   ],
+   "tests/test_e2e_cuj_helpers.py": [
+    3.44,
+    216
+   ],
+   "tests/test_e2e_uc.py": [
+    0.0,
+    6
+   ],
+   "tests/test_e2e_user_agent.py": [
+    3.62,
+    7
+   ],
+   "tests/test_entry_points.py": [
+    2.24,
+    4
+   ],
+   "tests/test_file_lock_cross_os.py": [
+    0.11,
+    9
+   ],
+   "tests/test_gateway_proxy.py": [
+    2.03,
+    69
+   ],
+   "tests/test_gateway_proxy_integration.py": [
+    53.11,
+    48
+   ],
+   "tests/test_integration_contract.py": [
+    70.53,
+    239
+   ],
+   "tests/test_integration_evidence.py": [
+    2.25,
+    271
+   ],
+   "tests/test_integration_managed.py": [
+    0.01,
+    8
+   ],
+   "tests/test_integration_model_discovery.py": [
+    1.0,
+    74
+   ],
+   "tests/test_integration_provider_catalog.py": [
+    0.2,
+    32
+   ],
+   "tests/test_integration_runner.py": [
+    0.82,
+    41
+   ],
+   "tests/test_integration_terminal_screen.py": [
+    41.43,
+    28
+   ],
+   "tests/test_interactive_picker.py": [
+    0.02,
+    11
+   ],
+   "tests/test_jsonc.py": [
+    0.53,
+    25
+   ],
+   "tests/test_launcher.py": [
+    0.01,
+    6
+   ],
+   "tests/test_macos_cowork_harness.py": [
+    0.75,
+    110
+   ],
+   "tests/test_macos_provision.py": [
+    0.0,
+    6
+   ],
+   "tests/test_managed_budget.py": [
+    0.09,
+    29
+   ],
+   "tests/test_managed_config.py": [
+    2.73,
+    239
+   ],
+   "tests/test_managed_export.py": [
+    0.31,
+    28
+   ],
+   "tests/test_managed_files.py": [
+    5.41,
+    198
+   ],
+   "tests/test_managed_model_lifecycle.py": [
+    0.19,
+    8
+   ],
+   "tests/test_managed_resolve.py": [
+    0.7,
+    96
+   ],
+   "tests/test_managed_setup.py": [
+    1.5,
+    104
+   ],
+   "tests/test_mcp.py": [
+    5.48,
+    306
+   ],
+   "tests/test_mcp_connection_login.py": [
+    0.2,
+    56
+   ],
+   "tests/test_mcp_oauth.py": [
+    0.0,
+    3
+   ],
+   "tests/test_mcp_proxy.py": [
+    0.93,
+    128
+   ],
+   "tests/test_mcp_proxy_cli.py": [
+    1.0,
+    6
+   ],
+   "tests/test_mcp_proxy_shared.py": [
+    46.89,
+    20
+   ],
+   "tests/test_mcp_web_search.py": [
+    0.02,
+    20
+   ],
+   "tests/test_mcp_web_search_concurrency.py": [
+    0.13,
+    13
+   ],
+   "tests/test_metrics.py": [
+    0.95,
+    45
+   ],
+   "tests/test_metrics_commands.py": [
+    0.15,
+    3
+   ],
+   "tests/test_metrics_delivery.py": [
+    6.55,
+    4
+   ],
+   "tests/test_metrics_isolation.py": [
+    0.21,
+    11
+   ],
+   "tests/test_model_sources.py": [
+    0.0,
+    4
+   ],
+   "tests/test_ownership.py": [
+    0.02,
+    24
+   ],
+   "tests/test_polly_review.py": [
+    0.03,
+    25
+   ],
+   "tests/test_published_agent_config.py": [
+    2.52,
+    89
+   ],
+   "tests/test_repro_claude_relayed.py": [
+    0.09,
+    10
+   ],
+   "tests/test_repro_custom_oauth_storm.py": [
+    10.91,
+    2
+   ],
+   "tests/test_request_tags.py": [
+    0.3,
+    9
+   ],
+   "tests/test_routing_rationale.py": [
+    0.02,
+    2
+   ],
+   "tests/test_security_scan.py": [
+    0.57,
+    33
+   ],
+   "tests/test_security_scan_request.py": [
+    1.68,
+    44
+   ],
+   "tests/test_skills.py": [
+    0.65,
+    17
+   ],
+   "tests/test_skills_api.py": [
+    0.25,
+    47
+   ],
+   "tests/test_skills_download.py": [
+    1.58,
+    97
+   ],
+   "tests/test_skills_list.py": [
+    0.1,
+    13
+   ],
+   "tests/test_skills_state.py": [
+    0.34,
+    35
+   ],
+   "tests/test_skills_usage.py": [
+    6.14,
+    9
+   ],
+   "tests/test_smart_router.py": [
+    6.62,
+    20
+   ],
+   "tests/test_smart_router_feedback.py": [
+    5.27,
+    97
+   ],
+   "tests/test_smart_router_logs_cli.py": [
+    3.57,
+    24
+   ],
+   "tests/test_smart_router_session_log.py": [
+    0.16,
+    30
+   ],
+   "tests/test_smart_routing_attribution_headers.py": [
+    0.11,
+    21
+   ],
+   "tests/test_smart_routing_config.py": [
+    6.0,
+    266
+   ],
+   "tests/test_startup_imports.py": [
+    2.91,
+    34
+   ],
+   "tests/test_state.py": [
+    0.47,
+    58
+   ],
+   "tests/test_string_utils.py": [
+    1.4,
+    36
+   ],
+   "tests/test_subprocess_cross_os.py": [
+    0.18,
+    35
+   ],
+   "tests/test_system_cross_os.py": [
+    0.29,
+    17
+   ],
+   "tests/test_telemetry.py": [
+    0.29,
+    59
+   ],
+   "tests/test_time_utils.py": [
+    0.03,
+    5
+   ],
+   "tests/test_tls.py": [
+    0.91,
+    31
+   ],
+   "tests/test_tls_https.py": [
+    83.39,
+    5
+   ],
+   "tests/test_tui_request_recorder.py": [
+    56.91,
+    48
+   ],
+   "tests/test_ug_headers.py": [
+    1.25,
+    18
+   ],
+   "tests/test_ug_review_bot.py": [
+    0.19,
+    43
+   ],
+   "tests/test_ui.py": [
+    0.89,
+    83
+   ],
+   "tests/test_usage.py": [
+    1.4,
+    55
+   ],
+   "tests/test_user_journey_gate.py": [
+    0.33,
+    14
+   ],
+   "tests/test_workspace.py": [
+    0.02,
+    38
+   ],
+   "tests/test_workspace_selection.py": [
+    2.63,
+    52
+   ]
+  },
+  "slow": {
+   "tests/test_agent_copilot.py::TestLaunch::test_proxy_and_registry_stop_when_copilot_cannot_start": 3.0,
+   "tests/test_agent_vscode.py::test_configure_saves_copilots_model_location_for_its_launches[mixed]": 4.72,
+   "tests/test_agents_commands.py::TestUnmanagedConfigureRecordsSelfManaged::test_managed_configure_records_nothing": 3.97,
+   "tests/test_claude_search_provider.py::test_automatic_selection_uses_verified_override": 2.21,
+   "tests/test_claude_search_provider.py::test_only_verified_override_suppresses_marked_helpers[alias-external]": 2.53,
+   "tests/test_claude_search_provider.py::test_only_verified_override_suppresses_marked_helpers[project-external]": 2.17,
+   "tests/test_claude_search_provider.py::test_only_verified_override_suppresses_marked_helpers[strict-external]": 2.07,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_managed_claude_source_configures_without_global_models[mps]": 3.4,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_managed_claude_source_configures_without_global_models[uc-parent]": 3.54,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_managed_config_registers_mcp_servers_after_configuring_agents": 3.36,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_managed_configure_accumulates_available_tools_for_all_agents": 4.49,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_provider_picker_gated_by_interactive_path": 5.87,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_selected_tools_skip_picker": 3.4,
+   "tests/test_cli.py::TestConfigureAgentsSelection::test_single_claude_agent_passes_managed_uc_parent_directly": 3.34,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_global_scope_keeps_gateway_auth_for_a_relay_backed_static_list[signed_in]": 10.03,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_global_scope_keeps_gateway_auth_for_a_relay_backed_static_list[signed_out]": 8.85,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_global_scope_proceeds_with_managed_config": 6.78,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_managed_config_blocks_user_scope_before_agent_setup[agent_args0]": 10.67,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_managed_config_blocks_user_scope_before_agent_setup[agent_args1]": 8.56,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_managed_config_blocks_user_scope_for_agents_list": 8.69,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_user_scope_proceeds_without_managed_config[feature_disabled]": 9.64,
+   "tests/test_cli.py::TestConfigureScopeFlags::test_user_scope_proceeds_without_managed_config[no_config]": 9.08,
+   "tests/test_cli.py::TestHeadlessConfigureModelSource::test_agents_failed_agent_keeps_its_saved_source": 5.37,
+   "tests/test_cli.py::TestHeadlessConfigureModelSource::test_agents_source_flags_configure_without_system_ai_models[--model-location-main.models-parent_schemas-main.models]": 2.87,
+   "tests/test_cli.py::TestHeadlessConfigureModelSource::test_agents_source_flags_configure_without_system_ai_models[--provider-main.default.mps-providers-main.default.mps]": 3.91,
+   "tests/test_cli.py::TestHeadlessConfigureModelSource::test_managed_config_without_agents_accepts_source_flags": 5.15,
+   "tests/test_cli.py::TestHeadlessConfigureModelSource::test_provider_replaces_saved_model_location_single_agent[claude]": 2.77,
+   "tests/test_copilot_app_plugin.py::TestExtensionSource::test_syntax[app-restart.mjs]": 5.48,
+   "tests/test_copilot_app_plugin.py::TestExtensionSource::test_syntax[extension.mjs]": 6.77,
+   "tests/test_copilot_app_plugin.py::TestSyncLock::test_the_extension_sees_ugs_lock": 3.07,
+   "tests/test_copilot_relay.py::TestDirectCalls::test_go_to_the_copilot_host_without_databricks_credentials[GET-/agents/swe/custom-agents/octo/repo]": 2.37,
+   "tests/test_copilot_relay.py::TestDirectCalls::test_go_to_the_copilot_host_without_databricks_credentials[POST-/agents/sessions]": 2.03,
+   "tests/test_copilot_relay.py::TestGate::test_answers_websocket_responses_with_426[GET-headers1]": 2.02,
+   "tests/test_copilot_relay.py::TestGate::test_refuses_anything_but_one_github_bearer[gho_x]": 2.02,
+   "tests/test_copilot_relay.py::TestGate::test_refuses_other_hosts_and_browser_origins[headers2]": 2.02,
+   "tests/test_copilot_relay.py::TestGate::test_refuses_paths_outside_the_secret[/s3cret-path/%63hat/completions]": 2.56,
+   "tests/test_copilot_relay.py::TestGate::test_refuses_paths_outside_the_secret[/s3cret-path//chat/completions]": 2.04,
+   "tests/test_copilot_relay.py::TestGate::test_refuses_paths_outside_the_secret[/s3cret-path/chat%5ccompletions]": 2.07,
+   "tests/test_copilot_relay.py::TestGatewayDenials::test_other_gateway_errors_are_relayed_unchanged[429]": 2.29,
+   "tests/test_copilot_relay.py::TestGatewayRoutes::test_a_request_header_adder_labels_gateway_calls": 2.34,
+   "tests/test_copilot_relay.py::TestOtelExport::test_a_dead_databricks_login_goes_to_the_refresh_failure_callback": 2.07,
+   "tests/test_copilot_relay.py::TestOtelExport::test_metrics_get_an_empty_success_and_go_nowhere": 2.05,
+   "tests/test_copilot_relay.py::TestOtelExport::test_needs_the_session_secret[metrics]": 2.03,
+   "tests/test_copilot_relay.py::TestOtelExport::test_needs_the_session_secret[traces]": 2.05,
+   "tests/test_copilot_relay.py::TestOtelExport::test_other_otel_calls_go_through_the_github_gate": 2.03,
+   "tests/test_copilot_relay.py::TestOtelExport::test_traces_go_to_the_gateway_otel_route_with_a_databricks_token": 2.05,
+   "tests/test_gateway_proxy_integration.py::TestOtelProxyEndToEnd::test_refuses_paths_outside_the_otlp_routes[/%2e%2e/%2e%2e/api/2.0/clusters/list]": 2.02,
+   "tests/test_integration_contract.py::test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage": 9.61,
+   "tests/test_integration_contract.py::test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app": 2.72,
+   "tests/test_integration_contract.py::test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app": 2.49,
+   "tests/test_integration_contract.py::test_full_claude_lane_includes_both_desktop_journeys": 2.09,
+   "tests/test_integration_contract.py::test_live_ci_lanes_together_cover_every_blocking_live_case[claude]": 7.89,
+   "tests/test_integration_contract.py::test_live_ci_lanes_together_cover_every_blocking_live_case[codex]": 7.05,
+   "tests/test_integration_contract.py::test_managed_integration_ci_is_blocking": 7.02,
+   "tests/test_integration_contract.py::test_pytest_discovers_the_serial_live_hook[args1-True]": 3.7,
+   "tests/test_integration_contract.py::test_soft_fail_ci_selectors_preserve_coverage[full-codex-True-test_smart_router_skill_turns_codex_subagent_routing_back_on]": 3.46,
+   "tests/test_integration_contract.py::test_soft_fail_ci_selectors_preserve_coverage[managed-codex-False-test_ug_configure_managed_codex]": 3.28,
+   "tests/test_integration_contract.py::test_soft_fail_ci_selectors_preserve_coverage[smoke-claude-False-test_ug_claude_headless_prompt_argument]": 2.91,
+   "tests/test_integration_contract.py::test_soft_fail_ci_selectors_preserve_coverage[smoke-codex-False-test_ug_codex_headless_prompt_argument]": 4.19,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_bounds_input_echo_by_the_remaining_budget[10-True]": 4.01,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_bounds_input_echo_by_the_remaining_budget[60-False]": 5.86,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_bounds_permanent_startup": 4.87,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_requires_fresh_echo_despite_visible_history[0-121]": 3.82,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_requires_fresh_echo_despite_visible_history[1-121]": 6.67,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_stops_submitting_once_the_budget_expires[echo-settles-at-deadline]": 5.43,
+   "tests/test_integration_terminal_screen.py::test_codex_mcp_inventory_stops_submitting_once_the_budget_expires[snapshot-just-before-deadline]": 3.43,
+   "tests/test_managed_files.py::TestWindowsManagedWrites::test_standard_users_can_only_read_secured_codex_folder": 3.21,
+   "tests/test_mcp_proxy_shared.py::test_backend_crash_fails_session_and_next_agent_restarts": 7.16,
+   "tests/test_mcp_proxy_shared.py::test_backend_fetches_external_bearer_for_each_request": 2.83,
+   "tests/test_mcp_proxy_shared.py::test_backend_has_no_visible_windows_console[pythonw-absent]": 4.42,
+   "tests/test_mcp_proxy_shared.py::test_backend_has_no_visible_windows_console[pythonw-present]": 3.59,
+   "tests/test_mcp_proxy_shared.py::test_bad_session_does_not_stop_other_agents": 4.99,
+   "tests/test_mcp_proxy_shared.py::test_concurrent_agents_share_backend_with_distinct_sessions": 3.16,
+   "tests/test_mcp_proxy_shared.py::test_default_schema_server_count_initializes_within_startup_budget": 9.49,
+   "tests/test_mcp_proxy_shared.py::test_different_credential_environments_use_separate_backends": 2.62,
+   "tests/test_mcp_proxy_shared.py::test_explicit_user_agent_takes_precedence_over_client_info": 2.09,
+   "tests/test_mcp_proxy_shared.py::test_private_endpoint_rejects_unauthenticated_local_connections": 2.82,
+   "tests/test_mcp_proxy_shared.py::test_workspace_selectors_are_isolated_on_the_same_host": 3.07,
+   "tests/test_metrics_delivery.py::test_short_command_delivers_final_metric_after_parent_exits[agent-launch]": 3.28,
+   "tests/test_metrics_delivery.py::test_short_command_delivers_final_metric_after_parent_exits[command-exit]": 3.27,
+   "tests/test_repro_custom_oauth_storm.py::test_concurrent_helpers_share_one_login": 4.52,
+   "tests/test_repro_custom_oauth_storm.py::test_killed_helper_releases_lock_for_next_login": 6.39,
+   "tests/test_skills_usage.py::TestDetachedReporter::test_a_large_request_arrives_after_ug_exits_right_away": 3.37,
+   "tests/test_skills_usage.py::TestDetachedReporter::test_a_ucode_package_in_the_working_directory_is_not_run": 2.62,
+   "tests/test_tls_https.py::test_os_store_verifies_every_client_by_default": 15.45,
+   "tests/test_tls_https.py::test_python_chain_with_both_bundle_variables_verifies_every_client": 14.92,
+   "tests/test_tls_https.py::test_python_chain_with_ssl_cert_file_leaves_requests_clients_failing": 16.88,
+   "tests/test_tls_https.py::test_untrusted_ca_fails_every_client_with_an_actionable_reason[os]": 19.02,
+   "tests/test_tls_https.py::test_untrusted_ca_fails_every_client_with_an_actionable_reason[python]": 17.12,
+   "tests/test_tui_request_recorder.py::test_claude_protocol_context_snapshots_after_existing_drain[False]": 2.18,
+   "tests/test_tui_request_recorder.py::test_records_request_and_response": 2.0
+  }
+ }
+}

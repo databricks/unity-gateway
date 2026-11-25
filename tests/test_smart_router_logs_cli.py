@@ -422,6 +422,7 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
     assert "\x1b" not in result.output
 
 
+@pytest.mark.parametrize("from_stdin", [False, True])
 @pytest.mark.parametrize(
     "check",
     [
@@ -454,12 +455,13 @@ def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
         ),
     ],
 )
-def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check):
+def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, check, from_stdin):
     write(payload())
     result_file = tmp_path / "env.validation.json"
     result_file.write_text(json.dumps(check))
-    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", str(result_file)]
-    recorded = runner.invoke(cli.app, args)
+    source = "-" if from_stdin else str(result_file)
+    args = ["smart-router-logs", "--session", "s1", "--record-route-validation", source]
+    recorded = runner.invoke(cli.app, args, input=json.dumps(check) if from_stdin else None)
     assert recorded.exit_code == 0, recorded.output
     assert json.loads(recorded.output) == {"v": 1}
     listed = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
@@ -467,7 +469,6 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, ch
     assert len(document["decisions"]) == 1
     [row] = document["route_validations"]
     assert row.pop("validation_id") and row.pop("at")
-    check = {key: value for key, value in check.items() if key != "routing_disabled"}
     assert row == {
         "v": session_log.SCHEMA_VERSION,
         "type": session_log.ROUTE_VALIDATION_TYPE,
@@ -480,6 +481,23 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, ch
     }
 
 
+def test_codex_route_validation_is_listed_under_the_codex_harness_only(log_dir):
+    session_log.append_route_validation(
+        "codex",
+        "s1",
+        {
+            "routing_disabled": True,
+            "router_name": "stable",
+            "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+        },
+    )
+    listed = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--harness", "codex"])
+    [row] = json.loads(listed.output)["route_validations"]
+    assert (row["harness"], row["session_id"], row["router_name"]) == ("codex", "s1", "stable")
+    claude = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
+    assert json.loads(claude.output)["route_validations"] == []
+
+
 @pytest.mark.parametrize("content", [None, "not json", "[]"])
 def test_record_route_validation_reports_an_unreadable_result(log_dir, tmp_path, content):
     result_file = tmp_path / "env.validation.json"
@@ -490,3 +508,103 @@ def test_record_route_validation_reports_an_unreadable_result(log_dir, tmp_path,
     assert result.exit_code == 1
     assert json.loads(result.output)["error"].startswith("cannot record route validation: ")
     assert not log_dir.exists()
+
+
+STARTUP_UNSUPPORTED = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "routing_unsupported_reason": "insufficient_eligible_options",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+    "validation_ms": 120,
+}
+STARTUP_FAILED = {
+    "routing_disabled": True,
+    "router_name": "stable",
+    "validation_failed": True,
+    "validation_failure_reason": "Smart Router returned an error (HTTP 500)",
+    "eligible_route_options": [],
+    "ineligible_route_options": [],
+    "available_route_options": [],
+    "validation_ms": 90,
+}
+ROUTING_ON_UNSUPPORTED = {**STARTUP_UNSUPPORTED, "routing_disabled": False}
+
+
+@pytest.mark.parametrize(
+    ("check", "task"),
+    [
+        pytest.param(
+            STARTUP_UNSUPPORTED, "Failed to enable smart routing.", id="startup-unsupported"
+        ),
+        pytest.param(STARTUP_FAILED, "Failed to validate smart routing.", id="startup-failed"),
+        pytest.param(
+            ROUTING_ON_UNSUPPORTED, "Warning: unsupported model list.", id="routing-on-unsupported"
+        ),
+    ],
+)
+def test_codex_validation_rows_list_in_the_table(log_dir, check, task):
+    session_log.append_route_validation("codex", "s1", check)
+    result = runner.invoke(
+        cli.app, ["smart-router-logs", "--session", "s1", "--harness", "codex", "--format", "table"]
+    )
+    assert result.exit_code == 0, result.output
+    [row] = [line for line in result.output.splitlines() if task in line]
+    cells = [cell.strip() for cell in row.strip("│").split("  ") if cell.strip()]
+    assert cells[-3:] == [task, "—", f"{check['validation_ms']} ms"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_reason"),
+    [
+        pytest.param(
+            None, "Smart Routing does not support this agent's model list.", id="null-reason"
+        ),
+        pytest.param("harness_not_supported", "Harness not supported", id="reason-code"),
+    ],
+)
+def test_codex_validation_detail_shows_models_and_reason(log_dir, reason, expected_reason):
+    session_log.append_route_validation(
+        "codex",
+        "s1",
+        {
+            **STARTUP_UNSUPPORTED,
+            "routing_unsupported_reason": reason,
+            "eligible_route_options": [{"model": "system.ai.claude-sonnet", "harness": "claude"}],
+            "ineligible_route_options": [
+                {
+                    "model": "system.ai.claude-haiku",
+                    "harness": "claude",
+                    "reason": "model_not_in_recipe",
+                },
+                {"model": "custom", "harness": "claude", "reason": None},
+            ],
+        },
+    )
+    [record] = session_log.read_records("codex", "s1", session_log.ROUTE_VALIDATION_TYPE)
+    result = runner.invoke(
+        cli.app,
+        [
+            "smart-router-logs",
+            "--session",
+            "s1",
+            "--harness",
+            "codex",
+            "--format",
+            "table",
+            "--decision",
+            record["validation_id"][:8],
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert expected_reason in result.output
+    for line in (
+        "Validation Time: 0.1s",
+        "✓ claude-sonnet",
+        "✗ claude-haiku  Not available in Smart Router",
+        "✗ custom  Not eligible for routing",
+        "Supported models",
+        "gpt-5",
+    ):
+        assert line in result.output

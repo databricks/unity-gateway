@@ -1140,10 +1140,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
+    @pytest.mark.parametrize("validation", [False, True])
     @pytest.mark.parametrize("auto_picker", [False, True])
     def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, auto_picker
+        self, tmp_path, monkeypatch, auto_picker, validation
     ):
+        if validation:
+            monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1229,19 +1232,31 @@ class TestV2Launch:
         assert captured["controls"] == (
             dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if auto_picker else {}
         )
+        route_argv = [
+            "/bin/ug",
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            "https://example.com",
+            "--model",
+            "system.ai.claude-opus-4-8",
+        ]
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
-                "routeCommand": [
-                    "/bin/ug",
-                    "claude-router-hook",
-                    "route-subagent-mod",
-                    "--host",
-                    "https://example.com",
-                    "--model",
-                    "system.ai.claude-opus-4-8",
-                ],
+                "routeCommand": route_argv,
+                **(
+                    {
+                        "validateCommand": [
+                            *route_argv[:2],
+                            claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                            *route_argv[3:],
+                        ]
+                    }
+                    if validation
+                    else {}
+                ),
             }
         }
         env = settings["env"]
@@ -1251,6 +1266,8 @@ class TestV2Launch:
             assert env[key] == os.environ[key]
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
+        # The managed recipe mod reads its recipe from the environment, not pluginConfigs.
+        assert env[routing.ROUTER_NAME_ENV_VAR] == routing.ROUTER_NAME
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert ("UserPromptSubmit" in settings["hooks"]) is auto_picker
         assert "PreToolUse" not in settings["hooks"]
@@ -1673,9 +1690,9 @@ class TestV2ModelPickerDiscovery:
         self, tmp_path, monkeypatch, provider, model, expected
     ):
         validation_start = Mock()
-        monkeypatch.setattr(v2.startup_validation, "start", validation_start)
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
         monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
-        monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
+        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
@@ -1691,7 +1708,7 @@ class TestV2ModelPickerDiscovery:
 
     def test_startup_validation_is_off_by_default(self, tmp_path, monkeypatch):
         validation_start = Mock()
-        monkeypatch.setattr(v2.startup_validation, "start", validation_start)
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
         catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0

@@ -2551,6 +2551,15 @@ def running_launcher() -> str | None:
     return None
 
 
+def windows_ug_exe(ug: str, launcher: str | None) -> str | None:
+    """``ug`` if it's an `.exe`, else ``launcher`` (the running `ug.exe`) if that is one: Node
+    can't start a `.cmd`, `.bat` or bare name without a shell."""
+    for candidate in (ug, launcher):
+        if candidate and candidate.lower().endswith(".exe"):
+            return candidate
+    return None
+
+
 def build_auth_token_argv(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:

@@ -13,7 +13,7 @@ export type RoutingExplanation = {
   formula?: string
 }
 type RoutingRecord = {
-  name: string; task: string; title: string; model: string; rationale: string; seconds?: number
+  name: string; title: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
 }
 
@@ -142,11 +142,11 @@ export const routedModels = {
 }
 
 const ANIMALS = [
-  'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
+  'Otter', 'Panda', 'Alpaca', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
   'Cheetah', 'Chipmunk', 'Cougar', 'Coyote', 'Deer', 'Dingo', 'Dolphin', 'Donkey', 'Elephant', 'Elk',
   'Ferret', 'Gazelle', 'Giraffe', 'Goat', 'Gopher', 'Gorilla', 'Hamster', 'Hare', 'Hedgehog', 'Hippo',
   'Horse', 'Hyena', 'Ibex', 'Impala', 'Jaguar', 'Kangaroo', 'Koala', 'Lemur', 'Leopard', 'Lion',
-  'Llama', 'Marmot', 'Meerkat', 'Mink', 'Mole', 'Mongoose', 'Moose', 'Mouse', 'Narwhal', 'Ocelot',
+  'Lynx', 'Marmot', 'Meerkat', 'Mink', 'Mole', 'Mongoose', 'Moose', 'Mouse', 'Narwhal', 'Ocelot',
   'Okapi', 'Orca', 'Pangolin', 'Platypus', 'Porcupine', 'Possum', 'Puma', 'Quokka', 'Rabbit', 'Raccoon',
   'Reindeer', 'Rhino', 'Seal', 'Sloth', 'Squirrel', 'Tapir', 'Tiger', 'Vole', 'Walrus', 'Warthog',
   'Weasel', 'Whale', 'Wolf', 'Wombat', 'Yak', 'Zebra', 'Albatross', 'Crane', 'Crow', 'Dove',
@@ -171,15 +171,15 @@ const launchNote = (selected: string, launched?: string): string => {
     ? `⚠ Launched Model: ${shortModel(launched)} (differs from the selected model)`
     : `Launched Model: ${shortModel(launched)}`
 }
-// Flags a launch that is not the model the heading named.
+// Flags a launch that is not the selected model.
 const mismatchNote = (selected: string, launched: string): string =>
-  differs(selected, launched) ? ` ⚠ heading said ${shortModel(selected)}` : ''
+  differs(selected, launched) ? ` ⚠ selected ${shortModel(selected)}` : ''
 const taskLabel = (record: RoutingRecord): string => {
   const launched = record.spawned?.model
   if (!launched) return `${record.name} — ${shortModel(record.model)} (selected, launch pending)`
   return `${record.name} — ${shortModel(launched)}${mismatchNote(record.model, launched)}`
 }
-// The heading the parent's call is given before launch: the predicted model, checked at spawn.
+// The selection label is only a prediction until the spawn receipt arrives.
 const heading = (record: RoutingRecord): string =>
   `${record.name} · ${shortModel(record.model)} · ${record.title}`
 // A neutral task title: the prompt's first sentence, so a description a model wrote around the
@@ -191,9 +191,28 @@ type RoutedDisplay = {
   session_id: string; agent_id: string; name: string; description: string
   animal: string; title: string; selected: string; launched: string
 }
-// The receipt-backed label: the launched model, flagged when the heading predicted another.
+// The receipt-backed label: the launched model, flagged when the selection differs.
 const receiptLabel = (d: Pick<RoutedDisplay, 'animal' | 'title' | 'selected' | 'launched'>): string =>
   `${d.animal} · ${shortModel(d.launched)} · ${d.title}${mismatchNote(d.selected, d.launched)}`
+const quotedDescriptionEnd = (text: string, description: string): number => {
+  const prefix = 'Agent "'
+  if (!text.startsWith(prefix)) return -1
+  let closingQuote = -1
+  let quote = text.indexOf('"', prefix.length)
+  while (quote >= 0) {
+    const candidate = safeText(text.slice(prefix.length, quote), 1000)
+    const after = text[quote + 1]
+    // A mismatched prefix cannot become the recorded description at a later quote.
+    if (candidate && !description.startsWith(candidate)) break
+    // Embedded quotes may match a prefix; prefer the full heading when it is present.
+    if (candidate && (!after || /[^\p{L}\p{N}_]/u.test(after))) {
+      closingQuote = quote
+      if (candidate === description) break
+    }
+    quote = text.indexOf('"', quote + 1)
+  }
+  return closingQuote
+}
 export const routedDisplays: {
   sessionId?: string; root?: string; records: Map<string, RoutedDisplay>
 } = { records: new Map() }
@@ -255,7 +274,7 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
   return lines
 }
 
-// A grouped call's decision: its task, then the selection.
+// Use the neutral title; the written description may name an overridden model.
 const card = ($: any, e: any, record: RoutingRecord) => {
   const { Box, Text } = $.ui.resolve(e)
   return Box({
@@ -264,7 +283,7 @@ const card = ($: any, e: any, record: RoutingRecord) => {
     marginBottom: 1,
     children: [
       Text({ bold: true, children: [taskLabel(record)] }),
-      Text({ dimColor: true, children: ['Task request: ', record.task] }),
+      Text({ dimColor: true, children: ['Task request: ', record.title] }),
       ...selection($, e, record, '↳ ', 2),
     ],
   })
@@ -298,8 +317,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-// Routes one Agent call once. The parent's reply is held until its calls are routed so the
-// heading Claude draws names the model; a call that bypassed that path routes here instead.
+// Route each call once without altering the input auto mode may have reviewed.
 async function routeCall($: any, e: any): Promise<void> {
   const { options, autoModels } = routing
   const command = options!.routeCommand as readonly string[]
@@ -366,7 +384,6 @@ async function routeCall($: any, e: any): Promise<void> {
     if (route) {
       records.set(tool_use_id, {
         name: names.get(tool_use_id)!,
-        task: input.description || input.subagent_type || tool,
         title: taskTitle(input),
         model: route.model,
         rationale: route.rationale,
@@ -382,9 +399,12 @@ async function routeCall($: any, e: any): Promise<void> {
 export async function* routeAgentStream($: any, step: any, source: AsyncGenerator<any, any>): AsyncGenerator<any, any> {
   // Rewriting the reply would void a server-side auto-mode verdict, so that review keeps its input.
   if (await $.serverReview()) return yield* source
+  // With the local fallback check off, a rewrite would leave the call with no usable verdict
+  // and auto mode blocks it, so the stream passes through untouched; tool.call routes instead.
+  if (await $.fallbackOff()) return yield* source
   // Nothing to head when routing is off, so the reply streams untouched. An Auto launch keeps
-  // the model's heading too: its session model is a picker alias, which cannot stand in as the
-  // fallback reviewer once the server-side verdict is void.
+  // the model's heading too: its session model is a picker alias, which cannot stand in as
+  // the fallback reviewer once the server-side verdict is void.
   if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels
       || routing.options?.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI === '0') {
     return yield* source
@@ -478,7 +498,11 @@ export const registerSubagentRouting = (
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const result = await next(route ? { ...e, model: route.model } : e)
+    // The task shows the spawn description, so the routed label is set here — after the
+    // permission decision, never on the reviewed call. On the rewrite path the recorded
+    // description is already this heading; this is what labels the task in every other mode.
+    const label = route && showModel ? heading(route) : undefined
+    const result = await next(route ? { ...e, model: route.model, ...(label ? { description: label } : {}) } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
@@ -509,18 +533,25 @@ export const registerSubagentRouting = (
     return result
   })
 
-  // Claude's own notice already names the heading; a launch that differs from it is called out.
+  // The native notice quotes whichever description the task carries — the one the model
+  // wrote, or the spawn-time routed label — which can name the model the parent asked for;
+  // the receipt's label replaces it at render time, and a differing launch is flagged.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
-    if (!saved || !differs(saved.selected, saved.launched)) return next(e)
-    return next({ ...e, props: { ...e.props,
-      text: `${e.props.text}\n⚠ Launched on ${shortModel(saved.launched)}, not the ${shortModel(saved.selected)} in the heading`,
-    } })
+    if (!saved || typeof e.props.text !== 'string') return next(e)
+    const spawnedLabel = `${saved.animal} · ${shortModel(saved.selected)} · ${saved.title}`
+    const closingQuote = Math.max(quotedDescriptionEnd(e.props.text, saved.description),
+      quotedDescriptionEnd(e.props.text, spawnedLabel))
+    const text = closingQuote >= 0
+      ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(closingQuote + 1)}` : e.props.text
+    const flagged = differs(saved.selected, saved.launched) && text === e.props.text
+      ? `${text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}` : text
+    return flagged === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text: flagged } })
   })
 
-  // The agent list reads the launch receipt, so it shows the launched model whatever the heading said.
+  // The agent list reads the launch receipt rather than the prediction.
   on('ui.render', { component: 'AgentRow' }, async ($, e, next) => {
     if (!showModel) return next(e)
     const live = routedModels.record(e.requestId)
@@ -538,9 +569,9 @@ export const registerSubagentRouting = (
       ...e,
       props: { ...e.props, tool: name,
         ...(showModel && record && input !== null && typeof input === 'object' && !Array.isArray(input)
-          && record.spawned?.model && differs(record.model, record.spawned.model)
-          ? { input: { ...input, description: receiptLabel({ animal: record.name, title: record.title,
-            selected: record.model, launched: record.spawned.model }) } } : {}),
+          ? { input: { ...input, description: record.spawned?.model
+            ? receiptLabel({ animal: record.name, title: record.title, selected: record.model, launched: record.spawned.model })
+            : heading(record) } } : {}),
       },
     } : e)
     // The in-progress line names no model, so blind configs still show it; only the
@@ -563,8 +594,8 @@ export const registerSubagentRouting = (
       })] })
     }
     if (grouped.has(e.requestId)) return original
+    // The native lone row already includes the task title; another line would repeat it.
     return Box({ flexDirection: 'column', children: [original,
-      Text({ dimColor: true, children: ['  Task request: ', record.task] }),
       ...selection($, e, record, '  ↳ ', 4),
     ] })
   })

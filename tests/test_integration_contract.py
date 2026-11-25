@@ -1,11 +1,13 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import importlib.util
 import io
 import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -85,7 +87,7 @@ def test_managed_integration_ci_is_blocking():
     assert needs is not None
     assert "managed" in {job.strip() for job in needs.group(1).split(",")}
     assert (
-        "if: ${{ always() && (github.event_name != 'pull_request' || "
+        "if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     ) in gate
     baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
@@ -299,7 +301,8 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             )
         assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
         for name in ("full", "managed"):
-            assert "smart_routing: [false]" in jobs[name]
+            if name == "managed":
+                assert "smart_routing: [false]" in jobs[name]
             assert (
                 "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
                 "inputs.codex_version || '0.156.0' }}"
@@ -320,7 +323,9 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         full |= relay
     # Full skips smoke cases only because smoke runs them on the same OS matrix.
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
-    assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
+    for platform in ("ubuntu-22.04", "windows-latest"):
+        for lane_agent in ("claude", "codex"):
+            assert f"- os: {platform}\n            agent: {lane_agent}" in jobs["full"]
     assert not smoke & full
     selected = smoke | full
     if agent == "claude":
@@ -357,8 +362,11 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
     assert "DATABRICKS_BEARER:" not in job
-    assert "os: [ubuntu-22.04, windows-latest]" in job
-    assert "agent: [claude, copilot]" in job
+    # The blocking caller runs the sharded Claude legs; the advisory caller the Copilot legs.
+    assert "inputs.mode == 'required' &&" in job
+    assert "inputs.mode == 'advisory' &&" in job
+    assert '"agent":"claude","shard":"1/3"' in job
+    assert '"agent":"copilot"' in job
     assert "fail-fast: false" in job
     assert "group: databricks-protected-runner-group" in job
     assert (
@@ -374,7 +382,10 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
         "matrix.os == 'windows-latest' && 85 || 40 }}"
     ) in job
     assert "AGENT: ${{ matrix.agent }}" in job
-    assert "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}" in job
+    assert (
+        "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}"
+        "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in job
+    )
     selected = set()
     for agent in ("claude", "copilot"):
         cases = _collect_integration_cases(_ci_marker_expression(job, agent))
@@ -410,7 +421,13 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     jobs = _integration_jobs()
     assert "concurrency:" not in jobs["smoke"]
     assert "concurrency:" not in jobs["full"]
-    assert "max-parallel: 4" in jobs["full"]
+    assert "max-parallel:" not in jobs["full"]
+    assert "needs: workspace" in jobs["full"]
+    assert "not smoke" in _ci_marker_expression(jobs["full"], "claude")
+    assert "not smoke" in _ci_marker_expression(jobs["full"], "codex")
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in jobs["full"]
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in jobs["full"]
+    assert "E2E_ADMIN_SP_CLIENT_ID" not in jobs["full"]
 
 
 def test_full_claude_lane_includes_both_desktop_journeys():
@@ -420,7 +437,8 @@ def test_full_claude_lane_includes_both_desktop_journeys():
         "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle",
         "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay",
     } <= cases
-    assert "os: [ubuntu-22.04, windows-latest]" in full
+    for platform in ("ubuntu-22.04", "windows-latest"):
+        assert f"- os: {platform}\n            agent: claude" in full
     assert "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in full
 
 
@@ -466,7 +484,7 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing
 
 def _discover_cujs(root, output):
     plan = _workflow_job("dedicated-cuj-plan", "dedicated-cuj")
-    script = textwrap.dedent(plan.split("        run: |\n", 1)[1])
+    script = textwrap.dedent(plan.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=root,
@@ -636,15 +654,28 @@ def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     entries, stderr = _discover_cujs(root, tmp_path / "github-output")
 
     assert entries is not None, stderr
-    assert [entry["test"] for entry in entries] == sorted(
-        path.name for path in (root / "tests/e2e_cuj").glob("test_*.py")
+    files = sorted(path.name for path in (root / "tests/e2e_cuj").glob("test_*.py"))
+    assert sorted({entry["test"] for entry in entries}) == files
+    assert len({entry["name"] for entry in entries}) == len(files), (
+        f"Duplicate CUJ_NAME values: {[entry['name'] for entry in entries]}"
     )
-    names = [entry["name"] for entry in entries]
-    assert len(set(names)) == len(names), f"Duplicate CUJ_NAME values: {names}"
     for entry in entries:
         number = re.fullmatch(r"test_cuj(\d+)_[a-z0-9_]+\.py", entry["test"])
         assert number, f"Name CUJ files test_cuj<N>_<topic>.py: {entry['test']}"
         assert entry["name"].startswith(f"CUJ {number.group(1)} · "), entry
+    # A file recorded with several shards expands to that many matrix entries, 1/N through N/N.
+    recorded = json.loads((root / "tests/live_test_times.json").read_text())
+    for path in files:
+        shards = recorded.get(f"cuj-{path}", {}).get("Linux", {}).get("shards", 1)
+        legs = [entry for entry in entries if entry["test"] == path]
+        assert len(legs) == shards
+        for entry in legs:
+            if shards > 1:
+                index, _, total = entry["shard"].partition("/")
+                assert (int(index), int(total)) == (legs.index(entry) + 1, shards)
+                assert entry["shard_index"] == legs.index(entry) + 1
+            else:
+                assert "shard" not in entry and "shard_index" not in entry
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -685,6 +716,7 @@ SKIPPED_ON_FORK_PRS = {
     "codex-desktop-windows",
     "dedicated-cuj-plan",
     "dedicated-cuj",
+    "live-shard-times",
     "cujs",
 }
 
@@ -702,8 +734,9 @@ def _skips_fork_prs(jobs, name):
         return True
     needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
     for need in [need.strip() for need in needs.group(1).split(",")] if needs else []:
-        requires_success = (
-            condition is None or f"needs.{need}.result == 'success'" in condition.group(1)
+        expression = condition.group(1) if condition else ""
+        requires_success = f"needs.{need}.result == 'success'" in expression or not re.search(
+            r"\b(?:always|cancelled|failure|success)\(\)", expression
         )
         if requires_success and _skips_fork_prs(jobs, need):
             return True
@@ -945,8 +978,8 @@ def _run_security_gate(
     request_change=None,
     api_error=None,
 ):
-    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
-    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
+    body = _workflow("security-gate.yml").split("        run: |\n", 1)[1].split("\n      - ", 1)[0]
+    script = textwrap.dedent(body).removeprefix("python3 - <<'PY'\n").removesuffix("PY")
     for key, value in {
         "REPO": "databricks/unity-gateway",
         "PR_NUMBER": pr,
@@ -1112,7 +1145,8 @@ def test_security_gate_runner_and_token_respect_event_trust(event_name, head_rep
     workflow = _workflow("security-gate.yml")
     runner = re.search(r"runs-on: >-\n(.*?)\n    timeout-minutes:", workflow, re.S)[1]
     token = re.search(r"GH_TOKEN: (.*)", workflow)[1]
-    condition = re.search(r"        if: (.*)", workflow)[1]
+    wait_step = workflow.split("      - name: Wait for the shared Security Scan\n", 1)[1]
+    condition = re.search(r"        if: (.*)", wait_step)[1]
     github = SimpleNamespace(
         event_name=event_name,
         repository="databricks/unity-gateway",
@@ -1262,6 +1296,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "codex-desktop-windows",
         "dedicated-cuj-plan",
         "dedicated-cuj",
+        "live-shard-times",
     ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
@@ -1288,6 +1323,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "codex-desktop-windows",
             "dedicated-cuj-plan",
             "dedicated-cuj",
+            "live-shard-times",
         )
     }
     results[failed_job]["result"] = job_result
@@ -1486,6 +1522,19 @@ def test_live_suites_use_fresh_id_for_random_ids():
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="CI parses these on Linux runners")
+def test_cowork_shell_scripts_parse():
+    # The ${VAR:?message} word re-parses quotes, so an apostrophe in it breaks the whole script;
+    # bash -n keeps that from reaching a macOS lane.
+    scripts = sorted((Path(__file__).parent.parent / "scripts/cowork-inference").rglob("*.sh"))
+    assert scripts
+    for path in scripts:
+        result = subprocess.run(
+            ["bash", "-n", str(path)], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0, f"{path}: {result.stderr}"
+
+
 @pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
 def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
@@ -1494,7 +1543,7 @@ def test_cowork_ci_permissions_and_required_gate(job_name):
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert condition.group(1) == (
-        "${{ github.event_name != 'merge_group' && "
+        "${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && "
         "(github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     )
@@ -1568,7 +1617,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     job = jobs["anthropic-mps"]
     assert (
         "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+        "matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}\n"
     ) in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
@@ -1625,7 +1674,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
 )
 def test_required_e2e_enforces_integration_result(event, integration_result, passes):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
-    script = required.split("        run: ", 1)[1].strip()
+    script = required.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
@@ -1683,31 +1732,49 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
 @pytest.mark.parametrize(
-    ("lint", "unit", "vscode", "passes"),
+    "failing",
     [
-        ("success", "success", "success", True),
-        ("failure", "success", "success", False),
-        ("skipped", "success", "success", False),
-        ("cancelled", "success", "success", False),
-        ("success", "failure", "success", False),
-        ("success", "success", "failure", False),
+        None,
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
     ],
 )
-def test_required_tests_enforces_lint_result(lint, unit, vscode, passes):
+@pytest.mark.parametrize("bad", ["failure", "skipped", "cancelled"])
+def test_required_tests_enforces_lint_result(failing, bad):
     required = (
         _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
     )
-    assert "    needs: [lint, test, vscode-extension]\n" in required
-    script = required.split("        run: |", 1)[1]
+    assert (
+        "    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, "
+        "vscode-extension]\n" in required
+    )
+    script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "COVERAGE_RESULT": "success",
+    }
+    if failing:
+        env[failing] = bad
     result = subprocess.run(
         ["/bin/bash", "-c", textwrap.dedent(script)],
-        env={**os.environ, "LINT_RESULT": lint, "RESULT": unit, "VSCODE_EXTENSION_RESULT": vscode},
+        env=env,
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
-    assert (result.returncode == 0) is passes, result.stderr
+    assert (result.returncode == 0) is (failing is None), result.stderr
 
 
 def test_integration_requires_a_passing_security_gate():
@@ -1718,3 +1785,660 @@ def test_integration_requires_a_passing_security_gate():
     condition = re.search(r"(?m)^    if: (.*)$", integration).group(1)
     assert "needs.security-gate.result == 'success'" in condition
     assert "security-gate" in re.search(r"(?m)^    needs: (.*)$", integration).group(1)
+
+
+@pytest.mark.parametrize(
+    ("args", "workspace", "workers"),
+    [
+        # The unit CI job passes only --ignore=tests/test_e2e.py, which pytest keeps out of args.
+        ([], "", None),
+        (["tests/test_cli.py"], "", None),
+        (["tests/test_e2e.py"], "", 0),
+        (["tests/test_e2e.py::TestUnityGateway"], "", 0),
+        ([], "https://workspace.example", 0),
+    ],
+)
+def test_live_runs_stay_serial_under_xdist(monkeypatch, args, workspace, workers):
+    from types import SimpleNamespace
+
+    from tests import conftest
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", workspace)
+    assert conftest.pytest_xdist_auto_num_workers(SimpleNamespace(args=args)) == workers
+
+
+@pytest.mark.parametrize(
+    ("args", "parallel"),
+    [
+        # Deselect every live test: the hook decides the worker count before collection.
+        (["tests/test_e2e.py", "-k", "no_such_test"], False),
+        (["tests/test_jsonc.py"], True),
+    ],
+)
+def test_pytest_discovers_the_serial_live_hook(args, parallel):
+    # The child run must not inherit this CI shard or overwrite its coverage report.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    # Two workers: enough to show the hook left unit runs parallel without starting one child
+    # worker per CPU inside every parent xdist worker.
+    env = {key: value for key, value in os.environ.items() if key not in skip}
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (0, 5), result.stdout + result.stderr
+    assert ("workers [" in result.stdout) is parallel, result.stdout
+
+
+def test_unit_shards_run_every_test_exactly_once():
+    from tests import shard
+
+    files = [f"tests/test_{name}.py" for name in "abcdefgh"]
+    slow = {"tests/test_a.py::test_0": 9.0, "tests/test_a.py::test_1": 3.0}
+    times = {"files": {"tests/test_a.py": [40.0, 100], "tests/test_b.py": [0.5, 10]}, "slow": slow}
+    nodeids = [
+        f"{path}::test_{index}" for path in files for index in range(100 if "_a" in path else 10)
+    ]
+    for total in (1, 3, 20, 40):
+        plan = shard.plan(files, total, times)
+        assert plan == shard.plan(list(files), total, times)  # identical on every shard
+        owners = [
+            [
+                index
+                for index, owned in enumerate(shard.owned_tests(units, nodeids, set(slow)))
+                if owned
+            ]
+            for units in plan
+        ]
+        assert sorted(index for owned in owners for index in owned) == list(range(len(nodeids)))
+    # Slow tests are units of their own; the rest of a slow file spreads across shards.
+    plan = shard.plan(files, 8, times)
+    assert sum(("test", "tests/test_a.py::test_0") in units for units in plan) == 1
+    owners = {
+        index for index, units in enumerate(plan) for unit in units if unit[1] == "tests/test_a.py"
+    }
+    # 40 s less 12 s of slow tests leaves 28 s: seven 4-second chunks on seven shards.
+    assert len(owners) == 7
+    assert shard.test_files() == sorted(
+        f"tests/{path.name}"
+        for path in Path(shard.TESTS).glob("test_*.py")
+        if path.name != "test_e2e.py"
+    )
+
+
+def test_unit_shard_loads_stay_balanced():
+    from tests import shard
+
+    for system, total in (("Linux", 24), ("Windows", 64)):
+        times = shard.load_times(system)
+        assert all(seconds >= shard.SLOW_SECONDS for seconds in times["slow"].values())
+        plan = shard.plan(shard.test_files(), total, times)
+        units = sorted(unit for owned in plan for unit in owned)
+        assert len(units) == len(set(units))
+        weights = []
+        for owned in plan:
+            load = 0.0
+            for unit in owned:
+                if unit[0] == "test":
+                    load += times["slow"][unit[1]]
+                else:
+                    slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                    load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+            weights.append(load)
+        assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+@pytest.mark.parametrize("spec", ["0/4", "5/4", "x/4"])
+def test_unit_shard_spec_rejects_bad_values(spec):
+    from tests import shard
+
+    with pytest.raises(ValueError):
+        shard.parse(spec)
+
+
+def _write_unit_shard_artifact(root, system, *, first_file_cases, first_file_collected):
+    """Write one downloaded shard artifact that owns every unit file whole.
+
+    The report claims the first file collected ``first_file_collected`` tests while its JUnit
+    holds exactly ``first_file_cases``, so a defect under test can make the two disagree.
+    """
+    from tests import shard
+
+    files = shard.test_files()
+    directory = root / f"unit-shard-{system}-1"
+    directory.mkdir(parents=True)
+    collected = {}
+    cases = []
+    for path in files:
+        module = Path(path).stem
+        if path == files[0]:
+            file_cases, count = first_file_cases, first_file_collected
+        else:
+            file_cases = [
+                (f"tests.{module}", "test_0", 0.1),
+                (f"tests.{module}", "test_1", 0.1),
+            ]
+            count = 2
+        cases += file_cases
+        collected[path] = count
+    junit = (
+        "<testsuite>"
+        + "".join(
+            f'<testcase classname="{classname}" name="{name}" time="{seconds}"/>'
+            for classname, name, seconds in cases
+        )
+        + "</testsuite>"
+    )
+    (directory / "junit.xml").write_text(junit, encoding="utf-8")
+    (directory / "shard-report.json").write_text(
+        json.dumps(
+            {
+                "shard": "1/1",
+                "units": [["chunk", path, 1, 1] for path in files],
+                "collected": collected,
+                "selected": sum(collected.values()),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _audit_unit_shards(tmp_path):
+    """Run scripts/unit_test_times.py over tmp_path's shard artifacts; return the result."""
+    script = Path(__file__).parent.parent / "scripts" / "unit_test_times.py"
+    output = tmp_path / "unit_test_times.json"
+    result = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "shards"), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result, output
+
+
+def test_unit_test_times_accepts_a_complete_shard_run(tmp_path):
+    """A both-OS shard set covering every test once passes and rebuilds class-qualified ids."""
+    from tests import shard
+
+    files = shard.test_files()
+    first = Path(files[0])
+    slow = round(shard.SLOW_SECONDS + 1, 2)
+    # Every file collects two tests; the first file also holds a class-based slow test, to
+    # prove the audit rebuilds its full nodeid from the JUnit classname.
+    cases = [
+        (f"tests.{first.stem}", "test_0", 0.1),
+        (f"tests.{first.stem}", "test_1", 0.1),
+        (f"tests.{first.stem}.TestRebuild", "test_slow", slow),
+    ]
+    for system in ("Linux", "Windows"):
+        _write_unit_shard_artifact(
+            tmp_path / "shards", system, first_file_cases=cases, first_file_collected=3
+        )
+    result, output = _audit_unit_shards(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    times = json.loads(output.read_text(encoding="utf-8"))
+    assert sorted(times) == ["Linux", "Windows"]
+    for system in ("Linux", "Windows"):
+        assert sorted(times[system]["files"]) == files
+        assert times[system]["slow"][f"{files[0]}::TestRebuild::test_slow"] == slow
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["a test ran twice", "a test never ran", "an OS never reported"],
+)
+def test_unit_test_times_rejects_incomplete_shard_runs(defect, tmp_path):
+    """A re-run test, a lost test or a missing OS fails the exactly-once audit.
+
+    A test that ran twice while another in the same file never ran keeps every per-file count
+    correct, so only the per-test check catches it.
+    """
+    from tests import shard
+
+    files = shard.test_files()
+    first = Path(files[0])
+    if defect == "a test ran twice":
+        cases = [
+            (f"tests.{first.stem}", "test_0", 0.1),
+            (f"tests.{first.stem}", "test_0", 0.1),
+        ]
+        collected = 2
+    else:
+        cases = [(f"tests.{first.stem}", "test_0", 0.1)]
+        collected = 2
+    _write_unit_shard_artifact(
+        tmp_path / "shards", "Linux", first_file_cases=cases, first_file_collected=collected
+    )
+    if defect != "an OS never reported":
+        _write_unit_shard_artifact(
+            tmp_path / "shards",
+            "Windows",
+            first_file_cases=cases,
+            first_file_collected=collected,
+        )
+    result, _ = _audit_unit_shards(tmp_path)
+    # SystemExit reports its message on stderr, where CI's job log shows it.
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "::error::Unit shards did not cover the suite" in result.stderr
+    if defect == "a test ran twice":
+        assert f"Linux: {files[0]}::test_0 ran 2 times" in result.stderr
+    elif defect == "a test never ran":
+        assert f"Linux: {files[0]} ran 1 of 2 tests" in result.stderr
+    else:
+        assert "Windows: no unit shard artifacts" in result.stderr
+
+
+LIVE_SHARD_LANES = (
+    # (job, lane, agent) for the integration lanes CI splits by test file and case.
+    ("full", "full-claude", "claude"),
+    ("anthropic-mps", "anthropic-mps-claude", "claude"),
+)
+
+
+@pytest.mark.parametrize(("job_name", "lane", "agent"), LIVE_SHARD_LANES)
+def test_live_shards_run_every_case_exactly_once(job_name, lane, agent):
+    from tests import live_shard, shard
+
+    jobs = _integration_jobs()
+    times = live_shard.lane_times(lane, "Windows")
+    cases = sorted(_collect_integration_cases(_ci_marker_expression(jobs[job_name], agent)))
+    assert cases
+    files = sorted({shard.file_of(case) for case in cases})
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", files, "Windows")
+        owned = shard.owned_tests(units, cases, set(times["slow"]))
+        owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
+    # Every case of the lane runs in exactly one shard, whatever files CI collects on the lane.
+    assert sorted(case for owned in owners for case in owned) == cases
+
+
+@pytest.mark.parametrize("lane", [entry[1] for entry in LIVE_SHARD_LANES])
+def test_live_shard_loads_stay_balanced(lane):
+    from tests import live_shard, shard
+
+    times = live_shard.lane_times(lane, "Windows")
+    assert times["files"], "record fresh times from the live-test-times artifact"
+    files = sorted(times["files"])
+    total = times["shards"]
+    plan = [
+        live_shard.units_for(lane, f"{index}/{total}", files, "Windows")
+        for index in range(1, total + 1)
+    ]
+    units = sorted(unit for owned in plan for unit in owned)
+    assert len(units) == len(set(units))
+    weights = []
+    for owned in plan:
+        load = 0.0
+        for unit in owned:
+            if unit[0] == "test":
+                load += times["slow"][unit[1]]
+            else:
+                slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+        weights.append(load)
+    assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+@pytest.mark.parametrize(("lane", "job_name"), [(entry[1], entry[0]) for entry in LIVE_SHARD_LANES])
+def test_live_shard_matrix_matches_the_recorded_shard_count(lane, job_name):
+    from tests import live_shard
+
+    jobs = _integration_jobs()
+    total = live_shard.lane_times(lane, "Windows")["shards"]
+    legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', jobs[job_name])
+    if legs:  # full: the shard legs are plain matrix entries.
+        assert sorted(legs, key=lambda leg: int(leg[0])) == [
+            (str(index), str(total)) for index in range(1, total + 1)
+        ]
+    else:  # anthropic-mps: the mode input selects the legs, so the shards live in its JSON.
+        for index in range(1, total + 1):
+            assert f'"shard":"{index}/{total}"' in jobs[job_name]
+        assert "inputs.mode == 'advisory' &&" in jobs[job_name]
+    # Sharded lanes feed the spec to the shared runner step; every leg uploads its own artifact.
+    assert "LIVE_SHARD: ${{ matrix.shard || '' }}" in jobs[job_name]
+    assert f"LIVE_SHARD_LANE: {lane}" in jobs[job_name]
+    assert "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in jobs[job_name]
+
+
+def test_cuj_shards_run_every_case_exactly_once():
+    from tests import live_shard, shard
+
+    test = "test_cuj4_smart_routing.py"
+    lane = f"cuj-{test}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--confcutdir=tests/e2e_cuj",
+            f"tests/e2e_cuj/{test}",
+            "--collect-only",
+            "-q",
+        ],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    cases = sorted(line for line in result.stdout.splitlines() if line.startswith("test_"))
+    assert cases
+    times = live_shard.lane_times(lane, "Linux")
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", [test], "Linux")
+        owned = shard.owned_tests(units, cases, set(times["slow"]))
+        owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
+    assert sorted(case for owned in owners for case in owned) == cases
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the CUJ lanes run on Linux")
+def test_cuj_shards_deselect_through_a_real_pytest_run(tmp_path):
+    # Drive the real collection hooks: each shard keeps only its cases, writes its report, and
+    # the shards together keep every case exactly once.
+    skip = {"UCODE_TEST_WORKSPACE", "UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"}
+    shards = []
+    for index in (1, 2, 3):
+        report = tmp_path / f"shard-{index}.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "--confcutdir=tests/e2e_cuj",
+                "tests/e2e_cuj/test_cuj4_smart_routing.py",
+                "--collect-only",
+                "-q",
+            ],
+            cwd=Path(__file__).parent.parent,
+            env={
+                **{key: value for key, value in os.environ.items() if key not in skip},
+                "UG_LIVE_SHARD": f"{index}/3",
+                "UG_LIVE_SHARD_LANE": "cuj-test_cuj4_smart_routing.py",
+                "UG_LIVE_SHARD_REPORT": str(report),
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        kept = {line for line in result.stdout.splitlines() if line.startswith("test_")}
+        assert kept
+        written = json.loads(report.read_text())
+        assert written["shard"] == f"{index}/3"
+        assert written["expected"]["test_cuj4_smart_routing.py"] == len(kept)
+        shards.append(kept)
+    assert len(set().union(*shards)) == sum(len(kept) for kept in shards)
+    baseline = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "--confcutdir=tests/e2e_cuj",
+            "tests/e2e_cuj/test_cuj4_smart_routing.py",
+            "--collect-only",
+            "-q",
+        ],
+        cwd=Path(__file__).parent.parent,
+        env={key: value for key, value in os.environ.items() if key not in skip},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert set().union(*shards) == {
+        line for line in baseline.stdout.splitlines() if line.startswith("test_")
+    }
+
+
+def test_run_integration_accepts_both_shard_flags():
+    # The flags left the mutually exclusive group once (argparse: "not allowed with argument"),
+    # which failed every Full journeys - Claude - Windows shard in 28 s.
+    spec = importlib.util.spec_from_file_location(
+        "run_integration", Path(__file__).parent.parent / "scripts/run_integration.py"
+    )
+    run_integration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_integration)
+    base = [
+        "--claude-version",
+        "2.1.290",
+        "--python",
+        "3.12",
+        "--ug-version",
+        "checkout",
+        "--workspace",
+        "https://example.databricks.com",
+        "--profile",
+        "ci",
+    ]
+    args = run_integration.arguments(base + ["--test-shard", "1/4", "--shard-lane", "full-claude"])
+    assert args.test_shard == "1/4" and args.shard_lane == "full-claude"
+    with pytest.raises(SystemExit):
+        run_integration.arguments(base + ["--test-shard", "1/4"])
+
+
+def test_live_shard_coverage_gate_downloads_every_shard_artifact():
+    job = _workflow_job("live-shard-times", "cujs")
+    for pattern in (
+        "integration-full-claude-windows-latest-shard*",
+        "integration-anthropic-mps-claude-windows-latest-shard*",
+        "e2e-cujs-*shard*",
+    ):
+        assert f"pattern: {pattern}" in job
+    assert "python3 scripts/live_shard_times.py" in job
+    gate = _workflow_job("cujs", "codex-desktop-macos")
+    assert "live-shard-times" in re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate).group(1)
+
+
+JUNIT_CASE = (
+    '<?xml version="1.0" encoding="utf-8"?><testsuite name="x" tests="{count}">{cases}</testsuite>'
+)
+
+
+def _fake_shard(root, name, report, cases):
+    directory = root / name
+    directory.mkdir(parents=True)
+    (directory / "shard-report.json").write_text(json.dumps(report), encoding="utf-8")
+    body = "".join(
+        f'<testcase classname="{classname}" name="{case}" time="{seconds}"/>'
+        for classname, case, seconds in cases
+    )
+    (directory / "junit.xml").write_text(JUNIT_CASE.format(count=len(cases), cases=body))
+
+
+def _fake_lane_artifacts(root, lane, system, total):
+    """One case per shard: disjoint units, agreeing collected files, no marker drops."""
+    for index in range(1, total + 1):
+        _fake_shard(
+            root,
+            f"{lane}-{system}-shard{index}",
+            {
+                "lane": lane,
+                "os": system,
+                "shard": f"{index}/{total}",
+                "units": [["test", f"test_x.py::c{index}"]],
+                "files": {"test_x.py": total},
+                "expected": {"test_x.py": 1},
+                "marker_deselected": {},
+            },
+            [("test_x", f"c{index}", "3.0")],
+        )
+
+
+def test_live_shard_times_verifies_coverage_and_records(tmp_path):
+    from tests import live_shard
+
+    lanes = live_shard.expected_shards()
+    for lane, (system, total) in sorted(lanes.items()):
+        _fake_lane_artifacts(tmp_path, lane, system, total)
+    recorded = tmp_path / "recorded.json"
+    result = subprocess.run(
+        [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    output = json.loads(recorded.read_text())
+    assert set(output) == set(lanes)
+    total = lanes["full-claude"][1]
+    assert output["full-claude"] == {
+        "Windows": {
+            "shards": total,
+            "files": {"test_x.py": [round(3.0 * total, 2), total]},
+            "slow": {f"test_x.py::c{index}": 3.0 for index in range(1, total + 1)},
+        }
+    }
+    # A shard that never uploaded its artifact fails the proof for its whole lane.
+    shutil.rmtree(tmp_path / f"full-claude-Windows-shard{total}")
+    result = subprocess.run(
+        [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "full-claude/Windows: shard set is" in result.stderr + result.stdout
+
+
+def test_checks_run_exactly_the_just_lint_commands():
+    """`Checks` runs ruff and ty without just; the commands must not drift from `just lint`."""
+    justfile = (Path(__file__).parent.parent / "justfile").read_text()
+    checks = _workflow("ci.yml").split("\n  checks:\n", 1)[1].split("\n  unit-linux:\n", 1)[0]
+    for recipe, command in (
+        ("ruff-check", "ruff check src/ tests/"),
+        ("ruff-format-check", "ruff format --check src/ tests/"),
+        ("ty", "ty check src/"),
+    ):
+        assert f"{recipe}:\n    uv run {command}\n" in justfile, recipe
+        assert f'"$VENV_BIN/{command.split()[0]}" {command.split(" ", 1)[1]}' in checks, recipe
+    assert "lint: ruff-check ruff-format-check ty\n" in justfile
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("coverage", ["success", "skipped", "failure"])
+def test_required_tests_requires_unit_shard_coverage(coverage):
+    required = (
+        _workflow("ci.yml").split("\n  required-tests:\n", 1)[1].split("\n  required-e2e:\n")[0]
+    )
+    script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
+    names = [
+        "LINT_RESULT",
+        "RESULT",
+        "WINDOWS_RESULT",
+        "PROVISIONING_RESULT",
+        "VSCODE_EXTENSION_RESULT",
+    ]
+    env = {
+        **os.environ,
+        **dict.fromkeys(names, "success"),
+        "COVERAGE_RESULT": coverage,
+    }
+    result = subprocess.run(
+        ["/bin/bash", "-c", textwrap.dedent(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (coverage == "success"), result.stderr
+
+
+@pytest.mark.parametrize(
+    ("job_name", "needs"),
+    [
+        ("codex-desktop-macos", "managed"),
+        ("codex-desktop-windows", "[managed, codex-desktop-macos]"),
+    ],
+)
+def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
+    # These lanes share one model quota; 429s appeared only when ten or more overlapped across
+    # runs, and the merge queue builds up to five entries at once.
+    jobs = _integration_jobs()
+    assert f"\n    needs: {needs}\n" in jobs[job_name]
+    assert "    if: ${{ !cancelled() && " in jobs[job_name]
+    assert "      max-parallel: 1\n" in jobs["managed"]
+
+
+def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
+    workflow = _workflow("ci.yml")
+    jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", workflow))
+    required = jobs["integration"]
+    advisory = jobs["integration-advisory"]
+    for job in (required, advisory):
+        assert "needs.security-gate.result == 'success'" in job
+        assert "github.event_name != 'merge_group'" in job
+        assert "uses: ./.github/workflows/integration.yml" in job
+    assert "needs: security-gate" in required
+    assert "mode: required" in required
+    assert "needs: [security-gate, integration]" in advisory
+    assert "mode: advisory" in advisory
+    assert "needs: [e2e, integration]" in jobs["required-e2e"]
+
+
+def test_integration_modes_preserve_blocking_and_advisory_lanes():
+    jobs = _integration_jobs()
+    required = {
+        "installation",
+        "installation-windows",
+        "cowork-inference-windows",
+        "cowork-inference-macos",
+        "smoke",
+        "headless-windows",
+        "full",
+        "codex-relay",
+        "antigravity",
+        "managed",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+        "cujs",
+        "codex-desktop-macos",
+        "codex-desktop-windows",
+    }
+    advisory = {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"}
+    for name in required:
+        assert "inputs.mode != 'advisory'" in jobs[name], name
+    for name in advisory:
+        assert "inputs.mode != 'required'" in jobs[name], name
+    assert "inputs.mode == 'required'" in jobs["anthropic-mps"]
+    assert "inputs.mode == 'advisory'" in jobs["anthropic-mps"]
+    assert "needs: [workspace, full, managed]" in jobs["soft-fail"]
+    cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert cujs_needs is not None
+    assert {name.strip() for name in cujs_needs.group(1).split(",")} == {
+        "installation",
+        "installation-windows",
+        "headless-windows",
+        "cowork-inference-windows",
+        "cowork-inference-macos",
+        "workspace",
+        "smoke",
+        "full",
+        "codex-relay",
+        "anthropic-mps",
+        "antigravity",
+        "managed",
+        "codex-desktop-macos",
+        "codex-desktop-windows",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+        "live-shard-times",
+    }
+    for name in required | advisory:
+        condition = re.search(r"(?m)^    if: (.*)$", jobs[name]).group(1)
+        if FORK_GUARD in condition:
+            assert f"({FORK_GUARD})" in condition, name
+    assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]

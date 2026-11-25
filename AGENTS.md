@@ -13,7 +13,7 @@ Tests live in `tests/`.
 - Run the full test suite with `uv run pytest`.
 - Run focused tests with `uv run pytest tests/<file>.py`.
 - Run e2e tests with `UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v`.
-- Run the lint gate (ruff check + ruff format check + ty) with `just lint`; `just fix` autofixes. These are the same checks CI's Lint job runs. Without `just` installed, use `uvx --from rust-just just lint`, or run the underlying `uv run ruff ...` / `uv run ty ...` commands directly.
+- Run the lint gate (ruff check + ruff format check + ty) with `just lint`; `just fix` autofixes. These are the same checks CI's `Checks` job runs. Without `just` installed, use `uvx --from rust-just just lint`, or run the underlying `uv run ruff ...` / `uv run ty ...` commands directly.
 - Run the CLI from the current checkout with `uv run ug ...`.
 - Reinstall the local checkout as the Unity Gateway tool with `uv tool install --reinstall .`.
 
@@ -132,7 +132,7 @@ Usage and routing instrumentation uses these constants (all in `metrics`):
 | --- | --- |
 | `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
 | `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent` and `http_status_code` when a response is available. |
-| `ROUTE_VALIDATION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around the startup `routes:validate` call, including the HTTP request and its 4 s deadline; an HTTP 404 leaves routing on, while any other failure or a missed deadline turns it off. Its HTTP attempt uses `api_operation="routes_validate"`. |
+| `ROUTE_VALIDATION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around the startup and `/smart-router on` `routes:validate` calls, including the HTTP request and its 10 s deadline. An HTTP 404 leaves routing on; any other failure, a missed deadline, or an unsupported list turns it off at startup and on `/smart-router on`. Its HTTP attempt uses `api_operation="routes_validate"`. |
 
 All three durations are recorded on success and failure. Use `subagent_routing()` around
 subagent route selection so its trigger is scoped to that decision. Each routing HTTP
@@ -354,6 +354,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
 | `parentSettingsBehavior` | Create/replace | Create/replace | Managed file only: `"merge"`, so Claude Desktop layers its own policy for Cowork and Chat under this file instead of dropping it (and stops warning about it). Like the header mod, only `ug configure` adds it and a plain launch never does; an administrator's own value is kept. Revert removes it |
 | Header mod | Merge | Merge | Managed file only, Linux, macOS, and Windows: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in an administrator-only `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure` (a terminal, or in place over an existing managed file through `sudo -n`; on Windows, elevated), never by a launch (even with `UG_HEADERS`, which instead warns when no header mod is enabled: neither ug's, current, nor another tool's enabled `ug-headers@` plugin such as Isaac's), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
+| Recipe mod | Merge | Merge | Managed file only, Linux, macOS, and Windows: `enabledPlugins["ug-smart-router-recipe@ucode-managed"]` and that mod beside `ug-headers@ucode-managed` in `prependPlugins` (an unset list becomes both mods plus `sec-default@builtin`). The mod's files ship in the header mod's `ucode-plugins` marketplace folder, and it alone writes the smart-router recipe into `CLAUDE_CODE_EXTRA_BODY`: the session mod never touches that variable, which Claude 2.1.331's guard denies to the user tier, so a machine without this mod simply sends no recipe. It re-reads the routing flags on every turn step, so a `/smart-router` toggle reaches the next request regardless of mod order. Installed and enabled by `ug configure` like the header mod, and by a managed run, which installs only this mod (per-launch headers stay out of one) into `prependPlugins` ahead of `sec-default@builtin` while keeping the administrator's own entries; revert removes its entries with the header mod's |
 
 </details>
 
@@ -371,6 +372,9 @@ and its tests.
   exists (`managed_files.published_agent_config_used()`), every other run skips the machine-wide
   files, as `UG_SKIP_OS_SETTINGS` does, and reads the agent configuration that the managed run
   saved.
+- A managed run also installs and enables the recipe mod (never the header mod: a managed run
+  doesn't support per-launch headers), so the smart-router recipe reaches the gateway from the
+  policy tier on Claude releases that seat the guard.
 - Without the marker file, a workspace with no agent configuration makes `--global` merge as the
   tables describe.
 

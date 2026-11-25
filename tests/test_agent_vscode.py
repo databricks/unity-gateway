@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -25,6 +26,9 @@ from ucode.managed_files import OS
 # The conftest fixture stubs these out for every test; the ones here exercise the real lookups.
 REAL_FIND_CODE = vscode.find_code
 REAL_FIND_COMMAND = vscode._find_command
+REAL_FIND_INSTALL = vscode.find_install
+REAL_FIRST_CODE_ON_PATH = vscode.first_code_on_path
+REAL_INSTALL_LOCATIONS = vscode._install_locations
 REAL_RUN_CODE = vscode._run_code
 REAL_USER_DIR = vscode.user_dir
 
@@ -72,10 +76,17 @@ class FakeCode:
         return subprocess.CompletedProcess(args, 0, "", "")
 
 
+FAKE_INSTALL = vscode.VSCodeInstall(
+    Path("/fake/bin/code"), Path("/fake/app"), {"nameShort": "Code", "version": "1.147.0"}
+)
+
+
 @pytest.fixture
 def code(monkeypatch):
     fake = FakeCode(vscode.extensions_dir(".vscode"))
     monkeypatch.setattr(vscode, "find_code", lambda: Path("/fake/bin/code"))
+    monkeypatch.setattr(vscode, "find_install", lambda prefer_runtime=False: FAKE_INSTALL)
+    monkeypatch.setattr(vscode, "first_code_on_path", lambda: Path("/fake/bin/code"))
     monkeypatch.setattr(vscode, "_find_command", lambda command: Path(f"/fake/bin/{command}"))
     monkeypatch.setattr(vscode, "_run_code", fake)
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace: "token")
@@ -1020,41 +1031,94 @@ class TestRevertSettings:
         assert REAL_USER_DIR(insiders=insiders) == Path.home() / expected
 
 
+def _desktop(
+    root: Path,
+    *,
+    layout: str = "code",
+    name: str = "Code",
+    version: str = "1.147.0",
+    targets: tuple[str, ...] = (),
+    command: str = "code",
+) -> Path:
+    """A fake VS Code install under ``root``: `bin/<command>`, `resources/app/product.json` and a
+    bundled runtime per target. Returns the `code` command."""
+    app = root / layout / "resources" / "app"
+    app.mkdir(parents=True)
+    (app / "product.json").write_text(json.dumps({"nameShort": name, "version": version}))
+    for target in targets:
+        runtime = (
+            app
+            / "node_modules.asar.unpacked/@github"
+            / f"copilot-sdk-{target}/prebuilds/{target}"
+            / "copilot-runtime"
+        )
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text("")
+    code = root / layout / "bin" / command
+    code.parent.mkdir(parents=True, exist_ok=True)
+    code.write_text("")
+    return code
+
+
+def _on_path(monkeypatch, *dirs: Path) -> None:
+    monkeypatch.setenv("PATH", os.pathsep.join(str(d) for d in dirs))
+
+
 class TestFindCode:
     @pytest.fixture(autouse=True)
     def _real_lookup(self, monkeypatch):
         monkeypatch.setattr(vscode, "find_code", REAL_FIND_CODE)
         monkeypatch.setattr(vscode, "_find_command", REAL_FIND_COMMAND)
+        monkeypatch.setattr(vscode, "find_install", REAL_FIND_INSTALL)
+        monkeypatch.setattr(vscode, "first_code_on_path", REAL_FIRST_CODE_ON_PATH)
+        monkeypatch.setattr(vscode, "current_os", lambda: OS.LINUX)
+        monkeypatch.setattr(vscode, "_install_locations", lambda command: [])
+        monkeypatch.delenv("UG_VSCODE_CODE", raising=False)
 
-    def test_prefers_code_on_path(self, monkeypatch):
-        monkeypatch.setattr(vscode.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+    def test_prefers_code_on_path(self, monkeypatch, tmp_path):
+        code = _desktop(tmp_path)
+        _on_path(monkeypatch, code.parent)
 
-        assert vscode.find_code() == Path("/usr/local/bin/code")
+        assert vscode.find_code() == code
+        assert vscode.first_code_on_path() == code
 
-    def test_falls_back_to_insiders(self, monkeypatch):
-        monkeypatch.setattr(
-            vscode.shutil,
-            "which",
-            lambda name: "/opt/bin/code-insiders" if name == "code-insiders" else None,
-        )
+    def test_falls_back_to_insiders(self, monkeypatch, tmp_path):
+        insiders = _desktop(tmp_path, name="Code - Insiders", command="code-insiders")
+        _on_path(monkeypatch, insiders.parent)
 
-        assert vscode.find_code() == Path("/opt/bin/code-insiders")
+        assert vscode.find_code() == insiders
+        assert vscode.find_install().insiders
 
     def test_looks_in_both_macos_application_folders(self, monkeypatch, tmp_path):
         monkeypatch.setattr(vscode, "current_os", lambda: OS.MACOS)
         monkeypatch.setattr(vscode.Path, "home", lambda: tmp_path)
         app = "Visual Studio Code.app/Contents/Resources/app/bin/code"
 
-        assert vscode._install_locations("code") == [
+        assert REAL_INSTALL_LOCATIONS("code") == [
             Path("/Applications") / app,
             tmp_path / "Applications" / app,
         ]
 
+    def test_linux_install_locations_cover_snap_and_flatpak(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vscode.Path, "home", lambda: tmp_path)
+
+        locations = REAL_INSTALL_LOCATIONS("code")
+        assert Path("/snap/code/current/usr/share/code/bin/code") in locations
+        assert (
+            Path(
+                "/var/lib/flatpak/app/com.visualstudio.code/current/active/files/extra/vscode/bin/code"
+            )
+            in locations
+        )
+        assert (
+            tmp_path
+            / ".local/share/flatpak/app/com.visualstudio.code/current/active/files/extra/vscode/bin/code"
+            in locations
+        )
+
     def test_falls_back_to_the_first_install_location_that_exists(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vscode.shutil, "which", lambda name: None)
-        installed = tmp_path / "bin/code"
-        installed.parent.mkdir()
-        installed.touch()
+        _on_path(monkeypatch, tmp_path / "empty")
+        installed = _desktop(tmp_path / "opt")
         monkeypatch.setattr(
             vscode,
             "_install_locations",
@@ -1064,20 +1128,187 @@ class TestFindCode:
         assert vscode.find_code() == installed
 
     def test_finds_the_windows_user_install(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vscode.shutil, "which", lambda name: None)
         monkeypatch.setattr(vscode, "current_os", lambda: OS.WINDOWS)
+        monkeypatch.setattr(vscode, "_install_locations", REAL_INSTALL_LOCATIONS)
+        _on_path(monkeypatch, tmp_path / "empty")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        code_cmd = tmp_path / "Programs/Microsoft VS Code/bin/code.cmd"
+        root = tmp_path / "Programs/Microsoft VS Code"
+        (root / "resources/app").mkdir(parents=True)
+        (root / "resources/app/product.json").write_text(json.dumps({"nameShort": "Code"}))
+        code_cmd = root / "bin/code.cmd"
         code_cmd.parent.mkdir(parents=True)
-        code_cmd.touch()
+        code_cmd.write_text("@echo off\r\n")
 
         assert vscode.find_code() == code_cmd
 
-    def test_none_when_vscode_isnt_installed(self, monkeypatch):
-        monkeypatch.setattr(vscode.shutil, "which", lambda name: None)
-        monkeypatch.setattr(vscode, "_install_locations", lambda command: [])
+    def test_none_when_vscode_isnt_installed(self, monkeypatch, tmp_path):
+        _on_path(monkeypatch, tmp_path / "empty")
 
         assert vscode.find_code() is None
+        assert vscode.first_code_on_path() is None
+
+    def test_skips_another_products_code_on_path(self, monkeypatch, tmp_path):
+        codium = _desktop(tmp_path / "codium", name="VSCodium")
+        real = _desktop(tmp_path / "real")
+        _on_path(monkeypatch, codium.parent, real.parent)
+
+        assert vscode.find_code() == real
+        assert vscode.first_code_on_path() == codium
+        assert vscode.describe_command(codium) == "VSCodium"
+
+    def test_skips_the_remote_server_command(self, monkeypatch, tmp_path):
+        server = tmp_path / ".vscode-server/bin/abc123/bin/remote-cli/code"
+        server.parent.mkdir(parents=True)
+        server.write_text("")
+        (tmp_path / ".vscode-server/bin/abc123/product.json").write_text('{"nameShort": "Code"}')
+        real = _desktop(tmp_path / "real")
+        _on_path(monkeypatch, server.parent, real.parent)
+
+        assert vscode.find_code() == real
+        assert vscode.describe_command(server) == "VS Code Server's command"
+
+    def test_skips_a_stale_link(self, monkeypatch, tmp_path):
+        stale = tmp_path / "usr/local/bin/code"
+        stale.parent.mkdir(parents=True)
+        stale.symlink_to(tmp_path / "gone/Visual Studio Code.app/Contents/Resources/app/bin/code")
+        _on_path(monkeypatch, stale.parent)
+        installed = _desktop(tmp_path / "Applications")
+        monkeypatch.setattr(vscode, "_install_locations", lambda command: [installed])
+
+        assert vscode.find_code() == installed
+        assert vscode.describe_command(stale) == "a link to a VS Code that isn't there anymore"
+
+    def test_prefers_the_install_with_a_runtime_for_the_seat_relay(self, monkeypatch, tmp_path):
+        old = _desktop(tmp_path / "old", version="1.140.0")
+        new = _desktop(tmp_path / "new", targets=("linux-x64",))
+        _on_path(monkeypatch, old.parent, new.parent)
+
+        assert vscode.find_install().code == old
+        assert vscode.find_install(prefer_runtime=True).code == new
+        assert vscode.find_install(prefer_runtime=True).runtime() is not None
+
+    def test_override_wins_and_a_bad_one_fails(self, monkeypatch, tmp_path):
+        on_path = _desktop(tmp_path / "a")
+        other = _desktop(tmp_path / "b")
+        _on_path(monkeypatch, on_path.parent)
+        monkeypatch.setenv("UG_VSCODE_CODE", str(other))
+        assert vscode.find_code() == other
+
+        monkeypatch.setenv("UG_VSCODE_CODE", str(tmp_path / "nowhere/code"))
+        with pytest.raises(RuntimeError, match="wasn't found"):
+            vscode.find_code()
+        codium = _desktop(tmp_path / "codium", name="VSCodium")
+        monkeypatch.setenv("UG_VSCODE_CODE", str(codium))
+        with pytest.raises(RuntimeError, match="VSCodium, not the desktop VS Code"):
+            vscode.find_code()
+
+
+class TestInstallToConfigure:
+    @pytest.fixture(autouse=True)
+    def _real_lookup(self, code, monkeypatch, tmp_path):
+        # After `code`, which stubs the lookup out.
+        monkeypatch.setattr(vscode, "find_install", REAL_FIND_INSTALL)
+        monkeypatch.setattr(vscode, "first_code_on_path", REAL_FIRST_CODE_ON_PATH)
+        monkeypatch.setattr(vscode, "current_os", lambda: OS.LINUX)
+        monkeypatch.setattr(vscode, "_install_locations", lambda command: [])
+        monkeypatch.setattr(vscode.platform, "machine", lambda: "arm64")
+        monkeypatch.delenv("UG_VSCODE_CODE", raising=False)
+        monkeypatch.setattr(vscode, "_requested_code", None)
+        _on_path(monkeypatch, tmp_path / "empty")
+
+    def test_says_what_code_on_path_is_when_no_desktop_vscode_exists(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        codium = _desktop(tmp_path / "codium", name="VSCodium")
+        _on_path(monkeypatch, codium.parent)
+
+        assert not vscode.configure(STATE)
+
+        printed = _printed(capsys)
+        assert "is VSCodium, and no desktop VS Code was found" in printed
+        assert "--vscode-code <path>" in printed
+
+    def test_notes_when_it_uses_another_install_than_code_on_path(
+        self, code, monkeypatch, tmp_path, capsys
+    ):
+        codium = _desktop(tmp_path / "codium", name="VSCodium")
+        real = _desktop(tmp_path / "real")
+        _on_path(monkeypatch, codium.parent, real.parent)
+
+        assert vscode.configure(STATE)
+
+        printed = _printed(capsys)
+        assert "Using VS Code at" in printed and "is VSCodium" in printed
+
+    def test_is_quiet_when_code_on_path_is_the_desktop_vscode(
+        self, code, monkeypatch, tmp_path, capsys
+    ):
+        real = _desktop(tmp_path / "real")
+        _on_path(monkeypatch, real.parent)
+
+        assert vscode.configure(STATE)
+
+        assert "Using VS Code at" not in _printed(capsys)
+
+    def test_an_intel_vscode_on_an_apple_silicon_mac_routes(
+        self, code, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setattr(vscode, "current_os", lambda: OS.MACOS)
+        monkeypatch.setattr(vscode, "uses_seat_relay", lambda state, provider, tool: True)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: "/bin/ug")
+        intel = _desktop(
+            tmp_path / "Applications",
+            layout="Visual Studio Code.app/Contents/Resources",
+            targets=("darwin-x64",),
+        )
+        _on_path(monkeypatch, intel.parent)
+
+        assert vscode.configure(STATE, provider="main.ai.copilot_seats")
+
+        assert "routing Copilot through main.ai.copilot_seats" in _printed(capsys)
+
+    def test_a_universal_build_prefers_the_hosts_architecture(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vscode, "current_os", lambda: OS.MACOS)
+        universal = _desktop(
+            tmp_path,
+            layout="Visual Studio Code.app/Contents/Resources",
+            targets=("darwin-x64", "darwin-arm64"),
+        )
+
+        assert vscode.bundled_runtime(universal).parent.name == "darwin-arm64"
+        monkeypatch.setattr(vscode.platform, "machine", lambda: "x86_64")
+        assert vscode.bundled_runtime(universal).parent.name == "darwin-x64"
+
+    def test_a_desktop_vscode_without_the_runtime_names_itself(
+        self, code, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setattr(vscode, "uses_seat_relay", lambda state, provider, tool: True)
+        old = _desktop(tmp_path / "old", version="1.140.0")
+        _on_path(monkeypatch, old.parent)
+
+        assert not vscode.configure(STATE, provider="main.ai.copilot_seats")
+
+        printed = _printed(capsys)
+        assert "VS Code 1.140.0 at" in printed and "has no bundled Copilot runtime" in printed
+        assert "Update VS Code" in printed
+
+    def test_the_override_is_used_and_recorded(self, code, monkeypatch, tmp_path):
+        on_path = _desktop(tmp_path / "a", name="VSCodium")
+        other = _desktop(tmp_path / "b")
+        _on_path(monkeypatch, on_path.parent)
+        vscode.request_code(str(other))
+        state = dict(STATE)
+
+        assert vscode.configure(state)
+
+        assert state[vscode.CODE_PATH_STATE_KEY] == str(other)
+
+    def test_a_bad_override_fails_loudly(self, code, monkeypatch, tmp_path, capsys):
+        vscode.request_code(str(tmp_path / "nowhere/code"))
+
+        assert not vscode.configure(STATE)
+
+        assert "wasn't found at" in _printed(capsys)
 
 
 class TestNextSteps:

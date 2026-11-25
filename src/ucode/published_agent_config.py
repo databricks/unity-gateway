@@ -200,6 +200,12 @@ def claude_ug_values(
     env.pop("ANTHROPIC_MODEL", None)
     if mcp_entries:
         overlay[claude_agent.MANAGED_MCP_SETTINGS_KEY] = dict(mcp_entries)
+    # The recipe mod carries the smart-router recipe from the policy tier, which Claude's guard
+    # reserves the extra body to on releases that seat it; per-launch headers stay out. Compose
+    # merges the admin's own `prependPlugins` entries in ahead of these without duplicating either.
+    root = claude_agent.claude_header_mod_root()
+    if root is not None:
+        claude_agent.enable_managed_mods(overlay, root, (claude_agent.CLAUDE_ROUTER_MOD_ID,))
     return overlay
 
 
@@ -431,6 +437,13 @@ def _written_paths(plan: AgentPlan) -> list[Path]:
     """The files ``plan`` writes, references before the files they name, so removing them in this
     order never leaves a dangling reference."""
     paths = [path for path, text in plan.files.items() if text is not None]
+    if plan.agent == "claude":
+        # The settings name the mods' plugins, so they leave first: a removal that fails partway
+        # leaves settings referencing files still on disk, never settings without their plugins.
+        settings = next((path for path in agent_paths("claude") if path in paths), None)
+        if settings is not None:
+            paths.remove(settings)
+            paths.insert(0, settings)
     if CODEX_MANAGED_CATALOG_PATH in paths:
         paths.remove(CODEX_MANAGED_CATALOG_PATH)
         paths.append(CODEX_MANAGED_CATALOG_PATH)
@@ -470,6 +483,12 @@ def plan_agents(
                 manifest, workspace, mcp_entries.get("claude"), claude_mcp_names
             )
             path = agent_paths("claude")[0]
+            # The recipe mod's files, installed before the settings that name them: the managed
+            # run is the only writer this machine has, and the guard denies the session mod's own
+            # recipe write on Claude releases that seat it.
+            mod_root = claude_agent.claude_header_mod_root()
+            if mod_root is not None:
+                plan.files.update(claude_agent.managed_mod_files(mod_root))
             plan.files[path] = claude_agent._dump_managed_settings(composed.doc)
             plan.reports.append((path, composed))
             tracing_paths = {

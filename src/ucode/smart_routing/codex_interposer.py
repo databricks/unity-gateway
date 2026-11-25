@@ -15,7 +15,11 @@ from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
 from ucode.smart_routing.codex_auto import CodexAutoPicker
-from ucode.smart_routing.codex_feedback import CodexFeedbackInput, CodexSmartRouter
+from ucode.smart_routing.codex_feedback import (
+    CodexFeedbackInput,
+    CodexSmartRouter,
+    ValidateModelList,
+)
 from ucode.smart_routing.codex_metadata import RoutingMetadata
 from ucode.smart_routing.feedback import FeedbackUpload
 
@@ -218,6 +222,7 @@ async def _handle_tui(
     session_controls: Path | None = None,
     provider: str | None = None,
     auto_picker: bool = False,
+    validate_model_list: ValidateModelList | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -251,7 +256,11 @@ async def _handle_tui(
         controller = (
             RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
-        smart_router = CodexSmartRouter(session_controls) if session_controls is not None else None
+        smart_router = (
+            CodexSmartRouter(session_controls, validate_model_list)
+            if session_controls is not None
+            else None
+        )
         feedback_input = CodexFeedbackInput(tui.send)
         picker = (
             CodexAutoPicker(smart_router, feedback_input, upstream.send, tui.send)
@@ -486,6 +495,7 @@ async def _serve(
     session_controls: Path | None = None,
     provider: str | None = None,
     auto_picker: bool = False,
+    validate_model_list: ValidateModelList | None = None,
 ):
     async def handler(tui):
         try:
@@ -502,6 +512,7 @@ async def _serve(
                 session_controls,
                 provider,
                 auto_picker,
+                validate_model_list,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -527,6 +538,7 @@ def start_interposer_thread(
     session_controls: Path | None = None,
     provider: str | None = None,
     auto_picker: bool = False,
+    validate_model_list: ValidateModelList | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:
@@ -560,6 +572,7 @@ def start_interposer_thread(
                     session_controls,
                     provider,
                     auto_picker,
+                    validate_model_list,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]

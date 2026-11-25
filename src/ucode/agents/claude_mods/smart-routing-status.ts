@@ -1,7 +1,8 @@
 import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
 import {
-  SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE, VALIDATION_FAILED_WARNING,
+  LOGS_DETAILS_HINT, SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY, UNSUPPORTED_MODEL_LIST_WARNING, UNSUPPORTED_ROUTER_STATE,
+  VALIDATION_FAILED_WARNING,
 } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -135,7 +136,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })
       : Text({ bold: true, color: 'black', backgroundColor: warning ? 'yellow' : 'gray', children: [' OFF '] })
     const trailer = warning
-      ? Text({ color: 'yellow', children: [warning] })
+      ? Text({ color: 'yellow', children: [`${warning} ${LOGS_DETAILS_HINT}`] })
       : enabled
       ? Text({
           dimColor: true,

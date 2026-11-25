@@ -22,7 +22,7 @@ from typing import Any
 from ucode.codex_config import provider_http_headers
 from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CODEX
-from ucode.smart_routing import orchestrator, routing, session_log
+from ucode.smart_routing import orchestrator, route_validation, routing, session_log
 from ucode.smart_routing.routing import RoutingDecision
 
 ROUTER_NAME = routing.ROUTER_NAME
@@ -47,6 +47,31 @@ def prioritize_gpt_models(models: list[str]) -> list[str]:
     return list(dict.fromkeys([*(model for model in models if _GPT_RE.search(model)), *models]))
 
 
+def codex_route_options(available_models: list[str]) -> list[tuple[str, str]]:
+    models = list(dict.fromkeys(available_models))
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "codex")
+
+
+def validate_codex_model_list(
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    *,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    """Return the shared route validation verdict for the Codex model list."""
+    return route_validation.validate(
+        workspace,
+        token,
+        codex_route_options(available_models),
+        router_name=routing.configured_router_name(),
+        provider=provider,
+        available_harness=AGENT_CODEX,
+    )
+
+
 def request_routing_decision(
     workspace: str,
     token: str,
@@ -59,10 +84,7 @@ def request_routing_decision(
     provider: str | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
-    models = list(dict.fromkeys(available_models))
-    if len(models) > routing.MAX_ROUTE_OPTIONS:
-        models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
-    route_options = routing.route_options_for(models, "codex")
+    route_options = codex_route_options(available_models)
     if not route_options:
         return None, "no cached model services are available"
     if attribution_headers is None:

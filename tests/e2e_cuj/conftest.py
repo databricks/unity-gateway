@@ -83,3 +83,27 @@ def _refresh_cuj_bearer(request):
         except DatabricksError as error:
             raise _scrubbed(error) from None
         session.refresh_bearer(refreshed)
+
+
+# CI runs a CUJ file slow enough to dominate `e2e` as several shards (tests/live_shard.py); each
+# shard keeps only its cases so the shards together run the file exactly once.
+_shard_report: dict = {}
+
+
+def pytest_collection_modifyitems(config, items):
+    spec = os.environ.get("UG_LIVE_SHARD")
+    if not spec:
+        return
+    from tests import live_shard
+
+    keep, drop, report = live_shard.plan_items(os.environ["UG_LIVE_SHARD_LANE"], spec, list(items))
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
+    _shard_report.update(report)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _shard_report and os.environ.get("UG_LIVE_SHARD_REPORT"):
+        from tests import live_shard
+
+        live_shard.write_report(os.environ["UG_LIVE_SHARD_REPORT"], _shard_report, {})

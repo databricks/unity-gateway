@@ -33,6 +33,8 @@ from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
+from ucode.smart_routing import session_log
+from ucode.smart_routing.claude_hooks import ROUTE_VALIDATION_MOD_EVENT
 from ucode.state import save_state as real_save_state
 
 # Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
@@ -243,7 +245,7 @@ class TestHelp:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        toggle.assert_called_once_with(True, None)
+        toggle.assert_called_once_with(True, None, agent="codex", feedback_collected=False)
         launch.assert_not_called()
 
     @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])
@@ -2230,6 +2232,43 @@ class TestSubcommandRouting:
         else:
             assert result.output == ""
             route.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "validation",
+        [
+            {"routing_disabled": True, "router_name": "stable"},
+            {"routing_disabled": False},
+        ],
+    )
+    @pytest.mark.parametrize("session_routing", ["1", "0"])
+    def test_claude_mod_validation_prints_the_verdict_without_recording_it(
+        self, tmp_path, monkeypatch, validation, session_routing
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        controls = tmp_path / "env.json"
+        controls.write_text(json.dumps({"ENABLE_SMART_ROUTING_V2": session_routing}))
+        monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(controls))
+        monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+        with patch(
+            "ucode.smart_routing.route_validation.validate", return_value=validation
+        ) as validate:
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    ROUTE_VALIDATION_MOD_EVENT,
+                    "--host",
+                    "https://example.com",
+                    "--model",
+                    "system.ai.claude-opus-4-8",
+                ],
+                input='{"session_id":"s1"}',
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
+            )
+        assert result.exit_code == 0, result.output
+        assert validate.call_args.args[2] == [("system.ai.claude-opus-4-8", "claude")]
+        assert result.output == json.dumps(validation)
+        assert session_log.read_records("claude", "s1", session_log.ROUTE_VALIDATION_TYPE) == []
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
@@ -6267,6 +6306,18 @@ class TestConfigureAgentsSelection:
         # The rich panel wraps lines, so match on the labels and names rather than exact spacing.
         assert "Coding Agents:" in out and "Claude Code" in out
         assert "Failed to configure:" in out and "Codex" in out
+
+    def test_managed_summary_names_everything_copilot_sets_up(self, capsys, monkeypatch):
+        import ucode.cli as cli_mod
+
+        managed = {"enabled_agents": {"copilot": {}}}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
+        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
+        cli_mod._summarize_managed_config(managed, ["copilot"], [])
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "GitHub Copilot (CLI, VS Code and app)" in out
+        assert "GitHub Copilot CLI" not in out
 
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
@@ -10704,7 +10755,8 @@ class TestAutoCleanupLifecycle:
         ):
             first = runner.invoke(app, ["revert"])
             assert first.exit_code == 1, first.output
-            assert "injected native write failure" in first.output
+            # The message may wrap at any width, depending on the temporary path length.
+            assert "injected native write failure" in " ".join(first.output.split())
             assert state_mod.get_claude_auto_revert_targets() == {"ug-auto-old": "team.models.main"}
             assert (
                 not private.exists()

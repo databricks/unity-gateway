@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import codex_interposer, session_env
+from ucode.smart_routing import codex_interposer, session_env, session_log
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
     RoutingMetadata,
@@ -156,6 +156,39 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("validation", "logged"),
+    [
+        (
+            {
+                "routing_disabled": True,
+                "router_name": "stable",
+                "available_route_options": [{"model": "gpt-5", "harness": "codex"}],
+            },
+            1,
+        ),
+        ({"routing_disabled": False}, 0),
+        ({"routing_disabled": True, "router_name": "stable", "logged": True}, 0),
+    ],
+    ids=["unsupported", "supported", "toggle-already-logged"],
+)
+def test_route_validation_is_logged_once_for_the_root_thread(tmp_path, validation, logged):
+    async def run():
+        metadata, _, _ = controller(tmp_path)
+        turn = {"id": "input", "method": "turn/start", "params": {"threadId": "root"}}
+        # The first prompt can precede the startup check's result file.
+        await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+        session_env.validation_result_path(metadata.controls).write_text(json.dumps(validation))
+        for _ in range(2):
+            await asyncio.wait_for(metadata.before_tui(copy.deepcopy(turn)), 2)
+
+    asyncio.run(run())
+    records = session_log.read_records("codex", "root", session_log.ROUTE_VALIDATION_TYPE)
+    assert [(r["harness"], r["session_id"], r["router_name"]) for r in records] == (
+        [("codex", "root", "stable")] if logged else []
+    )
+
+
 class StreamingWire(Wire):
     def __init__(self):
         super().__init__()
@@ -179,7 +212,9 @@ class StreamingWire(Wire):
 @pytest.fixture
 def running_interposer(tmp_path, monkeypatch):
     @asynccontextmanager
-    async def run(*, controls_text="{}", log=lambda _: None, auto_picker=False):
+    async def run(
+        *, controls_text="{}", log=lambda _: None, auto_picker=False, validate_model_list=None
+    ):
         controls = tmp_path / "controls.json"
         if controls_text is not None:
             controls.write_text(controls_text)
@@ -195,7 +230,13 @@ def running_interposer(tmp_path, monkeypatch):
         monkeypatch.setattr(codex_interposer, "connect", connect)
         task = asyncio.create_task(
             codex_interposer._handle_tui(
-                tui, "ws://localhost", None, log, session_controls=controls, auto_picker=auto_picker
+                tui,
+                "ws://localhost",
+                None,
+                log,
+                session_controls=controls,
+                auto_picker=auto_picker,
+                validate_model_list=validate_model_list,
             )
         )
         try:
@@ -1126,13 +1167,20 @@ def test_auto_mode_switch_preserves_collaboration_and_config_opens_picker(runnin
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("ending", ["save", "reject", "cancel"])
+@pytest.mark.parametrize("ending", ["save", "reject", "cancel", "unsupported"])
 def test_auto_effort_selection_applies_and_saves_or_rolls_back(running_interposer, ending):
     reject = ending == "reject"
     from ucode.smart_routing.codex_auto import AUTO_MODEL
 
+    validate = Mock(return_value={"routing_disabled": True}) if ending == "unsupported" else None
+
     async def run():
-        async with running_interposer(auto_picker=True) as (_, upstream, tui, controls):
+        async with running_interposer(auto_picker=True, validate_model_list=validate) as (
+            _,
+            upstream,
+            tui,
+            controls,
+        ):
             thread_id, _ = await register_auto_picker(upstream, tui)
             prompt = await open_auto_selection(upstream, tui, thread_id, AUTO_MODEL)
             await answer_auto_prompt(upstream, tui, prompt, ["gpt-two"])
@@ -1146,6 +1194,16 @@ def test_auto_effort_selection_applies_and_saves_or_rolls_back(running_interpose
                 assert updated["params"]["threadSettings"]["effort"] == "medium"
                 assert json.loads(controls.read_text()) == {}
                 assert upstream.outgoing.empty()
+                return
+            if ending == "unsupported":
+                assert (await asyncio.wait_for(tui.outgoing.get(), 2))["method"] == "warning"
+                updated = await asyncio.wait_for(tui.outgoing.get(), 2)
+                assert updated["params"]["threadSettings"]["model"] == "gpt-one"
+                assert json.loads(controls.read_text()) == dict.fromkeys(
+                    SMART_ROUTING_ENV_KEYS, "0"
+                )
+                assert upstream.outgoing.empty()
+                validate.assert_called_once_with()
                 return
             update = await asyncio.wait_for(upstream.outgoing.get(), 2)
             assert update["params"] == {"threadId": thread_id, "model": "gpt-two", "effort": "high"}
@@ -1236,3 +1294,51 @@ def test_auto_manual_selection_feedback_preserves_effort_and_monitors_delivery(
             assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
 
     asyncio.run(run())
+
+
+UNSUPPORTED_WARNING = {"routing_disabled": True, "validation_ms": 120}
+
+
+def _prompt(metadata, turn_id):
+    async def send():
+        await asyncio.wait_for(
+            metadata.before_tui(
+                {"id": turn_id, "method": "turn/start", "params": {"threadId": "root"}}
+            ),
+            2,
+        )
+        metadata.observe(
+            {"method": "turn/started", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+        )
+
+    asyncio.run(send())
+
+
+def _complete(metadata, turn_id):
+    metadata.observe(
+        {"method": "turn/completed", "params": {"threadId": "root", "turn": {"id": turn_id}}}
+    )
+
+
+def test_warning_hides_when_the_prompt_sent_while_it_showed_completes(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _prompt(metadata, "first")
+    _complete(metadata, "first")
+    assert session_env.validation_dismissed_path(metadata.controls).exists()
+
+
+def test_warning_stays_through_a_turn_already_running_when_it_arrives(tmp_path):
+    metadata, _, _ = controller(tmp_path)
+    dismissed = session_env.validation_dismissed_path(metadata.controls)
+    _prompt(metadata, "first")
+    session_env.validation_result_path(metadata.controls).write_text(
+        json.dumps(UNSUPPORTED_WARNING)
+    )
+    _complete(metadata, "first")
+    assert not dismissed.exists()
+    _prompt(metadata, "second")
+    _complete(metadata, "second")
+    assert dismissed.exists()

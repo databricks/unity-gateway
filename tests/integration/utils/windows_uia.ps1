@@ -11,18 +11,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Error.WriteLine('uia phase=load-assemblies')
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
 $automation = [Windows.Automation.AutomationElement]
 $byProcess = [Windows.Automation.PropertyCondition]::new($automation::ProcessIdProperty, $ProcessId)
+[Console]::Error.WriteLine('uia phase=find-windows')
 $windows = @($automation::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $byProcess))
 if (-not $windows.Count) { throw "Process $ProcessId has no window" }
 
 # Only controls a user could act on, so `tree` (what callers wait for) and `invoke` agree.
 function Get-Elements {
-    @(foreach ($window in $windows) {
+    $elements = @(foreach ($window in $windows) {
         $window
+        [Console]::Error.WriteLine('uia phase=find-descendants')
         $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-    }) | Where-Object { $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }
+    })
+    [Console]::Error.WriteLine('uia phase=filter-visible')
+    $elements | Where-Object { $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }
 }
 
 function Get-Value($element) {

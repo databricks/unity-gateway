@@ -395,6 +395,9 @@ class CodexAutoPicker:
                 if result.get("validation_error"):
                     raise ValueError(result["message"])
             if await self.ui_enabled() != (selection == AUTO_MODEL):
+                if selection == AUTO_MODEL:
+                    # Model-list validation deliberately keeps routing off; rollback must not undo it.
+                    old_controls = None
                 raise ValueError(result.get("message", "Could not change Smart Router state."))
             if result.get("delivery") == "pending":
                 task = asyncio.create_task(self.report_delivery(result["feedback_id"]))
