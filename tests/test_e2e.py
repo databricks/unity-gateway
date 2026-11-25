@@ -26,6 +26,7 @@ from urllib import request as urllib_request
 
 import pytest
 
+from scripts.run_integration import redact_secrets
 from tests.conftest import e2e_state_for
 from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
@@ -804,35 +805,41 @@ class TestOpencodeLaunch:
                 token=e2e_token,
             )
 
-        cmd = opencode.validate_cmd("opencode")
+        cmd = [*opencode.validate_cmd("opencode"), "--print-logs", "--log-level", "INFO"]
         print(f"[opencode-per-model] -> {provider}/{model}", flush=True)
         t0 = time.monotonic()
         try:
             result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
         except subprocess.TimeoutExpired as exc:
             elapsed = time.monotonic() - t0
-            partial_stdout = _timeout_output(exc.stdout)
-            partial_stderr = _timeout_output(exc.stderr)
+            partial_stdout = redact_secrets(
+                _timeout_output(exc.stdout), (e2e_token, e2e_workspace)
+            )[-12000:]
+            partial_stderr = redact_secrets(
+                _timeout_output(exc.stderr), (e2e_token, e2e_workspace)
+            )[-12000:]
             print(
                 f"[opencode-per-model] {provider}/{model} TIMEOUT after {elapsed:.1f}s\n"
-                f"  partial stdout: {partial_stdout[:500]!r}\n"
-                f"  partial stderr: {partial_stderr[:500]!r}",
+                f"  partial stdout tail: {partial_stdout!r}\n"
+                f"  partial stderr tail: {partial_stderr!r}",
                 flush=True,
                 file=sys.stderr,
             )
             pytest.fail(
                 f"OpenCode launch failure: provider={provider} model={model} "
-                f"TIMEOUT after {elapsed:.1f}s stderr={partial_stderr[:300]!r}"
+                f"TIMEOUT after {elapsed:.1f}s stderr tail={partial_stderr!r}"
             )
         elapsed = time.monotonic() - t0
-        combined = (result.stdout + result.stderr).strip()
-        status = "OK" if result.returncode == 0 and combined else f"FAIL rc={result.returncode}"
+        response = result.stdout.strip()
+        status = "OK" if result.returncode == 0 and response else f"FAIL rc={result.returncode}"
         print(f"[opencode-per-model] {provider}/{model} {status} ({elapsed:.1f}s)", flush=True)
-        if result.returncode != 0 or not combined:
+        if result.returncode != 0 or not response:
+            stdout_tail = redact_secrets(result.stdout, (e2e_token, e2e_workspace))[-12000:]
+            stderr_tail = redact_secrets(result.stderr, (e2e_token, e2e_workspace))[-12000:]
             pytest.fail(
                 f"OpenCode launch failure: provider={provider} model={model} "
                 f"rc={result.returncode} elapsed={elapsed:.1f}s "
-                f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+                f"stdout tail={stdout_tail!r} stderr tail={stderr_tail!r}"
             )
 
     def test_launch_deepseek_v4_pro(

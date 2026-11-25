@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -120,6 +121,19 @@ def redact_secrets(value: str, secrets: Iterable[str]) -> str:
     for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
         value = value.replace(secret, "<redacted>")
     return value
+
+
+def redact_junit_report(source: Path, destination: Path, secrets: Iterable[str]) -> None:
+    if not source.exists():
+        return
+    secrets = tuple(secrets)
+    report = ET.parse(source)
+    for element in report.iter():
+        element.text = redact_secrets(element.text or "", secrets)
+        element.tail = redact_secrets(element.tail or "", secrets)
+        for key, value in element.attrib.items():
+            element.set(key, redact_secrets(value, secrets))
+    report.write(destination, encoding="utf-8", xml_declaration=True)
 
 
 def managed_policy_paths(
@@ -235,7 +249,9 @@ def npm_executable(bin_dir: Path, name: str) -> Path:
     return bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
 
 
-def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
+def mint_m2m_token(
+    workspace: str, client_id: str, client_secret: str, *, timeout: float = 30
+) -> str:
     """Mint a short-lived workspace token for a service principal via OAuth client credentials.
 
     Managed-workspace M2M tokens expire hourly, so the runner mints them from client credentials
@@ -253,20 +269,33 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
-            token = json.load(response).get("access_token", "")
-    except urllib.error.HTTPError as exc:
-        detail = redact_secrets(
-            exc.read().decode("utf-8", errors="replace"), (client_secret, basic)
-        )[:2000]
-        raise RuntimeError(
-            f"Service-principal OAuth token request to {request.full_url} failed "
-            f"(HTTP {exc.code}): {detail}"
-        ) from None
-    if not token:
-        raise RuntimeError("Service-principal client credentials returned no access token.")
-    return token
+    attempt = 1
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (https workspace URL)
+                token = json.load(response).get("access_token", "")
+        except urllib.error.HTTPError as exc:
+            with exc:
+                if exc.code == 503 and attempt < 3:
+                    print(
+                        f"Service-principal OAuth token request failed (HTTP 503), "
+                        f"attempt {attempt}/3; retrying in {attempt}s.",
+                        file=sys.stderr,
+                    )
+                else:
+                    detail = redact_secrets(
+                        exc.read().decode("utf-8", errors="replace"), (client_secret, basic)
+                    )[:2000]
+                    raise RuntimeError(
+                        f"Service-principal OAuth token request to {request.full_url} failed "
+                        f"(HTTP {exc.code}): {detail}"
+                    ) from None
+            time.sleep(attempt)
+            attempt += 1
+            continue
+        if not token:
+            raise RuntimeError("Service-principal client credentials returned no access token.")
+        return token
 
 
 @contextlib.contextmanager
