@@ -194,6 +194,24 @@ type RoutedDisplay = {
 // The receipt-backed label: the launched model, flagged when the selection differs.
 const receiptLabel = (d: Pick<RoutedDisplay, 'animal' | 'title' | 'selected' | 'launched'>): string =>
   `${d.animal} · ${shortModel(d.launched)} · ${d.title}${mismatchNote(d.selected, d.launched)}`
+const quotedDescriptionEnd = (text: string, description: string): number => {
+  const prefix = 'Agent "'
+  if (!text.startsWith(prefix)) return -1
+  let closingQuote = -1
+  let quote = text.indexOf('"', prefix.length)
+  while (quote >= 0) {
+    const candidate = safeText(text.slice(prefix.length, quote), 1000)
+    const after = text[quote + 1]
+    // Embedded quotes may match a prefix; prefer the full heading when it is present.
+    if (candidate && description.startsWith(candidate)
+        && (!after || /[^\p{L}\p{N}_]/u.test(after))) {
+      closingQuote = quote
+      if (candidate === description) break
+    }
+    quote = text.indexOf('"', quote + 1)
+  }
+  return closingQuote
+}
 export const routedDisplays: {
   sessionId?: string; root?: string; records: Map<string, RoutedDisplay>
 } = { records: new Map() }
@@ -455,18 +473,7 @@ export const registerSubagentRouting = (
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || typeof e.props.text !== 'string') return next(e)
-    let closingQuote = -1
-    let quote = e.props.text.startsWith('Agent "') ? e.props.text.indexOf('"', 7) : -1
-    while (quote >= 0) {
-      const candidate = safeText(e.props.text.slice(7, quote), 1000)
-      const after = e.props.text[quote + 1]
-      if (candidate && saved.description.startsWith(candidate)
-          && (!after || /[^\p{L}\p{N}_]/u.test(after))) {
-        closingQuote = quote
-        if (candidate === saved.description) break
-      }
-      quote = e.props.text.indexOf('"', quote + 1)
-    }
+    const closingQuote = quotedDescriptionEnd(e.props.text, saved.description)
     const text = closingQuote >= 0
       ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(closingQuote + 1)}` : e.props.text
     const flagged = differs(saved.selected, saved.launched) && text === e.props.text
