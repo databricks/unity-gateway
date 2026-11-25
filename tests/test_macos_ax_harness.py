@@ -1,5 +1,6 @@
 """Linux-runnable checks for the macOS desktop Accessibility harness in tests/integration."""
 
+import itertools
 import json
 from types import SimpleNamespace
 
@@ -189,3 +190,38 @@ def test_app_environment_turns_off_the_app_sparkle_updater():
     assert env["CODEX_SPARKLE_ENABLED"] == "false"
     assert env["HOME"] == "/session/home"
     assert "CODEX_SPARKLE_ENABLED" not in session_env
+
+
+@pytest.mark.parametrize("state", ["dropped", "left", "stuck"])
+def test_click_until_gone_repeats_a_dropped_click(tmp_path, monkeypatch, state):
+    clock = itertools.count(0, 5)
+    monkeypatch.setattr(macos_app.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(macos_app.time, "sleep", lambda seconds: None)
+    session = RecordingSession(tmp_path / "artifacts")
+    app = mac_app(session, client="macos-ax")
+    dialog = [["AXButton", "Go to ChatGPT", "", ""]]
+    clicks = []
+
+    def run(*args, **kwargs):
+        clicks.append(args)
+        if state == "left" and len(clicks) == 2:
+            raise AssertionError(
+                "Fatal error: No AXButton labelled Go to ChatGPT (waited 2 seconds)"
+            )
+
+    def read_tree():
+        app.ax_errors = []
+        return dialog if state == "stuck" or len(clicks) < 2 else []
+
+    session.run = run
+    app.read_tree = read_tree
+
+    if state == "stuck":
+        with pytest.raises(AssertionError, match="never dismissed AXButton 'Go to ChatGPT'"):
+            app.click_until_gone("AXButton", "Go to ChatGPT", 120)
+        assert len(clicks) > 2
+        assert json.loads((session.artifacts / "chatgpt-tree.json").read_text())["tree"] == dialog
+    else:
+        app.click_until_gone("AXButton", "Go to ChatGPT", 120)
+        assert len(clicks) == 2
+    assert clicks[0] == ("click", "1813", "AXButton", "Go to ChatGPT", "60")
