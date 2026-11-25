@@ -1081,6 +1081,9 @@ jobs:
     timeout-minutes: 30
     env:
       DEPENDENCY: ${{ inputs.dependency }}
+      # The desktop harness launches the app with CODEX_SPARKLE_ENABLED=false (the app's own
+      # Sparkle gate, in tests/integration/utils/macos_app.py), so every journey runs exactly
+      # this SHA-pinned build instead of a newer appcast one applied mid-job.
       CHATGPT_APP_VERSION: 26.1103.31037
       CHATGPT_APP_SHA256: 7bad147d40446192757dbfdd71e26529146823ade2bcc52b3d6e6525de816613
       TEST_MARKER: managed_fixture and macos_desktop and codex
