@@ -92,7 +92,7 @@ def real_transport(monkeypatch):
 
 
 def _wait_for_result(path):
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + max(3, validation.VALIDATION_TIMEOUT_SECONDS + 2)
     while time.monotonic() < deadline:
         if path.exists():
             return json.loads(path.read_text())
@@ -241,6 +241,13 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, route
     assert headers["X-Databricks-Workspace-Id"] == "111"
     assert headers["X-Databricks-Org-Id"] == "111"
     assert headers["Databricks-model-provider-service"] == "main.default.mps"
+
+
+def test_supported_check_publishes_after_three_seconds(tmp_path, router):
+    router.pace = 0.18
+    controls, result = _run_check(router.url, tmp_path)
+    assert result == {"routing_disabled": False}
+    assert session_routing_enabled(controls) is True
 
 
 def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot_overwrite(
