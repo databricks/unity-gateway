@@ -33,7 +33,7 @@ from .helpers.constants import (
     WEB_SEARCH_MCP_SERVICE_NAME,
     WORKSPACE_POLICY_PATH,
 )
-from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
+from .helpers.desktop import PROFILE_ID, assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import SessionEvidence, assert_served
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
@@ -101,7 +101,7 @@ def _assert_mps_catalog(workspace) -> None:
         config = service.config
         assert config is not None, service
         targets = config.targets or []
-        assert [target.model for target in targets] == [model], service
+        assert model in [target.model for target in targets], service
         assert config.allow_all_targets is not True, service
         expected_type = (
             "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"
@@ -115,18 +115,17 @@ def _assert_mps_catalog(workspace) -> None:
             if agent == CLAUDE
             else ["openai/v1/chat/completions", "openai/v1/responses"]
         )
-        native_apis = [
-            getattr(api, "value", api)
-            for target in targets
-            for api in (target.native_api_types or [])
-        ]
-        # The backend's ordering isn't a contract.
-        assert sorted(native_apis) == sorted(expected_apis), targets
+        for target in targets:
+            native_apis = [getattr(api, "value", api) for api in target.native_api_types or []]
+            # The backend's ordering isn't a contract.
+            assert sorted(native_apis) == sorted(expected_apis), target
 
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]
         listed_targets = matching.config.targets if matching.config else None
-        assert [target.model for target in listed_targets or []] == [model], matching
+        assert sorted(target.model for target in listed_targets or []) == sorted(
+            target.model for target in targets
+        ), matching
 
 
 def _assert_mcp_services(workspace) -> None:
@@ -261,11 +260,20 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
+        profile = json.loads((config_library / f"{PROFILE_ID}.json").read_text(encoding="utf-8"))
+        desktop_models = profile["inferenceModels"]
+        claude_targets = workspace.client.ai_gateway.get_model_provider_service(
+            f"model-provider-services/{claude_mps}"
+        ).config.targets
+        assert sorted(model["name"] for model in desktop_models) == sorted(
+            target.model for target in claude_targets
+        ), desktop_models
+        assert {"name": claude_model, "labelOverride": "Claude Haiku 5.5"} in desktop_models
         assert_claude_desktop_profile(
             session,
             config_library,
             workspace.url,
-            models=[{"name": claude_model, "labelOverride": "Claude Haiku 5.5"}],
+            models=desktop_models,
             mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
@@ -400,13 +408,19 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
                 assert route.payload["task"]["prompt"] == task.prompt
                 assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
-                assert recorder.response_for(route).status_code == 200
+                response = recorder.response_for(route)
+                assert response.status_code == 200
+                selections = response.payload["route_selection"]
+                assert len(selections) == 1, selections
+                selected = selections[0]["route_option"]
+                assert selected in route.payload["route_options"], selected
+                assert selected["harness"] == CLAUDE, selected
                 request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
                 _assert_inference_request(
                     recorder,
                     request,
                     provider=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0],
-                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
+                    model=selected["model"],
                     marker=marker,
                 )
 

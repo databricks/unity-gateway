@@ -35,9 +35,10 @@ from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
-    assert_served,
+    canonical_model,
     claude_file_task,
     served_inference_request,
+    task_inference_request,
 )
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
@@ -275,7 +276,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         serves a completed native child file task, and the parent returns the hidden file value.
         """
         session = live_session
-        provider, model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        provider = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
         request_recorder.configure_session(
             session,
             ["configure", "--agent", CLAUDE, "--provider", provider, "--skip-upgrade"],
@@ -299,7 +300,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 "completed routed child file task and parent reply",
             )
             _assert_saved_provider_routing(
-                session, request_recorder, checkpoint, CLAUDE, provider, model, task
+                session, request_recorder, checkpoint, CLAUDE, provider, task
             )
             tui.wait_for_background_tasks()
             tui.exit_normally()
@@ -313,7 +314,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         model matches a completed native child, and the parent returns the hidden file value.
         """
         session = live_session
-        provider, model = MODEL_PROVIDER_SERVICE_FIXTURES[CODEX]
+        provider = MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0]
         request_recorder.configure_session(
             session,
             ["configure", "--agent", CODEX, "--provider", provider, "--skip-upgrade"],
@@ -337,7 +338,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 "completed routed child file task and parent reply",
             )
             _assert_saved_provider_routing(
-                session, request_recorder, checkpoint, CODEX, provider, model, task
+                session, request_recorder, checkpoint, CODEX, provider, task
             )
             tui.exit_normally()
 
@@ -459,7 +460,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         session.assert_not_routed()
 
 
-def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provider, model, task):
+def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provider, task):
     requests = recorder.requests_after(checkpoint)
     routes = [
         request
@@ -479,7 +480,15 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         assert len(selections) == 1, selections
         selected = selections[0]["route_option"]
         assert selected in options
-        assert selected == {"model": model, "harness": agent}
+        assert selected["harness"] == agent, selected
+        child = task_inference_request(
+            requests, agent, route.payload["task"]["prompt"], after=route.sequence
+        )
+        child = served_inference_request(recorder, requests, child, agent)
+        assert canonical_model(child.payload["model"]) == canonical_model(selected["model"]), (
+            child.payload["model"],
+            selected,
+        )
     inference = [
         request
         for request in requests
@@ -490,9 +499,7 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
     assert inference, "No provider inference request matched the delegated file task"
     for request in inference:
         assert request.headers[PROVIDER_HEADER] == provider
-        assert_served(
-            recorder, served_inference_request(recorder, inference, request, agent), model
-        )
+        served_inference_request(recorder, inference, request, agent)
     task.assert_completed(session, agent, child=True)
     task.assert_completed(session, agent)
     assert_subagent_routed(session, agent, task)
