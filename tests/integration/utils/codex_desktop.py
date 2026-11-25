@@ -86,17 +86,17 @@ def wait_for_windows_setup(app, timeout: float = 60) -> None:
             return
         if time.monotonic() >= deadline:
             mode, config_state = _windows_sandbox_mode(app.session.home)
+            if mode is None:
+                recorded_mode = "unset"
+            elif mode in ("elevated", "unelevated"):
+                recorded_mode = mode
+            else:
+                recorded_mode = "other"
             app.session.record(
                 "windows-setup-state.json",
                 {
                     "config_state": config_state,
-                    "sandbox_mode": (
-                        "unset"
-                        if mode is None
-                        else mode
-                        if mode in ("elevated", "unelevated")
-                        else "other"
-                    ),
+                    "sandbox_mode": recorded_mode,
                 },
             )
             app.session.record(
