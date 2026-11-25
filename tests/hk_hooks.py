@@ -37,14 +37,35 @@ def run(repo, *args, check=True, timeout=30):
 
 
 @pytest.fixture
-def repo(tmp_path, monkeypatch):
+def inherited_git_routing(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    external = tmp_path / "external"
+    external.mkdir()
+    run(external, "git", "init")
+    run(external, "git", "config", "user.name", "External repository")
+    run(external, "git", "config", "user.email", "external@example.invalid")
+    (external / "outside.py").write_text("outside = 1\n")
+    run(external, "git", "add", ".")
+    run(external, "git", "commit", "-m", "external baseline")
+    external_state = snapshot(external)
+    monkeypatch.setenv("GIT_DIR", str(external / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(external))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(external / ".git" / "index"))
+    return external, external_state
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch, inherited_git_routing):
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
     for tool in ("hk", "pkl", "uv", "just"):
         assert shutil.which(tool), f"Required hook-test tool is missing: {tool}"
     for name in ("hk.pkl", "justfile"):
-        shutil.copyfile(ROOT / name, tmp_path / name)
+        shutil.copyfile(ROOT / name, repo_path / name)
     root_pyproject = (ROOT / "pyproject.toml").read_text()
     ruff_config = root_pyproject[root_pyproject.index("[tool.ruff]") :]
     dev_dependencies = tomllib.loads(root_pyproject)["dependency-groups"]["dev"]
@@ -53,26 +74,26 @@ def repo(tmp_path, monkeypatch):
         for dependency in dev_dependencies
         if dependency.split("=", 1)[0] in {"ruff", "ty"}
     ]
-    (tmp_path / "pyproject.toml").write_text(
+    (repo_path / "pyproject.toml").write_text(
         '[project]\nname = "hook-check"\nversion = "0.0.0"\nrequires-python = ">=3.12"\n'
         + "[dependency-groups]\ndev = ["
         + ", ".join(f'"{dependency}"' for dependency in lint_dependencies)
         + "]\n"
         + ruff_config
     )
-    (tmp_path / "src").mkdir()
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "src/example.py").write_text("value = 1\n")
-    (tmp_path / "tests/example.py").write_text("assert True\n")
-    run(tmp_path, "uv", "sync", "--no-frozen", timeout=120)
-    run(tmp_path, "git", "init")
-    run(tmp_path, "git", "config", "user.name", "Hook test")
-    run(tmp_path, "git", "config", "user.email", "hook-test@example.invalid")
-    (tmp_path / ".gitignore").write_text(".venv/\n.ruff_cache/\n")
-    run(tmp_path, "git", "add", ".")
-    run(tmp_path, "git", "commit", "-m", "baseline")
-    run(tmp_path, "hk", "install")
-    return tmp_path
+    (repo_path / "src").mkdir()
+    (repo_path / "tests").mkdir()
+    (repo_path / "src/example.py").write_text("value = 1\n")
+    (repo_path / "tests/example.py").write_text("assert True\n")
+    run(repo_path, "uv", "sync", "--no-frozen", timeout=120)
+    run(repo_path, "git", "init")
+    run(repo_path, "git", "config", "user.name", "Hook test")
+    run(repo_path, "git", "config", "user.email", "hook-test@example.invalid")
+    (repo_path / ".gitignore").write_text(".venv/\n.ruff_cache/\n")
+    run(repo_path, "git", "add", ".")
+    run(repo_path, "git", "commit", "-m", "baseline")
+    run(repo_path, "hk", "install")
+    return repo_path
 
 
 def hook_timeout_seconds(repo):
@@ -105,25 +126,9 @@ def hook(repo, name):
     return result, elapsed
 
 
-def test_pre_commit_ignores_inherited_git_routing(repo, tmp_path, monkeypatch):
-    external = tmp_path / "external"
-    external.mkdir()
-    run(external, "git", "init")
-    run(external, "git", "config", "user.name", "External repository")
-    run(external, "git", "config", "user.email", "external@example.invalid")
-    (external / "outside.py").write_text("outside = 1\n")
-    run(external, "git", "add", ".")
-    run(external, "git", "commit", "-m", "external baseline")
-    external_state = snapshot(external)
-
-    monkeypatch.setenv("GIT_DIR", str(external / ".git"))
-    monkeypatch.setenv("GIT_WORK_TREE", str(external))
-    monkeypatch.setenv("GIT_INDEX_FILE", str(external / ".git" / "index"))
-    run(repo, "git", "add", "src/example.py")
-    result, elapsed = hook(repo, "pre-commit")
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert elapsed < hook_timeout_seconds(repo)
+def test_repository_fixture_ignores_inherited_git_routing(repo, inherited_git_routing):
+    external, external_state = inherited_git_routing
+    assert run(repo, "git", "rev-parse", "HEAD").stdout
     assert snapshot(external) == external_state
 
 
@@ -174,7 +179,18 @@ def test_pre_commit_never_re_resolves_a_stale_manifest(repo):
     # must not trigger a re-resolve, so the hook passes and uv.lock keeps its
     # bytes (hook() compares the tracked files, uv.lock included, across the run).
     config = repo / "pyproject.toml"
-    config.write_text(config.read_text().replace("ruff==0.16.5", "ruff==0.16.6"))
+    manifest = config.read_text()
+    dev_dependencies = tomllib.loads(manifest)["dependency-groups"]["dev"]
+    ruff_pin = next(
+        dependency for dependency in dev_dependencies if dependency.startswith("ruff==")
+    )
+    match = re.fullmatch(r"(ruff==)([0-9]+(?:\.[0-9]+)*)", ruff_pin)
+    assert match
+    version = match.group(2).split(".")
+    version[-1] = str(int(version[-1]) + 1)
+    stale_pin = match.group(1) + ".".join(version)
+    assert manifest.count(ruff_pin) == 1
+    config.write_text(manifest.replace(ruff_pin, stale_pin, 1))
     run(repo, "git", "add", "pyproject.toml")
     path = repo / "src/example.py"
     path.write_text("value = 2\n")
@@ -198,7 +214,8 @@ def test_timeout_preserves_index_and_unstaged_edits(repo, name):
     # Delay the checker, not hk's timeout or its staging/recovery settings.
     config = repo / "hk.pkl"
     original = "uv run ruff format --check {{files}}" if name == "pre-commit" else "just lint"
-    delay = f'\\"{sys.executable}\\" -c \\"import time; time.sleep(20)\\"'
+    python_executable = Path(sys.executable).as_posix()
+    delay = f'\\"{python_executable}\\" -c \\"import time; time.sleep(20)\\"'
     # Seed the user's own stash entry while the normal hook is still fast: hk's
     # git-stash recovery must leave it intact alongside its own push/pop
     # (hook() compares refs/stash across the run).
