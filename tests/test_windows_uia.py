@@ -12,7 +12,9 @@ import time
 
 import pytest
 
+from tests import windows_uia_diagnostics
 from tests.integration.utils.windows_app import UIA_CLIENT, WindowsUIAProcess
+from tests.windows_uia_diagnostics import capture_native_environment as _capture_native_environment
 
 STUB_TYPES = r"""
 using System;
@@ -204,6 +206,10 @@ def _native_failure_details(app, helper, stderr):
         details["tree"] = helper.request("tree")
     except AssertionError as error:
         details["tree_error"] = str(error)
+    try:
+        details["native_environment"] = _capture_native_environment(app.pid, helper.proc.pid)
+    except Exception as error:
+        details["native_environment"] = {"error": str(error)}
     if app.poll() is None:
         app.terminate()
         app.wait(timeout=10)
@@ -221,24 +227,78 @@ def test_native_form_wait_stops_immediately_if_the_form_process_exits(tmp_path):
         _wait_for_form_shown(Form(), tmp_path / "ready", timeout=30)
 
 
-def test_native_failure_details_preserve_form_exit_stderr_and_wait_metrics():
+def test_native_failure_details_preserve_form_exit_stderr_and_wait_metrics(monkeypatch):
     class Form:
+        pid = 123
+
         def poll(self):
             return 17
 
     class Helper:
+        proc = Form()
         last_metrics = {"wait_ms": 30000}
 
         def request(self, action):
             raise AssertionError("no window")
 
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_capture_native_environment",
+        lambda fixture, helper: {"fixture": {"bitness": 64}, "children": []},
+        raising=False,
+    )
     details = _native_failure_details(Form(), Helper(), io.StringIO("form startup error"))
     assert details == {
         "form_exit": 17,
         "wait_metrics": {"wait_ms": 30000},
         "tree_error": "no window",
+        "native_environment": {"fixture": {"bitness": 64}, "children": []},
         "form_stderr": "form startup error",
     }
+
+
+def test_failure_diagnostics_do_not_mask_the_original_failure(monkeypatch):
+    class Form:
+        pid = 1
+
+        def poll(self):
+            return 1
+
+    class Helper:
+        proc = Form()
+        last_metrics = {}
+
+        def request(self, _):
+            raise AssertionError("no tree")
+
+    def fail_diagnostics(*_):
+        raise TypeError("diagnostics failed")
+
+    monkeypatch.setattr(sys.modules[__name__], "_capture_native_environment", fail_diagnostics)
+    result = _native_failure_details(Form(), Helper(), io.StringIO("stderr"))
+    assert result["tree_error"] == "no tree"
+    assert result["native_environment"]["error"] == "diagnostics failed"
+
+
+def test_native_diagnostics_keep_window_facts_when_uia_inspection_fails(monkeypatch):
+    monkeypatch.setattr(
+        windows_uia_diagnostics.ctypes, "WinDLL", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(windows_uia_diagnostics, "_process_facts", lambda *a: {"bitness": 64})
+    monkeypatch.setattr(
+        windows_uia_diagnostics,
+        "_child_windows",
+        lambda *a: [{"handle": 1, "class_name": "Button"}],
+    )
+
+    def fail_uia(_):
+        raise OSError("UIA unavailable")
+
+    monkeypatch.setattr(windows_uia_diagnostics, "_uia_properties", fail_uia)
+    details = windows_uia_diagnostics.capture_native_environment(1, 2)
+    assert details["fixture"]["bitness"] == details["helper"]["bitness"] == 64
+    assert details["children"] == [{"handle": 1, "class_name": "Button"}]
+    assert "UIA unavailable" in details["uia_error"]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows UI Automation requires native Windows")
@@ -314,7 +374,7 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
             image = tmp_path / "screenshot.png"
             helper.request("screenshot", str(image))
             assert image.stat().st_size > 0
-        except AssertionError as error:
+        except Exception as error:
             details = _native_failure_details(app, helper, form_stderr)
             record_property("windows_uia_failure", json.dumps(details, sort_keys=True))
             error.add_note("Native UIA diagnostics: " + json.dumps(details, sort_keys=True))
