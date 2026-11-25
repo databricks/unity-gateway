@@ -348,6 +348,7 @@ class TerminalProcess:
                                 "harness",
                                 "validation_failed",
                                 "validation_failure_reason",
+                                "validation_diagnostics",
                                 "validation_ms",
                             )
                             if key in record

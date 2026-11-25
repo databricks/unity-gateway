@@ -1,8 +1,8 @@
 function Protect-DiagnosticText {
     param([string]$Text)
-    foreach ($secret in @($env:DATABRICKS_BEARER, $env:CLAUDE_CODE_OAUTH_TOKEN, $env:DATABRICKS_CLIENT_SECRET, $env:UG_COWORK_PAT)) {
-        if ($secret) { $Text = $Text.Replace($secret, '[REDACTED]') }
-    }
+    $secrets = @($env:DATABRICKS_BEARER, $env:CLAUDE_CODE_OAUTH_TOKEN, $env:DATABRICKS_CLIENT_SECRET, $env:UG_COWORK_PAT) |
+        Where-Object { $_ } | Sort-Object { $_.Length } -Descending
+    foreach ($secret in $secrets) { $Text = $Text.Replace($secret, '[REDACTED]') }
     $Text = $Text -replace '\bsk-ant-[A-Za-z0-9_-]+', '[REDACTED]'
     $Text = $Text -replace '\bdapi[0-9a-f]{32}(-\d+)?\b', '[REDACTED]'
     $Text = $Text -replace '(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+', 'Bearer [REDACTED]'
@@ -37,6 +37,35 @@ function Test-CoworkVmReady {
         try { return $reader.ReadToEnd().Contains('[VM:start] Startup complete') }
         finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
+}
+
+function Set-CoworkFolderInput {
+    param([scriptblock]$ReadFocusedEdit, [string]$Folder, [DateTime]$Deadline)
+    do {
+        $edit = & $ReadFocusedEdit
+        if ($edit -and [DateTime]::UtcNow -lt $Deadline) {
+            $edit.SetValue($Folder)
+            if ($edit.Current.Value -cne $Folder) { throw 'Folder picker address input did not retain the requested path' }
+            return
+        }
+        if ([DateTime]::UtcNow -ge $Deadline) { throw 'Folder picker address input never obtained focus' }
+        Start-Sleep -Milliseconds 500
+    } while ($true)
+}
+
+function Wait-CoworkFolderReady {
+    param([scriptblock]$ReadPicker, [string]$ExpectedLeaf, [DateTime]$Deadline)
+    $pattern = '(?i)^Address:\s*(?:.*[\\/>]\s*)?' + [regex]::Escape($ExpectedLeaf) + '\s*$'
+    do {
+        $state = & $ReadPicker
+        $address = [string]$state.address
+        if ($state.button -and $address -match $pattern -and [DateTime]::UtcNow -lt $Deadline) { return $state.button }
+        if ([DateTime]::UtcNow -ge $deadline) {
+            $observed = if ($address) { $address } else { '<not observed>' }
+            throw "Folder picker did not navigate to $ExpectedLeaf; last address: $observed"
+        }
+        Start-Sleep -Milliseconds 500
+    } while ($true)
 }
 
 function Get-CoworkResponseError {

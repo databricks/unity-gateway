@@ -3650,7 +3650,9 @@ def smart_router_logs_cmd(
                         if r.get("type") == session_log.DECISION_TYPE
                     ],
                     "route_validations": [
-                        r for r in records if r.get("type") == session_log.ROUTE_VALIDATION_TYPE
+                        {key: value for key, value in r.items() if key != "validation_diagnostics"}
+                        for r in records
+                        if r.get("type") == session_log.ROUTE_VALIDATION_TYPE
                     ],
                 }
             )

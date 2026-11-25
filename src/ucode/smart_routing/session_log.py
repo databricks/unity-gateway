@@ -27,6 +27,7 @@ ROUTE_VALIDATION_FIELDS = (
     "routing_unsupported_reason",
     "validation_failed",
     "validation_failure_reason",
+    "validation_diagnostics",
     "eligible_route_options",
     "ineligible_route_options",
     "available_route_options",

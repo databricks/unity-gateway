@@ -270,38 +270,58 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     assert router.answered.wait(3)
     assert json.loads(validation_result_path(controls).read_text()) == result
     assert isinstance(result.pop("validation_ms"), int)
-    reason = result.pop("validation_failure_reason")
-    assert reason.startswith("Smart Router didn't respond in time")
-    for detail in ("dns=", "connect=", "tls=", "ttfb=", "request_id="):
-        assert detail in reason, reason
-    result["validation_failure_reason"] = "Smart Router didn't respond in time"
+    diagnostics = result.pop("validation_diagnostics")
     assert result == _failed("Smart Router didn't respond in time")
+    for detail in ("connect_dns_tcp=", "tls=", "ttfb=", "request_id="):
+        assert detail in diagnostics, diagnostics
     assert session_routing_enabled(controls) is False
+
+
+def test_timeout_diagnostics_exclude_untrusted_reason_text():
+    reason = (
+        "network error: timed out; diagnostics: synthetic-secret; diagnostics: connect_dns_tcp=42ms"
+    )
+    result = validation._verdict(None, reason, "stable", time.monotonic(), "codex")
+    assert result["validation_failure_reason"] == "Smart Router didn't respond in time"
+    assert result["validation_diagnostics"] == "connect_dns_tcp=42ms"
+    assert "synthetic-secret" not in json.dumps(result)
+    plain = validation._verdict(
+        None, "network error: timed out", "stable", time.monotonic(), "codex"
+    )
+    assert "validation_diagnostics" not in plain
+
+
+def test_validation_probe_does_not_install_a_global_profiler(router, monkeypatch):
+    monkeypatch.setattr(
+        sys, "setprofile", lambda *_: pytest.fail("global profiling is not allowed")
+    )
+    timings = validation._NetworkTimings()
+    outcome = {}
+    validation._probe(router.url, "test-token", {"route_options": []}, None, outcome, timings)
+    assert outcome["response"] == ({"is_supported": True}, None)
 
 
 def test_network_trace_records_real_loopback_transport(router, monkeypatch):
     monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
     timings = validation._NetworkTimings()
     token = databricks._HTTP_TRACE.set(timings.trace)
-    previous_profile = sys.getprofile()
-    sys.setprofile(timings.profile)
     try:
         payload, reason = databricks._http_post_json(
             f"{router.url}/validate", "test-token", {"models": ["m"]}, timeout=4
         )
     finally:
-        sys.setprofile(previous_profile)
         databricks._HTTP_TRACE.reset(token)
     assert payload == {"is_supported": True} and reason is None
     summary = timings.summary()
-    for phase in ("dns", "connect", "ttfb"):
+    for phase in ("connect_dns_tcp", "ttfb"):
         assert re.search(rf"{phase}=\d+ms", summary), summary
     assert "transport=pooled" in summary
     assert "connection=new" in summary
     assert "request_id=test-request-id" in summary
 
 
-def test_network_trace_records_urllib_https_timings(tmp_path):
+@pytest.mark.parametrize("disable_pool", [True, False], ids=["urllib", "httpcore"])
+def test_network_trace_records_https_transport(tmp_path, disable_pool):
     ca = tmp_path / "ca"
     tls_ca.write_ca(ca)
     certificate = tmp_path / "localhost.pem"
@@ -315,11 +335,9 @@ from ucode import databricks
 from ucode.smart_routing.route_validation import _NetworkTimings
 trace = _NetworkTimings()
 token = databricks._HTTP_TRACE.set(trace.trace)
-sys.setprofile(trace.profile)
 try:
     payload, reason = databricks._http_post_json(sys.argv[1], 'test-token', {}, timeout=4)
 finally:
-    sys.setprofile(None)
     databricks._HTTP_TRACE.reset(token)
 print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary()}))
 """
@@ -330,9 +348,13 @@ print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary
         try:
             env = {
                 **os.environ,
-                "UG_NO_POOLED_HTTP": "1",
+                "UG_NO_POOLED_HTTP": "1" if disable_pool else "0",
                 "SSL_CERT_FILE": str(ca / tls_ca.CA_CERTIFICATE),
                 "NO_PROXY": "localhost,127.0.0.1",
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "http_proxy": "",
+                "https_proxy": "",
             }
             result = subprocess.run(
                 [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/validate"],
@@ -348,9 +370,15 @@ print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary
     output = json.loads(result.stdout)
     assert output["payload"] == {"is_supported": True} and output["reason"] is None
     summary = output["summary"]
-    for phase in ("dns", "connect", "tls", "ttfb"):
-        assert re.search(rf"{phase}=\d+ms", summary), summary
-    assert "transport=urllib" in summary
+    if disable_pool:
+        assert "transport=urllib" in summary
+        assert "connect_dns_tcp=not-observed" in summary
+        assert "tls=not-observed" in summary
+        assert "ttfb=not-observed" in summary
+    else:
+        assert "transport=pooled" in summary
+        for phase in ("connect_dns_tcp", "tls", "ttfb"):
+            assert re.search(rf"{phase}=\d+ms", summary), summary
     assert "request_id=test-request-id" in summary
 
 

@@ -28,6 +28,19 @@ _REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
 _REAL_CLAUDE_MANAGED_SETTINGS_PATH = claude_agent._managed_settings_path
 
 
+def test_inherited_product_selectors_do_not_change_unit_test_defaults():
+    names = (
+        "UG_SKIP_OS_SETTINGS",
+        "UG_LAUNCH_WRITE_OS_SETTINGS",
+        "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+        "UG_NO_POOLED_HTTP",
+        "UG_ROUTE_VALIDATION",
+        "UG_WORKSPACE",
+    )
+    present = [name for name in names if name in os.environ]
+    assert not present, f"Inherited selectors were not isolated: {present}"
+
+
 @pytest.fixture(autouse=True)
 def _reset_dry_run():
     config_io.set_dry_run(False)

@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import custom_oauth, gateway_proxy, managed_files
+from ucode import custom_oauth, gateway_proxy, managed_files, ui
 from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -3113,7 +3113,15 @@ class TestCodexManagedConfig:
         assert f"--relay-port {port} " in unit_path.read_text()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
-    def test_desktop_relay_preserves_user_provider_and_dry_run(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("long_path", [False, True], ids=["standard", "long-path"])
+    def test_desktop_relay_preserves_user_provider_and_dry_run(
+        self, tmp_path, monkeypatch, capsys, long_path
+    ):
+        monkeypatch.setattr(ui.err_console, "_width", 4096)
+        if long_path:
+            # Align the warning with Rich's default 80-column wrap boundary.
+            extra = (130 - len(str(tmp_path / ".codex/config.toml")) - 1) % 80 or 80
+            tmp_path = tmp_path / ("x" * extra)
         self._sudo_counting_env(tmp_path, monkeypatch)
         app_path = codex._legacy_config_path()
         app_path.parent.mkdir(parents=True, exist_ok=True)

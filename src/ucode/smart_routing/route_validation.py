@@ -8,11 +8,7 @@ is the flag-off answer from the endpoint, so it leaves routing on and records no
 from __future__ import annotations
 
 import contextvars
-import http.client
 import re
-import socket
-import ssl
-import sys
 import threading
 import time
 from collections.abc import Iterable, Mapping
@@ -47,11 +43,6 @@ TIMED_OUT_FAILURE_REASON = "Smart Router didn't respond in time"
 HTTP_ERROR_FAILURE_REASON = "Smart Router returned an error (HTTP {status})"
 UNREACHABLE_FAILURE_REASON = "Smart Router couldn't be reached"
 UNEXPECTED_RESPONSE_FAILURE_REASON = "Smart Router returned an unexpected response"
-_SOCKET_TYPE = socket.socket
-_DNS_CODE = socket.getaddrinfo.__code__
-_TLS_CODE = ssl.SSLSocket.do_handshake.__code__
-_TLS_READ_CODE = ssl.SSLSocket.recv.__code__
-_RESPONSE_CODE = http.client.HTTPResponse.begin.__code__
 _REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-databricks-request-id")
 
 
@@ -92,28 +83,12 @@ class _NetworkTimings:
                 if phase == "ttfb" and source:
                     self.ttfb_source = source
 
-    def profile(self, frame, event, arg) -> None:
-        phase = None
-        if event in ("call", "return"):
-            if frame.f_code is _DNS_CODE:
-                phase = "dns"
-            elif frame.f_code is _TLS_CODE:
-                phase = "tls"
-            elif frame.f_code is _RESPONSE_CODE:
-                phase = "ttfb"
-            elif event == "return" and frame.f_code is _TLS_READ_CODE:
-                self.mark("ttfb", False, source="first-read")
-        elif event in ("c_call", "c_return", "c_exception"):
-            method = getattr(arg, "__name__", None)
-            if isinstance(getattr(arg, "__self__", None), _SOCKET_TYPE):
-                if method in ("connect", "connect_ex"):
-                    phase = "connect"
-                elif event == "c_return" and method in ("recv", "recv_into"):
-                    self.mark("ttfb", False, source="first-read")
-        if phase:
-            self.mark(phase, event in ("call", "c_call"), source="headers-complete")
-
     def trace(self, event: str, info: dict[str, Any]) -> None:
+        for phase, name in (("connect_dns_tcp", "connect_tcp"), ("tls", "start_tls")):
+            if event.endswith(f"{name}.started"):
+                self.mark(phase, True)
+            elif event.endswith((f"{name}.complete", f"{name}.failed")):
+                self.mark(phase, False)
         if event.startswith("transport."):
             with self.lock:
                 self.transport = event.removeprefix("transport.")
@@ -137,7 +112,7 @@ class _NetworkTimings:
         now = time.monotonic()
         with self.lock:
             fields = []
-            for phase in ("dns", "connect", "tls", "ttfb"):
+            for phase in ("connect_dns_tcp", "tls", "ttfb"):
                 total = self.elapsed.get(phase, 0.0)
                 if phase in self.started:
                     fields.append(f"{phase}={round((total + now - self.started[phase]) * 1000)}ms+")
@@ -147,7 +122,7 @@ class _NetworkTimings:
                     fields.append(f"{phase}=not-observed")
             connection = (
                 "new"
-                if "connect" in self.started or "connect" in self.elapsed
+                if "connect_dns_tcp" in self.started or "connect_dns_tcp" in self.elapsed
                 else ("reused" if self.transport == "pooled" and self.sent else "unknown")
             )
             return ", ".join(
@@ -231,12 +206,7 @@ def _failure_reason(payload: object, reason: str | None) -> str | None:
     if reason == CHECK_FAILED_REASON:
         return CHECK_FAILED_REASON
     if TIMED_OUT_MARKER in reason:
-        details = reason.partition("; diagnostics: ")[2]
-        return (
-            f"{TIMED_OUT_FAILURE_REASON}; diagnostics: {details}"
-            if details
-            else TIMED_OUT_FAILURE_REASON
-        )
+        return TIMED_OUT_FAILURE_REASON
     if reason.startswith(NETWORK_ERROR_PREFIX):
         return UNREACHABLE_FAILURE_REASON
     return UNEXPECTED_RESPONSE_FAILURE_REASON
@@ -275,14 +245,11 @@ def _probe(
     timings: _NetworkTimings,
 ) -> None:
     trace_token = _HTTP_TRACE.set(timings.trace)
-    previous_profile = sys.getprofile()
-    sys.setprofile(timings.profile)
     try:
         outcome["response"] = _validate_route_options(workspace, token, body, provider)
     except Exception:
         outcome["response"] = (None, CHECK_FAILED_REASON)
     finally:
-        sys.setprofile(previous_profile)
         _HTTP_TRACE.reset(trace_token)
 
 
@@ -335,11 +302,16 @@ def _verdict(
         if failure is not None
         else _unsupported_details(cast(dict, payload), router_name, available_harness)
     )
-    return {
+    result = {
         "routing_disabled": True,
         **details,
         "validation_ms": round((time.monotonic() - started) * 1000),
     }
+    if reason and TIMED_OUT_MARKER in reason:
+        _, separator, diagnostics = reason.rpartition("; diagnostics: ")
+        if separator and diagnostics:
+            result["validation_diagnostics"] = diagnostics
+    return result
 
 
 def check_failed(router_name: str, started: float) -> dict[str, Any]:

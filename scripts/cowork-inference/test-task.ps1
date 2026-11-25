@@ -72,7 +72,22 @@ function Save-UI {
     if (-not $Root) { return }
     $controls = $Root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
     $rows = @($controls | ForEach-Object {
-        @{ name = $_.Current.Name; type = $_.Current.ControlType.ProgrammaticName; id = $_.Current.AutomationId; enabled = $_.Current.IsEnabled; offscreen = $_.Current.IsOffscreen }
+        try {
+            $valuePattern = $null
+            $value = if ($_.Current.IsPassword) { '[REDACTED]' }
+                elseif ($_.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+                    Protect-DiagnosticText ([string]$valuePattern.Current.Value)
+                } else { $null }
+            @{
+                name = Protect-DiagnosticText ([string]$_.Current.Name)
+                type = $_.Current.ControlType.ProgrammaticName
+                id = Protect-DiagnosticText ([string]$_.Current.AutomationId)
+                enabled = $_.Current.IsEnabled
+                offscreen = $_.Current.IsOffscreen
+                focused = $_.Current.HasKeyboardFocus
+                value = $value
+            }
+        } catch [Windows.Automation.ElementNotAvailableException] { }
     })
     Protect-DiagnosticText ($rows | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $evidence "$Name.json")
 }
@@ -98,12 +113,35 @@ function Select-Folder {
     if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle)) {
         throw 'Could not activate the native folder picker'
     }
-    [Windows.Forms.Clipboard]::SetText($task.folder)
+    $navigationDeadline = [DateTime]::UtcNow.AddSeconds(20)
     [Windows.Forms.SendKeys]::SendWait('^l')
-    [Windows.Forms.SendKeys]::SendWait('^v')
+    Set-CoworkFolderInput -Folder $task.folder -Deadline $navigationDeadline -ReadFocusedEdit {
+        $controls = $dialog.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+        $edit = $controls | Where-Object {
+            try {
+                $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Edit' -and
+                $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and $_.Current.HasKeyboardFocus
+            } catch [Windows.Automation.ElementNotAvailableException] { $false }
+        } | Select-Object -First 1
+        $pattern = $null
+        if ($edit -and $edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $pattern }
+    }
+    Save-UI 'folder-input' -Root $dialog
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Start-Sleep -Seconds 1
-    Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
+    $button = Wait-CoworkFolderReady -ExpectedLeaf ([IO.Path]::GetFileName($task.folder)) -Deadline $navigationDeadline -ReadPicker {
+        $addresses = $dialog.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+        $address = $addresses | Where-Object {
+            try {
+                $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane' -and
+                $_.Current.Name -like 'Address:*' -and -not $_.Current.IsOffscreen
+            } catch [Windows.Automation.ElementNotAvailableException] { $false }
+        } | Select-Object -First 1
+        @{
+            address = if ($address) { $address.Current.Name } else { '' }
+            button = Find-Control -Names @('Select Folder', 'Select folder', 'Open') -Root $dialog
+        }
+    }
+    Invoke-Control $button
     $permission = Wait-Control -Names @(
         'Allow Claude to change files in “CoworkProbe”?',
         'Allow Claude to access “CoworkProbe”?',

@@ -2175,9 +2175,11 @@ unsupported model list turns routing off for the session. Every other failure tu
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
 responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
 deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Local
-pooled HTTP and urllib HTTPS tests also check timing and request-ID diagnostics; they do not prove
-which phase caused a live timeout. Terminal artifacts retain redacted, allowlisted validation records
-before the temporary session is removed; malformed records are reported without masking test failures.
+pooled HTTP/HTTPS tests check combined DNS/TCP, TLS and response-header timing plus request IDs;
+urllib HTTPS records transport and request ID without phase timings. These do not prove which phase
+caused a live timeout. The unchanged user-facing timeout reason is separate from safe diagnostics,
+which terminal artifacts retain before the temporary session is removed. Malformed records are
+reported without masking test failures.
 The Codex back-on journey also records upstream connection, TLS and response-header phase events
 from its forwarding recorder without recording request bodies or credentials.
 Only HTTP 404 (the flag-off answer) leaves routing on silently. Result-write failures are isolated.

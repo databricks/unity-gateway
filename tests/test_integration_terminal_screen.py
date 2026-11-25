@@ -63,7 +63,8 @@ def test_terminal_preserves_redacted_router_validation_on_failure(tmp_path):
     record = {
         "type": "route_validation",
         "validation_failed": True,
-        "validation_failure_reason": "dns=1ms, ttfb=4000ms+, request_id=synthetic-secret",
+        "validation_failure_reason": "Smart Router didn't respond in time",
+        "validation_diagnostics": "connect_dns_tcp=1ms, ttfb=4000ms+, request_id=synthetic-secret",
         "validation_ms": 4003,
     }
     other = {"type": "decision", "prompt": "private-prompt"}
@@ -79,7 +80,8 @@ def test_terminal_preserves_redacted_router_validation_on_failure(tmp_path):
         {"read_error": "JSONDecodeError"},
         {
             "validation_failed": True,
-            "validation_failure_reason": "dns=1ms, ttfb=4000ms+, request_id=<redacted>",
+            "validation_failure_reason": "Smart Router didn't respond in time",
+            "validation_diagnostics": "connect_dns_tcp=1ms, ttfb=4000ms+, request_id=<redacted>",
             "validation_ms": 4003,
         },
     ]

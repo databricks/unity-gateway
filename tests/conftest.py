@@ -66,6 +66,58 @@ def pytest_xdist_auto_num_workers(config):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_product_selectors(monkeypatch, request):
+    if request.node.path.name == "test_e2e.py":
+        return
+    for name in (
+        "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY",
+        "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+        "ENABLE_PROMPT_CACHING_1H",
+        "ENABLE_SMART_ROUTER_AUTO_MODE",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY",
+        "ENABLE_SMART_ROUTING_V2",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI",
+        "ENABLE_TOOL_SEARCH",
+        "ISAAC_LAUNCH_MODE",
+        "ISAAC_SMART_ROUTER_FEEDBACK",
+        "SMART_ROUTER_CONFIG_VERSION",
+        "SMART_ROUTER_NAME",
+        "UCODE_AGENT_LABELS_DIR",
+        "UCODE_CLAUDE_PTY_DEBUG",
+        "UCODE_CLAUDE_V2_SOCKET",
+        "UCODE_CLAUDE_WEB_SEARCH_PROVIDER",
+        "UCODE_DEBUG",
+        "UCODE_MANAGED_CONFIG_STUB",
+        "UCODE_RELAYED_PROXY_DIAGNOSTICS",
+        "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE",
+        "UCODE_RUNTIME_WRAPPER_PID",
+        "UCODE_SESSION_ENV_FILE",
+        "UCODE_SKILL_USAGE_REPORT",
+        "UCODE_SMART_ROUTER_PYTHON",
+        "UCODE_WEB_SEARCH_MODEL",
+        "UG_AUTO_UPGRADE_AGENT",
+        "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH",
+        "UG_CODEX_MODEL_PROVIDER_SERVICE",
+        "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+        "UG_CODEX_REQUEST_TAGS",
+        "UG_CODEX_SMART_ROUTER_RECIPE",
+        "UG_ENABLE_METRICS_EXPORT",
+        "UG_HEADERS",
+        "UG_LAUNCH_WRITE_OS_SETTINGS",
+        "UG_NO_POOLED_HTTP",
+        "UG_ROUTE_VALIDATION",
+        "UG_SKIP_OS_SETTINGS",
+        "UG_TEST_METRICS_DIAGNOSTICS",
+        "UG_TLS_TRUST_STORE",
+        "UG_VSCODE_CODE",
+        "UG_WORKSPACE",
+        "UG_WORKSPACE_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_route_validation(monkeypatch):
     from ucode.smart_routing import route_validation
 

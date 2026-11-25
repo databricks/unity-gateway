@@ -25,6 +25,14 @@ try {
             throw 'Diagnostic redaction assertion failed'
         }
     }
+    $env:DATABRICKS_BEARER = 'overlap'
+    $env:DATABRICKS_CLIENT_SECRET = 'overlap-long"\\secret'
+    $value = Protect-DiagnosticText "prefix $($env:DATABRICKS_CLIENT_SECRET) suffix"
+    $encoded = @{ value = $value } | ConvertTo-Json
+    if ($value -cne 'prefix [REDACTED] suffix' -or $encoded -match 'overlap|secret') {
+        throw 'UI values must redact overlapping credentials before JSON serialization'
+    }
+    $env:DATABRICKS_BEARER = 'known-fixture-token'
     $responseError = 'Claude responded: API Error: Request rejected (429)'
     if ((Get-CoworkResponseError @('Start task', "$responseError known-fixture-token")) -cne "$responseError [REDACTED]") {
         throw 'Cowork API error must retain the provider status and redact credentials'
@@ -55,6 +63,57 @@ try {
         Set-Content -LiteralPath $vmLog -Value ('[VM:start] Startup complete' + ('x' * 200)) -Encoding utf8
         if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A longer replacement must still show readiness' }
     } finally { Remove-Item -LiteralPath $vmLog -Force }
+    $script:focusedTestEdit = [pscustomobject]@{ Current = [pscustomobject]@{ Value = '' }; Writes = 0 }
+    $script:focusedTestEdit | Add-Member -MemberType ScriptMethod -Name SetValue -Value {
+        param($Value)
+        $this.Writes++
+        $this.Current.Value = $Value
+    }
+    $script:focusReads = 0
+    $focusedEdit = {
+        $script:focusReads++
+        if ($script:focusReads -eq 1) { return $null }
+        return $script:focusedTestEdit
+    }
+    Set-CoworkFolderInput -ReadFocusedEdit $focusedEdit -Folder '/tmp/CoworkProbe' `
+        -Deadline ([DateTime]::UtcNow.AddSeconds(3))
+    if ($script:focusReads -ne 2 -or $script:focusedTestEdit.Writes -ne 1 -or $script:focusedTestEdit.Current.Value -cne '/tmp/CoworkProbe') {
+        throw 'Folder input was not written once after focus'
+    }
+    $script:staleTestEdit = [pscustomobject]@{ Current = [pscustomobject]@{ Value = 'stale' }; Writes = 0 }
+    $script:staleTestEdit | Add-Member -MemberType ScriptMethod -Name SetValue -Value { param($Value) $this.Writes++ }
+    try {
+        Set-CoworkFolderInput -ReadFocusedEdit { $script:staleTestEdit } -Folder '/tmp/CoworkProbe' `
+            -Deadline ([DateTime]::UtcNow.AddSeconds(1))
+        throw 'A stale address value must fail'
+    } catch {
+        if ($_.Exception.Message -notmatch 'did not retain') { throw }
+    }
+    if ($script:staleTestEdit.Writes -ne 1) { throw 'A failed address write must not be repeated' }
+    $script:pickerReads = 0
+    $picker = {
+        $script:pickerReads++
+        if ($script:pickerReads -eq 1) { return @{ address = 'Address: runneradmin'; button = 'wrong' } }
+        return @{ address = 'Address: Documents > CoworkProbe'; button = 'ready' }
+    }
+    $button = Wait-CoworkFolderReady -ReadPicker $picker -ExpectedLeaf 'CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3))
+    if ($button -ne 'ready' -or $script:pickerReads -ne 2) { throw 'Folder picker selected before navigation completed' }
+    $selected = $false
+    try {
+        Wait-CoworkFolderReady -ReadPicker { @{ address = 'Address: runneradmin'; button = 'wrong' } } `
+            -ExpectedLeaf 'CoworkProbe' -Deadline ([DateTime]::UtcNow) | Out-Null
+        $selected = $true
+    } catch {
+        if ($_.Exception.Message -notmatch 'Address: runneradmin') { throw }
+    }
+    if ($selected) { throw 'A non-navigating picker must not select a folder' }
+    try {
+        Wait-CoworkFolderReady -ReadPicker { @{ address = ''; button = 'wrong' } } `
+            -ExpectedLeaf 'CoworkProbe' -Deadline ([DateTime]::UtcNow) | Out-Null
+        throw 'A missing address must not be accepted'
+    } catch {
+        if ($_.Exception.Message -notmatch '<not observed>') { throw }
+    }
 } finally {
     $env:DATABRICKS_BEARER = $savedBearer
     $env:CLAUDE_CODE_OAUTH_TOKEN = $savedOAuthToken

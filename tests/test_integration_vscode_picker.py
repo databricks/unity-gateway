@@ -85,6 +85,99 @@ def fast_steps(monkeypatch):
     monkeypatch.setattr(vscode_module, "POLL_S", 0.01)
 
 
+def test_model_picker_dismisses_topmost_dropdown_before_closing_editor():
+    class Element:
+        def __init__(self, window):
+            self.window = window
+            self.first = self
+
+        def locator(self, *_args, **_kwargs):
+            return self
+
+        def filter(self, **_kwargs):
+            return self
+
+        def element_handle(self, **_kwargs):
+            return self
+
+        def is_visible(self):
+            return self.window.current["modelsEditor"]
+
+        def click(self, **_kwargs):
+            assert not self.window.current["dropdown"], (
+                "dropdown must be dismissed before editor close"
+            )
+            self.window.current["modelsEditor"] = False
+
+    class OverlappingWindow(VSCode):
+        def __init__(self):
+            self.current = {
+                "onboarding": None,
+                "dialog": None,
+                "tour": None,
+                "copilotChatOffNotice": False,
+                "modelsEditor": True,
+                "dropdown": True,
+                "picker": "Databricks model",
+                "modelButton": f"Models, {LABEL}",
+            }
+            self.actions, self.states, self.started = [], [], time.monotonic()
+            self.copilot_session_ready = True
+            self.code = SimpleNamespace(poll=lambda: None)
+            element = Element(self)
+            self.page = SimpleNamespace(
+                locator=lambda *_: element,
+                keyboard=SimpleNamespace(press=self.dismiss),
+                mouse=SimpleNamespace(move=lambda *_: None),
+            )
+
+        def screen(self):
+            return dict(self.current)
+
+        def dismiss(self, key):
+            assert key == "Escape"
+            self.current.update(dropdown=False, picker=None)
+
+        def shot(self, _name):
+            pass
+
+    window = OverlappingWindow()
+    assert window._picker_state(window.screen(), LABEL) == "dropdown blocking editor"
+    window.pick_model(LABEL)
+    assert window.actions == ["model picker: dismiss dropdown", "Language Models editor: Close"]
+    assert not window.current["dropdown"] and not window.current["modelsEditor"]
+
+
+@pytest.mark.parametrize(
+    ("screen", "message"),
+    [
+        ({"modelsEditor": True, "dropdown": True}, "dropdown appeared before the click"),
+        ({"modelsEditor": False, "dropdown": False}, "editor closed before the click"),
+    ],
+)
+def test_editor_close_timeout_reports_observed_transition(screen, message):
+    class Element:
+        first = None
+
+        def __init__(self):
+            self.first = self
+
+        def filter(self, **_kwargs):
+            return self
+
+        def element_handle(self, **_kwargs):
+            from playwright.sync_api import TimeoutError
+
+            raise TimeoutError("click target changed")
+
+    window = object.__new__(VSCode)
+    window.actions = []
+    window.page = SimpleNamespace(locator=lambda *_: Element())
+    window.screen = lambda: screen
+    assert window._close_models_editor()()
+    assert window.actions == [f"  ({message})"]
+
+
 def test_pick_model_closes_a_language_models_editor_that_opens_as_the_last_one_closes():
     # The second editor is already up on the first read after the first one closed.
     window = ScriptedVSCode(
@@ -94,6 +187,26 @@ def test_pick_model_closes_a_language_models_editor_that_opens_as_the_last_one_c
     window.pick_model(LABEL)
 
     assert window.actions == ["language models editor", "language models editor", "picker closed"]
+
+
+def test_assert_not_in_picker_handles_dropdown_blocking_editor():
+    overlap = {"state": "dropdown blocking editor", "modelsEditor": True, "picker": "open"}
+    window = ScriptedVSCode(
+        overlap,
+        {
+            "dropdown blocking editor": [EDITOR],
+            "language models editor": [CLOSED],
+            "picker closed": [NO_MATCH],
+        },
+    )
+    window.assert_not_in_picker(LABEL)
+    assert window.actions == [
+        "dropdown blocking editor",
+        "language models editor",
+        "picker closed",
+        "model picker: Escape",
+    ]
+    assert window.current["picker"] is None
 
 
 def test_assert_not_in_picker_closes_a_language_models_editor_that_opens_as_the_last_one_closes():
