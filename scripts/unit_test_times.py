@@ -4,8 +4,9 @@ usage: unit_test_times.py <directory of downloaded shard artifacts> <output json
 
 Each artifact holds one shard's JUnit XML and its report from tests/conftest.py: the units it
 owned (slow tests and file chunks) and how many tests each of its files collected. For every OS,
-every unit must be owned exactly once, and the tests run per file must equal that file's
-collected count; anything else fails this job. The output has tests/unit_test_times.json's shape.
+every unit must be owned exactly once, every test that ran must have run exactly once, the tests
+run per file must equal that file's collected count, and both OSes' shards must be present;
+anything else fails this job. The output has tests/unit_test_times.json's shape.
 """
 
 import collections
@@ -30,6 +31,7 @@ def main() -> None:
     units = collections.defaultdict(collections.Counter)
     collected = collections.defaultdict(dict)
     ran = collections.defaultdict(collections.Counter)
+    runs = collections.defaultdict(collections.Counter)
     by_file = collections.defaultdict(lambda: collections.defaultdict(lambda: [0.0, 0]))
     by_test = collections.defaultdict(collections.Counter)
     for artifact in sorted(path for path in artifacts.iterdir() if path.is_dir()):
@@ -42,10 +44,14 @@ def main() -> None:
             path = shard.file_of(test)
             seconds = float(case.get("time", 0))
             ran[system][path] += 1
+            runs[system][test] += 1
             by_file[system][path][0] += seconds
             by_file[system][path][1] += 1
             by_test[system][test] += seconds
     problems = []
+    for system in ("Linux", "Windows"):
+        if system not in units:
+            problems.append(f"{system}: no unit shard artifacts")
     for system in sorted(units):
         chunks = {unit[1]: unit[3] for unit in units[system] if unit[0] == "chunk"}
         if sorted(chunks) != files:
@@ -63,6 +69,9 @@ def main() -> None:
             expected = collected[system].get(path)
             if ran[system][path] != expected:
                 problems.append(f"{system}: {path} ran {ran[system][path]} of {expected} tests")
+        for test, count in sorted(runs[system].items()):
+            if count != 1:
+                problems.append(f"{system}: {test} ran {count} times")
         print(f"{system}: {sum(ran[system].values())} tests across {len(chunks)} files")
     if problems:
         raise SystemExit("::error::Unit shards did not cover the suite:\n" + "\n".join(problems))
