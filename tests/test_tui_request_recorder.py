@@ -1,5 +1,6 @@
 import gzip
 import json
+import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -94,6 +95,32 @@ def test_validation_forwarding_records_safe_upstream_timings(recorder):
     assert all(isinstance(event["elapsed_ms"], int) for event in row["events"])
     assert "private-prompt" not in json.dumps(row)
     assert "synthetic-secret" not in json.dumps(row)
+
+
+def test_validation_forwarding_preserves_safe_refused_upstream_evidence():
+    with socket.socket() as unavailable:
+        unavailable.bind(("127.0.0.1", 0))
+        upstream = f"http://127.0.0.1:{unavailable.getsockname()[1]}"
+        with TuiRequestRecorder(upstream) as recorder:
+            response = httpx.post(
+                f"{recorder.url}{request_recorder.ROUTE_VALIDATION_PATH}",
+                headers={"Authorization": "Bearer synthetic-secret"},
+                json={"prompt": "private-prompt"},
+            )
+            assert response.status_code == 502
+            request = recorder.expect_request(
+                method="POST", path=request_recorder.ROUTE_VALIDATION_PATH
+            )
+            assert recorder.response_for(request).status_code == 502
+            [timing] = recorder.validation_timings()
+            assert timing["sequence"] == request.sequence
+            assert timing["transport_error"] == "ConnectError"
+            assert any(
+                event["name"] == "connection.connect_tcp.failed" for event in timing["events"]
+            )
+            assert all(isinstance(event["elapsed_ms"], int) for event in timing["events"])
+            assert "private-prompt" not in json.dumps(timing)
+            assert "synthetic-secret" not in json.dumps(timing)
 
 
 @pytest.mark.parametrize(
