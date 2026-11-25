@@ -993,6 +993,7 @@ class TestV2Launch:
     def test_setup_failure_launches_claude_unrouted_with_a_warning(self, monkeypatch):
         error = v2.ClaudeRoutingSetupError("Smart routing could not start its socket")
         monkeypatch.setattr(v2, "launch_claude", Mock(side_effect=error))
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "exec_or_spawn", Mock())
         monkeypatch.setattr(claude, "print_warning", Mock())
 
