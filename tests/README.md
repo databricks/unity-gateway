@@ -1670,6 +1670,9 @@ turns/queries/servers, wrong origins/models and echoed or incomplete answers. Sk
 selects the single root rollout and retains any child rollouts in the artifacts. Missing or
 ambiguous roots fail, and successful child evidence cannot satisfy a failed or incomplete root.
 These are offline parser checks; live desktop coverage requires the native CI jobs.
+`test_windows_uia.py` runs the PowerShell helper's command paths against stub UI controls using
+PowerShell Core (`pwsh` on PATH); on Windows it additionally drives a real WinForms window with
+Windows PowerShell and native UI Automation. The native-Windows case is skipped on other platforms.
 Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
 in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;
@@ -1744,6 +1747,11 @@ or skipped dependency fails the gate, and a running integration suite keeps it
 pending. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
+The post-gate `Managed quota probe (advisory)` reads the managed model configuration and makes
+three concurrent, single-attempt minimal requests per configured probe model, sequentially by
+model. Its artifact records status, latency and selected rate-limit headers without credentials.
+A successful small burst does not establish quota independence or capacity at higher concurrency.
+
 One shared `Security Scan` runs from the default branch on `workflow_run: requested` for
 PR CI. A new request cancels an older scan for the same event, source repository and branch.
 Its protected resolver validates the PR, source repository, branch and commit against GitHub;
@@ -1762,11 +1770,12 @@ minutes. A rate limit leaves the scan pending: `Retry-After` takes precedence, o
 exhausted primary quota waits for `X-RateLimit-Reset`, and secondary limits without a retry time
 back off from one minute. Waiting never exceeds the original sleep budget, and a limit that
 outlasts the gate still causes a timeout. Extra pages or gates sharing an IP can reach the
-anonymous API rate limit.
+anonymous API rate limit. GitHub API 5xx responses also leave the scan pending within that same
+poll budget; persistent 5xx responses still fail closed.
 `test_security_gate_waits_for_the_current_scan` covers failure/timeout, pagination and scan
 provenance; separate cases cover authentication and mismatched request/comment identities.
-Rate-limit cases cover recovery, persistent limits and incomplete listings; the API-error cases
-cover access errors, server failures and network timeouts.
+Rate-limit and server-error cases cover recovery and persistent failures; the API-error cases
+cover access errors and network timeouts.
 The workflow-expression tests verify runner/token selection. These component tests do not
 establish live event delivery, organization runner restrictions or ruleset enforcement.
 

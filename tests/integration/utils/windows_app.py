@@ -82,6 +82,7 @@ class WindowsUIAProcess:
             raise
         self.responses = queue.Queue()
         self.broken = False
+        self.last_metrics: dict[str, float] = {}
 
         def read_responses():
             for line in self.proc.stdout:
@@ -92,6 +93,7 @@ class WindowsUIAProcess:
         self.reader.start()
 
     def request(self, command: str, *args: str) -> str:
+        self.last_metrics = {}
         assert not self.broken, "UI Automation helper is unavailable"
         assert self.proc.poll() is None, "UI Automation helper exited"
         self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
@@ -104,6 +106,14 @@ class WindowsUIAProcess:
             raise AssertionError("UI Automation helper did not respond") from error
         assert line is not None, "UI Automation helper exited without a response"
         response = json.loads(line)
+        metrics = response.get("metrics", {})
+        self.last_metrics = {
+            key: value
+            for key, value in metrics.items()
+            if key in {"init_ms", "action_ms", "wait_ms", "click_ms", "polls"}
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        }
         assert response["ok"], f"UI Automation {command} failed: {response['error']}"
         return response["output"]
 
@@ -116,6 +126,8 @@ class WindowsUIAProcess:
             self.proc.wait()
         self.reader.join(timeout=5)
         self.proc.stdout.close()
+        self.stderr.seek(0)
+        self.stderr_output = self.stderr.read()
         self.stderr.close()
 
 
@@ -181,6 +193,10 @@ class WindowsApp:
             finally:
                 stop_process(self.proc)
             self.reader.join(timeout=5)
+            self.session.record(
+                f"{self.name}-uia-stderr.json",
+                {"stderr": _redact_app_log(self.session, self.uia_process.stderr_output)},
+            )
             self.session.record(f"{self.name}-uia-timings.json", self.timings)
             log = _redact_app_log(self.session, self.log.read_text(errors="replace"))
             self.session.record(
@@ -206,6 +222,7 @@ class WindowsApp:
             return output
         finally:
             timing = {"action": command, "seconds": time.monotonic() - started}
+            timing.update(self.uia_process.last_metrics)
             if command in ("click", "wait") and output.isdigit():
                 timing["polls"] = int(output)
             self.timings.append(timing)

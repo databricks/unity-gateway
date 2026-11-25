@@ -42,6 +42,16 @@ def test_persistent_windows_uia_protocol_preserves_process_and_errors():
     assert client.proc.poll() is not None
 
 
+def test_persistent_uia_preserves_helper_stderr_after_exit():
+    helper = "import sys; print('startup failed', file=sys.stderr)"
+    client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        client.proc.wait(timeout=5)
+    finally:
+        client.close()
+    assert "startup failed" in client.stderr_output
+
+
 def test_persistent_uia_timeout_cannot_reuse_a_stale_response():
     class Responses:
         def get(self, timeout):
@@ -121,7 +131,8 @@ def test_windows_uia_records_native_click_poll_count():
     helper = (
         "import json,sys\n"
         "for line in sys.stdin:\n"
-        " print(json.dumps({'ok':True, 'output':'3', 'error':''}),flush=True)\n"
+        " print(json.dumps({'ok':True, 'output':'3', 'error':'', "
+        "'metrics':{'init_ms':11, 'wait_ms':22, 'click_ms':3, 'secret':'private'}}),flush=True)\n"
     )
     app = object.__new__(windows_app.WindowsApp)
     app.proc = SimpleNamespace(poll=lambda: None, pid=123)
@@ -133,7 +144,10 @@ def test_windows_uia_records_native_click_poll_count():
     finally:
         app.uia_process.close()
     assert app.timings[0]["polls"] == 3
-    assert "Continue" not in repr(app.timings)
+    assert app.timings[0]["init_ms"] == 11
+    assert app.timings[0]["wait_ms"] == 22
+    assert app.timings[0]["click_ms"] == 3
+    assert "Continue" not in repr(app.timings) and "private" not in repr(app.timings)
 
 
 def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):

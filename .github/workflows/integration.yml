@@ -82,7 +82,7 @@ env:
 jobs:
   installation:
     if: ${{ inputs.mode != 'advisory' }}
-    name: Installation tests
+    name: ${{ inputs.mode == 'advisory' && 'Installation tests (runs in Integration)' || 'Installation tests' }}
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Installation tests
@@ -183,7 +183,7 @@ jobs:
 
   installation-windows:
     if: ${{ inputs.mode != 'advisory' }}
-    name: Windows installation tests
+    name: ${{ inputs.mode == 'advisory' && 'Windows installation tests (runs in Integration)' || 'Windows installation tests' }}
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Windows installation tests
@@ -235,7 +235,7 @@ jobs:
       - *budget-check
 
   cowork-inference-windows:
-    name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
+    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · Windows (runs in Integration)' || format('Cowork desktop tasks · Windows · {0}', matrix.source.name) }}
     runs-on: windows-latest
     if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 60
@@ -374,7 +374,7 @@ jobs:
       - *budget-check
 
   cowork-inference-macos:
-    name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
+    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · macOS (runs in Integration)' || format('Cowork desktop tasks · macOS · {0}', matrix.source.name) }}
     runs-on: macos-15-intel
     if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 80
@@ -520,7 +520,7 @@ jobs:
 
   smoke:
     if: ${{ inputs.mode != 'advisory' }}
-    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
+    name: ${{ inputs.mode == 'advisory' && 'Smoke journeys (runs in Integration)' || format('Smoke journeys · {0} · {1}', matrix.agent == 'claude' && 'Claude' || 'Codex', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
     needs: workspace
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -745,7 +745,7 @@ jobs:
 
   headless-windows:
     if: ${{ inputs.mode != 'advisory' }}
-    name: Windows headless journey · Claude
+    name: ${{ inputs.mode == 'advisory' && 'Windows headless journey · Claude (runs in Integration)' || 'Windows headless journey · Claude' }}
     needs: workspace
     runs-on: windows-latest
     timeout-minutes: 20
@@ -820,7 +820,7 @@ jobs:
       - *budget-check
 
   full:
-    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
+    name: ${{ inputs.mode == 'advisory' && 'Full journeys (runs in Integration)' || format('Full journeys · {0} · {1}{2}', matrix.agent == 'claude' && 'Claude' || 'Codex', matrix.os == 'windows-latest' && 'Windows' || 'Linux', matrix.smart_routing && ' · Smart routing' || '') }}
     if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
@@ -880,7 +880,7 @@ jobs:
 
   codex-relay:
     if: ${{ inputs.mode != 'advisory' }}
-    name: Codex relay login and inference
+    name: ${{ inputs.mode == 'advisory' && 'Codex relay login and inference (runs in Integration)' || 'Codex relay login and inference' }}
     needs: workspace
     runs-on:
       group: databricks-protected-runner-group
@@ -902,7 +902,7 @@ jobs:
 
   # See tests/integration/README.md#soft-fail-tests for supported cases and restoration criteria.
   soft-fail:
-    name: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    name: ${{ inputs.mode == 'required' && 'Soft-fail journeys (runs in Integration advisory)' || format('Soft-fail journeys · {0} · {1} (non-blocking)', matrix.agent, matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
     if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, full, managed]
     continue-on-error: true
@@ -928,7 +928,7 @@ jobs:
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
-    name: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    name: ${{ inputs.mode == 'required' && 'Full journeys · OpenCode (runs in Integration advisory)' || format('Full journeys · OpenCode · {0} (non-blocking)', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
     if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
@@ -952,7 +952,7 @@ jobs:
   # Non-blocking pending stabilization, like OpenCode: continue-on-error and absent from the
   # cujs `needs`.
   copilot:
-    name: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    name: ${{ inputs.mode == 'required' && 'Full journeys · Copilot (runs in Integration advisory)' || format('Full journeys · Copilot · {0} (non-blocking)', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
     if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
@@ -976,7 +976,7 @@ jobs:
   # Blocking: part of the cujs gate. Linux only: Antigravity CLI's gateway mode supports macOS
   # and Linux, and ug installs no Windows build.
   antigravity:
-    name: Full journeys · Antigravity · Linux
+    name: ${{ inputs.mode == 'advisory' && 'Full journeys · Antigravity · Linux (runs in Integration)' || 'Full journeys · Antigravity · Linux' }}
     if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     runs-on: ubuntu-22.04
@@ -995,7 +995,7 @@ jobs:
   # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the cujs
   # `needs`. On Linux the tests drive the VS Code window on a private Xvfb display.
   vscode:
-    name: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    name: ${{ inputs.mode == 'required' && 'Full journeys · VS Code Copilot Chat (runs in Integration advisory)' || format('Full journeys · VS Code Copilot Chat · {0} (non-blocking)', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
     if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
@@ -1020,7 +1020,7 @@ jobs:
   # Runs on the managed e2e workspace with an injected config that enables Claude/Codex but not
   # OpenCode (a service principal authenticates it, like the `managed` lane).
   managed-opencode:
-    name: Managed OpenCode self-managed (non-blocking)
+    name: ${{ inputs.mode == 'required' && 'Managed OpenCode self-managed (runs in Integration advisory)' || 'Managed OpenCode self-managed (non-blocking)' }}
     if: ${{ inputs.mode != 'required' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     continue-on-error: true
     runs-on: ubuntu-22.04
@@ -1085,7 +1085,7 @@ jobs:
   # settings on Windows too. Dedicated CUJs require POSIX PTYs.
 
   managed:
-    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
+    name: ${{ inputs.mode == 'advisory' && 'Managed config (runs in Integration)' || format('Managed config · {0}{1}', matrix.agent == 'claude' && 'Claude' || 'Codex', matrix.smart_routing && ' · Smart routing' || '') }}
     if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -1124,14 +1124,6 @@ jobs:
         with:
           version: 1.17.0
       - *budget-setup-done
-      - &managed-quota-diagnostics
-        name: Inspect managed model quota configuration
-        shell: bash
-        env:
-          UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
-          DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
-        run: uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py
       - name: Run the managed cases against the managed e2e workspace
         shell: bash
         env:
@@ -1169,7 +1161,7 @@ jobs:
       - *budget-check
 
   dedicated-cuj-plan:
-    name: Plan E2E CUJs
+    name: ${{ inputs.mode == 'advisory' && 'Plan E2E CUJs (runs in Integration)' || 'Plan E2E CUJs' }}
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Plan E2E CUJs
@@ -1209,7 +1201,7 @@ jobs:
 
   dedicated-cuj:
     if: ${{ inputs.mode != 'advisory' }}
-    name: E2E CUJs · ${{ matrix.name }}
+    name: ${{ inputs.mode == 'advisory' && 'E2E CUJs (runs in Integration)' || format('E2E CUJs · {0}', matrix.name) }}
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     # One runner per file: CUJs own separate workspaces but share machine-wide /etc agent settings.
     needs: dedicated-cuj-plan
@@ -1285,7 +1277,7 @@ jobs:
   # Checks the live lanes' shards together ran every case exactly once, and records fresh
   # per-case timings so tests/live_test_times.json can rebalance the shards when they drift.
   live-shard-times:
-    name: Live shard coverage
+    name: ${{ inputs.mode == 'advisory' && 'Live shard coverage (runs in Integration)' || 'Live shard coverage' }}
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Live shard coverage
@@ -1349,7 +1341,7 @@ jobs:
       - *budget-check
 
   cujs:
-    name: All integration tests
+    name: ${{ inputs.mode == 'advisory' && 'All integration tests (runs in Integration)' || 'All integration tests' }}
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: All integration tests
@@ -1387,7 +1379,7 @@ jobs:
   # OpenAI's appcast keeps every versioned macOS build, so the desktop app can be pinned by hash.
 
   codex-desktop-macos:
-    name: Codex desktop inference · macOS
+    name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · macOS (runs in Integration)' || 'Codex desktop inference · macOS' }}
     # Codex lanes on the managed service principal share one model quota; see the Windows lane.
     needs: managed
     if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -1420,7 +1412,6 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
-      - *managed-quota-diagnostics
       # The pinned build is a few hundred megabytes; cache it so only the hash check runs.
       - name: Cache the pinned ChatGPT app
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -1469,7 +1460,7 @@ jobs:
   # OpenAI keeps, so the Windows app can be pinned by hash too.
 
   codex-desktop-windows:
-    name: Codex desktop inference · Windows
+    name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · Windows (runs in Integration)' || 'Codex desktop inference · Windows' }}
     # After the macOS desktop lane, so each run has one Codex caller on the managed service
     # principal at a time: five merge-queue entries stay under the ~10 concurrent callers at which
     # that quota returned 429s.
@@ -1507,7 +1498,6 @@ jobs:
         run: |
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
-      - *managed-quota-diagnostics
       # The pinned build is a few hundred megabytes; cache it so only the hash check runs.
       - name: Cache the pinned ChatGPT app
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

@@ -78,6 +78,9 @@ jobs:
                           pages.append(json.load(response))
                   except urllib.error.HTTPError as error:
                       headers = error.headers or {}
+                      if 500 <= error.code <= 599:
+                          print(f"GitHub API returned HTTP {error.code}; the Security Scan remains pending.", flush=True)
+                          return None, None
                       if error.code == 429 or (error.code == 403 and (
                           headers.get("X-RateLimit-Remaining") == "0"
                           or headers.get("Retry-After")

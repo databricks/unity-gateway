@@ -1,6 +1,7 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import http.client
 import importlib.util
 import io
 import json
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -75,6 +77,38 @@ def test_quota_diagnostics_report_malformed_json_without_failing(monkeypatch):
     )
 
 
+def test_quota_diagnostics_report_truncated_response_without_failing(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    diagnostics = runpy.run_path(str(script))
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"partial", 20)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request: Response())
+    assert diagnostics["read_api"]("https://private.example", "token", "/api") == (
+        "incomplete-read",
+        None,
+    )
+
+
+@pytest.mark.parametrize("error", [ConnectionResetError("connection"), TimeoutError("timeout")])
+def test_quota_diagnostics_report_connection_failures_without_failing(monkeypatch, error):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    diagnostics = runpy.run_path(str(script))
+
+    def fail(request):
+        raise error
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    assert diagnostics["read_api"]("https://private.example", "token", "/api") == (
+        "connection-error",
+        None,
+    )
+
+
 def test_quota_diagnostics_handle_absent_optional_rate_configuration():
     script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
     diagnostics = runpy.run_path(str(script))
@@ -105,11 +139,35 @@ def test_quota_diagnostics_use_m2m_and_do_not_print_credentials(monkeypatch, cap
         SimpleNamespace(mint_m2m_token=lambda host, caller, secret: "private-token"),
     )
     monkeypatch.setitem(main.__globals__, "read_api", lambda host, token, path: (403, None))
+    monkeypatch.setitem(main.__globals__, "probe_model", lambda *args: [])
     main()
     output = capsys.readouterr().out
     assert "model_service_status" in output and "403" in output
     for value in ("private.example", "private-id", "private-secret", "private-token"):
         assert value not in output
+
+
+@pytest.mark.parametrize(("config", "present"), [({}, False), ({"rate_limits": []}, True)])
+def test_quota_diagnostics_distinguish_omitted_from_empty_limits(
+    monkeypatch, capsys, config, present
+):
+    from types import SimpleNamespace
+
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    main = runpy.run_path(str(script))["main"]
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://private.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "caller")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "secret")
+    monkeypatch.setitem(
+        sys.modules, "run_integration", SimpleNamespace(mint_m2m_token=lambda *args: "token")
+    )
+    monkeypatch.setitem(
+        main.__globals__, "read_api", lambda host, token, path: (200, {"config": config})
+    )
+    monkeypatch.setitem(main.__globals__, "probe_model", lambda *args: [])
+    main()
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[0]["model_service_rate_limits_present"] is present
 
 
 def test_claude_quota_diagnostics_include_models_used_by_managed_fixtures(monkeypatch, capsys):
@@ -125,20 +183,116 @@ def test_claude_quota_diagnostics_include_models_used_by_managed_fixtures(monkey
         sys.modules, "run_integration", SimpleNamespace(mint_m2m_token=lambda *args: "token")
     )
     monkeypatch.setitem(main.__globals__, "read_api", lambda *args: (403, None))
+    monkeypatch.setitem(main.__globals__, "probe_model", lambda *args: [])
     main()
     models = {json.loads(line)["model"] for line in capsys.readouterr().out.splitlines()}
     assert {"system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"} <= models
 
 
-def test_managed_and_desktop_lanes_run_read_only_quota_diagnostics():
-    jobs = _integration_jobs()
-    job = jobs["managed"]
+def test_quota_probe_runs_exactly_three_concurrent_requests_and_redacts(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    probe = runpy.run_path(str(script))["probe_model"]
+    barrier = threading.Barrier(3)
+    requests = []
+
+    class Response(io.BytesIO):
+        status = 200
+        headers = {
+            "x-request-id": "request-id",
+            "x-ratelimit-remaining": "3",
+            "authorization": "secret",
+        }
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        barrier.wait(timeout=5)
+        return Response(b"{}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    results = probe("https://private.example", "secret-token", "gpt-6-sol", "codex")
+    assert len(requests) == len(results) == 3
+    assert all(row["status"] == 200 and row["latency_ms"] >= 0 for row in results)
+    assert all(
+        row["headers"] == {"x-request-id": "request-id", "x-ratelimit-remaining": "3"}
+        for row in results
+    )
+    assert all(request.full_url.endswith("/ai-gateway/codex/v1/responses") for request in requests)
+    assert all(json.loads(request.data)["model"] == "system.ai.gpt-6-sol" for request in requests)
+    assert "private.example" not in repr(results) and "secret" not in repr(results)
+
+
+def test_quota_probe_rejects_unknown_agent_without_sending_requests(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    probe = runpy.run_path(str(script))["probe_model"]
+    requests = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: requests.append(args))
+    with pytest.raises(ValueError, match="agent"):
+        probe("https://private.example", "secret-token", "gpt-6-sol", "unknown")
+    assert not requests
+
+
+def test_quota_probe_marks_truncated_response_without_claiming_success(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    probe = runpy.run_path(str(script))["probe_model"]
+
+    class Response(io.BytesIO):
+        status = 200
+        headers = {"x-request-id": "request-id"}
+
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"partial", 20)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: Response())
+    results = probe("https://private.example", "secret-token", "gpt-6-sol", "codex")
+    assert len(results) == 3
+    assert all(row["status"] == 200 and row["error"] == "incomplete-read" for row in results)
+
+
+def test_quota_probe_records_connection_errors_without_retry(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    probe = runpy.run_path(str(script))["probe_model"]
+    requests = []
+
+    def disconnected(request, timeout):
+        requests.append(request)
+        raise ConnectionResetError("private diagnostic")
+
+    monkeypatch.setattr(urllib.request, "urlopen", disconnected)
+    results = probe("https://private.example", "secret-token", "gpt-6-sol", "codex")
+    assert len(requests) == len(results) == 3
+    assert all(row["status"] == "transport-error" for row in results)
+    assert "private diagnostic" not in repr(results)
+
+
+def test_quota_probe_never_retries_429(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    probe = runpy.run_path(str(script))["probe_model"]
+    requests = []
+
+    def rejected(request, timeout):
+        requests.append(request)
+        raise urllib.error.HTTPError(request.full_url, 429, "limited", {"Retry-After": "9"}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", rejected)
+    results = probe("https://private.example", "secret-token", "gpt-5-6-sol", "codex")
+    assert len(requests) == len(results) == 3
+    assert all(row["status"] == 429 and row["headers"]["retry-after"] == "9" for row in results)
+
+
+def test_managed_quota_probe_runs_once_after_gate_without_blocking_e2e():
+    ci = _workflow("ci.yml").split("\njobs:\n", 1)[1]
+    jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", ci))
+    job = jobs["managed-quota-probe"]
+    assert "needs: security-gate" in job
+    assert _requires_gate_success(job)
+    assert "continue-on-error: true" in job
     assert "python scripts/managed_quota_diagnostics.py" in job
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}" in job
     assert "DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}" in job
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}" in job
-    for name in ("codex-desktop-macos", "codex-desktop-windows"):
-        assert "- *managed-quota-diagnostics" in jobs[name]
+    assert "managed-quota-probe" not in jobs["required-e2e"]
+    for name in ("managed", "codex-desktop-macos", "codex-desktop-windows"):
+        assert "managed-quota-diagnostics" not in _integration_jobs()[name]
 
 
 def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
@@ -608,7 +762,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     job = _workflow_job("dedicated-cuj", "cujs")
 
     assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
-    assert "name: E2E CUJs · ${{ matrix.name }}" in job
+    assert "format('E2E CUJs · {0}', matrix.name)" in job
     assert "fail-fast: false" in job
     assert "include: ${{ fromJSON(needs.dedicated-cuj-plan.outputs.cujs) }}" in job
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
@@ -1044,6 +1198,7 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
     workflows = Path(__file__).parent.parent / ".github/workflows"
     credential = re.compile(
         r"secrets\s*[.\[]|(?m:^\s*secrets:)|(?m:^\s*environment:)|"
+        r"(?m:^\s*id-token:\s*write\b)|"
         r"\b(?:DATABRICKS_CLIENT_ID|DATABRICKS_CLIENT_SECRET|DATABRICKS_BEARER|"
         r"[A-Z0-9_]*SP_CLIENT_(?:ID|SECRET))\b"
     )
@@ -1058,12 +1213,23 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         text = _workflow(workflow)
         header, body = text.split("\njobs:\n", 1)
         assert not credential.search(header), f"{workflow}: workflow-wide credentials"
-        jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
+        jobs = dict(
+            re.findall(r"(?ms)^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body)
+        )
         for name, job in jobs.items():
             if name == "security-gate":
                 assert not credential.search(job), (workflow, name)
                 continue
-            if not credential.search(job) and "uses: ./.github/workflows/" not in job:
+            has_pr_token = workflow == "ci.yml" and "github.token" in job
+            has_pr_write = workflow == "ci.yml" and re.search(
+                r"(?m)^\s+[a-z][a-z-]*:\s*write\b", job
+            )
+            if (
+                not credential.search(job)
+                and not has_pr_token
+                and not has_pr_write
+                and "uses: ./.github/workflows/" not in job
+            ):
                 continue
             needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
             assert needs and "security-gate" in needs[1].split(", "), (workflow, name)
@@ -1076,7 +1242,7 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
                 assert _requires_gate_success(job_header), (workflow, name)
 
     ci = _workflow("ci.yml").split("\njobs:\n", 1)[1]
-    jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", ci))
+    jobs = dict(re.findall(r"(?ms)^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", ci))
     for name, job in jobs.items():
         if name == "security-gate":
             continue
@@ -1116,6 +1282,29 @@ def test_credential_contract_rejects_a_new_ungated_job(monkeypatch, prerequisite
         globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
     )
     with pytest.raises(AssertionError, match="accidental-secret"):
+        test_pr_jobs_with_credentials_require_a_successful_security_gate()
+
+
+@pytest.mark.parametrize(
+    ("job_name", "credential"),
+    [
+        ("deploy_prod", "    env:\n      TOKEN: ${{ secrets.CI_TOKEN }}\n"),
+        ("Deploy", "    permissions:\n      id-token: write\n"),
+        ("oidc-bypass", "    permissions:\n      id-token: write\n"),
+        ("github-token-bypass", "    env:\n      GH_TOKEN: ${{ github.token }}\n"),
+        ("write-permission-bypass", "    permissions:\n      contents: write\n"),
+    ],
+)
+def test_credential_contract_rejects_write_or_token_bypasses(monkeypatch, job_name, credential):
+    workflow = _workflow
+    ci = workflow("ci.yml") + (
+        f"\n  {job_name}:\n    runs-on: ubuntu-latest\n"
+        "    needs: security-gate\n    if: ${{ always() }}\n" + credential
+    )
+    monkeypatch.setitem(
+        globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
+    )
+    with pytest.raises(AssertionError, match=job_name):
         test_pr_jobs_with_credentials_require_a_successful_security_gate()
 
 
@@ -1400,7 +1589,7 @@ def test_security_gate_supports_anonymous_and_authenticated_requests(monkeypatch
     [
         *[
             urllib.error.HTTPError("https://api.github.com", status, "failure", {}, None)
-            for status in (403, 404, 503)
+            for status in (403, 404)
         ],
         urllib.error.URLError("unreachable"),
         TimeoutError("timed out"),
@@ -1410,6 +1599,29 @@ def test_security_gate_api_errors_block_ci(monkeypatch, error):
     code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error)
     assert str(code).startswith("::error::")
     assert "tests remain blocked" in code and "re-run failed CI jobs" in code
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@pytest.mark.parametrize("failure_call", [1, 3, 4])
+def test_security_gate_waits_through_transient_server_error(monkeypatch, status, failure_call):
+    error = urllib.error.HTTPError("https://api.github.com", status, "failure", {}, None)
+    observed = {}
+    code, _ = _run_security_gate(
+        monkeypatch, [[{}]], api_errors={failure_call: error}, observed=observed
+    )
+    assert code == 0
+    assert observed["sleeps"] == [10]
+
+
+@pytest.mark.parametrize("status", [500, 503, 504])
+def test_security_gate_persistent_server_errors_still_fail_closed(monkeypatch, status):
+    error = urllib.error.HTTPError("https://api.github.com", status, "failure", {}, None)
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
+    assert str(code).startswith("::error::")
+    assert "did not complete" in code
+    assert sum(observed["sleeps"]) == 20 * 60
+    assert len(observed["fetches"]) == 27
 
 
 @pytest.mark.parametrize("status", [403, 429])
@@ -2847,6 +3059,57 @@ def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
     assert "needs: [security-gate, integration]" in advisory
     assert "mode: advisory" in advisory
     assert "needs: [security-gate, e2e, integration]" in jobs["required-e2e"]
+
+
+def test_integration_modes_explain_jobs_run_by_the_other_caller():
+    jobs = _integration_jobs()
+    for job_name, job in jobs.items():
+        condition = re.search(r"(?m)^    if: (.*)$", job)
+        condition = condition.group(1) if condition else ""
+        if "inputs.mode != 'advisory'" in condition or job_name == "live-shard-times":
+            mode, other = "advisory", "Integration"
+        elif "inputs.mode != 'required'" in condition:
+            mode, other = "required", "Integration advisory"
+        else:
+            continue
+        name = re.search(r"(?m)^    name: (.*)$", job).group(1)
+        prefix = f"${{{{ inputs.mode == '{mode}' && '"
+        assert name.startswith(prefix), (job_name, name)
+        assert f"(runs in {other})' ||" in name, (job_name, name)
+
+
+def test_integration_mode_union_covers_the_unsplit_workflow():
+    jobs = _integration_jobs()
+    executed = {"required": set(), "advisory": set()}
+    for name, job in jobs.items():
+        condition = re.search(r"(?m)^    if: (.*)$", job)
+        condition = condition.group(1) if condition else ""
+        if "inputs.mode != 'advisory'" in condition or name == "live-shard-times":
+            executed["required"].add(name)
+        elif "inputs.mode != 'required'" in condition:
+            executed["advisory"].add(name)
+        else:
+            assert "inputs.mode" not in condition, (name, condition)
+            executed["required"].add(name)
+            executed["advisory"].add(name)
+    assert executed["required"] | executed["advisory"] == (
+        SKIPPED_ON_FORK_PRS | {"installation", "installation-windows"}
+    )
+    assert {"full", "managed", "live-shard-times", "cujs"} <= executed["required"]
+    assert {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"} <= executed[
+        "advisory"
+    ]
+
+    matrix = re.search(r"(?m)^        include: (.*)$", jobs["anthropic-mps"]).group(1)
+    required = re.search(r"inputs.mode == 'required' && '([^']+)'", matrix).group(1)
+    advisory = re.search(r"inputs.mode == 'advisory' && '([^']+)'", matrix).group(1)
+    all_modes = re.search(r"\|\| '([^']+)'\)\s*}}$", matrix).group(1)
+
+    def canonical(value):
+        return {json.dumps(item, sort_keys=True) for item in json.loads(value)}
+
+    assert canonical(required) | canonical(advisory) == canonical(all_modes)
+    assert not canonical(required) & canonical(advisory)
 
 
 def test_integration_modes_preserve_blocking_and_advisory_lanes():

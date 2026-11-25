@@ -9,14 +9,18 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$initClock = [Diagnostics.Stopwatch]::StartNew()
 [Console]::Error.WriteLine('uia phase=load-assemblies')
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
 $automation = [Windows.Automation.AutomationElement]
+$root = $automation::RootElement
 $byProcess = [Windows.Automation.PropertyCondition]::new($automation::ProcessIdProperty, $ProcessId)
+$initMs = $initClock.Elapsed.TotalMilliseconds
+$script:metrics = @{}
 
 function Get-Windows {
     [Console]::Error.WriteLine('uia phase=find-windows')
-    @($automation::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $byProcess))
+    @($root.FindAll([Windows.Automation.TreeScope]::Children, $byProcess))
 }
 
 function Get-Elements($windows) {
@@ -38,7 +42,8 @@ function Get-Value($element) {
 }
 
 function Find-Target($windows, $role, $name, $matchValue) {
-    $field = [Windows.Automation.ControlType].GetField($role -replace '^ControlType\.', '')
+    $typeName = $role -replace '^ControlType\.', ''
+    $field = [Windows.Automation.ControlType].GetField($typeName)
     if (-not $field) { throw "Unknown control type $role" }
     $conditions = @(
         [Windows.Automation.PropertyCondition]::new($automation::ControlTypeProperty, $field.GetValue($null))
@@ -65,7 +70,7 @@ function Find-Target($windows, $role, $name, $matchValue) {
 function Invoke-Action($action, $argsList) {
     $first = if ($argsList.Count -gt 0) { [string]$argsList[0] } else { '' }
     $second = if ($argsList.Count -gt 1) { [string]$argsList[1] } else { '' }
-    $windows = @(Get-Windows)
+    $windows = if ($action -in @('click', 'wait')) { @() } else { @(Get-Windows) }
     if (-not $windows.Count -and ($action -notin @('click', 'wait'))) { throw "Process $ProcessId has no window" }
     switch ($action) {
         'tree' {
@@ -78,22 +83,33 @@ function Invoke-Action($action, $argsList) {
             $timeout = if (($action -in @('click', 'wait')) -and $argsList.Count -gt 2) { [double]$argsList[2] } else { 0 }
             $deadline = [DateTime]::UtcNow.AddSeconds($timeout)
             $polls = 0
-            do {
-                $polls++
-                $windows = @(Get-Windows)
-                $target = Find-Target $windows $first $second ($action -eq 'wait')
-                if ($target) { break }
-                if ([DateTime]::UtcNow -ge $deadline) { throw "No enabled $first named '$second'" }
-                Start-Sleep -Milliseconds 250
-            } while ($true)
+            $waitClock = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                do {
+                    $polls++
+                    $windows = @(Get-Windows)
+                    $target = Find-Target $windows $first $second ($action -eq 'wait')
+                    if ($target) { break }
+                    if ([DateTime]::UtcNow -ge $deadline) { throw "No enabled $first named '$second'" }
+                    Start-Sleep -Milliseconds 250
+                } while ($true)
+            } finally {
+                $script:metrics.wait_ms = $waitClock.Elapsed.TotalMilliseconds
+                $script:metrics.polls = $polls
+            }
             if ($action -eq 'wait') { "$polls"; break }
-            $pattern = $null
-            if ($target.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
-                $pattern.Invoke()
-            } elseif ($target.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
-                $pattern.Select()
-            } else {
-                $target.SetFocus()
+            $clickClock = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                $pattern = $null
+                if ($target.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+                    $pattern.Invoke()
+                } elseif ($target.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+                    $pattern.Select()
+                } else {
+                    $target.SetFocus()
+                }
+            } finally {
+                $script:metrics.click_ms = $clickClock.Elapsed.TotalMilliseconds
             }
             if ($action -eq 'click') { "$polls" }
         }
@@ -121,6 +137,8 @@ function Invoke-Action($action, $argsList) {
 
 if ($Command -eq 'session') {
     while ($null -ne ($line = [Console]::ReadLine())) {
+        $script:metrics = @{ init_ms = $initMs }
+        $actionClock = [Diagnostics.Stopwatch]::StartNew()
         try {
             $request = $line | ConvertFrom-Json
             $output = @(Invoke-Action $request.command @($request.args)) -join "`n"
@@ -128,7 +146,9 @@ if ($Command -eq 'session') {
         } catch {
             $response = @{ ok = $false; output = ''; error = $_.Exception.Message }
         }
-        [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress))
+        $script:metrics.action_ms = $actionClock.Elapsed.TotalMilliseconds
+        $response.metrics = $script:metrics
+        [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 4))
     }
 } else {
     Invoke-Action $Command @($First, $Second)
