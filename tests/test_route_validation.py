@@ -301,6 +301,44 @@ def test_validation_probe_does_not_install_a_global_profiler(router, monkeypatch
     assert outcome["response"] == ({"is_supported": True}, None)
 
 
+def test_validation_probe_restores_request_trace_after_success_and_failure(router, monkeypatch):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    events = []
+
+    def previous(event, _info):
+        events.append(event)
+
+    token = databricks._HTTP_TRACE.set(previous)
+    try:
+        outcome = {}
+        validation._probe(
+            router.url,
+            "test-token",
+            {"route_options": []},
+            None,
+            outcome,
+            validation._NetworkTimings(),
+        )
+        assert outcome["response"] == ({"is_supported": True}, None)
+        assert databricks._HTTP_TRACE.get() is previous
+        assert events == []
+        payload, reason = databricks._http_post_json(
+            f"{router.url}/unrelated", "test-token", {}, timeout=4
+        )
+        assert payload == {"is_supported": True} and reason is None
+        assert events
+
+        def fail(*_args):
+            raise RuntimeError("synthetic transport failure")
+
+        monkeypatch.setattr(validation, "_validate_route_options", fail)
+        validation._probe(router.url, "test-token", {}, None, outcome, validation._NetworkTimings())
+        assert outcome["response"] == (None, validation.CHECK_FAILED_REASON)
+        assert databricks._HTTP_TRACE.get() is previous
+    finally:
+        databricks._HTTP_TRACE.reset(token)
+
+
 def test_network_trace_records_real_loopback_transport(router, monkeypatch):
     monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
     timings = validation._NetworkTimings()

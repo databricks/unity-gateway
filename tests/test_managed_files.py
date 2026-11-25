@@ -41,6 +41,36 @@ def test_inherited_product_selectors_do_not_change_unit_test_defaults():
     assert not present, f"Inherited selectors were not isolated: {present}"
 
 
+def test_unit_selector_isolation_with_contaminated_parent_environment():
+    env = dict(os.environ)
+    for name in ("UG_TEST_SHARD", "UG_TEST_SHARD_REPORT", "PYTEST_ADDOPTS"):
+        env.pop(name, None)
+    env.update(
+        UG_SKIP_OS_SETTINGS="1",
+        UG_LAUNCH_WRITE_OS_SETTINGS="1",
+        ENABLE_CUSTOM_OAUTH_FROM_CLI="1",
+        UG_NO_POOLED_HTTP="1",
+        UG_ROUTE_VALIDATION="1",
+        UG_WORKSPACE="https://test.invalid",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-n",
+            "0",
+            "-q",
+            f"{__file__}::test_inherited_product_selectors_do_not_change_unit_test_defaults",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.fixture(autouse=True)
 def _reset_dry_run():
     config_io.set_dry_run(False)

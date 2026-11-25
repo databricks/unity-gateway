@@ -3512,6 +3512,10 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
     "name",
     [
         "DATABRICKS_CLIENT_SECRET",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
         "UG_CUJ_SP_CLIENT_SECRET",
         "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
         "UG_BENCH_CLIENT_SECRET",

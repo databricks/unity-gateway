@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.harness import process_group_options, stop_process
+from tests.integration.utils.harness import process_group_options, redact_text, stop_process
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -54,6 +54,8 @@ class _CaptureServer:
 
     def __init__(self):
         self.requests: list[_CapturedRequest] = []
+        self.timeout_output: tuple[str, str] | None = None
+        self.redaction_env: dict[str, str] = {}
         self.condition = threading.Condition()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -218,6 +220,31 @@ def capture_server():
     server.stop()
 
 
+@pytest.fixture
+def child_readiness(capture_server):
+    ready = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(204)
+            self.end_headers()
+            with capture_server.condition:
+                ready.set()
+                capture_server.condition.notify_all()
+
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}", ready
+        finally:
+            server.shutdown()
+            thread.join()
+
+
 def _expected_ua(agent_name: str, binary: str) -> str:
     return ucode_user_agent(ug_version(), f"{agent_name}/{agent_version(binary)}")
 
@@ -235,10 +262,21 @@ def _header(req: _CapturedRequest, name: str) -> str | None:
     return None
 
 
+_CAPTURE_TIMEOUT_SECONDS = 20
+
+
 def _run_until_first_request(
-    cmd: list[str], env: dict[str, str], server: _CaptureServer, prefix: str, timeout: int = 20
+    cmd: list[str],
+    env: dict[str, str],
+    server: _CaptureServer,
+    prefix: str,
+    timeout: float = _CAPTURE_TIMEOUT_SECONDS,
+    *,
+    startup_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess | None:
     """Stop the agent after the relevant wire request, or report an early exit or timeout."""
+    server.timeout_output = None
+    server.redaction_env = env
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(
             cmd,
@@ -256,24 +294,73 @@ def _run_until_first_request(
 
         threading.Thread(target=notify_exit, daemon=True).start()
         with server.condition:
-            ready = server.condition.wait_for(
-                lambda: (
-                    server.first_request_with_path_prefix(prefix) is not None
-                    or process.poll() is not None
-                ),
-                timeout=timeout,
+            started = startup_event is None or server.condition.wait_for(
+                lambda: startup_event.is_set() or process.poll() is not None,
+                timeout=_CAPTURE_TIMEOUT_SECONDS,
             )
+            if started:
+                ready = server.condition.wait_for(
+                    lambda: (
+                        server.first_request_with_path_prefix(prefix) is not None
+                        or process.poll() is not None
+                    ),
+                    timeout=timeout,
+                )
+            else:
+                ready = False
         stop_process(process)
-        if not ready:
-            return None
         stdout.seek(0)
         stderr.seek(0)
-        return subprocess.CompletedProcess(cmd, process.returncode, stdout.read(), stderr.read())
+        out, err = stdout.read(), stderr.read()
+        if not ready:
+            server.timeout_output = (
+                redact_text(out.decode("utf-8", errors="replace"), env),
+                redact_text(err.decode("utf-8", errors="replace"), env),
+            )
+            return None
+        return subprocess.CompletedProcess(cmd, process.returncode, out, err)
 
 
-def test_capture_stops_agent_after_the_matching_request(capture_server):
+def test_capture_timeout_preserves_redacted_child_output(capture_server, child_readiness):
+    ready_url, ready = child_readiness
+    script = (
+        "import sys, time, urllib.request; "
+        "print('failure synthetic-secret', file=sys.stderr, flush=True); "
+        f"urllib.request.urlopen({ready_url!r}); "
+        "time.sleep(10)"
+    )
+    env = {**os.environ, "DATABRICKS_BEARER": "synthetic-secret"}
+    result = _run_until_first_request(
+        [sys.executable, "-c", script],
+        env,
+        capture_server,
+        "/wanted",
+        timeout=2,
+        startup_event=ready,
+    )
+    assert result is None
+    message = _no_request_msg(capture_server, result)
+    assert "failure <redacted>" in message
+    assert "synthetic-secret" not in message
+
+
+def test_capture_early_exit_redacts_child_output(capture_server):
+    script = "import sys; print('failure synthetic-secret', file=sys.stderr); sys.exit(1)"
+    env = {**os.environ, "DATABRICKS_BEARER": "synthetic-secret"}
+    result = _run_until_first_request(
+        [sys.executable, "-c", script], env, capture_server, "/wanted"
+    )
+    assert result is not None and result.returncode == 1
+    message = _no_request_msg(capture_server, result)
+    assert "failure <redacted>" in message
+    assert "synthetic-secret" not in message
+
+
+def test_capture_stops_agent_after_the_matching_request(capture_server, child_readiness):
+    ready_url, ready = child_readiness
     script = (
         "import time, urllib.error, urllib.request\n"
+        f"urllib.request.urlopen({ready_url!r})\n"
         "for path in ('/other', '/wanted'):\n"
         f"    url = {capture_server.base_url!r} + path\n"
         "    try: urllib.request.urlopen(url)\n"
@@ -281,13 +368,43 @@ def test_capture_stops_agent_after_the_matching_request(capture_server):
         "time.sleep(60)\n"
     )
     result = _run_until_first_request(
-        [sys.executable, "-c", script], os.environ.copy(), capture_server, "/wanted", timeout=2
+        [sys.executable, "-c", script],
+        os.environ.copy(),
+        capture_server,
+        "/wanted",
+        timeout=2,
+        startup_event=ready,
     )
-    assert result is not None
+    assert result is not None, _no_request_msg(capture_server, result)
     assert [request.path for request in capture_server.requests] == ["/other", "/wanted"]
 
 
-def test_capture_does_not_wait_for_a_detached_child_holding_output(tmp_path, capture_server):
+def test_capture_request_deadline_starts_after_child_readiness(capture_server, child_readiness):
+    ready_url, ready = child_readiness
+    script = (
+        "import time, urllib.error, urllib.request\n"
+        "time.sleep(2.2)\n"
+        f"urllib.request.urlopen({ready_url!r})\n"
+        f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
+        "except urllib.error.HTTPError: pass\n"
+        "time.sleep(60)\n"
+    )
+    result = _run_until_first_request(
+        [sys.executable, "-c", script],
+        os.environ.copy(),
+        capture_server,
+        "/wanted",
+        timeout=2,
+        startup_event=ready,
+    )
+    assert result is not None, _no_request_msg(capture_server, result)
+    assert [request.path for request in capture_server.requests] == ["/wanted"]
+
+
+def test_capture_does_not_wait_for_a_detached_child_holding_output(
+    tmp_path, capture_server, child_readiness
+):
+    ready_url, ready = child_readiness
     release = threading.Event()
     child_ready = tmp_path / "child-ready"
 
@@ -317,6 +434,7 @@ def test_capture_does_not_wait_for_a_detached_child_holding_output(tmp_path, cap
             "options = {'start_new_session': True} if os.name == 'posix' else {'creationflags': 8}\n"
             f"subprocess.Popen([sys.executable, '-c', {child!r}], **options)\n"
             f"while not pathlib.Path({str(child_ready)!r}).exists(): time.sleep(0.01)\n"
+            f"urllib.request.urlopen({ready_url!r})\n"
             f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
             "except urllib.error.HTTPError: pass\n"
             "time.sleep(60)\n"
@@ -331,15 +449,22 @@ def test_capture_does_not_wait_for_a_detached_child_holding_output(tmp_path, cap
                         capture_server,
                         "/wanted",
                         timeout=2,
+                        startup_event=ready,
                     )
                 )
             finally:
-                completed.set()
+                with capture_server.condition:
+                    completed.set()
+                    capture_server.condition.notify_all()
 
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         try:
-            finished_without_child = completed.wait(3)
+            with capture_server.condition:
+                capture_server.condition.wait_for(
+                    lambda: ready.is_set() or completed.is_set(), timeout=_CAPTURE_TIMEOUT_SECONDS
+                )
+            finished_without_child = ready.is_set() and completed.wait(3)
         finally:
             release.set()
             worker.join(timeout=5)
@@ -352,9 +477,17 @@ def test_capture_does_not_wait_for_a_detached_child_holding_output(tmp_path, cap
 
 def _no_request_msg(server: _CaptureServer, result: subprocess.CompletedProcess | None) -> str:
     if result is None:
-        return "Agent timed out before any request reached the capture server."
-    stderr = (result.stderr or b"").decode(errors="replace")[:600]
-    stdout = (result.stdout or b"").decode(errors="replace")[:300]
+        stdout, stderr = server.timeout_output or ("", "")
+        return (
+            "Agent timed out before any request reached the capture server.\n"
+            f"  stderr: {stderr[:600]!r}\n  stdout: {stdout[:300]!r}"
+        )
+    stderr = redact_text((result.stderr or b"").decode(errors="replace"), server.redaction_env)[
+        :600
+    ]
+    stdout = redact_text((result.stdout or b"").decode(errors="replace"), server.redaction_env)[
+        :300
+    ]
     return (
         f"No request reached the capture server.\n"
         f"  paths: {[r.path for r in server.requests]}\n"
