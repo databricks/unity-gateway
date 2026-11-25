@@ -716,7 +716,10 @@ Like any version, the preset overrides individually set routing env vars.
 In the Auto flow, an explicit ordinary `--model` starts with routing off. In other
 smart-routing launches, an explicit `--model`, from `ug claude --model` or a launcher
 such as Omnigent, keeps subagent routing when first-prompt routing is off.
-With first-prompt routing on, an explicit model still skips routing.
+With first-prompt routing on, an explicit model still skips routing, except under
+`ISAAC_LAUNCH_MODE=omni`: Omnigent pins every launch's model, so there the session starts on
+that model and the first prompt may route it to another. Headless `-p` keeps the model and
+routes only subagents.
 
 When a model response launches a subagent, UG buffers that step and removes
 premature model claims before displaying or storing them. After launch, UG renders

@@ -701,6 +701,14 @@ def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
     launch.assert_called_once()
 
 
+# Each way a launch pins the main model: Claude's forwarded --model, ug's own --model.
+_PINNED_MODEL_LAUNCHES = [
+    ("claude", ["--model", "fixed"], None),
+    ("claude", ["-p", "hi", "--model", "fixed"], None),
+    ("claude", [], "fixed"),
+    ("codex", [], "fixed"),
+]
+
 _NOTICE_VISIBILITY_CASES = [
     (smart_routing_config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, False),
     (smart_routing_config.SUBAGENT_ORCH_V0, True),
@@ -998,15 +1006,7 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize(
-        ("tool", "tool_args", "model"),
-        [
-            ("claude", ["--model", "fixed"], None),
-            ("claude", ["-p", "hi", "--model", "fixed"], None),
-            ("claude", [], "fixed"),
-            ("codex", [], "fixed"),
-        ],
-    )
+    @pytest.mark.parametrize(("tool", "tool_args", "model"), _PINNED_MODEL_LAUNCHES)
     @pytest.mark.parametrize(
         ("routing_env", "expected"),
         [
@@ -1020,6 +1020,25 @@ class TestSubcommandRouting:
     ):
         for name, value in routing_env.items():
             monkeypatch.setenv(name, value)
+
+        options = cli_mod._launch_options(
+            tool,
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(("tool", "tool_args", "model"), _PINNED_MODEL_LAUNCHES)
+    @pytest.mark.parametrize(("launch_mode", "expected"), [("omni", True), ("direct", False)])
+    def test_isaac_omni_explicit_model_keeps_first_prompt_routing(
+        self, monkeypatch, tool, tool_args, model, launch_mode, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ISAAC_LAUNCH_MODE", launch_mode)
 
         options = cli_mod._launch_options(
             tool,
@@ -1426,6 +1445,35 @@ class TestSubcommandRouting:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         observed = []
         with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                options.launch_smart_routing
+            )
+            result = runner.invoke(app, [tool, *launch_args, "--", "--model", model])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [routed]
+
+    @pytest.mark.parametrize(
+        "tool,model",
+        [("claude", "claude-opus-5-5"), ("codex", "gpt-6.2-astra")],
+    )
+    @pytest.mark.parametrize(
+        ("launch_args", "routed"),
+        [([], True), (["--disable-smart-routing"], False)],
+        ids=["first-prompt-version", "disable-flag"],
+    )
+    def test_isaac_omni_forwarded_model_keeps_first_prompt_routing(
+        self, monkeypatch, tool, model, launch_args, routed
+    ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.171.0"
+        )
+        monkeypatch.setenv("ISAAC_LAUNCH_MODE", "omni")
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0
+        )
+        observed = []
+        with _launch_policy_patches(None) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
                 options.launch_smart_routing
             )

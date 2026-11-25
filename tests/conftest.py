@@ -312,6 +312,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.delenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", raising=False)
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
+    # An `isaac omni` pane's launch mode changes which pinned launches route.
+    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.

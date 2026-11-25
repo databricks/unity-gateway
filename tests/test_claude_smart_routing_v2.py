@@ -1114,6 +1114,58 @@ class TestV2Launch:
         }
 
     @requires_pty
+    @pytest.mark.parametrize(
+        ("tool_args", "launch_model"),
+        [(["--model", "system.ai.claude-opus-5-5"], None), ([], "system.ai.claude-opus-5-5")],
+        ids=["forwarded-model", "ug-model"],
+    )
+    def test_first_prompt_launch_starts_on_a_pinned_model(
+        self, tmp_path, monkeypatch, tool_args, launch_model
+    ):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["/bin/ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-sonnet-5"], model_id_to_display_name={}
+            ),
+        )
+        captured: dict = {}
+
+        def fake_run(argv, **_kwargs):
+            captured["argv"] = argv
+            captured["settings"] = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+            return 0
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                tool_args,
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=launch_model,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        argv = captured["argv"]
+        assert argv.count("--model") == 1
+        assert argv[argv.index("--model") + 1] == "system.ai.claude-opus-5-5"
+        assert "/bin/ug claude-router-hook route-first-prompt" in {
+            hook["command"]
+            for group in captured["settings"]["hooks"]["UserPromptSubmit"]
+            for hook in group["hooks"]
+        }
+
+    @requires_pty
     def test_does_not_restore_when_wrapper_never_switches(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
@@ -2369,13 +2421,14 @@ class TestV2HeadlessClaude:
         assert argv[argv.index("--model") + 1] == "system.ai.claude-sonnet-5[1m]"
         assert argv[-4:] == ["-p", "fix the parser", "--output-format", "json"]
 
-    def test_explicit_model_skips_routing(self, tmp_path, monkeypatch):
+    def test_explicit_model_keeps_the_model_and_routes_only_subagents(self, tmp_path, monkeypatch):
         launched, prompts = self._launch(
             monkeypatch, tmp_path, ["-p", "fix the parser", "--model", "opus"]
         )
 
         assert prompts == []
         assert launched["argv"].count("--model") == 1
+        assert launched["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
 
     def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch, capsys, caplog):
         caplog.set_level("DEBUG", logger="ucode.smart_routing.v2")

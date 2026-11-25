@@ -1199,7 +1199,10 @@ hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 `test_cli.py` covers forwarded model arguments under explicit enable/disable, managed
 defaults and routing presets for Claude and Codex, including pinned-root bypass of
-first-prompt routing and Isaac's config-only Codex launch arguments.
+first-prompt routing, the `ISAAC_LAUNCH_MODE=omni` exception that keeps first-prompt routing
+from the pinned model (`--disable-smart-routing` still wins), and Isaac's config-only Codex
+launch arguments. `test_claude_smart_routing_v2.py` checks that a first-prompt launch with a
+forwarded or ug `--model` starts Claude on that model once and installs the first-prompt hook.
 The model-forwarding cases fix Codex's reported version at 0.165.0 so managed routing
 does not depend on an agent installed on the test runner.
 `test_smart_router.py` also runs each agent's orchestrator hook in a fresh Python
