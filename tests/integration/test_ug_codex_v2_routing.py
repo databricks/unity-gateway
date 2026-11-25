@@ -117,7 +117,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(
     )
     catalog, original_config, original_catalog = _seed_user_owned_native_codex_settings(session)
     if managed_catalog:
-        use_managed_config_fixture(session, "codex_routing")
+        use_managed_config_fixture(session, "codex_lifecycle_a")
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     with TuiRequestRecorder(workspace) as recorder:
