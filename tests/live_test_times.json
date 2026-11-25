@@ -1,0 +1,161 @@
+{
+ "anthropic-mps-claude": {
+  "Windows": {
+   "files": {
+    "test_ug_claude_managed_model_discovery.py": [
+     149.81,
+     6
+    ],
+    "test_ug_claude_model_discovery.py": [
+     71.54,
+     2
+    ],
+    "test_ug_configure_claude.py": [
+     41.37,
+     1
+    ],
+    "test_ug_configure_managed_lifecycle.py": [
+     134.51,
+     1
+    ],
+    "test_ug_configure_managed_models.py": [
+     38.32,
+     1
+    ]
+   },
+   "shards": 3,
+   "slow": {
+    "test_ug_claude_managed_model_discovery.py::test_case_01_fresh_managed_claude_uses_admin_discovery": 19.23,
+    "test_ug_claude_managed_model_discovery.py::test_case_01_managed_claude_uses_admin_discovery_after_configure": 57.66,
+    "test_ug_claude_managed_model_discovery.py::test_case_03_fresh_managed_claude_rejects_provider_override": 5.24,
+    "test_ug_claude_managed_model_discovery.py::test_case_03_managed_claude_rejects_provider_override": 32.44,
+    "test_ug_claude_managed_model_discovery.py::test_case_05_fresh_managed_claude_rejects_model_location_override": 5.74,
+    "test_ug_claude_managed_model_discovery.py::test_case_05_managed_claude_rejects_model_location_override": 29.49,
+    "test_ug_claude_model_discovery.py::test_case_11_configured_claude_provider_discovers_models_by_default": 43.64,
+    "test_ug_claude_model_discovery.py::test_case_11_fresh_claude_provider_discovers_models_by_default": 27.89,
+    "test_ug_configure_claude.py::test_ug_configure_claude_anthropic_mps": 41.37,
+    "test_ug_configure_managed_lifecycle.py::test_managed_fixture_claude_model_lifecycle": 134.51,
+    "test_ug_configure_managed_models.py::test_managed_claude_mps_defaults_accompany_discovery": 38.32
+   }
+  }
+ },
+ "cuj-test_cuj4_smart_routing.py": {
+  "Linux": {
+   "files": {
+    "test_cuj4_smart_routing.py": [
+     720.0,
+     35
+    ]
+   },
+   "shards": 3,
+   "slow": {
+    "test_cuj4_smart_routing.py::TestCujAutoModelPicker::test_auto_preset_starts_on_managed_default_and_toggles_routing": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_admin_default_model_serves_the_first_prompt[claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_admin_default_model_serves_the_first_prompt[codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_agent_completes_real_first_prompt_file_task_without_model_override[claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_agent_completes_real_first_prompt_file_task_without_model_override[codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_managed_smart_routing_orchestrates_claude_without_routing_the_first_prompt": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_managed_smart_routing_orchestrates_codex_without_routing_the_first_prompt": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_routing_disabled_fresh_sessions_use_defaults_without_router_decisions": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles[first_prompt_and_subagent_no_orch_v0]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles[subagent_only_v0]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles[subagent_only_v1]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles[subagent_orch_v0]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles[subagent_orch_v0_claude_only]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles[subagent_orch_v1]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[first_prompt_and_subagent_no_orch_v0-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[first_prompt_and_subagent_no_orch_v0-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_auto_v0_claude_only-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_auto_v0_claude_only-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_only_v0-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_only_v0-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_only_v1-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_only_v1-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0_blind_subagent_model-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0_blind_subagent_model-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0_blind_subagent_model_claude_only-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0_blind_subagent_model_claude_only-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0_claude_only-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v0_claude_only-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v1-claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent[subagent_orch_v1-codex]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_supported_model_list_passes_startup_route_validation_and_routing_stays_on": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_with_model_override_bypasses_router_and_uses_requested_model[claude]": 20.57,
+    "test_cuj4_smart_routing.py::TestCujSmartRouting::test_with_model_override_bypasses_router_and_uses_requested_model[codex]": 20.57
+   }
+  }
+ },
+ "full-claude": {
+  "Windows": {
+   "files": {
+    "test_ug_claude_commands.py": [
+     112.96,
+     4
+    ],
+    "test_ug_claude_headless.py": [
+     350.9,
+     12
+    ],
+    "test_ug_claude_model_discovery.py": [
+     66.54,
+     3
+    ],
+    "test_ug_claude_relayed.py": [
+     15.58,
+     1
+    ],
+    "test_ug_configure_claude.py": [
+     165.71,
+     4
+    ],
+    "test_ug_configure_claude_desktop.py": [
+     84.76,
+     2
+    ],
+    "test_ug_configure_claude_lifecycle.py": [
+     72.29,
+     2
+    ],
+    "test_ug_smart_routing_hooks.py": [
+     89.07,
+     6
+    ]
+   },
+   "shards": 4,
+   "slow": {
+    "test_ug_claude_commands.py::test_ug_claude_auth_help[routing-off]": 36.5,
+    "test_ug_claude_commands.py::test_ug_claude_auth_help[routing-on]": 26.31,
+    "test_ug_claude_commands.py::test_ug_claude_mcp_help[routing-off]": 25.12,
+    "test_ug_claude_commands.py::test_ug_claude_mcp_help[routing-on]": 25.04,
+    "test_ug_claude_headless.py::test_ug_claude_fresh_foundry_mps": 7.5,
+    "test_ug_claude_headless.py::test_ug_claude_headless_allow_all_bedrock_provider": 30.07,
+    "test_ug_claude_headless.py::test_ug_claude_headless_bedrock_runtime_opus": 32.42,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[claude-equals]": 34.87,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[claude-separate]": 35.43,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[ug-equals]": 34.9,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[ug-separate]": 35.16,
+    "test_ug_claude_headless.py::test_ug_claude_headless_fresh_workspace": 8.66,
+    "test_ug_claude_headless.py::test_ug_claude_headless_prompt_after_separator": 35.74,
+    "test_ug_claude_headless.py::test_ug_claude_headless_prompt_stdin": 35.34,
+    "test_ug_claude_headless.py::test_ug_claude_preserves_caller_settings_and_hook": 34.72,
+    "test_ug_claude_headless.py::test_ug_claude_reports_unsupported_short_model_option": 26.09,
+    "test_ug_claude_model_discovery.py::test_case_09_fresh_claude_discovers_system_models": 15.02,
+    "test_ug_claude_model_discovery.py::test_case_13_configured_claude_model_location_overrides_saved_setup": 36.86,
+    "test_ug_claude_model_discovery.py::test_case_13_fresh_claude_model_location_discovers_parent_models": 14.67,
+    "test_ug_claude_relayed.py::test_ug_claude_relayed_serves_subscription_and_databricks_models": 15.58,
+    "test_ug_configure_claude.py::test_ug_configure_claude_bedrock_mantle_mps": 55.22,
+    "test_ug_configure_claude.py::test_ug_configure_claude_bedrock_mps": 36.05,
+    "test_ug_configure_claude.py::test_ug_configure_claude_custom_foundry_mps": 35.34,
+    "test_ug_configure_claude.py::test_ug_configure_claude_foundry_mps": 39.1,
+    "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle": 25.73,
+    "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay": 59.03,
+    "test_ug_configure_claude_lifecycle.py::test_ug_configure_claude_repeat_and_revert": 71.05,
+    "test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message": 78.84,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_claude_route_subagent_hook[first_prompt_and_subagent_no_orch_v0]": 2.06,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_claude_route_subagent_hook[legacy-env]": 2.42
+   }
+  }
+ }
+}

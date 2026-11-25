@@ -422,9 +422,19 @@ service needs a user session), the GUI, or inference.
 `test_ug_codex_desktop_macos.py` covers the GUI and inference on macOS only: after the same managed
 configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
 Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
-app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. It then clicks an
-absent label in the same app and requires a nonzero helper exit with the native four-column
-accessibility tree captured before the fatal error in command evidence.
+app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. The harness launches
+the app with its Sparkle updater off through the app's own `CODEX_SPARKLE_ENABLED` gate, so it
+cannot replace the SHA-pinned build mid-job, and every launch asserts the installed version is
+the job's pin. Each click is one native command that activates the app, waits for the element
+and clicks it — one mouse click posted once the element's frame has stopped moving, read after
+activation from the same traversal that found the element (the app's web controls accept AXPress
+without acting on it, and a dialog still animating in reports a moving frame);
+traversal failures surface as `AX error:` lines instead of an empty tree, and
+a dismissal wait treats a traversal that failed partway as not settled, so a busy app can no
+longer look like a left dialog. Onboarding dismissals wait for the dialog to leave, recording
+the stuck tree on failure. It
+then clicks an absent label in the same app and requires a nonzero helper exit with the native
+four-column accessibility tree captured before the fatal error in command evidence.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
@@ -1911,11 +1921,10 @@ separate CI model-selection job; the full agent lanes include scoped model
 discovery. Real `ug configure` performs its normal workspace discovery inside
 each test; only explicit-model scenarios choose and record a discovered
 `system.ai` model as a test argument.
-Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
-**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
-headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
-on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
+Every same-repository PR and push to `main` runs **Smoke journeys** and **Full journeys**
+in parallel. Smoke runs the Hosted configure/TUI, headless argument, and custom OAuth CLI TUI
+journeys for each agent (six cases, two agent jobs per OS). Full excludes the smoke cases,
+which run separately on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
 full/managed journeys, and dedicated CUJs. Routing cases run in separate required
 matrix rows with Codex 0.171.0; dedicated CUJ4 and CUJ7 runners use that newer pin too.
 The full selections are disjoint within each agent and OS:
@@ -1949,8 +1958,8 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. Full runs at most four
-matrix rows in parallel: cases share no workspace state, only inference capacity.
+separate runners isolate those writes as well as the PTYs. Full matrix rows run in parallel:
+cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,
 and other PRs, so rate limits remain possible.
 No test retries or assertion changes
@@ -1961,9 +1970,10 @@ all full rows, and all **Managed config** rows to pass for full/live runs. Each 
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
-The advisory Windows installation and headless lanes are not yet included in that aggregate check.
-The existing required `e2e` context also waits for the complete integration workflow, so integration
-cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+The required `e2e` context waits for the blocking integration jobs. Advisory jobs run in a
+separate gated workflow call after the blocking call, so their checks remain visible without
+holding up `e2e`. Manual and authorized fork runs retain both sets in one call. Full coverage
+on PRs needs no label or opt-in.
 
 ### Soft-fail tests
 
