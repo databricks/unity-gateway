@@ -731,6 +731,28 @@ def test_enforced_shard_limits_have_a_sufficient_pooled_sample():
                 assert budget[phase] >= max(1.25 * p99, p99 + 10, data["observed_max"][phase])
 
 
+def test_windows_shard_budget_covers_recorded_runner_outlier():
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
+    data = budgets["_unit_calibration"]["windows"]
+    recent = data["recent_outlier_calibration"]
+    assert data["samples"] == 3264
+    assert data["p50"] == {"setup": 10, "run": 17, "total": 27}
+    assert data["p99"] == {"setup": 22, "run": 30, "total": 45}
+    assert recent["phase_margin"] == {"setup": 4, "run": 8, "total": 12}
+    assert len(set(recent["run_ids"])) >= 3
+    assert recent["samples"] == 256
+    assert recent["outlier_run"] in recent["run_ids"]
+    assert recent["outlier_job"] == 139031483052
+    assert recent["run_p99"] == 32
+    assert recent["run_max"] == data["observed_max"]["run"] == 57
+    assert recent["run_margin"] == 8
+    assert recent["reason"]
+    for budget in budgets["ci"]["unit-windows"].values():
+        assert budget == {"setup": 55, "run": 65, "total": 85}
+        assert budget["run"] - recent["run_max"] == recent["run_margin"]
+        assert all(budget[phase] >= data["observed_max"][phase] for phase in budget)
+
+
 def test_every_enforced_nonshard_budget_cites_samples_and_headroom():
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
     calibration = budgets["_job_calibration"]
