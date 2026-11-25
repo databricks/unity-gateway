@@ -33,7 +33,7 @@ from .helpers.constants import (
     WEB_SEARCH_MCP_SERVICE_NAME,
     WORKSPACE_POLICY_PATH,
 )
-from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
+from .helpers.desktop import PROFILE_ID, assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import SessionEvidence, assert_served
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
@@ -260,11 +260,20 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
+        profile = json.loads((config_library / f"{PROFILE_ID}.json").read_text(encoding="utf-8"))
+        desktop_models = profile["inferenceModels"]
+        claude_targets = workspace.client.ai_gateway.get_model_provider_service(
+            f"model-provider-services/{claude_mps}"
+        ).config.targets
+        assert sorted(model["name"] for model in desktop_models) == sorted(
+            target.model for target in claude_targets
+        ), desktop_models
+        assert {"name": claude_model, "labelOverride": "Claude Haiku 5.5"} in desktop_models
         assert_claude_desktop_profile(
             session,
             config_library,
             workspace.url,
-            models=[{"name": claude_model, "labelOverride": "Claude Haiku 5.5"}],
+            models=desktop_models,
             mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
@@ -403,12 +412,15 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 assert response.status_code == 200
                 selections = response.payload["route_selection"]
                 assert len(selections) == 1, selections
+                selected = selections[0]["route_option"]
+                assert selected in route.payload["route_options"], selected
+                assert selected["harness"] == CLAUDE, selected
                 request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
                 _assert_inference_request(
                     recorder,
                     request,
                     provider=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0],
-                    model=selections[0]["route_option"]["model"],
+                    model=selected["model"],
                     marker=marker,
                 )
 

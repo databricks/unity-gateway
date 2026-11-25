@@ -989,8 +989,13 @@ def test_mcp_completion_does_not_pool_results_from_different_sessions(monkeypatc
         (None, False),
     ],
 )
-@pytest.mark.parametrize("target_count", [1, 2])
-def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted, target_count):
+@pytest.mark.parametrize(
+    "second_target_apis",
+    [None, "same", ["openai/v1/chat/completions"]],
+    ids=["one-target", "second-target-same-apis", "second-target-missing-api"],
+)
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted, second_target_apis):
+    accepted = accepted and second_target_apis in (None, "same")
     services = {}
     for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
         name = f"model-provider-services/{name}"
@@ -1008,9 +1013,11 @@ def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted, target_co
                         model=f"{model}-{index}" if index else model,
                         native_api_types=["anthropic/v1/messages"]
                         if agent == CLAUDE
-                        else native_apis,
+                        else native_apis
+                        if index == 0 or second_target_apis == "same"
+                        else second_target_apis,
                     )
-                    for index in range(target_count)
+                    for index in range(1 if second_target_apis is None else 2)
                 ],
             ),
         )
