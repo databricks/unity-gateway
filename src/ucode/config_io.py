@@ -11,8 +11,6 @@ from typing import TypedDict, cast
 import tomlkit
 import tomlkit.exceptions
 
-from ucode.ui import console
-
 
 class ToolSpec(TypedDict):
     binary: str
@@ -94,6 +92,8 @@ def restore_file(config_path: Path, backup_path: Path, managed: bool) -> bool:
 
 def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     if _dry_run:
+        from ucode.ui import console
+
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
     ensure_parent_dir(path)
@@ -106,6 +106,8 @@ def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> Non
 def write_json_file(path: Path, payload: dict) -> None:
     content = json.dumps(payload, indent=2) + "\n"
     if _dry_run:
+        from ucode.ui import console
+
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
     ensure_parent_dir(path)
@@ -217,6 +219,8 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
     content = tomlkit.dumps(doc)
     if _dry_run:
+        from ucode.ui import console
+
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
     ensure_parent_dir(path)

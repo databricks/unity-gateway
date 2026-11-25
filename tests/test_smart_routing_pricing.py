@@ -180,17 +180,22 @@ class TestPriceCache:
         [
             "not json",
             json.dumps({"version": 999, "models": {"claude-opus-4-8": {"input": "5"}}}),
-            json.dumps({"version": 1, "models": {}}),
-            json.dumps({"version": 1, "models": []}),
-            json.dumps({"version": 1, "models": {"claude-opus-4-8": {}}}),
-            json.dumps({"version": 1, "models": {"claude-opus-4-8": {"input": "invalid"}}}),
+            json.dumps({"version": 2, "models": {}}),
+            json.dumps({"version": 2, "models": []}),
+            json.dumps({"version": 2, "models": {"claude-opus-4-8": {"fetched_at": 100.0}}}),
+            json.dumps(
+                {
+                    "version": 2,
+                    "models": {"claude-opus-4-8": {"input": "invalid", "fetched_at": 100.0}},
+                }
+            ),
         ],
     )
     def test_unusable_cache_reads_as_absent(self, tmp_path, content):
         path = tmp_path / "model-prices.json"
         path.write_text(content)
 
-        assert pricing.read_price_cache(path) is None
+        assert pricing.read_price_cache(path, now=100.0) is None
 
     def test_expires_models_independently(self, tmp_path, monkeypatch):
         path = tmp_path / "prices.json"

@@ -312,7 +312,8 @@ def test_savings_launch_survives_failed_rate_refresh(native_binary, tmp_path, di
     assert (cache.read_bytes() if cache.exists() else None) == before
 
 
-def test_savings_survive_native_exit_and_new_ug_resume_process(native_binary, tmp_path):
+@pytest.mark.parametrize("turn_off", [False, True], ids=["enabled", "off-before-exit"])
+def test_savings_survive_native_exit_and_new_ug_resume_process(native_binary, tmp_path, turn_off):
     root = tmp_path / "session"
     replies = [
         {
@@ -333,6 +334,8 @@ def test_savings_survive_native_exit_and_new_ug_resume_process(native_binary, tm
             launch_path, _ = first.settings()
             options = _assert_launch_options(first)
             usage = Path(options["savings_usage_dir"]) / f"{session_id}.json"
+            if turn_off:
+                assert "Smart Router is off" in first.send("/smart-router off")["result"]
         assert not launch_path.parent.exists()
         assert usage.is_file(), "Native exit removed the session's accounting"
         initial = _recorded_usage(usage, 1, output_tokens=11)

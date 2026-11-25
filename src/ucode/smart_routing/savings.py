@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -23,10 +24,9 @@ from ucode.smart_routing.pricing import (
     ModelPrice,
     TokenUsage,
     model_key,
-    read_price_cache,
+    read_price_cache_with_expiry,
     token_cost,
 )
-from ucode.smart_routing.session_env import effective_environment
 
 MODULE = "ucode.smart_routing.savings"
 USAGE_FILENAME = "savings-usage.json"
@@ -94,8 +94,10 @@ def _response_costs(
 
 def usage_savings(
     usage_path: Path, *, price_cache: Path, baseline_session_start: bool
-) -> tuple[Decimal, Decimal] | None:
-    """The ``(saved, baseline)`` dollars for the mod's token sums, or None with nothing to claim.
+) -> tuple[Decimal, Decimal, float] | None:
+    """The ``(saved, baseline, expires_at)`` estimate, or None with nothing to claim.
+
+    Dollar totals expire at the earliest Unix expiry time of the rates they use.
 
     None until routing changed some model, and whenever an entry is malformed, baseline-less or
     unpriced: an undercounted figure would be worse than none. A file that can't be read as the
@@ -115,9 +117,11 @@ def usage_savings(
         if not isinstance(start, str) or not start:
             return None
         fixed_baseline = start
-    prices = read_price_cache(price_cache)
-    if prices is None:
+    cached = read_price_cache_with_expiry(price_cache)
+    if cached is None:
         return None
+    prices = {key: price for key, (price, _) in cached.items()}
+    expires_at = float("inf")
 
     actual_total = baseline_total = Decimal(0)
     rerouted = False
@@ -150,10 +154,11 @@ def usage_savings(
             return None
         actual_total += costs[0]
         baseline_total += costs[1]
+        expires_at = min(expires_at, cached[served_key][1], cached[baseline_key][1])
         rerouted = rerouted or served_key != baseline_key
     if not rerouted or baseline_total <= 0:
         return None
-    return baseline_total - actual_total, baseline_total
+    return baseline_total - actual_total, baseline_total, expires_at
 
 
 def savings_segment(saved: Decimal, baseline: Decimal) -> dict[str, object]:
@@ -171,15 +176,22 @@ def savings_segment(saved: Decimal, baseline: Decimal) -> dict[str, object]:
 def usage_output(usage_path: Path, *, price_cache: Path, baseline_session_start: bool) -> str:
     """The one JSON line the mod reads: its savings segment, or null."""
     # The mod must get a parseable line whatever goes wrong.
-    savings = None
+    output: dict[str, object] = {"savings": None}
     try:
         computed = usage_savings(
             usage_path, price_cache=price_cache, baseline_session_start=baseline_session_start
         )
-        savings = None if computed is None else savings_segment(*computed)
+        if computed is not None:
+            saved, baseline, expires_at = computed
+            valid_for_ms = int((expires_at - time.time()) * 1000)
+            if valid_for_ms > 0:
+                output = {
+                    "savings": savings_segment(saved, baseline),
+                    "valid_for_ms": valid_for_ms,
+                }
     except Exception:  # noqa: BLE001
         pass
-    return json.dumps({"savings": savings})
+    return json.dumps(output)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,16 +202,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--write-usage", action="store_true", help="Save the JSON snapshot on stdin."
     )
+    parser.add_argument(
+        "--no-price", action="store_true", help="Skip the optional savings estimate."
+    )
     parser.add_argument("--price-cache", type=Path, required=True)
     parser.add_argument("--baseline-session-start", action="store_true")
     args = parser.parse_args(argv)
-    enabled = (
-        effective_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
-    )
     if args.write_usage:
         try:
-            if not enabled:
-                raise ValueError("savings accounting is disabled")
             document = json.loads(sys.stdin.buffer.read())
             if (
                 not isinstance(document, dict)
@@ -217,6 +227,15 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001 - keep the snapshot in the mod for a later write
             print(json.dumps({"savings": None}))
             return 1
+    if args.no_price:
+        print(json.dumps({"savings": None}))
+        return 0
+
+    from ucode.smart_routing.session_env import effective_environment
+
+    enabled = (
+        effective_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
+    )
     line = (
         usage_output(
             args.usage,

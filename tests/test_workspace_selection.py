@@ -354,7 +354,8 @@ class TestEndpointRatesTransport:
         return json.loads(result.stdout)
 
     @pytest.mark.parametrize(
-        "workspace,selectors", [(WORKSPACE + ":8443", SELECTOR), (OTHER_WORKSPACE, {})]
+        "workspace,selectors",
+        [(WORKSPACE + ":8443", SELECTOR), (WORKSPACE + "?w=111", SELECTOR), (OTHER_WORKSPACE, {})],
     )
     def test_repeated_names_and_host_scoped_workspace_headers(self, tmp_path, workspace, selectors):
         names = ["system.ai.claude-haiku-4-5", "system.ai.claude-sonnet-4-6"]
@@ -430,10 +431,13 @@ class TestEndpointRatesTransport:
             ],
         ],
     )
-    def test_response_shapes(self, tmp_path, payload, expected):
-        with EndpointRatesTransport(tmp_path / "tls", payload) as transport:
-            assert self.fetch(transport, tmp_path / "home", ["system.ai.example"]) == expected
-        assert len(transport.requests) == 1
+    def test_response_shapes(self, monkeypatch, payload, expected):
+        # The TLS cases above cover transport; this matrix exercises the real response parser.
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+        assert (
+            list(db_mod.fetch_endpoint_rates(WORKSPACE, SYNTHETIC_BEARER, ["system.ai.example"]))
+            == expected
+        )
 
     @pytest.mark.parametrize("disconnect", [False, True])
     def test_http_and_connection_failures_are_optional(self, tmp_path, disconnect):

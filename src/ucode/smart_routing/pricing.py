@@ -304,7 +304,18 @@ def _read_price_entries(path: Path, *, now: float) -> dict[str, tuple[ModelPrice
     return entries
 
 
+def read_price_cache_with_expiry(
+    path: Path, *, now: float | None = None
+) -> dict[str, tuple[ModelPrice, float]] | None:
+    """Load unexpired prices and their Unix expiry times from the same cache snapshot."""
+    entries = _read_price_entries(path, now=time.time() if now is None else now)
+    return {
+        key: (price, fetched_at + _PRICE_CACHE_MAX_AGE_SECONDS)
+        for key, (price, fetched_at) in entries.items()
+    } or None
+
+
 def read_price_cache(path: Path, *, now: float | None = None) -> dict[str, ModelPrice] | None:
     """Load unexpired prices keyed by ``model_key``; unknown ages are not usable."""
-    entries = _read_price_entries(path, now=time.time() if now is None else now)
-    return {key: price for key, (price, _) in entries.items()} or None
+    entries = read_price_cache_with_expiry(path, now=now)
+    return {key: price for key, (price, _) in entries.items()} if entries else None
