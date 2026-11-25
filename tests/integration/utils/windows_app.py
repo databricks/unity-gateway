@@ -106,7 +106,7 @@ class WindowsApp:
                 diagnostic = diagnostic.decode("utf-8", errors="replace")
             self.session.record(
                 f"{self.name}-uia-{command}-timeout.json",
-                {"command": command, "phase": self.session.redact(diagnostic[-2000:])},
+                {"command": command, "stderr": self.session.redact(diagnostic[-2000:])},
             )
             raise
         assert result.returncode == 0, f"UI Automation {command} failed: {result.stderr}"

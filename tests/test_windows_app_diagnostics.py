@@ -31,6 +31,6 @@ def test_uia_timeout_records_phase_and_still_fails(monkeypatch):
     assert evidence == [
         (
             "chatgpt-uia-tree-timeout.json",
-            {"command": "tree", "phase": "uia phase=find-descendants\n"},
+            {"command": "tree", "stderr": "uia phase=find-descendants\n"},
         )
     ]

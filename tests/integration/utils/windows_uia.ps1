@@ -27,9 +27,7 @@ function Get-Elements {
         $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
     })
     [Console]::Error.WriteLine('uia phase=filter-visible')
-    $visible = @($elements | Where-Object { $_.Current.IsEnabled -and -not $_.Current.IsOffscreen })
-    [Console]::Error.WriteLine('uia phase=read-controls')
-    $visible
+    $elements | Where-Object { $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }
 }
 
 function Get-Value($element) {
