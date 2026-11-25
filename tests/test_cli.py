@@ -2327,34 +2327,55 @@ class TestManagedConfigLaunchSourceGuard:
 
 
 @pytest.mark.parametrize(
-    ("args", "services", "old_codex", "relay"),
+    ("args", "services", "old_codex", "expected"),
     [
-        ([], ["main.team.chatgpt", "main.team.foundry"], False, True),
-        ([], ["main.team.foundry"], False, False),
-        (["--enable-smart-routing"], ["main.team.chatgpt"], False, False),
+        (
+            [],
+            ["main.team.chatgpt", "main.team.foundry"],
+            False,
+            {"relay", "login_checked", "lookup"},
+        ),
+        ([], ["main.team.foundry"], False, {"lookup"}),
+        (["--enable-smart-routing"], ["main.team.chatgpt"], False, {"routing"}),
         (
             ["--enable-smart-routing", "--model", "main.team.chatgpt"],
             ["main.team.chatgpt"],
             False,
-            True,
+            {"lookup", "relay", "warning"},
         ),
         (
             ["--enable-smart-routing", "--model", "main.team.foundry"],
             ["main.team.chatgpt"],
             False,
-            False,
+            {"lookup", "routing"},
         ),
         (
             ["--enable-smart-routing", "--", "exec", "-m", "main.team.chatgpt", "hi"],
             ["main.team.chatgpt"],
             False,
-            True,
+            {"lookup", "relay"},
         ),
-        ([], ["main.team.chatgpt"], True, True),
-        (["--model", "main.team.chatgpt"], ["main.team.chatgpt"], True, True),
+        (
+            [],
+            ["main.team.chatgpt"],
+            True,
+            {"lookup", "relay", "login_checked", "upgrade", "warning"},
+        ),
+        (
+            ["--model", "main.team.chatgpt"],
+            ["main.team.chatgpt"],
+            True,
+            {"lookup", "relay", "warning"},
+        ),
+        (
+            ["--model", "main.team.foundry"],
+            ["main.team.chatgpt"],
+            True,
+            {"lookup", "relay", "login_checked", "upgrade", "warning"},
+        ),
     ],
 )
-def test_codex_managed_model_service_launch(monkeypatch, args, services, old_codex, relay):
+def test_codex_managed_model_service_launch(monkeypatch, args, services, old_codex, expected):
     managed = {
         "enabled_agents": {
             "codex": {
@@ -2409,19 +2430,15 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
         result = runner.invoke(app, ["codex", *args])
 
     assert result.exit_code == 0, result.output
-    assert calls["configure"].call_args.kwargs["relayed"] is relay
     assert calls["configure"].call_args.kwargs["provider"] is None
-    checked = calls["launch"].call_args.args[1].get("_codex_launch_login_checked")
-    assert bool(checked) == (relay and "--model" not in args and "-m" not in args)
-    if args == ["--enable-smart-routing"]:
-        lookup.assert_not_called()
-    if "--model" in args:
-        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is not relay
-    if old_codex and "--model" in args and relay:
-        upgrade.assert_not_called()
-    if old_codex or ("--model" in args and relay):
-        assert not calls["launch"].call_args.kwargs["options"].launch_smart_routing
-        assert "Running without smart routing." in " ".join(_strip_ansi(result.output).split())
+    assert calls["configure"].call_args.kwargs["relayed"] is ("relay" in expected)
+    launch = calls["launch"].call_args
+    assert bool(launch.args[1].get("_codex_launch_login_checked")) is ("login_checked" in expected)
+    assert launch.kwargs["options"].launch_smart_routing is ("routing" in expected)
+    assert lookup.called is ("lookup" in expected)
+    assert upgrade.called is ("upgrade" in expected)
+    output = " ".join(_strip_ansi(result.output).split())
+    assert ("Running without smart routing." in output) is ("warning" in expected)
 
 
 @pytest.mark.parametrize(
@@ -2442,7 +2459,11 @@ def test_codex_explicit_model_with_configured_provider(provider_source, relay_se
         patch.object(
             cli_mod.codex_agent, "relay_model_services", return_value=relay_services
         ) as lookup,
-        patch.object(cli_mod.codex_agent, "use_model_service_relay", return_value=True),
+        patch.object(
+            cli_mod.codex_agent,
+            "use_model_service_relay",
+            return_value=cli_mod.codex_agent.LaunchAuth(True, False, None),
+        ),
     ):
         result = runner.invoke(app, ["codex", *args, "--disable-smart-routing", "--model", service])
 
@@ -2465,7 +2486,11 @@ def test_codex_explicit_model_with_configured_provider(provider_source, relay_se
 def test_codex_location_uses_explicitly_selected_seat_service(location, saved_location):
     with (
         _launch_policy_patches(None) as calls,
-        patch.object(cli_mod.codex_agent, "use_model_service_relay", return_value=True) as detect,
+        patch.object(
+            cli_mod.codex_agent,
+            "use_model_service_relay",
+            return_value=cli_mod.codex_agent.LaunchAuth(True, False, None),
+        ) as detect,
     ):
         if saved_location:
             calls["state"]["model_locations"] = {"codex": location}

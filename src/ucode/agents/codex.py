@@ -16,7 +16,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -1973,13 +1973,20 @@ def selected_service_overrides_saved_provider(
     )
 
 
+@dataclass(frozen=True)
+class LaunchAuth:
+    relayed: bool
+    login_checked: bool
+    routing_unavailable: str | None
+
+
 def use_model_service_relay(
     state: dict,
     selected_model: str | None,
     *,
     configuring: bool,
     selected_only: bool,
-) -> bool:
+) -> LaunchAuth:
     """Select per-user relay auth for a static list or an explicitly selected model service."""
     models = [] if selected_only else state.get("codex_static_models")
     candidates = list(models) if isinstance(models, list) else []
@@ -1988,14 +1995,14 @@ def use_model_service_relay(
         candidates.append(selection)
     relay_backed = relay_model_services(state, candidates, configuring=configuring)
     if not relay_backed:
-        return False
+        return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
     selected_relay = selected_model in relay_backed and not configuring
     # An explicitly selected seat uses the same browser login at launch as a direct relay provider.
     if not selected_relay and not (
         os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])
     ):
         print_note("Sign in with `codex login` to use the ChatGPT subscription model service.")
-        return False
+        return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
     path = codex_managed_config_path()
     if path:
         for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
@@ -2005,7 +2012,7 @@ def use_model_service_relay(
                 if selected_relay:
                     raise
                 print_note(f"Using Databricks authentication for this model list: {exc}")
-                return False
+                return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
             if conflicts:
                 if selected_relay:
                     raise RuntimeError(
@@ -2017,8 +2024,8 @@ def use_model_service_relay(
                 print_note(
                     f"Codex managed authentication at {policy} takes precedence over your ChatGPT seat."
                 )
-                return False
-    return True
+                return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
+    return LaunchAuth(relayed=True, login_checked=not selected_relay, routing_unavailable=None)
 
 
 def launch_relay_and_routing(
@@ -2030,14 +2037,18 @@ def launch_relay_and_routing(
     relayed: bool,
     routed: bool,
     managed_routing: bool,
-) -> tuple[bool, str | None]:
+) -> LaunchAuth:
     """Choose the launch credentials and report why smart routing must be disabled."""
+    auth = LaunchAuth(relayed=relayed, login_checked=False, routing_unavailable=None)
     if not provider and (selected_model or (not routed and not parent_schema)):
-        relayed = use_model_service_relay(
+        auth = use_model_service_relay(
             state, selected_model, configuring=False, selected_only=routed or bool(parent_schema)
         )
-    if relayed and (managed_routing or (routed and not provider)):
-        return True, "Smart routing is unavailable with a ChatGPT subscription relay."
+    if auth.relayed and (managed_routing or (routed and not provider)):
+        return replace(
+            auth,
+            routing_unavailable="Smart routing is unavailable with a ChatGPT subscription relay.",
+        )
     if managed_routing:
         try:
             agents.ensure_minimum_version(
@@ -2046,11 +2057,32 @@ def launch_relay_and_routing(
         except RuntimeError as exc:
             if routed and not provider and not parent_schema:
                 # The ordinary launch may use seats from the managed static list.
-                relayed = use_model_service_relay(
+                auth = use_model_service_relay(
                     state, selected_model, configuring=False, selected_only=False
                 )
-            return relayed, str(exc)
-    return relayed, None
+            return replace(auth, routing_unavailable=str(exc))
+    return auth
+
+
+def with_launch_source(
+    state: dict,
+    *,
+    pinned_provider: str | None,
+    model_service: str | None,
+    parent_schema: str | None,
+    login_checked: bool,
+) -> dict:
+    """Apply the session's resolved source after configure has saved the workspace state."""
+    state = state.copy()
+    if parent_schema:
+        state["_codex_launch_parent_schema"] = parent_schema
+    elif model_service:
+        state["_codex_launch_model_service"] = model_service
+    elif pinned_provider:
+        state["_codex_launch_provider"] = pinned_provider
+    if login_checked:
+        state["_codex_launch_login_checked"] = True
+    return state
 
 
 def _ensure_chatgpt_login(binary: str) -> None:

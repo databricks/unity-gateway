@@ -4456,7 +4456,7 @@ def _launch_tool(
             else None
         )
         selected_service = model or forwarded_model
-        selected_relay_overrides_provider = False
+        overriding_relay_service = None
         if managed_provider:
             provider = managed_provider
             parent_schema = None
@@ -4468,7 +4468,7 @@ def _launch_tool(
         elif tool == AGENT_CODEX and codex_agent.selected_service_overrides_saved_provider(
             state, selected_service, provider, explicit_provider
         ):
-            selected_relay_overrides_provider = True
+            overriding_relay_service = selected_service
             provider = None
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
         # version. Its version is applied right before launch, after the launch options below.
@@ -4669,8 +4669,9 @@ def _launch_tool(
                     provider_models = authored
                     coding_agent_config_defaults = authored
         routing_unavailable = None
+        codex_auth = None
         if tool == AGENT_CODEX:
-            relayed, routing_unavailable = codex_agent.launch_relay_and_routing(
+            codex_auth = codex_agent.launch_relay_and_routing(
                 state,
                 selected_service,
                 provider=provider,
@@ -4686,6 +4687,8 @@ def _launch_tool(
                 ),
                 managed_routing=managed_smart_routing_applies,
             )
+            relayed = codex_auth.relayed
+            routing_unavailable = codex_auth.routing_unavailable
         if routing_unavailable:
             print_warning(f"{routing_unavailable} Running without smart routing.")
             smart_routing_enabled = False
@@ -4914,15 +4917,14 @@ def _launch_tool(
         if tool == AGENT_CLAUDE:
             if provider:
                 state["_claude_launch_provider"] = provider
-        elif tool == AGENT_CODEX:
-            if parent_schema:
-                state["_codex_launch_parent_schema"] = parent_schema
-            elif selected_relay_overrides_provider:
-                state = {**state, "_codex_launch_model_service": selected_service}
-            elif explicit_provider or managed_provider:
-                state = {**state, "_codex_launch_provider": provider}
-            if relayed and not provider and not selected_service:
-                state = {**state, "_codex_launch_login_checked": True}
+        elif codex_auth is not None:
+            state = codex_agent.with_launch_source(
+                state,
+                pinned_provider=explicit_provider or managed_provider,
+                model_service=overriding_relay_service,
+                parent_schema=parent_schema,
+                login_checked=codex_auth.login_checked,
+            )
         elif tool == AGENT_COPILOT:
             if provider:
                 state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider

@@ -1874,11 +1874,15 @@ class TestCodexLaunch:
         monkeypatch.setattr(databricks, "model_service_relay_lookup", detect)
         state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
         assert (
-            codex.use_model_service_relay(state, selection, configuring=False, selected_only=False)
+            codex.use_model_service_relay(
+                state, selection, configuring=False, selected_only=False
+            ).relayed
             is signed_in
         )
         assert (
-            codex.use_model_service_relay(state, selection, configuring=False, selected_only=False)
+            codex.use_model_service_relay(
+                state, selection, configuring=False, selected_only=False
+            ).relayed
             is signed_in
         )
         detect.assert_called_once_with(
@@ -1901,7 +1905,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
         assert codex.use_model_service_relay(
             {"workspace": WS}, "cat.s.seat", configuring=configuring, selected_only=False
-        ) is (not configuring)
+        ).relayed is (not configuring)
 
     @pytest.mark.parametrize("selected", [False, True])
     def test_model_service_relay_when_managed_config_cannot_be_read(
@@ -1926,7 +1930,7 @@ class TestCodexLaunch:
         else:
             assert not codex.use_model_service_relay(
                 state, selected_model=None, configuring=False, selected_only=False
-            )
+            ).relayed
 
     @pytest.mark.parametrize("selected", [False, True])
     @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
@@ -1954,7 +1958,7 @@ class TestCodexLaunch:
         else:
             assert not codex.use_model_service_relay(
                 state, selected_model=None, configuring=False, selected_only=False
-            )
+            ).relayed
 
     @pytest.mark.parametrize(
         ("provider", "checked", "saved"),

@@ -864,7 +864,7 @@ def _configure_one(
             state,
             relayed=codex.use_model_service_relay(
                 state, configuring=True, selected_model=None, selected_only=False
-            ),
+            ).relayed,
         )
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:

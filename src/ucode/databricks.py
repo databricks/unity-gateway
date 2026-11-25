@@ -3811,6 +3811,8 @@ _RELAY_LOOKUP_TIMEOUT_S = 5
 _RELAY_LOOKUP_RETRY_AFTER_S = 60
 
 _RELAY_LOOKUP_MAX_AGE_S = 24 * 60 * 60
+# Codex must notice when a stored-auth service gains a ChatGPT fallback between launches.
+_OPENAI_NOT_RELAYED_TTL_S = 5 * 60
 _RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str, str, bool], tuple[RelayLookup, float]] = {}
 
 
@@ -3818,7 +3820,7 @@ def _relay_lookup_ttl(result: RelayLookup, provider_type: str) -> int:
     if result is RelayLookup.UNKNOWN:
         return _RELAY_LOOKUP_RETRY_AFTER_S
     if result is RelayLookup.NOT_RELAYED and provider_type == OPENAI_PROVIDER_TYPE:
-        return 5 * 60
+        return _OPENAI_NOT_RELAYED_TTL_S
     return _RELAY_LOOKUP_MAX_AGE_S
 
 
