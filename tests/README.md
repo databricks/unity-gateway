@@ -2183,3 +2183,8 @@ The Claude and Codex back-on TUI journeys in `tests/integration/test_ug_smart_ro
 the live validate request that turning routing on sends (HTTP 200, `is_supported: true`), and CUJ 4
 checks the live startup request for both agents. These component tests
 do not establish live Gateway or classifier compatibility.
+
+`test_native_config_files.py` covers local JSON/TOML preview inputs, canonical Volume references,
+caller-authorized SDK downloads, same-path refresh, source conflicts, bounded reads and parsing
+failures. `test_workspace_selection.py` covers workspace selector headers on the download client.
+These component tests do not establish live Volume permissions or agent inference.

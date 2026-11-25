@@ -2570,3 +2570,7 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 Configure loading indicators: skill download component coverage verifies the shared spinner
 starts before bundle requests and reports completed/total downloads. MCP and skill
 reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
+
+Native configuration file loading has component coverage in `../test_native_config_files.py`.
+Live UC Volume permissions, consumer-only users, and native agent inference with those files
+remain unverified. The file resolver's local previews require no workspace credentials.

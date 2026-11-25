@@ -222,6 +222,44 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    def test_native_file_download_selects_the_workspace(self, selected, monkeypatch):
+        from types import SimpleNamespace
+
+        from ucode.native_config_files import resolve_native_config_files
+
+        clients = []
+
+        def client(**kwargs):
+            clients.append(kwargs)
+            return SimpleNamespace(
+                files=SimpleNamespace(
+                    download=lambda path: SimpleNamespace(
+                        contents=io.BytesIO(b'{"language": "French"}')
+                    )
+                )
+            )
+
+        # No live credentials are needed to exercise SDK construction and the resolver.
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", client)
+        result = resolve_native_config_files(
+            {
+                "enabled_agents": {
+                    "claude": {
+                        "claude_code": {
+                            "managed_settings_file": "/Volumes/main/ai/configs/settings.json"
+                        }
+                    }
+                }
+            },
+            SHARED,
+            agents=["claude"],
+            token="test-token",
+        )
+        assert clients[0]["custom_headers"] == SELECTOR
+        assert result["enabled_agents"]["claude"]["claude_code"]["managed_settings"] == {
+            "language": "French"
+        }
+
     def test_model_service_metadata_lookup(self, selected):
         url = f"{SHARED}/api/2.1/unity-catalog/model-services/main.team.opaque"
         with patch.object(
