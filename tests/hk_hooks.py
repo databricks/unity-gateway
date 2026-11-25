@@ -97,15 +97,40 @@ def test_pre_commit_preserves_partial_staging(repo, staged, unstaged, success):
     assert elapsed < 9
 
 
-def test_pre_commit_handles_spaces_and_deletions(repo):
+def test_pre_commit_rejects_invalid_spaced_path(repo):
     # Needs formatting on purpose: if the glob silently skipped spaced paths,
     # the hook would pass and this assert would catch the skip.
     (repo / "src/file with spaces.py").write_text("value=2\n")
     run(repo, "git", "add", "src/file with spaces.py")
-    run(repo, "git", "rm", "src/example.py")
     result, elapsed = hook(repo, "pre-commit")
     assert result.returncode != 0, result.stdout + result.stderr
     assert "file with spaces.py" in result.stdout + result.stderr
+    assert elapsed < 9
+
+
+def test_pre_commit_accepts_clean_spaced_path_and_deletions(repo):
+    # Valid content under a spaced name must pass: a quoting bug that splits
+    # the path would point ruff at missing files and fail here.
+    (repo / "src/clean file.py").write_text("value = 2\n")
+    run(repo, "git", "add", "src/clean file.py")
+    run(repo, "git", "rm", "src/example.py")
+    result, elapsed = hook(repo, "pre-commit")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert elapsed < 9
+
+
+def test_pre_commit_never_re_resolves_a_stale_manifest(repo):
+    # UV_FROZEN=1 makes uv use uv.lock as-is: a manifest that drifts from it
+    # must not trigger a re-resolve, so the hook passes and uv.lock keeps its
+    # bytes (hook() compares the tracked files, uv.lock included, across the run).
+    config = repo / "pyproject.toml"
+    config.write_text(config.read_text().replace("ruff==0.16.5", "ruff==0.16.6"))
+    run(repo, "git", "add", "pyproject.toml")
+    path = repo / "src/example.py"
+    path.write_text("value = 2\n")
+    run(repo, "git", "add", "src/example.py")
+    result, elapsed = hook(repo, "pre-commit")
+    assert result.returncode == 0, result.stdout + result.stderr
     assert elapsed < 9
 
 
