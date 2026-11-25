@@ -3,6 +3,7 @@
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
@@ -55,11 +56,73 @@ def _redact_app_log(session, text: str) -> str:
     return session.redact(text)
 
 
-def _capture_app_log(stream, path: Path) -> None:
+def _windows_process_start(pid: int) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return datetime.fromtimestamp(ticks / 10_000_000 - 11_644_473_600, UTC).isoformat(
+            timespec="milliseconds"
+        )
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _capture_app_log(stream, path: Path, events: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as log:
         for line in stream:
-            log.write(f"{datetime.now(UTC).isoformat(timespec='milliseconds')} {line}")
+            observed_at = datetime.now(UTC).isoformat(timespec="milliseconds")
+            log.write(f"{observed_at} {line}")
             log.flush()
+            if "stdio_transport_spawned" in line and (match := re.search(r"\bpid=(\d+)", line)):
+                pid = int(match.group(1))
+                event = {"event": "stdio-transport-spawn", "observed_at": observed_at, "pid": pid}
+                try:
+                    event["process_started_at"] = _windows_process_start(pid)
+                except OSError as error:
+                    event["process_start_error"] = str(error)
+                events.append(event)
+            elif match := re.search(
+                r"method=windowsSandbox/(readiness|setupStart|setupComplete)\b", line
+            ):
+                error_code = re.search(r"\berrorCode=(null|-?\d+|[A-Z][A-Z0-9_]*)\b", line)
+                events.append(
+                    {
+                        "event": match.group(1),
+                        "observed_at": observed_at,
+                        "error_code": error_code.group(1) if error_code else None,
+                    }
+                )
+            elif "app_server_connection.state_changed" in line and (
+                match := re.search(r"\bcause=(stop_process|start_process)\b", line)
+            ):
+                events.append({"event": match.group(1), "observed_at": observed_at})
+            elif "Failed to load Windows sandbox readiness" in line and "identity" in line.lower():
+                events.append({"event": "identity-not-ready", "observed_at": observed_at})
 
 
 class WindowsUIAProcess:
@@ -87,6 +150,7 @@ class WindowsUIAProcess:
         self.started = started
         self.init_metrics: dict[str, float] = {}
         self.last_metrics: dict[str, float] = {}
+        self.last_diagnostics: dict = {}
 
         def read_responses():
             for line in self.proc.stdout:
@@ -113,6 +177,7 @@ class WindowsUIAProcess:
 
     def request(self, command: str, *args: str) -> str:
         self.last_metrics = {}
+        self.last_diagnostics = {}
         assert not self.broken, "UI Automation helper is unavailable"
         assert self.proc.poll() is None, "UI Automation helper exited"
         if not self.ready:
@@ -127,6 +192,7 @@ class WindowsUIAProcess:
         self.proc.stdin.flush()
         timeout = float(args[2]) + 5 if command in ("click", "wait") else 60
         response = self._receive(timeout)
+        self.last_diagnostics = response.get("diagnostics", {})
         metrics = {**self.init_metrics, **response.get("metrics", {})}
         self.last_metrics = {
             key: value
@@ -143,6 +209,8 @@ class WindowsUIAProcess:
                 "action_ms",
                 "wait_ms",
                 "click_ms",
+                "target_snapshot_ms",
+                "picker_new_window_count",
                 "composer_focus_before_wait",
                 "composer_focus_at_first_key",
                 "composer_focus_wait_ms",
@@ -176,6 +244,7 @@ class WindowsApp:
         self.log = session.home.parent / f"{name}.log"
         self.powershell = Path(shutil.which("powershell.exe") or "powershell.exe")
         self.timings: list[dict] = []
+        self.setup_events: list[dict] = []
         self.baseline_sampled = False
         self.version, location = _installed_package(package)
         self.executable = str(Path(location) / executable)
@@ -196,7 +265,9 @@ class WindowsApp:
             **process_group_options(),
         )
         self.reader = threading.Thread(
-            target=_capture_app_log, args=(self.proc.stdout, self.log), daemon=True
+            target=_capture_app_log,
+            args=(self.proc.stdout, self.log, self.setup_events),
+            daemon=True,
         )
         self.reader.start()
         self.timings.append({"action": "app_spawn", "seconds": time.monotonic() - started})
@@ -237,6 +308,7 @@ class WindowsApp:
                 {"stderr": _redact_app_log(self.session, self.uia_process.stderr_output)},
             )
             self.session.record(f"{self.name}-uia-timings.json", self.timings)
+            self.session.record(f"{self.name}-setup-events.json", self.setup_events)
             log = _redact_app_log(self.session, self.log.read_text(errors="replace"))
             self.session.record(
                 f"{self.name}-log.json",
@@ -255,16 +327,33 @@ class WindowsApp:
     def uia(self, command: str, *args: str) -> str:
         assert self.proc.poll() is None, f"{self.name} exited with {self.proc.returncode}"
         started = time.monotonic()
+        started_at = datetime.now(UTC).isoformat(timespec="milliseconds")
         output = ""
         try:
             output = self.uia_process.request(command, *args)
             return output
         finally:
-            timing = {"action": command, "seconds": time.monotonic() - started}
+            timing = {
+                "action": command,
+                "started_at": started_at,
+                "ended_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "seconds": time.monotonic() - started,
+            }
             timing.update(self.uia_process.last_metrics)
+            if self.uia_process.last_diagnostics:
+                timing["diagnostics"] = self.uia_process.last_diagnostics
             if command in ("click", "wait") and output.isdigit():
                 timing["polls"] = int(output)
             self.timings.append(timing)
+
+    def mark_setup_phase(self, phase: str) -> None:
+        self.timings.append(
+            {
+                "action": "setup-phase",
+                "phase": phase,
+                "started_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+            }
+        )
 
     def read_tree(self) -> list[list[str]]:
         """Each element's control type, name and value."""
@@ -311,9 +400,11 @@ class WindowsApp:
                 raise
             return []
 
-    def _control_action(self, action: str, control: str, name: str | None, timeout: float) -> None:
+    def _control_action(
+        self, action: str, control: str, name: str | None, timeout: float, *extra: str
+    ) -> None:
         try:
-            self.uia(action, control, name or "", f"{timeout:g}")
+            self.uia(action, control, name or "", f"{timeout:g}", *extra)
         except AssertionError as error:
             try:
                 self.session.record(
@@ -337,9 +428,16 @@ class WindowsApp:
             raise AssertionError(f"{self.name} target disappeared before tree capture")
         return tree
 
-    def click(self, control: str, name: str | None, timeout: float = STEP_TIMEOUT) -> None:
+    def click(
+        self,
+        control: str,
+        name: str | None,
+        timeout: float = STEP_TIMEOUT,
+        *,
+        trace_picker: bool = False,
+    ) -> None:
         """Activate the first enabled ``control`` element named ``name`` (any name if None)."""
-        self._control_action("click", control, name, timeout)
+        self._control_action("click", control, name, timeout, *(["picker"] if trace_picker else []))
 
     def type_line(self, text: str, *, submit: bool = True) -> None:
         """Type with real keystrokes, optionally pressing Enter."""

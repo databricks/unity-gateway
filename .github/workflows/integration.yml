@@ -1515,6 +1515,18 @@ jobs:
             throw 'The ChatGPT MSIX does not match the pinned SHA256'
           }
           Add-AppxPackage -Path $msix
+      - name: Compile UIA diagnostic observer
+        shell: powershell
+        run: |
+          $observer = Join-Path $env:RUNNER_TEMP 'windows-uia-probe.dll'
+          try {
+            Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+            $references = @([Windows.Automation.AutomationElement].Assembly.Location, [Windows.Automation.AutomationProperty].Assembly.Location)
+            Add-Type -Path tests/integration/utils/windows_uia_probe.cs -ReferencedAssemblies $references -OutputAssembly $observer
+          } catch {
+            Write-Output "UIA diagnostic observer unavailable: $($_.Exception.GetType().Name)"
+          }
+          "UG_UIA_PROBE_ASSEMBLY=$observer" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - *budget-setup-done
       - name: Complete a Codex turn in the desktop app against the managed e2e workspace
         shell: bash

@@ -12,16 +12,18 @@ def windows_live_environment():
     return {"DATABRICKS_BEARER": "bearer"}
 
 
-def test_isolated_runner_forwards_only_the_explicit_uia_comparison_flag():
+def test_isolated_runner_forwards_only_explicit_uia_diagnostic_settings():
     environment = {
         "PATH": "/bin",
         "UG_UIA_BASELINE_SAMPLE": "1",
+        "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
         "DATABRICKS_BEARER": "secret",
         "UNRELATED_SETTING": "private",
     }
     assert runner.isolated_base_environment(environment) == {
         "PATH": "/bin",
         "UG_UIA_BASELINE_SAMPLE": "1",
+        "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
     }
 
 

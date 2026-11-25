@@ -17,6 +17,15 @@ Import-Module Microsoft.PowerShell.Utility
 $moduleMs = $moduleClock.Elapsed.TotalMilliseconds
 $uiaClock = [Diagnostics.Stopwatch]::StartNew()
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$script:probeLoadError = $null
+try {
+    if ($env:UG_UIA_PROBE_ASSEMBLY) {
+        Add-Type -Path $env:UG_UIA_PROBE_ASSEMBLY
+    } else {
+        $probeReferences = @([Windows.Automation.AutomationElement].Assembly.Location, [Windows.Automation.AutomationProperty].Assembly.Location)
+        Add-Type -Path "$PSScriptRoot/windows_uia_probe.cs" -ReferencedAssemblies $probeReferences
+    }
+} catch { $script:probeLoadError = $_.Exception.GetType().Name }
 $uiaMs = $uiaClock.Elapsed.TotalMilliseconds
 $formsClock = [Diagnostics.Stopwatch]::StartNew()
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -35,12 +44,24 @@ $initMetrics = @{
     init_ms = $initClock.Elapsed.TotalMilliseconds
 }
 $script:metrics = @{}
+$script:diagnostics = @{}
 $script:composer = $null
 $script:composerClickedAt = 0
+$script:pickerWindows = @()
+$script:pickerNewWindows = [Collections.Generic.HashSet[int]]::new()
 
 function Get-Windows {
     [Console]::Error.WriteLine('uia phase=find-windows')
     @($root.FindAll([Windows.Automation.TreeScope]::Children, $byProcess))
+}
+
+function Observe-PickerWindows($windows) {
+    try {
+        foreach ($window in $windows) {
+            $handle = $window.Current.NativeWindowHandle
+            if ($handle -and $handle -notin $script:pickerWindows) { [void]$script:pickerNewWindows.Add($handle) }
+        }
+    } catch { $script:diagnostics.picker_window_error = $_.Exception.GetType().Name }
 }
 
 function Get-Elements($windows) {
@@ -59,6 +80,28 @@ function Get-Value($element) {
         return $pattern.Current.Value
     }
     ''
+}
+
+function Get-ExpandState($target) {
+    $pattern = $null
+    if ($target.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+        return "$($pattern.Current.ExpandCollapseState)"
+    }
+    return $null
+}
+
+function Get-TargetDetails($target, $windows) {
+    $editCondition = [Windows.Automation.PropertyCondition]::new($automation::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
+    $editCount = 0
+    foreach ($window in $windows) { $editCount += $window.FindAll([Windows.Automation.TreeScope]::Subtree, $editCondition).Count }
+    return @{
+        name = $target.Current.Name
+        value = (Get-Value $target)
+        is_enabled = $target.Current.IsEnabled
+        runtime_id = @($target.GetRuntimeId())
+        expand_collapse_state = (Get-ExpandState $target)
+        edit_count = $editCount
+    }
 }
 
 function Find-Target($windows, $role, $name, $matchValue) {
@@ -104,11 +147,13 @@ function Invoke-Action($action, $argsList) {
             $timeout = if (($action -in @('click', 'wait')) -and $argsList.Count -gt 2) { [double]$argsList[2] } else { 0 }
             $deadline = [DateTime]::UtcNow.AddSeconds($timeout)
             $polls = 0
+            $watchPicker = $action -eq 'click' -and $first -eq 'ControlType.MenuItem' -and $script:pickerWindows.Count -gt 0
             $waitClock = [Diagnostics.Stopwatch]::StartNew()
             try {
                 do {
                     $polls++
                     $windows = @(Get-Windows)
+                    if ($watchPicker) { Observe-PickerWindows $windows }
                     $target = Find-Target $windows $first $second ($action -eq 'wait')
                     if ($target) { break }
                     if ([DateTime]::UtcNow -ge $deadline) { throw "No enabled $first named '$second'" }
@@ -117,20 +162,47 @@ function Invoke-Action($action, $argsList) {
             } finally {
                 $script:metrics.wait_ms = $waitClock.Elapsed.TotalMilliseconds
                 $script:metrics.polls = $polls
+                if ($watchPicker) { $script:metrics.picker_new_window_count = $script:pickerNewWindows.Count }
             }
             if ($action -eq 'wait') { "$polls"; break }
+            $isPicker = $action -eq 'click' -and $argsList.Count -gt 3 -and $argsList[3] -eq 'picker'
+            $observeTarget = $action -eq 'click' -and ($first -eq 'ControlType.Edit' -or $isPicker)
+            if ($isPicker) {
+                try { $script:pickerWindows = @($windows | ForEach-Object { $_.Current.NativeWindowHandle }) }
+                catch { $script:diagnostics.picker_window_error = $_.Exception.GetType().Name; $script:pickerWindows = @() }
+                $script:pickerNewWindows.Clear()
+                $script:diagnostics.top_level_windows_before = $script:pickerWindows.Count
+                $script:diagnostics.activation_succeeded = $false
+            }
+            if ($observeTarget) {
+                $snapshotClock = [Diagnostics.Stopwatch]::StartNew()
+                try { $script:diagnostics.target = Get-TargetDetails $target $windows }
+                catch { $script:diagnostics.target_error = $_.Exception.GetType().Name }
+                $script:metrics.target_snapshot_ms = $snapshotClock.Elapsed.TotalMilliseconds
+            }
             $clickClock = [Diagnostics.Stopwatch]::StartNew()
             try {
                 $pattern = $null
                 if ($target.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+                    if ($isPicker) { $script:diagnostics.activation = 'invoke' }
                     $pattern.Invoke()
                 } elseif ($target.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+                    if ($isPicker) { $script:diagnostics.activation = 'selection' }
                     $pattern.Select()
                 } else {
+                    if ($isPicker) { $script:diagnostics.activation = 'focus' }
                     $target.SetFocus()
                 }
+                if ($isPicker) { $script:diagnostics.activation_succeeded = $true }
             } finally {
                 $script:metrics.click_ms = $clickClock.Elapsed.TotalMilliseconds
+            }
+            if ($isPicker) {
+                try { $script:diagnostics.target_after = @{ expand_collapse_state = (Get-ExpandState $target); runtime_id = @($target.GetRuntimeId()) } }
+                catch { $script:diagnostics.target_after_error = $_.Exception.GetType().Name }
+                try { Observe-PickerWindows @(Get-Windows) }
+                catch { $script:diagnostics.picker_window_error = $_.Exception.GetType().Name }
+                $script:metrics.picker_new_window_count = $script:pickerNewWindows.Count
             }
             if ($action -eq 'click' -and $first -eq 'ControlType.Edit') {
                 $script:composer = $target
@@ -139,6 +211,9 @@ function Invoke-Action($action, $argsList) {
             if ($action -eq 'click') { "$polls" }
         }
         'type' {
+            $observedComposer = $script:composer
+            $observePickerType = -not $observedComposer -and $script:pickerWindows.Count -gt 0
+            if ($observePickerType) { Observe-PickerWindows $windows }
             if ($script:composer) {
                 $focusClock = [Diagnostics.Stopwatch]::StartNew()
                 $hasFocus = $script:composer.Current.HasKeyboardFocus
@@ -156,14 +231,45 @@ function Invoke-Action($action, $argsList) {
             }
             $focused = $automation::FocusedElement.Current.ProcessId
             if ($focused -ne $ProcessId) { throw "Keyboard focus is in process $focused, not $ProcessId" }
-            if ($script:composer) {
-                $script:metrics.composer_focus_at_first_key = [int]$script:composer.Current.HasKeyboardFocus
-                $script:metrics.click_to_first_key_ms = 1000 * ([Diagnostics.Stopwatch]::GetTimestamp() - $script:composerClickedAt) / [Diagnostics.Stopwatch]::Frequency
-                if (-not $script:metrics.composer_focus_at_first_key) { throw 'The composer lost keyboard focus before typing' }
-                $script:composer = $null
+            $probe = $null
+            if ($observedComposer -and $script:probeLoadError) {
+                $script:diagnostics.composer_probe_error = $script:probeLoadError
+            } elseif ($observedComposer) {
+                try {
+                    $probe = [WindowsUIA.ComposerProbe]::new()
+                    foreach ($window in $windows) { $probe.Observe($window) }
+                } catch {
+                    $script:diagnostics.composer_probe_error = $_.Exception.GetType().Name
+                    if ($probe) { try { $probe.Dispose() } catch { $script:diagnostics.composer_probe_dispose_error = $_.Exception.GetType().Name } }
+                    $probe = $null
+                }
             }
-            [Windows.Forms.SendKeys]::SendWait(($first -replace '[+^%~(){}\[\]]', '{$0}'))
-            if ($second -eq 'enter') { [Windows.Forms.SendKeys]::SendWait('{ENTER}') }
+            try {
+                if ($script:composer) {
+                    $script:metrics.composer_focus_at_first_key = [int]$script:composer.Current.HasKeyboardFocus
+                    $script:metrics.click_to_first_key_ms = 1000 * ([Diagnostics.Stopwatch]::GetTimestamp() - $script:composerClickedAt) / [Diagnostics.Stopwatch]::Frequency
+                    if (-not $script:metrics.composer_focus_at_first_key) { throw 'The composer lost keyboard focus before typing' }
+                    $script:composer = $null
+                }
+                [Windows.Forms.SendKeys]::SendWait(($first -replace '[+^%~(){}\[\]]', '{$0}'))
+                if ($second -eq 'enter') { [Windows.Forms.SendKeys]::SendWait('{ENTER}') }
+            } finally {
+                if ($probe) {
+                    try { $probe.Dispose() } catch { $script:diagnostics.composer_probe_error = $_.Exception.GetType().Name }
+                    $script:diagnostics.composer_samples = @($probe.GetSamples())
+                    $script:diagnostics.composer_probe_errors = $probe.ErrorCount
+                }
+                if ($observePickerType) {
+                    Observe-PickerWindows @(Get-Windows)
+                    $script:metrics.picker_new_window_count = $script:pickerNewWindows.Count
+                }
+                if ($observedComposer) {
+                    try {
+                        $current = Find-Target @(Get-Windows) 'ControlType.Edit' '' $false
+                        if ($current) { $script:diagnostics.composer_final = @{ value = (Get-Value $current); runtime_id = @($current.GetRuntimeId()) } }
+                    } catch { $script:diagnostics.composer_final_error = $_.Exception.GetType().Name }
+                }
+            }
         }
         'screenshot' {
             $rect = $windows[0].Current.BoundingRectangle
@@ -185,6 +291,7 @@ if ($Command -eq 'session') {
     [Console]::Out.WriteLine((@{ event = 'ready'; metrics = $initMetrics } | ConvertTo-Json -Compress -Depth 4))
     while ($null -ne ($line = [Console]::ReadLine())) {
         $script:metrics = @{} + $initMetrics
+        $script:diagnostics = @{}
         $actionClock = [Diagnostics.Stopwatch]::StartNew()
         try {
             $request = $line | ConvertFrom-Json
@@ -195,7 +302,8 @@ if ($Command -eq 'session') {
         }
         $script:metrics.action_ms = $actionClock.Elapsed.TotalMilliseconds
         $response.metrics = $script:metrics
-        [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 4))
+        $response.diagnostics = $script:diagnostics
+        [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 8))
     }
 } else {
     Invoke-Action $Command @($First, $Second)

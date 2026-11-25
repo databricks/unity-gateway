@@ -825,7 +825,7 @@ def arguments(
 
 
 def isolated_base_environment(environment: Mapping[str, str]) -> dict[str, str]:
-    """Carry only platform settings and the explicit UIA comparison flag into the runner."""
+    """Carry only platform settings and explicit UIA diagnostics into the runner."""
     keep = (
         "PATH",
         "SYSTEMROOT",
@@ -842,6 +842,7 @@ def isolated_base_environment(environment: Mapping[str, str]) -> dict[str, str]:
         "HTTP_PROXY",
         "NO_PROXY",
         "UG_UIA_BASELINE_SAMPLE",
+        "UG_UIA_PROBE_ASSEMBLY",
     )
     return {key: environment[key] for key in keep if key in environment}
 

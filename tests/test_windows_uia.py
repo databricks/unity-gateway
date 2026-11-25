@@ -20,9 +20,20 @@ STUB_TYPES = r"""
 using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
+using Stub;
 namespace Stub {
+    public class ElementNotAvailableException : Exception { }
     public class AutomationProperty { public string Key; public AutomationProperty(string key) { Key = key; } }
     public class AutomationPattern { public string Key; public AutomationPattern(string key) { Key = key; } }
+    public delegate void AutomationPropertyChangedEventHandler(object sender, AutomationPropertyChangedEventArgs args);
+    public class AutomationPropertyChangedEventArgs : EventArgs { public object NewValue; }
+    public static class Automation {
+        public static AutomationPropertyChangedEventHandler Changed;
+        public static void AddAutomationPropertyChangedEventHandler(AutomationElement root, TreeScope scope, AutomationPropertyChangedEventHandler handler, params AutomationProperty[] properties) { Changed += handler; }
+        public static void RemoveAutomationPropertyChangedEventHandler(AutomationElement root, AutomationPropertyChangedEventHandler handler) { Changed -= handler; }
+        public static void Raise(AutomationElement target, string value) { if (Changed != null) Changed(target, new AutomationPropertyChangedEventArgs { NewValue = value }); }
+    }
     public enum TreeScope { Children, Descendants, Subtree }
     public abstract class Condition {
         public abstract bool Match(AutomationElement element);
@@ -59,17 +70,19 @@ namespace Stub {
         public static readonly ControlType Button = new ControlType("Button");
         public static readonly ControlType Edit = new ControlType("Edit");
         public static readonly ControlType Text = new ControlType("Text");
+        public static readonly ControlType MenuItem = new ControlType("MenuItem");
         public static readonly ControlType Window = new ControlType("Window");
     }
     public class Rect { public int X = 0, Y = 0, Width = 100, Height = 80; }
     public class CurrentInfo {
-        public int ProcessId = 123; public bool IsEnabled = true, IsOffscreen = false;
+        public int ProcessId = 123, NativeWindowHandle = 555; public bool IsEnabled = true, IsOffscreen = false;
         public bool HasKeyboardFocus { get { State.Event("focus-check"); return ++State.FocusChecks >= 2; } }
         public string Name; public ControlType ControlType; public Rect BoundingRectangle = new Rect();
     }
     public static class State {
         public static string Value = "";
         public static int FocusChecks = 0;
+        public static bool Opened = false;
         public static void Event(string text) { File.AppendAllText(Environment.GetEnvironmentVariable("UIA_TEST_EVENTS"), text + "\n"); }
     }
     public class AutomationElement {
@@ -84,9 +97,14 @@ namespace Stub {
         public AutomationElement(ControlType type, string name) { Current = new CurrentInfo { ControlType = type, Name = name }; }
         private AutomationElement[] Children() { return new[] { new AutomationElement(ControlType.Button, "Press"), new AutomationElement(ControlType.Edit, ""), new AutomationElement(ControlType.Text, "Ready") }; }
         public AutomationElement[] FindAll(TreeScope scope, Condition condition) {
-            return scope == TreeScope.Children ? new[] { new AutomationElement(ControlType.Window, "window") } : Children();
+            if (scope != TreeScope.Children) return Children().Where(condition.Match).ToArray();
+            var first = new AutomationElement(ControlType.Window, "window");
+            if (!State.Opened) return new[] { first };
+            var second = new AutomationElement(ControlType.Window, "popup"); second.Current.NativeWindowHandle = 556;
+            return new[] { first, second };
         }
         public AutomationElement FindFirst(TreeScope scope, Condition condition) { return Children().FirstOrDefault(condition.Match); }
+        public int[] GetRuntimeId() { return new[] { 123, 456 }; }
         public bool TryGetCurrentPattern(AutomationPattern pattern, out object value) {
             if (pattern.Key == "value" && Current.ControlType == ControlType.Edit) { value = new ValuePattern(); return true; }
             if (pattern.Key == "invoke" && Current.ControlType == ControlType.Button) { value = new InvokePattern(); return true; }
@@ -100,9 +118,10 @@ namespace Stub {
         public ValueCurrent Current { get { return new ValueCurrent(); } }
     }
     public class ValueCurrent { public string Value { get { return State.Value; } } }
-    public class InvokePattern { public static readonly AutomationPattern Pattern = new AutomationPattern("invoke"); public void Invoke() { State.Event("invoke"); } }
+    public class ExpandCollapsePattern { public static readonly AutomationPattern Pattern = new AutomationPattern("expand"); }
+    public class InvokePattern { public static readonly AutomationPattern Pattern = new AutomationPattern("invoke"); public void Invoke() { State.Opened = !State.Opened; State.Event("invoke"); } }
     public class SelectionItemPattern { public static readonly AutomationPattern Pattern = new AutomationPattern("selection"); public void Select() { State.Event("select"); } }
-    public static class SendKeys { public static void SendWait(string text) { State.Value = text; State.Event("type"); } }
+    public static class SendKeys { public static void SendWait(string text) { State.Value = ""; foreach (char c in text) { State.Value += c; Automation.Raise(AutomationElement.FocusedElement, State.Value); } State.Event("type"); } }
     public class Bitmap : IDisposable {
         public object Size = new object(); public Bitmap(int width, int height) {} public void Save(string path, object format) { File.WriteAllText(path, "image"); } public void Dispose() {}
     }
@@ -115,15 +134,22 @@ namespace Stub {
 """
 
 
-def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
-    tmp_path, monkeypatch, record_property
-):
+def _stub_uia_script(tmp_path, monkeypatch, *, fail_probe=False):
     pwsh = shutil.which("pwsh")
     assert pwsh, "PowerShell Core is required for the UIA helper contract"
     source = UIA_CLIENT.read_text(encoding="utf-8")
+    probe_source = UIA_CLIENT.with_name("windows_uia_probe.cs").read_text(encoding="utf-8")
+    probe_source = "\n".join(
+        line for line in probe_source.splitlines() if not line.startswith("using ")
+    )
     source = source.replace(
         "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes",
-        "Add-Type -TypeDefinition @'\n" + STUB_TYPES + "\n'@",
+        "Add-Type -TypeDefinition @'\n" + STUB_TYPES + "\n" + probe_source + "\n'@",
+    )
+    source = source.replace(
+        "        $probeReferences = @([Windows.Automation.AutomationElement].Assembly.Location, [Windows.Automation.AutomationProperty].Assembly.Location)\n"
+        '        Add-Type -Path "$PSScriptRoot/windows_uia_probe.cs" -ReferencedAssemblies $probeReferences',
+        "        throw 'probe unavailable'" if fail_probe else "",
     )
     source = source.replace("Add-Type -AssemblyName System.Windows.Forms, System.Drawing", "")
     source = source.replace("[Windows.Automation.", "[Stub.")
@@ -134,7 +160,15 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
     script = tmp_path / "stub-uia.ps1"
     script.write_text(source, encoding="utf-8")
     events = tmp_path / "events.txt"
+    monkeypatch.delenv("UG_UIA_PROBE_ASSEMBLY", raising=False)
     monkeypatch.setenv("UIA_TEST_EVENTS", str(events))
+    return pwsh, script, events
+
+
+def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
+    tmp_path, monkeypatch, record_property
+):
+    pwsh, script, events = _stub_uia_script(tmp_path, monkeypatch)
     helper = WindowsUIAProcess(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script), "session", "123"]
     )
@@ -152,18 +186,36 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
             "wait_ms",
         ):
             assert helper.last_metrics[key] >= 0
-        assert helper.request("click", "ControlType.Button", "Press", "5") == "1"
+        assert helper.request("click", "ControlType.Button", "Press", "5", "picker") == "1"
+        assert helper.last_diagnostics["activation"] == "invoke"
+        assert helper.last_diagnostics["activation_succeeded"] is True
+        assert helper.last_diagnostics["target_after"]["expand_collapse_state"] is None
         assert helper.last_metrics["click_ms"] >= 0
         assert helper.last_metrics["wait_ms"] >= 0
         record_property("stub_uia_startup", json.dumps(helper.last_metrics, sort_keys=True))
+        with pytest.raises(AssertionError, match="No enabled ControlType.MenuItem"):
+            helper.request("click", "ControlType.MenuItem", "Select model", "0")
+        assert helper.last_metrics["picker_new_window_count"] == 1
         helper.request("invoke", "ControlType.Button", "Press")
         helper.request("click", "ControlType.Edit", "", "5")
-        helper.request("type", "hello", "")
+        assert helper.last_diagnostics["target"]["runtime_id"] == [123, 456]
+        assert helper.last_diagnostics["target"]["is_enabled"] is True
+        assert helper.last_diagnostics["target"]["edit_count"] == 1
+        helper.request("type", "abcdefghijklmnop", "")
+        assert [sample["value"] for sample in helper.last_diagnostics["composer_samples"]] == [
+            "abcdefgh",
+            "abcdefghijklmnop",
+        ]
+        assert all(
+            sample["runtime_id"] == [123, 456]
+            for sample in helper.last_diagnostics["composer_samples"]
+        )
+        assert helper.last_diagnostics["composer_final"]["value"] == "abcdefghijklmnop"
         assert helper.last_metrics["composer_focus_before_wait"] == 0
         assert helper.last_metrics["composer_focus_at_first_key"] == 1
         assert helper.last_metrics["composer_focus_wait_ms"] >= 0
         assert helper.last_metrics["click_to_first_key_ms"] >= 0
-        assert helper.request("wait", "ControlType.Edit", "hello", "5") == "1"
+        assert helper.request("wait", "ControlType.Edit", "abcdefghijklmnop", "5") == "1"
         image = tmp_path / "screenshot.png"
         helper.request("screenshot", str(image))
         assert image.read_text() == "image"
@@ -187,6 +239,20 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
         check=True,
     )
     assert "ControlType.Button\tPress" in legacy.stdout
+
+
+def test_optional_composer_probe_failure_does_not_block_typing(tmp_path, monkeypatch):
+    pwsh, script, _ = _stub_uia_script(tmp_path, monkeypatch, fail_probe=True)
+    helper = WindowsUIAProcess(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script), "session", "123"]
+    )
+    try:
+        helper.request("click", "ControlType.Edit", "", "5")
+        helper.request("type", "hello", "")
+        assert helper.last_diagnostics["composer_probe_error"]
+        assert helper.request("wait", "ControlType.Edit", "hello", "5") == "1"
+    finally:
+        helper.close()
 
 
 def _wait_for_form_shown(app, ready, timeout):

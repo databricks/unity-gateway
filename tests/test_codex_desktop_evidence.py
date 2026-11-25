@@ -4,6 +4,7 @@ import copy
 import io
 import re
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -181,7 +182,41 @@ def test_windows_uia_records_native_click_poll_count():
     assert app.timings[0]["init_ms"] == 11
     assert app.timings[0]["wait_ms"] == 22
     assert app.timings[0]["click_ms"] == 3
+    start = datetime.fromisoformat(app.timings[0]["started_at"])
+    end = datetime.fromisoformat(app.timings[0]["ended_at"])
+    assert start.utcoffset().total_seconds() == end.utcoffset().total_seconds() == 0
+    assert start <= end
     assert "Continue" not in repr(app.timings) and "private" not in repr(app.timings)
+
+
+def test_windows_setup_banner_wait_has_a_utc_boundary():
+    app = object.__new__(windows_app.WindowsApp)
+    app.timings = []
+    app.mark_setup_phase("banner-wait-start")
+    entry = app.timings[0]
+    assert entry["action"] == "setup-phase" and entry["phase"] == "banner-wait-start"
+    assert datetime.fromisoformat(entry["started_at"]).utcoffset().total_seconds() == 0
+
+
+def test_windows_picker_trace_is_forwarded_to_the_helper():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " request=json.loads(line)\n"
+        " print(json.dumps({'ok':True,'output':'1','error':'','metrics':{},"
+        "'diagnostics':{'picker':request['args'][-1]}}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        app.click("ControlType.Button", "picker", trace_picker=True)
+    finally:
+        app.uia_process.close()
+    assert app.timings[0]["diagnostics"] == {"picker": "picker"}
 
 
 def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):
@@ -208,11 +243,44 @@ def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):
 
 def test_windows_app_log_preserves_and_timestamps_every_line(tmp_path):
     log = tmp_path / "app.log"
-    windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log)
+    windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log, [])
     lines = log.read_text().splitlines()
     assert len(lines) == 2
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ first", lines[0])
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ second", lines[1])
+
+
+def test_app_log_records_sandbox_and_app_server_process_timestamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        windows_app,
+        "_windows_process_start",
+        lambda pid: "2026-11-25T00:00:00+00:00",
+        raising=False,
+    )
+    lines = (
+        "[StdioConnection] stdio_transport_spawned pid=42\n"
+        "[AppServerConnection] response_routed method=windowsSandbox/readiness errorCode=null\n"
+        "[AppServerConnection] response_routed method=windowsSandbox/setupStart errorCode=null\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=stop_process\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=start_process\n"
+        "Failed to load Windows sandbox readiness errorMessage=identity-not-ready\n"
+    )
+    events = []
+    windows_app._capture_app_log(io.StringIO(lines), tmp_path / "app.log", events)
+    assert [event["event"] for event in events] == [
+        "stdio-transport-spawn",
+        "readiness",
+        "setupStart",
+        "stop_process",
+        "start_process",
+        "identity-not-ready",
+    ]
+    assert events[0]["pid"] == 42
+    assert events[0]["process_started_at"] == "2026-11-25T00:00:00+00:00"
+    assert all(
+        datetime.fromisoformat(event["observed_at"]).utcoffset().total_seconds() == 0
+        for event in events
+    )
 
 
 def test_windows_app_log_redacts_service_principal_secret(monkeypatch):

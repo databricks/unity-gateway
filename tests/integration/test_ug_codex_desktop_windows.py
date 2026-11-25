@@ -64,11 +64,14 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
+        app.mark_setup_phase("banner-wait-start")
         wait_for_windows_setup(app)
+        app.mark_setup_phase("setup-click-start")
         app.click("ControlType.Button", "Continue")
         wait_for_windows_sandbox(app)
+        app.mark_setup_phase("sandbox-mode-observed")
         # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
-        app.click("ControlType.Button", MODEL_PICKER)
+        app.click("ControlType.Button", MODEL_PICKER, trace_picker=True)
         app.type_line("")
         app.click("ControlType.MenuItem", "Select model")
         tree = app.wait_for("ControlType.RadioButton", MANAGED_CODEX_MODEL_LABEL)
@@ -146,9 +149,12 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
         try:
+            app.mark_setup_phase("banner-wait-start")
             wait_for_windows_setup(app)
+            app.mark_setup_phase("setup-click-start")
             app.click("ControlType.Button", "Continue")
             wait_for_windows_sandbox(app)
+            app.mark_setup_phase("sandbox-mode-observed")
             app.click("ControlType.Edit", None)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
             app.type_line(prompt, submit=False)

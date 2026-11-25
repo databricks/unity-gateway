@@ -37,6 +37,16 @@ def _markers(nodes):
     }
 
 
+def test_windows_uia_observer_is_compiled_before_desktop_launch():
+    workflow = _workflow("integration.yml")
+    windows_job = workflow.split("  codex-desktop-windows:\n", 1)[1]
+    assert windows_job.index("Compile UIA diagnostic observer") < windows_job.index(
+        "Complete a Codex turn in the desktop app"
+    )
+    assert "UG_UIA_PROBE_ASSEMBLY" in windows_job
+    assert "shell: powershell" in windows_job
+
+
 def test_unit_shards_upload_junit_evidence_even_when_a_test_fails():
     workflow = _workflow("ci.yml")
     report = workflow.split("      - &unit-report\n", 1)[1].split("\n\n  unit-windows:", 1)[0]
