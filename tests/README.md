@@ -1676,7 +1676,10 @@ prompt through the GUI, and assert the exact answer, model, and completed turn f
 Both also invoke a user-authored `$CODEX_HOME/skills` skill whose reference file supplies a hidden
 query and completion token, after registering `system.ai.web_search` with `ug mcp add`.
 The token must render in the GUI and complete on the managed model; native successful MCP receipts
-must carry the query in that same Codex Desktop/Databricks turn. The pinned app versions are
+must carry the query in that same Codex Desktop/Databricks turn, and every matching call must succeed.
+Before sending the Windows skill prompt, the test waits up to 120 seconds for the app's first-launch
+runtime install to report `installed`, because the app restarts MCP servers when the install finishes.
+The pinned app versions are
 macOS `26.1103.31037` and Windows `26.1103.7773.0`; harness-latest also selects the macOS journey.
 `test_codex_desktop_evidence.py` rejects false positives from failed/missing calls, unrelated
 turns/queries/servers, wrong origins/models and echoed or incomplete answers. Skill/MCP evidence

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -244,6 +245,63 @@ def test_restart_experiment_rejects_stale_or_out_of_order_responses():
     app.timings = []
     with pytest.raises(AssertionError, match="post-setup restart"):
         app.wait_for_setup_restart(0, time.monotonic())
+
+
+def test_runtime_install_wait_accepts_already_recorded_outcome():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [{"event": "primary-runtime-install-outcome", "outcome": "installed"}]
+    app.timings = []
+    app.wait_for_runtime_install(time.monotonic() + 1)
+    assert app.timings[-1]["phase"] == "runtime-install-complete"
+
+
+def test_runtime_install_wait_wakes_for_later_log_event(tmp_path):
+    waiting = threading.Event()
+
+    class Condition(threading.Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = Condition()
+    app.setup_events = []
+    app.timings = []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(app.wait_for_runtime_install, time.monotonic() + 2)
+        assert waiting.wait(timeout=1)
+        windows_app._capture_app_log(
+            io.StringIO("primary_runtime_install_call_outcome outcome=installed\n"),
+            tmp_path / "app.log",
+            app.setup_events,
+            app.setup_condition,
+        )
+        result.result(timeout=1)
+    assert app.timings[-1]["phase"] == "runtime-install-complete"
+
+
+def test_runtime_install_wait_rejects_non_installed_outcome():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [
+        {"event": "primary-runtime-install-outcome", "outcome": "failed"},
+        {"event": "primary-runtime-install-outcome", "outcome": "installed"},
+    ]
+    app.timings = []
+    with pytest.raises(AssertionError, match="outcome: failed"):
+        app.wait_for_runtime_install(time.monotonic() + 1)
+    assert app.timings == []
+
+
+def test_runtime_install_wait_rejects_missing_outcome_at_deadline():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [{"event": "setupComplete"}]
+    app.timings = []
+    with pytest.raises(AssertionError, match="never finished its first-launch runtime install"):
+        app.wait_for_runtime_install(time.monotonic())
+    assert app.timings == []
 
 
 def test_restart_experiment_reports_identity_errors_relative_to_first_interaction():
@@ -573,6 +631,25 @@ def test_app_log_records_sandbox_and_app_server_process_timestamps(tmp_path, mon
         datetime.fromisoformat(event["observed_at"]).utcoffset().total_seconds() == 0
         for event in events
     )
+
+
+def test_app_log_records_only_bounded_runtime_install_outcome(tmp_path):
+    lines = (
+        "[install-primary-runtime] primary_runtime_bundle_install_outcome outcome=installed\n"
+        "[install-primary-runtime] primary_runtime_install_call_outcome outcome=installed-extra!\n"
+        "[install-primary-runtime] primary_runtime_install_call_outcome "
+        "bundleOperationId=private outcome=installed release=latest\n"
+        "[install-primary-runtime] primary_runtime_install_call_outcome outcome=failed\n"
+    )
+    events = []
+    windows_app._capture_app_log(
+        io.StringIO(lines), tmp_path / "app.log", events, threading.Condition()
+    )
+    assert [event["outcome"] for event in events] == ["installed", "failed"]
+    for event in events:
+        assert event.keys() == {"event", "observed_at", "outcome"}
+        assert event["event"] == "primary-runtime-install-outcome"
+        assert datetime.fromisoformat(event["observed_at"]).utcoffset().total_seconds() == 0
 
 
 def test_windows_app_log_redacts_service_principal_secret(monkeypatch):
