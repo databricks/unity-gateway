@@ -16,8 +16,8 @@ from ucode.workspace import workspace_headers
 
 MAX_NATIVE_CONFIG_FILE_BYTES = 1024 * 1024
 _NATIVE_FILE_ROLES = {
-    "claude": ("claude_code", ("managed_settings",)),
-    "codex": ("codex", ("config", "requirements")),
+    "claude": ("claude_code", {"managed_settings": "managed_settings_json"}),
+    "codex": ("codex", {"config": "config_toml", "requirements": "requirements_toml"}),
 }
 
 
@@ -80,8 +80,7 @@ def resolve_native_config_files(
         native = entry.get(variant)
         if not isinstance(native, dict):
             continue
-        for role in roles:
-            reference = f"{role}_file"
+        for role, reference in roles.items():
             if reference not in native:
                 continue
             field = f"agent_native_config.{variant}.{reference}"

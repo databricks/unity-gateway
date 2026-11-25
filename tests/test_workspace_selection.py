@@ -253,7 +253,7 @@ class TestHelperArgv:
                 "enabled_agents": {
                     "claude": {
                         "claude_code": {
-                            "managed_settings_file": "/Volumes/main/ai/configs/settings.json"
+                            "managed_settings_json": "/Volumes/main/ai/configs/settings.json"
                         }
                     }
                 }
