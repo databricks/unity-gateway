@@ -358,7 +358,10 @@ audit; that event can omit its model. Existing records are not backfilled.
 
 Select `SMART_ROUTER_CONFIG_VERSION=subagent_orch_savings_v0` for Claude savings
 estimates with subagent routing and orchestration. Other presets leave savings off.
-Without a preset, `ENABLE_SMART_ROUTING_SAVINGS=1` opts in when routing is enabled.
+Without a preset, `ENABLE_SMART_ROUTING_SAVINGS=1` opts in with legacy routing flags
+(`ENABLE_SMART_ROUTING_V2=1` or `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1`).
+`--enable-smart-routing` and managed routing select a preset; choose
+`subagent_orch_savings_v0` to include savings.
 Session off/on hides/restores the row and excludes disabled turns from its totals.
 
 The row above the prompt shows the estimated amount and percentage saved, or the

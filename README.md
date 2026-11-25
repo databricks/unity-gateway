@@ -839,8 +839,10 @@ that hidden display with `subagent_orch_v0_claude_only`'s Codex opt-out.
 and sets `ENABLE_SMART_ROUTING_SAVINGS=1`. Savings tracking, endpoint-price refresh,
 pricing, and the above-prompt savings row are opt-in and currently
 implemented for Claude. Every other preset sets this flag to `"0"`, overriding an
-inherited `"1"`. Without a selector, explicitly set `ENABLE_SMART_ROUTING_SAVINGS=1`
-with routing enabled to use the feature.
+inherited `"1"`. Without a selector, `ENABLE_SMART_ROUTING_SAVINGS=1` works with
+legacy routing flags (`ENABLE_SMART_ROUTING_V2=1` or
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1`). `--enable-smart-routing` and managed routing
+select a preset, so use `subagent_orch_savings_v0` to enable savings with either.
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_savings_v0 ug claude

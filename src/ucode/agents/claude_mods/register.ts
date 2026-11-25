@@ -519,7 +519,7 @@ export function register(on: On, options: PluginOptions): void {
       let state: SessionUsage | null = null;
       let baseline: string | null = null;
       try {
-        trackSavings = await ready($, current ?? {});
+        trackSavings = await ready($, current);
         state = epoch === sessionEpoch ? sessionUsage : null;
         // Keep selection history while accounting is off. A request may override its
         // model without changing the user's selection for later main/child work.

@@ -71,7 +71,7 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
   const state = {
     controls: {} as Record<string, string>, failWrites: false, writes: 0, prices: 0,
     usage: null as any, sessionId: 'session',
-    denySavingsWrites: false, failControls: false,
+    denySavingsWrites: false, failControls: false, denyEnvironmentRead: false,
     selectedModel: 'claude-opus-4-8',
     responseUsage: { input_tokens: 1, output_tokens: 1 } as any,
     priceBarrier: null as Promise<void> | null,
@@ -88,6 +88,7 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
   const clock = mock.clock(on);
   const env: Record<string, unknown> = { ...options, UCODE_SESSION_ENV_FILE: '/session/env.json', UCODE_SMART_ROUTER_PYTHON: '/python' };
   on('env.get', (_, e) => {
+    if (state.denyEnvironmentRead && e.name === 'ENABLE_SMART_ROUTING_V2') return { deny: 'environment unavailable' };
     if (e.name === 'ENABLE_SMART_ROUTING_SAVINGS') state.savingsFlagReads += 1;
     return { value: env[e.name] };
   });
@@ -599,25 +600,30 @@ test('denied savings writes preserve native toggles and rollback', { options }, 
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(body);
 });
 
-test('an unreadable environment preserves the last orchestrator state and forwards requests', { options }, async ($, on) => {
-  const env: Record<string, unknown> = { ...options };
-  let denyEnvironmentRead = false;
+test('an unreadable environment preserves orchestration and recorded usage', { options }, async ($, on) => {
   let invalidations = 0;
-  on('env.get', (_, e) => denyEnvironmentRead && e.name === 'ENABLE_SMART_ROUTING_V2'
-    ? { deny: 'environment unavailable' } : { value: env[e.name] });
-  on('ui.invalidate', (_, e) => {
-    if (e.event === 'tool.describe') invalidations += 1;
+  on('ui.invalidate', { event: 'tool.describe' }, () => {
+    invalidations += 1;
     return { value: undefined };
   });
-  on('turn.step', async function* (_, e) {
-    return { turnId: e.turnId, index: e.index, answer: 'done', toolUses: [] };
-  });
+  const { state, env, clock, row } = await savingsRow($, on);
+  invalidations = 0;
   for (const denied of [true, false]) {
-    denyEnvironmentRead = denied;
-    const result = await $.turn.step({ turnId: 'environment', index: 0, messageCount: 1, model: 'claude-opus-4-8' }).next();
-    expect(result.value.answer).toBe('done');
+    state.denyEnvironmentRead = denied;
+    for (const agentId of [undefined, 'child']) {
+      const result = await $.turn.step({
+        turnId: 'environment', index: 0, messageCount: 1,
+        model: agentId ? 'claude-sonnet-4-6' : 'claude-opus-4-8', agentId,
+      }).next();
+      expect(result.value.answer).toBe('done');
+    }
     expect(invalidations).toBe(0);
   }
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.usage.entries.find((entry: any) => entry.agent === 'main').usage.input_tokens).toBe(2);
+  expect(state.usage.entries.find((entry: any) => entry.agent === 'child').usage.input_tokens).toBe(102);
+  expect(JSON.stringify(await row.drawn())).toContain('$0.18');
   env.ENABLE_SMART_ROUTER_ORCHESTRATOR = '0';
   await $.turn.step({ turnId: 'disabled', index: 0, messageCount: 1, model: 'claude-opus-4-8' }).next();
   expect(invalidations).toBe(1);
