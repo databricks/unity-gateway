@@ -72,8 +72,9 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
   const { incompleteUsage = false, pendingSteps = 0, legacyBaseline = false, legacyChild = false, legacySession = false, usageFile, invalidSavedUsage } = fixture;
   const state = {
     controls: {} as Record<string, string>, failWrites: false, writes: 0, prices: 0,
-    usage: null as any, sessionId: 'session',
+    usage: null as any, sessionId: 'session', usageReads: 0,
     denySavingsWrites: false, failControls: false, denyEnvironmentRead: false,
+    denySavingsRead: false, denySessionPathRead: false,
     selectedModel: 'claude-opus-4-8',
     responseUsage: { input_tokens: 1, output_tokens: 1 } as any,
     priceBarrier: null as Promise<void> | null,
@@ -91,6 +92,8 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
   const env: Record<string, unknown> = { ...options, UCODE_SESSION_ENV_FILE: '/session/env.json', UCODE_SMART_ROUTER_PYTHON: '/python' };
   on('env.get', (_, e) => {
     if (state.denyEnvironmentRead && e.name === 'ENABLE_SMART_ROUTING_V2') return { deny: 'environment unavailable' };
+    if (state.denySavingsRead && e.name === 'ENABLE_SMART_ROUTING_SAVINGS') return { deny: 'savings flag unavailable' };
+    if (state.denySessionPathRead && e.name === 'UCODE_SESSION_ENV_FILE') return { deny: 'session path unavailable' };
     if (e.name === 'ENABLE_SMART_ROUTING_SAVINGS') state.savingsFlagReads += 1;
     return { value: env[e.name] };
   });
@@ -105,7 +108,10 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
       state.controlReads += 1;
       return { value: JSON.stringify(state.controls) };
     }
-    if (files.has(e.path)) return { value: files.get(e.path)! };
+    if (files.has(e.path)) {
+      state.usageReads += 1;
+      return { value: files.get(e.path)! };
+    }
     if (e.path === initialPath) {
       if (usageFile === 'unreadable' || usageFile === 'missing') return { deny: 'usage file unavailable' };
       if (usageFile === 'malformed') return { value: '{"version":1,"entries":[' };
@@ -939,6 +945,99 @@ test('a cost increase replaces the routing band and cached renders do not reread
 });
 
 
+for (const denied of ['savings flag', 'session path']) {
+  for (const failed of [false, true]) {
+    test('an admitted request retains uncertainty after a denied ' + denied + (failed ? ' and error' : ' on completion'), { options }, async ($, on) => {
+      const { state, clock, row } = await savingsRow($, on);
+      const entries = JSON.stringify(state.usage.entries);
+      let release!: () => void;
+      const started = new Promise<void>(resolve => { state.stepStarted = resolve; });
+      state.stepBarrier = new Promise<void>(resolve => { release = resolve; });
+      const pending = $.turn.step({ turnId: 'denied-control', index: 0, messageCount: 1, model: state.selectedModel }).next();
+      await started;
+      state.denySavingsRead = denied === 'savings flag';
+      state.denySessionPathRead = denied === 'session path';
+      if (failed) state.stepError = new Error('request failed');
+      release();
+      let caught: unknown;
+      try {
+        const result = await pending;
+        expect(result.value.answer).toBe('done');
+      } catch (error) {
+        caught = error;
+      }
+      // Native wraps a failed test hook; accounting must preserve that failure.
+      if (failed) expect(String(caught)).toBe('HooksError: no implementation for turn.step');
+      else expect(caught).toBe(undefined);
+      state.denySavingsRead = false;
+      state.denySessionPathRead = false;
+      await $.turn.complete({ answer: 'done', isAborted: failed });
+      await clock.advance(1);
+      expect(state.usage.incomplete_usage).toBe(true);
+      expect(JSON.stringify(state.usage.entries)).toBe(entries);
+      expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
+    });
+  }
+}
+
+test('a first prompt after clearing while OFF preserves the baseline for later ON work', {
+  options: { ...options, savings_pricer: [...options.savings_pricer, '--baseline-session-start'] },
+}, async ($, on) => {
+  const { state, clock } = await savingsRow($, on);
+  await $.command.run({ command: 'smart-router', args: 'off' });
+  await $.session.end({ reason: 'clear', sessionId: state.sessionId });
+  state.sessionId = 'off-session';
+  state.selectedModel = 'claude-sonnet-4-6';
+  const prices = state.prices;
+  await $.prompt.submit({ text: 'Start a new session while routing is off.' });
+  await $.turn.step({ turnId: 'off', index: 0, messageCount: 1, model: state.selectedModel }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.usage.entries.length).toBe(0);
+  expect(state.usage.start_model).toBe(state.selectedModel);
+  expect(state.prices).toBe(prices);
+  await $.command.run({ command: 'smart-router', args: 'on' });
+  await $.prompt.submit({ text: 'Continue with routing on.' });
+  await $.turn.step({ turnId: 'on', index: 0, messageCount: 2, model: 'claude-haiku-4-5' }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.usage.incomplete_usage).toBe(false);
+  expect(state.usage.entries.length).toBe(1);
+  expect(state.usage.entries[0].baseline).toBe(state.selectedModel);
+  expect(state.usage.entries[0].served).toBe('claude-haiku-4-5');
+});
+
+test('cache-write totals survive a split-only response and reload', { options }, async ($, on) => {
+  const { state, clock, files } = await savingsRow($, on, { usageFile: 'missing' });
+  state.responseUsage = { cache_creation: { ephemeral_1h_input_tokens: 3, ephemeral_5m_input_tokens: 2 } };
+  await $.turn.step({ turnId: 'split-only', index: 0, messageCount: 1, model: state.selectedModel }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  const path = `${options.savings_usage_dir}/session.json`;
+  const recorded = JSON.parse(files.get(path)!);
+  expect(recorded.incomplete_usage).toBe(false);
+  expect(recorded.entries[0].usage.cache_creation_input_tokens).toBe(5);
+  expect(recorded.entries[0].usage.cache_creation).toEqual(state.responseUsage.cache_creation);
+
+  const loads = state.usageReads;
+  await $.session.end({ reason: 'resume', sessionId: state.sessionId });
+  await clock.advance(1);
+  await $.prompt.submit({ text: 'Continue this session.' });
+  await clock.advance(1);
+  expect(state.usageReads - loads).toBe(1);
+  expect(state.usage.entries).toEqual(recorded.entries);
+  state.responseUsage = {
+    cache_creation_input_tokens: 9,
+    cache_creation: { ephemeral_1h_input_tokens: 4, ephemeral_5m_input_tokens: 1 },
+  };
+  await $.turn.step({ turnId: 'partial-split', index: 0, messageCount: 1, model: state.selectedModel }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.usage.incomplete_usage).toBe(false);
+  expect(state.usage.entries[0].usage.cache_creation_input_tokens).toBe(14);
+  expect(state.usage.entries[0].usage.cache_creation).toEqual({ ephemeral_1h_input_tokens: 7, ephemeral_5m_input_tokens: 3 });
+});
+
 for (const [label, usage] of [
   ['fraction', { input_tokens: 0.5, output_tokens: 10 }],
   ['negative', { input_tokens: 7, output_tokens: -1 }],
@@ -947,6 +1046,9 @@ for (const [label, usage] of [
   ['boolean', { input_tokens: true, output_tokens: 10 }],
   ['split fraction', { input_tokens: 7, cache_creation: { ephemeral_5m_input_tokens: 0.5 } }],
   ['split boolean', { input_tokens: 7, cache_creation: { ephemeral_1h_input_tokens: false } }],
+  ['split exceeds total', { cache_creation_input_tokens: 1, cache_creation: { ephemeral_1h_input_tokens: 1000 } }],
+  ['split sum exceeds total', { cache_creation_input_tokens: 2, cache_creation: { ephemeral_1h_input_tokens: 2, ephemeral_5m_input_tokens: 1 } }],
+  ['split conflicts with zero', { cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 1 } }],
 ] as const) {
   test('a saved ' + label + ' token count hides the estimate without replacing the snapshot', { options }, async ($, on) => {
     const { state, clock, row, files } = await savingsRow($, on, { invalidSavedUsage: usage });

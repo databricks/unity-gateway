@@ -563,12 +563,15 @@ export function register(on: On, options: PluginOptions): void {
           const served = str(request.model) ?? str(usage?.model);
           const base = useStartBaseline ? startBaseline : routed ? baseline : served;
           // A late response still belongs to its captured session; OFF excludes it.
-          if (trackSavings && state && await readSavingsState($)) {
-            if (!validTokenUsage(usage) || !served || !base) {
-              markUsageIncomplete($, state);
-            } else {
-              accumulate(state, agent ?? 'main', base, served, beforeUserSwitch, routed, usage);
-              state.dirty = true;
+          if (trackSavings && state) {
+            const active = await readSavingsState($);
+            if (active !== false) {
+              if (active === undefined || !validTokenUsage(usage) || !served || !base) {
+                markUsageIncomplete($, state);
+              } else {
+                accumulate(state, agent ?? 'main', base, served, beforeUserSwitch, routed, usage);
+                state.dirty = true;
+              }
             }
           }
         } catch {}
@@ -577,7 +580,7 @@ export function register(on: On, options: PluginOptions): void {
         // A thrown or cancelled request may have been billed without returning usage.
         if (!completed && trackSavings) {
           try {
-            if (state && await readSavingsState($)) markUsageIncomplete($, state);
+            if (state && await readSavingsState($) !== false) markUsageIncomplete($, state);
           } catch {}
         }
         if (pendingState) {
@@ -1246,6 +1249,10 @@ function accumulate(
   for (const k of TOKEN_KEYS) entry.usage[k] += num(usage[k]);
   // The 5m/1h cache-write split is only summed where the API reported it.
   const split = usage.cache_creation;
+  // Split-only responses still need a total in the persisted cumulative record.
+  if (usage.cache_creation_input_tokens === undefined) {
+    entry.usage.cache_creation_input_tokens += CACHE_SPLIT_KEYS.reduce((sum, key) => sum + num(split?.[key]), 0);
+  }
   if (split && typeof split === 'object') {
     const sums = entry.usage.cache_creation ?? {};
     for (const k of CACHE_SPLIT_KEYS) if (k in split) sums[k] = (sums[k] ?? 0) + num(split[k]);
@@ -1260,7 +1267,9 @@ function validTokenUsage(usage: any): boolean {
     || !TOKEN_KEYS.every(key => optionalTokens(usage[key]))) return false;
   const split = usage.cache_creation;
   return split === undefined || (split !== null && typeof split === 'object'
-    && !Array.isArray(split) && CACHE_SPLIT_KEYS.every(key => optionalTokens(split[key])));
+    && !Array.isArray(split) && CACHE_SPLIT_KEYS.every(key => optionalTokens(split[key]))
+    && (usage.cache_creation_input_tokens === undefined
+      || CACHE_SPLIT_KEYS.reduce((sum, key) => sum + num(split[key]), 0) <= usage.cache_creation_input_tokens));
 }
 
 function validSavedUsage(saved: any): boolean {
@@ -1325,14 +1334,14 @@ async function readSavingsFlag($: EngineInterface): Promise<string | undefined> 
   }
 }
 
-async function readSavingsState($: EngineInterface, snapshot?: Environment): Promise<boolean> {
+async function readSavingsState($: EngineInterface, snapshot?: Environment): Promise<boolean | undefined> {
   if (!savingsConfigured) return false;
   try {
     if (snapshot) return snapshot.ENABLE_SMART_ROUTING_SAVINGS === '1';
     const controls = await readSessionControls($);
-    return (controls.ENABLE_SMART_ROUTING_SAVINGS ?? await readSavingsFlag($)) === '1';
+    return (controls.ENABLE_SMART_ROUTING_SAVINGS ?? await $.env.get('ENABLE_SMART_ROUTING_SAVINGS')) === '1';
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -1349,7 +1358,7 @@ async function refreshSavingsState($: EngineInterface, snapshot?: Environment): 
   const active = await readSavingsState($, snapshot);
   if (state !== sessionUsage || !savingsSessionActive) return false;
   // A slow control read cannot undo a native toggle that just completed.
-  if (revision === savingsControlRevision) setSavingsActive($, active);
+  if (revision === savingsControlRevision) setSavingsActive($, active === true);
   return savingsActive;
 }
 
@@ -1398,10 +1407,10 @@ async function savingsPromptSubmit($: EngineInterface, e: any): Promise<void> {
       endedSessionId = null;
       resumePending = false;
     }
-    if (!await ready($)) return;
+    await ready($);
     const state = sessionUsage;
-    if (!state || state.firstPromptSeen) return;
-    // This runs before UserPromptSubmit blocks the prompt for the PTY router.
+    if (!savingsSessionActive || !state?.canPersist || state.firstPromptSeen) return;
+    // Capture selection history while OFF too, before the PTY router handles this prompt.
     const selected = await savingsMainModel($);
     if (state !== sessionUsage || !savingsSessionActive) return;
     state.startModel = selected;

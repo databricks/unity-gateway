@@ -526,6 +526,50 @@ def test_malformed_saved_counts_hide_the_whole_estimate_and_preserve_snapshots(
     assert usage.read_bytes() == valid_bytes
 
 
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"cache_creation_input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 1000}},
+        {
+            "cache_creation_input_tokens": 2,
+            "cache_creation": {"ephemeral_1h_input_tokens": 2, "ephemeral_5m_input_tokens": 1},
+        },
+        {"cache_creation_input_tokens": 0, "cache_creation": {"ephemeral_5m_input_tokens": 1}},
+    ],
+)
+def test_inconsistent_cache_splits_hide_the_estimate_and_preserve_snapshots(
+    tmp_path, price_cache, counts
+):
+    usage = write_usage(tmp_path, [entry("child", OPUS_ID, SONNET_ID, counts)])
+    inconsistent = usage.read_bytes()
+    assert priced(usage, price_cache) is None
+    assert usage.read_bytes() == inconsistent
+
+    write_usage(tmp_path, [entry("known", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+    previous = usage.read_bytes()
+    result = TestPricerCommand.run(price_cache, usage, snapshot=inconsistent)
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {"savings": None}
+    assert usage.read_bytes() == previous
+
+
+@pytest.mark.parametrize("total,amount", [(None, "$0.18"), (30_000, "$0.24")])
+def test_partial_and_split_only_cache_breakdowns_remain_priceable(
+    tmp_path, price_cache, total, amount
+):
+    counts = {
+        key: value for key, value in SUBAGENT_USAGE.items() if key != "cache_creation_input_tokens"
+    }
+    if total is not None:
+        counts["cache_creation_input_tokens"] = total
+    usage = write_usage(tmp_path, [entry("child", OPUS_ID, SONNET_ID, counts)])
+    snapshot = usage.read_bytes()
+    result = TestPricerCommand.run(price_cache, usage, snapshot=snapshot)
+    assert result.returncode == 0, result.stderr
+    assert decoded_savings(result.stdout) == saved(amount, "60%")
+    assert json.loads(usage.read_bytes()) == json.loads(snapshot)
+
+
 def test_zero_counts_and_absent_optional_counts_remain_priceable(tmp_path, price_cache):
     usage = write_usage(
         tmp_path,

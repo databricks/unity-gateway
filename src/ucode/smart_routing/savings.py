@@ -63,8 +63,14 @@ def _valid_token_usage(usage: object) -> bool:
     if "cache_creation" not in usage:
         return True
     split = usage["cache_creation"]
-    return isinstance(split, dict) and counts(
-        split, ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+    split_keys = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+    return (
+        isinstance(split, dict)
+        and counts(split, split_keys)
+        and (
+            "cache_creation_input_tokens" not in usage
+            or sum(split.get(key, 0) for key in split_keys) <= usage["cache_creation_input_tokens"]
+        )
     )
 
 
