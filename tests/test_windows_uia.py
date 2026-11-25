@@ -259,9 +259,9 @@ def _wait_for_form_shown(app, ready, timeout):
     deadline = time.monotonic() + timeout
     while not ready.is_file():
         if (code := app.poll()) is not None:
-            raise AssertionError(f"WinForms process exited with {code} before showing its window")
+            raise AssertionError(f"Window process exited with {code} before showing its window")
         if time.monotonic() >= deadline:
-            raise AssertionError("WinForms window did not become visible")
+            raise AssertionError("Test window did not become visible")
         time.sleep(0.05)
     return max(0.0, deadline - time.monotonic())
 
@@ -377,18 +377,21 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
     form.write_text(
         textwrap.dedent(
             """\
-            Add-Type -AssemblyName System.Windows.Forms
-            $form = [Windows.Forms.Form]::new()
-            $form.Text = 'UG UIA contract'
-            $form.TopMost = $true
-            $form.Add_Shown({ [IO.File]::WriteAllText($env:UIA_TEST_READY, 'shown') })
-            $button = [Windows.Forms.Button]::new()
-            $button.Text = 'Press'
+            Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+            $form = [Windows.Window]::new()
+            $form.Title = 'UG UIA contract'
+            $form.Topmost = $true
+            $form.Width = 400
+            $form.Height = 200
+            $form.Add_ContentRendered({ [IO.File]::WriteAllText($env:UIA_TEST_READY, 'shown') })
+            $panel = [Windows.Controls.StackPanel]::new()
+            $button = [Windows.Controls.Button]::new()
+            $button.Content = 'Press'
             $button.Add_Click({ [IO.File]::WriteAllText($env:UIA_TEST_MARKER, 'clicked') })
-            $edit = [Windows.Forms.TextBox]::new()
-            $edit.Top = 40
-            $form.Controls.Add($button)
-            $form.Controls.Add($edit)
+            $edit = [Windows.Controls.TextBox]::new()
+            [void]$panel.Children.Add($button)
+            [void]$panel.Children.Add($edit)
+            $form.Content = $panel
             [void]$form.ShowDialog()
             """
         ),

@@ -1671,7 +1671,7 @@ selects the single root rollout and retains any child rollouts in the artifacts.
 ambiguous roots fail, and successful child evidence cannot satisfy a failed or incomplete root.
 These are offline parser checks; live desktop coverage requires the native CI jobs.
 `test_windows_uia.py` runs the PowerShell helper's command paths against stub UI controls using
-PowerShell Core (`pwsh` on PATH); on Windows it additionally drives a real WinForms window with
+PowerShell Core (`pwsh` on PATH); on Windows it additionally drives a real WPF window with
 Windows PowerShell and native UI Automation. The native-Windows case is skipped on other platforms.
 Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
 in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
