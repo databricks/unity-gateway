@@ -1,0 +1,5 @@
+{
+  "name": "cowork-spawn-hi",
+  "version": "0.1.0",
+  "description": "Display hi before Agent or Task tool calls."
+}

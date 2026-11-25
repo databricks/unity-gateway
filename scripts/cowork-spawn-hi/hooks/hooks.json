@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Agent|Task)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{\"systemMessage\":\"hi\"}'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
