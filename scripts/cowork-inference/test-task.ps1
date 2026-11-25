@@ -84,6 +84,9 @@ function Select-Folder {
     $folderButton = Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder')
     $folderButtonName = $folderButton.Current.Name
     # UI Automation activation left this visible picker closed on hosted Windows.
+    if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$script:window.Current.NativeWindowHandle)) {
+        throw 'Could not activate Claude before selecting a folder'
+    }
     Click-Control $folderButton
     Start-Sleep -Seconds 1
     Save-UI 'folder-menu'
