@@ -98,11 +98,14 @@ def test_pre_commit_preserves_partial_staging(repo, staged, unstaged, success):
 
 
 def test_pre_commit_handles_spaces_and_deletions(repo):
-    (repo / "src/file with spaces.py").write_text("value = 2\n")
+    # Needs formatting on purpose: if the glob silently skipped spaced paths,
+    # the hook would pass and this assert would catch the skip.
+    (repo / "src/file with spaces.py").write_text("value=2\n")
     run(repo, "git", "add", "src/file with spaces.py")
     run(repo, "git", "rm", "src/example.py")
     result, elapsed = hook(repo, "pre-commit")
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "file with spaces.py" in result.stdout + result.stderr
     assert elapsed < 9
 
 
@@ -120,7 +123,7 @@ def test_timeout_preserves_index_and_unstaged_edits(repo, name):
     # Delay the checker, not hk's timeout or its staging/recovery settings.
     config = repo / "hk.pkl"
     original = "uv run ruff format --check {{files}}" if name == "pre-commit" else "just lint"
-    delay = f'{sys.executable} -c \\"import time; time.sleep(30)\\"'
+    delay = f'\\"{sys.executable}\\" -c \\"import time; time.sleep(30)\\"'
     config.write_text(config.read_text().replace(original, delay))
     run(repo, "git", "add", "hk.pkl")
     path = repo / "src/example.py"
