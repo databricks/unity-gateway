@@ -1,9 +1,12 @@
 """Contracts for CI job time budgets."""
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -81,6 +84,83 @@ def test_job_over_budget_fails(tmp_path):
     )
     assert result.returncode != 0
     assert "over budget" in result.stdout.lower()
+
+
+def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget(tmp_path):
+    source = (WORKFLOWS / "integration.yml").read_text(encoding="utf-8")
+    job = source.split("\n  live-shard-times:\n", 1)[1].split("\n  cujs:\n", 1)[0]
+    steps = (
+        "*budget-start",
+        "actions/checkout@",
+        "Mark live-shard checkout complete",
+        "pattern: integration-full-claude-windows-latest-shard*",
+        "Mark full-shard download complete",
+        "pattern: integration-anthropic-mps-claude-windows-latest-shard*",
+        "Mark MPS-shard download complete",
+        "pattern: e2e-cujs-*shard*",
+        "Mark CUJ-shard download complete",
+        "*budget-setup-done",
+        "Summarize live-shard setup",
+        "*budget-check",
+    )
+    positions = [job.index(step) for step in steps]
+    assert positions == sorted(positions)
+    block = job.split("      - name: Summarize live-shard setup\n", 1)[1].split("\n      - ", 1)[0]
+    script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "BUDGET_JOB_STARTED": "100",
+        "BUDGET_COVERAGE_CHECKOUT_DONE": "104",
+        "BUDGET_COVERAGE_FULL_DONE": "234",
+        "BUDGET_COVERAGE_MPS_DONE": "235",
+        "BUDGET_COVERAGE_CUJ_DONE": "236",
+        "BUDGET_RUN_STARTED": "237",
+    }
+    bash = shutil.which("bash")
+    assert bash is not None
+    subprocess.run([bash, "-eu", "-c", script], env=env, check=True)
+    text = summary.read_text()
+    for row in (
+        "| Checkout and clock start | 4 |",
+        "| Full-shard artifacts | 130 |",
+        "| MPS-shard artifacts | 1 |",
+        "| CUJ-shard artifacts | 1 |",
+        "| Other setup | 1 |",
+    ):
+        assert row in text
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
+    assert budgets["integration"]["live-shard-times"]["Live shard coverage"] == {
+        "setup": 20,
+        "run": 40,
+        "total": 45,
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--budgets",
+            str(BUDGETS),
+            "--workflow",
+            "integration",
+            "--job",
+            "live-shard-times",
+            "--name",
+            "Live shard coverage",
+            "--started",
+            "100",
+            "--run-started",
+            "237",
+            "--ended",
+            "238",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "setup 137s > 20s" in result.stdout
 
 
 def test_job_within_budget_passes(tmp_path):
@@ -399,9 +479,12 @@ def test_every_integration_matrix_variant_has_a_budget():
             r"(?m)^          - agent: (.+)\n            smart_routing: true$", jobs["managed"]
         )
     )
-    for job, os in (("cowork-inference-windows", "Windows"), ("cowork-inference-macos", "macOS")):
+    for job, platform in (
+        ("cowork-inference-windows", "Windows"),
+        ("cowork-inference-macos", "macOS"),
+    ):
         sources = re.findall(r"(?m)^            name: (.+)$", jobs[job])
-        expected[job] = {f"Cowork desktop tasks · {os} · {name}" for name in sources}
+        expected[job] = {f"Cowork desktop tasks · {platform} · {name}" for name in sources}
     for job, names in expected.items():
         assert names, job
         assert set(budgets["integration"][job]) == names

@@ -1825,6 +1825,8 @@ The final required `e2e` check waits for both suites and requires both to succee
 On pull requests, integration jobs check the setup, run and total limits in
 `.github/ci-time-budgets.json`. Overruns fail blocking jobs; advisory jobs retain their
 non-blocking status. A PR changing `uv.lock` or `pyproject.toml` receives a notice instead.
+Live shard coverage includes artifact downloads in its setup budget and reports each download
+interval in the job summary to distinguish storage delays from other setup work.
 The required installation and live jobs run directly on fresh GitHub Ubuntu VMs,
 not inside the optional Docker image. An advisory `windows-latest` job runs
 the five credential-free checks in `test_installation.py` (installation, CLI,
