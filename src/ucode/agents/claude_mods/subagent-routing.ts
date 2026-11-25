@@ -394,68 +394,6 @@ async function routeCall($: any, e: any): Promise<void> {
   }
 }
 
-// The recorded call is what auto mode reviews and what the grouped heading draws, so only
-// the label-only description is rewritten, before either sees it.
-export async function* routeAgentStream($: any, step: any, source: AsyncGenerator<any, any>): AsyncGenerator<any, any> {
-  // Rewriting the reply would void a server-side auto-mode verdict, so that review keeps its input.
-  if (await $.serverReview()) return yield* source
-  // With the local fallback check off, a rewrite would leave the call with no usable verdict
-  // and auto mode blocks it, so the stream passes through untouched; tool.call routes instead.
-  if (await $.fallbackOff()) return yield* source
-  // Nothing to head when routing is off, so the reply streams untouched. An Auto launch keeps
-  // the model's heading too: its session model is a picker alias, which cannot stand in as
-  // the fallback reviewer once the server-side verdict is void.
-  if (!(routing.options?.routeCommand as readonly string[] | undefined)?.length || routing.autoModels
-      || routing.options?.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI === '0') {
-    return yield* source
-  }
-  const held: any[] = []
-  const calls = new Map<number, { tool: string; id: string; json: string }>()
-  const release = async function* (): AsyncGenerator<any> {
-    const inputs = new Map<number, Record<string, any>>()
-    for (const [index, call] of calls) {
-      try { inputs.set(index, JSON.parse(call.json || '{}')) } catch { /* leave the call as the model wrote it */ }
-    }
-    // A call that cannot be routed goes on as the model wrote it; it must not cost the reply.
-    await Promise.all([...calls].map(async ([index, call]) => {
-      if (!inputs.has(index)) return
-      try {
-        await routeCall($, { ...inputs.get(index), tool: call.tool, tool_use_id: call.id, agentId: step.agentId })
-      } catch {
-        $.ui.log('Smart Router could not route this subagent; using its original settings.')
-      }
-    }))
-    const written = new Set<number>()
-    for (const chunk of held) {
-      const call = chunk.kind === 'input' ? calls.get(chunk.index) : undefined
-      if (!call) { yield chunk; continue }
-      if (written.has(chunk.index)) continue
-      written.add(chunk.index)
-      const record = records.get(call.id)
-      const input = inputs.get(chunk.index)
-      yield record && input ? { ...chunk, json: JSON.stringify({ ...input, description: heading(record) }) }
-        : { ...chunk, json: call.json }
-    }
-    held.length = 0
-    calls.clear()
-  }
-  // A consumer that stops reading must also stop the reply stream beneath this one.
-  try {
-    while (true) {
-      const next = await source.next()
-      if (next.done) { yield* release(); return next.value }
-      const chunk = next.value
-      if (chunk.kind === 'tool' && (chunk.name === 'Agent' || chunk.name === 'Task')) calls.set(chunk.index, { tool: chunk.name, id: chunk.id, json: '' })
-      if (!calls.size) { yield chunk; continue }
-      if (chunk.kind === 'input' && calls.has(chunk.index)) calls.get(chunk.index)!.json += chunk.json
-      held.push(chunk)
-      if (chunk.kind === 'stop') yield* release()
-    }
-  } finally {
-    await source.return?.(undefined)
-  }
-}
-
 export const registerSubagentRouting = (
   on: On,
   options: PluginOptions,
