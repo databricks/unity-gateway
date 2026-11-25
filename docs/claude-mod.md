@@ -280,6 +280,11 @@ requests still use the existing skill. Earlier targets, agent notes, and additio
 files remain available through the existing Isaac CLI options.
 
 Claude sessions launched without smart routing use the existing feedback skill.
+Omnigent launches (`ISAAC_LAUNCH_MODE=omni`) pass every `/isaac-feedback` to that
+skill too, including the terminal panel's. Omnigent's Web UI shows neither the form nor
+the mod's log lines, and an open form holds the Claude pane's input, so messages sent
+from the Web UI would wait behind it. Unlike `--feedback-collected`, no caller marks
+these invocations, so the terminal can't keep the form.
 
 Each submission passes Claude's native session ID and the current routing controls
 to Isaac. Valid session-file overrides are copied into that child process's environment,

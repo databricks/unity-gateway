@@ -462,3 +462,29 @@ test('a failed off from the form logs no off reply', { options: WITH_ISAAC }, as
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
   await form.unmount();
 });
+
+test('an omni launch leaves every /isaac-feedback to Isaac\'s command', { options: WITH_ISAAC }, async ($, on) => {
+  const { env, runs, logs, panes } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
+  const isaac: string[] = [];
+  on('command.run', ($, e) => {
+    isaac.push(e.args);
+    return { ref: 1, text: `isaac ${e.args}` };
+  });
+  const invocations = [
+    '', REASON, `--category smart-routing ${REASON}`, `--category other ${REASON}`, `-- ${REASON}`,
+    'retry 0b6f8c2e-4d1a-4c3b-9e7f-5a2d1c0b9e8f',
+  ];
+  for (const args of invocations) {
+    expect((await $.command.run({ command: 'isaac-feedback', args })).text).toBe(`isaac ${args}`);
+  }
+  expect(isaac).toEqual(invocations);
+  expect(panes).toEqual([]);
+  expect(runs).toEqual([]);
+  expect(logs).toEqual([]);
+
+  // Other launch modes keep the native form.
+  env.ISAAC_LAUNCH_MODE = undefined;
+  expect((await $.command.run({ command: 'isaac-feedback', args: '' })).text).toBeUndefined();
+  expect(panes).toEqual(['smart-router-feedback']);
+  expect(isaac).toEqual(invocations);
+});
