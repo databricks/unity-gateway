@@ -989,7 +989,8 @@ def test_mcp_completion_does_not_pool_results_from_different_sessions(monkeypatc
         (None, False),
     ],
 )
-def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
+@pytest.mark.parametrize("target_count", [1, 2])
+def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted, target_count):
     services = {}
     for agent, (name, model) in constants.MODEL_PROVIDER_SERVICE_FIXTURES.items():
         name = f"model-provider-services/{name}"
@@ -1004,11 +1005,12 @@ def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
                 ),
                 targets=[
                     SimpleNamespace(
-                        model=model,
+                        model=f"{model}-{index}" if index else model,
                         native_api_types=["anthropic/v1/messages"]
                         if agent == CLAUDE
                         else native_apis,
                     )
+                    for index in range(target_count)
                 ],
             ),
         )

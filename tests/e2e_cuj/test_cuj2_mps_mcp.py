@@ -101,7 +101,7 @@ def _assert_mps_catalog(workspace) -> None:
         config = service.config
         assert config is not None, service
         targets = config.targets or []
-        assert [target.model for target in targets] == [model], service
+        assert model in [target.model for target in targets], service
         assert config.allow_all_targets is not True, service
         expected_type = (
             "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC"
@@ -115,18 +115,17 @@ def _assert_mps_catalog(workspace) -> None:
             if agent == CLAUDE
             else ["openai/v1/chat/completions", "openai/v1/responses"]
         )
-        native_apis = [
-            getattr(api, "value", api)
-            for target in targets
-            for api in (target.native_api_types or [])
-        ]
-        # The backend's ordering isn't a contract.
-        assert sorted(native_apis) == sorted(expected_apis), targets
+        for target in targets:
+            native_apis = [getattr(api, "value", api) for api in target.native_api_types or []]
+            # The backend's ordering isn't a contract.
+            assert sorted(native_apis) == sorted(expected_apis), target
 
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]
         listed_targets = matching.config.targets if matching.config else None
-        assert [target.model for target in listed_targets or []] == [model], matching
+        assert [target.model for target in listed_targets or []] == [
+            target.model for target in targets
+        ], matching
 
 
 def _assert_mcp_services(workspace) -> None:
@@ -400,13 +399,16 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
                 assert route.payload["task"]["prompt"] == task.prompt
                 assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
-                assert recorder.response_for(route).status_code == 200
+                response = recorder.response_for(route)
+                assert response.status_code == 200
+                selections = response.payload["route_selection"]
+                assert len(selections) == 1, selections
                 request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
                 _assert_inference_request(
                     recorder,
                     request,
                     provider=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0],
-                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
+                    model=selections[0]["route_option"]["model"],
                     marker=marker,
                 )
 

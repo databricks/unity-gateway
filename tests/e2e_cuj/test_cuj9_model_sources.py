@@ -118,7 +118,12 @@ def source_contract(cuj):
             f"model-provider-services/{provider}"
         )
         assert service.config and service.config.allow_all_targets is not True, provider
-        assert [item.model for item in service.config.targets or []] == [target], provider
+        targets = [item.model for item in service.config.targets or []]
+        if provider == SOURCE_OPENAI_PROVIDER:
+            # Copilot's `providers.openai.*` source lists every target, and COPILOT_MODELS expects one.
+            assert targets == [target], provider
+        else:
+            assert target in targets, provider
     for model in (
         CLAUDE_SONNET_MODEL_SERVICE,
         CODEX_LUNA_MODEL_SERVICE,

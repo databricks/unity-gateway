@@ -165,8 +165,10 @@ A separate CUJ2 Claude TUI case checks default Model Provider Service support wi
 first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
 both route-selection requests, plus completed parent and child turns.
 
-CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
-Responses and Chat Completions native APIs; its workspace's Codex default must match.
+CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose `gpt-6-luna`, with every target on both
+Responses and Chat Completions native APIs; its workspace's Codex default must match. CUJ2 and
+CUJ7 accept extra targets on both shared provider services. CUJ9 requires the OpenAI service to
+expose only `gpt-6-luna`, because Copilot's `ug_e2e.providers.openai.*` source lists every target.
 CUJ1 and CUJ6 use `system.ai.gpt-6-luna` for the Codex Luna selection. Provision the CUJ1
 and CUJ6 phase A model lists, plus the CUJ6 phase C model list and default, before running
 these cases. Tests only validate the published fixtures; they never update them.
