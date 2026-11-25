@@ -8,6 +8,47 @@ from pathlib import Path
 from .agents import _evidence_id, antigravity, claude, codex, copilot
 
 _AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
+_CLAUDE_TELEMETRY = re.compile(
+    r"otel|opentelemetry|telemetry|export.{0,30}(?:span|trace)|(?:span|trace).{0,30}export",
+    re.IGNORECASE,
+)
+_CLAUDE_TELEMETRY_FAILURE = re.compile(
+    r"error|fail|timeout|timed out|retry|reject|drop|disable", re.IGNORECASE
+)
+_CLAUDE_HTTP_STATUS = re.compile(r"\b(?:status|http)[^\n]{0,12}\b([1-5][0-9]{2})\b", re.IGNORECASE)
+
+
+def claude_telemetry_debug_summary(path: Path) -> dict:
+    """Count telemetry diagnostics without copying prompts or credentials from Claude's debug log."""
+    if not path.is_file():
+        return {"debug_file_present": False}
+    size = path.stat().st_size
+    window = 2_000_000
+    with path.open("rb") as log:
+        log.seek(max(0, size - window))
+        data = log.read(window)
+    if size > window:
+        data = data.partition(b"\n")[2]
+    telemetry_lines = 0
+    failure_lines = 0
+    http_statuses: dict[str, int] = {}
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        if not _CLAUDE_TELEMETRY.search(line):
+            continue
+        telemetry_lines += 1
+        if _CLAUDE_TELEMETRY_FAILURE.search(line):
+            failure_lines += 1
+        if match := _CLAUDE_HTTP_STATUS.search(line):
+            status = match.group(1)
+            http_statuses[status] = http_statuses.get(status, 0) + 1
+    return {
+        "debug_file_present": True,
+        "debug_bytes": size,
+        "tail_truncated": size > window,
+        "telemetry_lines": telemetry_lines,
+        "telemetry_failure_lines": failure_lines,
+        "telemetry_http_statuses": http_statuses,
+    }
 
 
 def assert_no_terminal_api_error(screen: str) -> None:

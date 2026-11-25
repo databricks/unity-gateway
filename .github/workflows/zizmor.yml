@@ -10,14 +10,73 @@ permissions:
 jobs:
   zizmor:
     name: zizmor
+    env:
+      BUDGET_WORKFLOW: zizmor
+      BUDGET_JOB_NAME: zizmor
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Start the budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: &budget-secret-free
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+        run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - name: Mark setup done
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: *budget-secret-free
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482  # v0.6.4
         with:
           version: 1.30.1
           # Fail the job on findings instead of uploading SARIF to code scanning.
           advanced-security: false
+      - name: Check this job's time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \
+            --workflow "$BUDGET_WORKFLOW" --job "$GITHUB_JOB" --name "$BUDGET_JOB_NAME" \
+            --started "$BUDGET_JOB_STARTED" --run-started "${BUDGET_RUN_STARTED:-$BUDGET_JOB_STARTED}" \
+            --ended "$(date +%s)" --changed-files "$changed"

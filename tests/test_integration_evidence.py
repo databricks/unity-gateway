@@ -6,6 +6,7 @@ import os
 import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,15 +17,35 @@ from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    claude_telemetry_debug_summary,
     tool_outputs,
 )
 from tests.integration.utils.harness import UserSession
 from tests.integration.utils.terminal import (
+    TerminalProcess,
     claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+def test_claude_telemetry_debug_summary_records_only_bounded_signals(tmp_path):
+    debug_file = tmp_path / "debug.log"
+    debug_file.write_text(
+        "prompt secret-session-bearer\n"
+        "[DEBUG] OpenTelemetry trace export failed HTTP status 503 token=secret-session-bearer\n"
+        "[DEBUG] OTel exporter sent spans HTTP 200\n"
+    )
+
+    assert claude_telemetry_debug_summary(debug_file) == {
+        "debug_file_present": True,
+        "debug_bytes": debug_file.stat().st_size,
+        "tail_truncated": False,
+        "telemetry_lines": 2,
+        "telemetry_failure_lines": 1,
+        "telemetry_http_statuses": {"503": 1, "200": 1},
+    }
 
 
 def test_antigravity_native_log_evidence_is_bounded_and_redacted(tmp_path):
@@ -68,6 +89,34 @@ def test_antigravity_native_log_evidence_without_logs(tmp_path):
         "files_omitted": 0,
         "logs": [],
     }
+
+
+def test_antigravity_terminal_cleanup_saves_logs_without_masking_failure(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    log_dir = session.home / antigravity.STATE_DIRECTORY / "log"
+    log_dir.mkdir(parents=True)
+    (log_dir / "cli-1.log").write_text("native diagnostic\n")
+    child = SimpleNamespace(kill=lambda: None, send=lambda _: None, exitstatus=0, signalstatus=None)
+    monkeypatch.setattr("tests.integration.utils.terminal.spawn_pty", lambda *_: child)
+
+    with TerminalProcess(session, "antigravity", ["ug", "antigravity"], "tui"):
+        pass
+    assert (
+        json.loads((session.artifacts / "antigravity-logs.json").read_text())["logs"][0]["tail"]
+        == "native diagnostic\n"
+    )
+
+    def fail_to_read(_session):
+        raise OSError("native log unavailable")
+
+    monkeypatch.setattr(antigravity, "requested_urls", fail_to_read)
+    with pytest.raises(RuntimeError, match="original task failure"):
+        with TerminalProcess(session, "antigravity", ["ug", "antigravity"], "failed-tui"):
+            raise RuntimeError("original task failure")
 
 
 def test_antigravity_native_log_evidence_keeps_recent_files_by_modification_time(tmp_path):

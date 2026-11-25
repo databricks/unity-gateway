@@ -115,7 +115,7 @@ def test_agent_rollup_requires_every_shard(shards):
     agent = _job("e2e")
     assert "needs: e2e-shards" in agent
     result = subprocess.run(
-        ["/bin/bash", "-c", agent.split("        run: ", 1)[1].strip()],
+        ["/bin/bash", "-c", agent.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()],
         env={**os.environ, "RESULT": shards},
         capture_output=True,
         timeout=10,
@@ -134,7 +134,7 @@ def test_required_rollup_fails_closed(event, agent, integration):
     assert (
         "if: ${{ always() && (github.event_name == 'pull_request' || !cancelled()) }}" in required
     )
-    script = required.split("        run: ", 1)[1].strip()
+    script = required.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={**os.environ, "EVENT_NAME": event, "RESULT": agent, "INTEGRATION_RESULT": integration},
