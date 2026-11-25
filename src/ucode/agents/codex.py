@@ -2041,9 +2041,10 @@ def launch_relay_and_routing(
 ) -> LaunchAuth:
     """Choose the launch credentials and report why smart routing must be disabled."""
     auth = LaunchAuth(relayed=relayed, login_checked=False, routing_unavailable=None)
-    if not provider and (selected_model or (not routed and not parent_schema)):
+    check_static_list = not routed and not parent_schema
+    if not provider and (selected_model or check_static_list):
         auth = use_model_service_relay(
-            state, selected_model, configuring=False, selected_only=routed or bool(parent_schema)
+            state, selected_model, configuring=False, selected_only=not check_static_list
         )
     if auth.relayed and (managed_routing or (routed and not provider)):
         return replace(

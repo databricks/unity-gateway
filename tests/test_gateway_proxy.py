@@ -1009,17 +1009,21 @@ class TestCodexRelayProxy:
         assert str(url) == "https://w/ai-gateway/codex/v1/responses"
 
         # Switch models within one running proxy, including returning to the saved native model.
+        provider_headers = {"seat", "mps"} if pinned or saved else set()
+        stored_headers = {"seat", "mps"} if pinned else set()
+        seat_headers = {"seat", "mps"} if pinned else {"seat"}
         requests = [
-            ("gpt-5.2", pinned or saved, pinned or saved),
-            ("cat.s.seat", True, pinned),
-            ("cat.s.foundry", pinned, pinned),
-            ("system.ai.gpt-5.2", pinned, pinned),
-            ("databricks-gpt", pinned, pinned),
-            (None, pinned or saved, pinned or saved),
-            ("gpt-5.2", pinned or saved, pinned or saved),
+            ("gpt-5.2", provider_headers),
+            ("cat.s.seat", seat_headers),
+            ("cat.s.foundry", stored_headers),
+            ("system.ai.gpt-5.2", stored_headers),
+            ("databricks-gpt", stored_headers),
+            (None, provider_headers),
+            ("gpt-5.2", provider_headers),
         ]
         client = _FakeClient([_FakeResp(200, b"ok") for _ in requests])
-        for model, seat, keep_provider in requests:
+        for model, expected in requests:
+            seat = "seat" in expected
             h = object.__new__(server.RequestHandlerClass)
             h.client = client  # the bound class keeps the real cache, token header, and handler
             h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
@@ -1045,7 +1049,7 @@ class TestCodexRelayProxy:
                 "Bearer tok1" if seat else None
             )
             assert sent.get("Databricks-Model-Provider-Service") == (
-                "cat.s.mps" if keep_provider else None
+                "cat.s.mps" if "mps" in expected else None
             )
             assert gateway_proxy.CODEX_SESSION_HEADER not in sent
 
