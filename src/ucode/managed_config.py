@@ -97,8 +97,9 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 }
 
 # The newest managed-config ``spec_version`` this build reads. The server stamps 2 on a config that
-# uses ``mcp_servers.sources``, so builds that can't read ``sources`` refuse it and keep their cache.
-MAX_SPEC_VERSION = 2
+# uses ``mcp_servers.sources`` and 3 for native files. Older builds refuse these configurations
+# and keep their cache rather than silently omitting policy.
+MAX_SPEC_VERSION = 3
 
 # AgentConfig's `agent_native_config` field, an `AgentNativeConfig` message whose `agent` oneof
 # holds one variant per agent, by proto field name. The normalized agent entry keeps each variant

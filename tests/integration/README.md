@@ -2574,3 +2574,7 @@ reconciliation behavior retains existing component coverage; terminal appearance
 Native configuration file loading has component coverage in `../test_native_config_files.py`.
 Live UC Volume permissions, consumer-only users, and native agent inference with those files
 remain unverified. The file resolver's local previews require no workspace credentials.
+
+File-backed managed runs also have component coverage in `../test_published_agent_config.py` for
+composition and failure-before-write behavior. Native Linux/macOS agent inference and live
+Volume authorization are still required before rollout.

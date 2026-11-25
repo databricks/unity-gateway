@@ -34,6 +34,7 @@ from ucode.agents.codex_catalog import prepare_codex_catalog
 from ucode.config_io import deep_merge_dict, is_dry_run
 from ucode.databricks import get_databricks_token, get_model_provider_service
 from ucode.managed_config import (
+    _gate_config,
     _is_feature_disabled,
     _policy_content,
     get_managed_config,
@@ -57,6 +58,7 @@ from ucode.managed_resolve import (
     managed_unity_catalog_location,
 )
 from ucode.managed_setup import claude_family_candidates, validate_manifest
+from ucode.native_config_files import resolve_native_config_files
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import console, normalize_workspace_url, print_note, print_warning
@@ -786,6 +788,9 @@ def run(
     from ucode import mcp
 
     host = split_workspace_key(key)[0]
+    gated = _gate_config(raw)
+    if gated.reason:
+        raise ManagedRunError(EXIT_USAGE, gated.reason)
     manifest = normalize_managed_config(raw)
     errors = validate_manifest(manifest, None)
     if errors and source:
@@ -806,6 +811,15 @@ def run(
                 f"is rebuilt, including {', '.join(skipped)}."
             )
             agents = list(MANAGED_AGENTS)
+
+    try:
+        manifest = resolve_native_config_files(
+            manifest, host, agents=agents, token=token, source=source
+        )
+    except ValueError as exc:
+        raise ManagedRunError(EXIT_USAGE, str(exc)) from exc
+    except OSError as exc:
+        raise ManagedRunError(EXIT_FETCH, str(exc)) from exc
 
     enabled = manifest.get("enabled_agents") or {}
     if token is not None:
@@ -850,6 +864,12 @@ def run(
                 console.print()
         print_report(plans, dry_run=True)
         return
+
+    if not claude_agent.auto_configuration_enabled():
+        try:
+            claude_agent.cleanup_auto_configuration()
+        except RuntimeError as exc:
+            raise ManagedRunError(EXIT_WRITE, str(exc)) from exc
 
     # Each file is replaced atomically. Keep the previous contents so that a failure partway
     # through restores every file, and the machine never mixes two runs' files.
