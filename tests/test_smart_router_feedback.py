@@ -192,6 +192,63 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
     assert not session_env.session_routing_enabled(controls)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX Bash and native argv handling")
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param(REASON, id="multiline-apostrophe"),
+        pytest.param(
+            'Keep "$UG_QUOTING_SENTINEL", $(printf injected > "$UG_QUOTING_SENTINEL"), '
+            '`printf injected > "$UG_QUOTING_SENTINEL"` and * literal.\r\n'
+            "Don't drop this final backslash and newline: \\\n",
+            id="shell-syntax-crlf",
+        ),
+        pytest.param(
+            'Do not run this\'; printf injected > "$UG_QUOTING_SENTINEL"; #\n'
+            "The second line stays in the reason.",
+            id="quote-breakout",
+        ),
+    ],
+)
+def test_bash_feedback_reason_is_one_literal_argument(tmp_path, reason):
+    executable = shutil.which("bash")
+    if executable is None and not os.environ.get("CI"):
+        pytest.skip("Bash is unavailable")
+    assert executable is not None, "Required POSIX shell is unavailable: bash"
+    sentinel = tmp_path / "embedded-command-executed"
+    recorder = tmp_path / "record argv.py"
+    recorder.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+    # Exercise the skill's Bash quoting with a child that records its received argv.
+    literal = "'" + reason.replace("'", "'\\''") + "'"
+    command = (
+        '"$UCODE_SMART_ROUTER_PYTHON" "$UG_QUOTING_RECORDER" claude '
+        "--disable-smart-routing --smart-router-feedback " + literal
+    )
+    result = subprocess.run(
+        [executable, "--noprofile", "--norc", "-c", command],
+        cwd=tmp_path,
+        env={
+            "UCODE_SMART_ROUTER_PYTHON": sys.executable,
+            "UG_QUOTING_RECORDER": str(recorder),
+            "UG_QUOTING_SENTINEL": str(sentinel),
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == [
+        "claude",
+        "--disable-smart-routing",
+        "--smart-router-feedback",
+        reason,
+    ]
+    assert not sentinel.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell and native argv handling")
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(
