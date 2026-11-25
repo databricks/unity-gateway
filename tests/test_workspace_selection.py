@@ -222,24 +222,31 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
-    def test_native_file_download_selects_the_workspace(self, selected, monkeypatch):
+    @pytest.mark.parametrize("workspace_id", [WSID, "1b4e28ba-2fa1-11d2-883f-0016d3cca427", None])
+    def test_native_file_download_selects_the_workspace(self, monkeypatch, workspace_id):
         from types import SimpleNamespace
+
+        from databricks.sdk.service.files import FilesAPI
 
         from ucode.native_config_files import resolve_native_config_files
 
+        activate(SHARED, workspace_id)
         clients = []
+        requests = []
 
         def client(**kwargs):
             clients.append(kwargs)
+            config = SimpleNamespace(workspace_id="stale-environment-value")
+
+            def request(method, path, **kwargs):
+                requests.append(kwargs["headers"])
+                return {"contents": io.BytesIO(b'{"language": "French"}')}
+
             return SimpleNamespace(
-                files=SimpleNamespace(
-                    download=lambda path: SimpleNamespace(
-                        contents=io.BytesIO(b'{"language": "French"}')
-                    )
-                )
+                config=config, files=FilesAPI(SimpleNamespace(_cfg=config, do=request))
             )
 
-        # No live credentials are needed to exercise SDK construction and the resolver.
+        # Exercise the SDK's real per-request header construction without network or credentials.
         monkeypatch.setattr("databricks.sdk.WorkspaceClient", client)
         result = resolve_native_config_files(
             {
@@ -255,7 +262,8 @@ class TestHelperArgv:
             agents=["claude"],
             token="test-token",
         )
-        assert clients[0]["custom_headers"] == SELECTOR
+        assert clients[0]["custom_headers"] == workspace_headers(SHARED)
+        assert requests[0].get("X-Databricks-Workspace-Id") == workspace_id
         assert result["enabled_agents"]["claude"]["claude_code"]["managed_settings"] == {
             "language": "French"
         }

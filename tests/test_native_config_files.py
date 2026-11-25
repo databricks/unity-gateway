@@ -27,7 +27,9 @@ def _remote(monkeypatch, download):
     # The SDK is the external file transport. The resolver and parsers remain real.
     monkeypatch.setattr(
         "databricks.sdk.WorkspaceClient",
-        lambda **kwargs: SimpleNamespace(files=SimpleNamespace(download=download)),
+        lambda **kwargs: SimpleNamespace(
+            config=SimpleNamespace(workspace_id="stale"), files=SimpleNamespace(download=download)
+        ),
     )
 
 

@@ -104,12 +104,15 @@ def resolve_native_config_files(
                             raise OSError("workspace credentials are required to read native files")
                         from databricks.sdk import WorkspaceClient
 
+                        selection = workspace_headers(workspace)
                         client = WorkspaceClient(
                             host=workspace,
                             token=token,
                             auth_type="pat",
-                            custom_headers=workspace_headers(workspace),
+                            custom_headers=selection,
                         )
+                        # FilesAPI supplies its own workspace header, which outranks custom headers.
+                        client.config.workspace_id = selection.get("X-Databricks-Workspace-Id", "")
                     from databricks.sdk.errors import DatabricksError
 
                     try:
