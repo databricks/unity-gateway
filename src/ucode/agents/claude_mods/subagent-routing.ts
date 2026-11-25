@@ -202,9 +202,10 @@ const quotedDescriptionEnd = (text: string, description: string): number => {
   while (quote >= 0) {
     const candidate = safeText(text.slice(prefix.length, quote), 1000)
     const after = text[quote + 1]
+    // A mismatched prefix cannot become the recorded description at a later quote.
+    if (candidate && !description.startsWith(candidate)) break
     // Embedded quotes may match a prefix; prefer the full heading when it is present.
-    if (candidate && description.startsWith(candidate)
-        && (!after || /[^\p{L}\p{N}_]/u.test(after))) {
+    if (candidate && (!after || /[^\p{L}\p{N}_]/u.test(after))) {
       closingQuote = quote
       if (candidate === description) break
     }

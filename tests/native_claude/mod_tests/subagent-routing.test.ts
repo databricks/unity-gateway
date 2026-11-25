@@ -1075,8 +1075,8 @@ test('completed notification labels restore per child and render without storage
     await ui.unmount();
   }
   const unmatched = await $.ui.mount({ ...notice, props: { ...notice.props,
-    text: 'Agent "other task" finished' } });
-  expect(renders[renders.length - 1].props.text).toBe('Agent "other task" finished\n⚠ Launched on launched-model, not the selected selected-model');
+    text: 'Agent "other task" finished\nSummary: "Joke from Sonnet"' } });
+  expect(renders[renders.length - 1].props.text).toBe('Agent "other task" finished\nSummary: "Joke from Sonnet"\n⚠ Launched on launched-model, not the selected selected-model');
   await unmatched.unmount();
   for (const isExpanded of [false, true]) {
     const ui = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded,
