@@ -745,6 +745,14 @@ def arguments(
         help="Also collect the journeys that drive the installed ChatGPT desktop app.",
     )
     parser.add_argument(
+        "--test-shard",
+        help="Run only this shard's cases of the selected lane, e.g. 1/4 (tests/integration/conftest.py).",
+    )
+    parser.add_argument(
+        "--shard-lane",
+        help="Lane key into tests/live_test_times.json that balances --test-shard, e.g. full-claude.",
+    )
+    parser.add_argument(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
@@ -771,6 +779,8 @@ def arguments(
         parser.error("--vscode-version requires --copilot-version.")
     if args.vscode_version and args.headless_only:
         parser.error("VS Code has no headless journey; drop --headless-only.")
+    if (args.test_shard is None) != (args.shard_lane is None):
+        parser.error("Pass --test-shard and --shard-lane together.")
     if not (
         args.claude_version
         or args.codex_version
@@ -939,6 +949,8 @@ def main() -> int:
         return stdout.strip()
 
     report = {
+        "shard": args.test_shard or "",
+        "shard_lane": args.shard_lane or "",
         "requested": {
             "ug": str(args.ug_wheel) if args.ug_wheel else args.ug_version,
             "entry_point": args.entry_point,
@@ -1335,6 +1347,11 @@ def main() -> int:
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
+                # CI splits one lane into balanced shards; the suite's conftest keeps only this
+                # shard's cases and writes the report the coverage proof reads.
+                "UG_LIVE_SHARD": args.test_shard or "",
+                "UG_LIVE_SHARD_LANE": args.shard_lane or "",
+                "UG_LIVE_SHARD_REPORT": str(output / "shard-report.json"),
             }
         )
         for agent in agents:

@@ -1,13 +1,18 @@
 set -euo pipefail
 test "$GITHUB_ACTIONS" = true
 test "$(uname -s)" = Darwin
+# The workflow env pins the archive and the cache key together, so bumping one bumps both.
+: "${CLAUDE_DESKTOP_MACOS_URL:?Set CLAUDE_DESKTOP_MACOS_URL to the pinned Claude Desktop archive}"
+: "${CLAUDE_DESKTOP_MACOS_SHA256:?Set CLAUDE_DESKTOP_MACOS_SHA256 to the SHA256 of the pinned archive}"
 evidence="$RUNNER_TEMP/macos-cowork-evidence"
 mkdir -p "$evidence"
 archive="$RUNNER_TEMP/Claude.zip"
-curl --fail --location --retry 2 --max-time 300 \
-  'https://downloads.claude.ai/releases/darwin/universal/4.23118.0/Claude-8175c354eda704cea00fdeddfa69cea329dd321a.zip' \
-  --output "$archive"
-echo "5b8feee3da048e26bbb29a5d601e97034f674ac3b76f7d0237751c46d6034b23  $archive" | shasum -a 256 --check
+if [ ! -f "$archive" ]; then
+  curl --fail --location --retry 2 --max-time 300 \
+    "$CLAUDE_DESKTOP_MACOS_URL" \
+    --output "$archive"
+fi
+echo "$CLAUDE_DESKTOP_MACOS_SHA256  $archive" | shasum -a 256 --check
 /usr/bin/ditto -x -k "$archive" /Applications
 /usr/bin/codesign --verify --deep --strict /Applications/Claude.app
 /usr/bin/codesign -dv --verbose=4 /Applications/Claude.app 2> "$evidence/signature.txt"

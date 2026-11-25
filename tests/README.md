@@ -1704,7 +1704,19 @@ Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Full journeys · Claude` (with the other agents named likewise).
 Unit tests run as 24 Linux and 64 Windows shards (`Unit tests · <OS> · <n>/<total>`). `tests/shard.py` assigns each test slower than 2 s on its own, plus every file's remaining tests in interleaved 4-second chunks, slowest first to the least-loaded shard using `tests/unit_test_times.json` (measured per OS on hosted runners); each shard receives only its files, so it imports and collects only what it runs. `Unit test times` runs wherever the shards do, pull requests included, and fails unless, for each OS, every unit ran exactly once, every test ran exactly once and both OSes' shards are present; `test` requires it, so every run proves shard coverage before merge. Main's run also records fresh per-file timings as an artifact to commit when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main, and run its tools directly; uv is installed only when that cache misses. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
 `tests/e2e_cuj/test_cuj<N>_*.py` file, because CUJs share machine-wide `/etc` agent
-settings. All matrices use `fail-fast: false` so one failure does not cancel other coverage.
+settings — except a file recorded with several shards in `tests/live_test_times.json`
+(`CUJ 4` runs three), which runs that many runners, each keeping only its cases.
+The slowest blocking live lanes shard the same way, balanced by `tests/live_shard.py`
+from per-case times in `tests/live_test_times.json` (measured on hosted runners, like
+the unit shards): `Full journeys · Claude · Windows` runs four shards and
+`Anthropic MPS ... · Claude · Windows` three (its Cowork Desktop steps stay on the
+first shard). `scripts/run_integration.py --test-shard i/n --shard-lane <lane>` splits
+the lane; the suite's conftest keeps only the shard's cases, pytest stays serial inside
+each VM (configure and revert touch machine-wide settings), and every shard uploads
+its JUnit XML and shard report. `Live shard coverage` fails unless the shards together
+ran every case exactly once and records fresh timings as an artifact to commit when
+shards drift; `All integration tests` requires it. All matrices use
+`fail-fast: false` so one failure does not cancel other coverage.
 
 The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
