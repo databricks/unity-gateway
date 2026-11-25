@@ -973,8 +973,10 @@ class TestClaudeRelayProxyWiring:
 
 
 class TestCodexRelayProxy:
-    @pytest.mark.parametrize("pinned", [False, True])
-    def test_codex_proxy_credentials(self, monkeypatch, pinned):
+    @pytest.mark.parametrize("source", ["model-service", "saved-provider", "pinned-provider"])
+    def test_codex_proxy_credentials(self, monkeypatch, source):
+        pinned = source == "pinned-provider"
+        saved = source == "saved-provider"
         cache = Mock(token="tok1")
         cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
@@ -998,6 +1000,7 @@ class TestCodexRelayProxy:
                 "https://w",
                 lambda _f: "t",
                 session_secret="test-session",
+                default_provider="cat.s.mps" if saved else None,
             )
         server.server_close()
         upstream.close()
@@ -1005,18 +1008,16 @@ class TestCodexRelayProxy:
         url = upstream.build_request("POST", "v1/responses").url
         assert str(url) == "https://w/ai-gateway/codex/v1/responses"
 
-        requests = (
-            [("gpt-5.2", True)]
-            if pinned
-            else [
-                ("cat.s.seat", True),
-                ("cat.s.foundry", False),
-                ("system.ai.gpt-5.2", False),
-                ("cat.s.seat", True),
-            ]
-        )
+        # Switch models within one running proxy, including returning to the saved native model.
+        requests = [
+            ("gpt-5.2", pinned or saved, pinned or saved),
+            ("cat.s.seat", True, pinned),
+            ("cat.s.foundry", pinned, pinned),
+            ("system.ai.gpt-5.2", pinned, pinned),
+            ("gpt-5.2", pinned or saved, pinned or saved),
+        ]
         client = _FakeClient([_FakeResp(200, b"ok") for _ in requests])
-        for model, seat in requests:
+        for model, seat, keep_provider in requests:
             h = object.__new__(server.RequestHandlerClass)
             h.client = client  # the bound class keeps the real cache, token header, and handler
             h.wfile, h.request_version, h._headers_buffer = _Collect(), "HTTP/1.1", []
@@ -1042,7 +1043,7 @@ class TestCodexRelayProxy:
                 "Bearer tok1" if seat else None
             )
             assert sent.get("Databricks-Model-Provider-Service") == (
-                "cat.s.mps" if pinned else None
+                "cat.s.mps" if keep_provider else None
             )
             assert gateway_proxy.CODEX_SESSION_HEADER not in sent
 

@@ -627,6 +627,12 @@ class _RelayProxyHandler(_ProxyHandler):
     # includes a subscription-relay destination for this agent.
     routes_to_subscription_relay: Callable[[str, str], bool] | None = None
 
+    relay_strip: frozenset[str] = frozenset()
+    gateway_strip = _DATABRICKS_ROUTE_STRIP
+
+    def _use_provider_relay(self, model: str | None) -> bool:
+        return not is_databricks_routed_model(model)
+
     def _is_relay_backed_model_service(self, model: str | None) -> bool:
         if not model or not is_uc_model_service(model) or self.routes_to_subscription_relay is None:
             return False
@@ -635,17 +641,24 @@ class _RelayProxyHandler(_ProxyHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         model = _request_model(body)
         if self._is_relay_backed_model_service(model):
-            return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
-        if is_databricks_routed_model(model):
-            return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
-        return self.token_header, frozenset(), "relay"
+            return (
+                self.token_header,
+                self.relay_strip | _MODEL_SERVICE_ROUTE_STRIP,
+                "relay-model-service",
+            )
+        if self._use_provider_relay(model):
+            return self.token_header, self.relay_strip, "relay"
+        return AUTHORIZATION_HEADER, self.gateway_strip, "databricks"
 
 
 CODEX_SESSION_HEADER = "X-UG-Codex-Session"
 
 
 class _CodexModelServiceProxyHandler(_RelayProxyHandler):
+    relay_strip = frozenset({CODEX_SESSION_HEADER.lower()})
+    gateway_strip = _DATABRICKS_ROUTE_STRIP | relay_strip | {"chatgpt-account-id"}
     session_secret: str
+    default_provider: str | None = None
 
     def _handle(self) -> None:
         # This proxy can attach workspace Authorization. Keep it on the Codex API surface.
@@ -658,18 +671,15 @@ class _CodexModelServiceProxyHandler(_RelayProxyHandler):
             return
         super()._handle()
 
-    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        model = _request_model(body)
-        if self._is_relay_backed_model_service(model):
-            return (
-                self.token_header,
-                _MODEL_SERVICE_ROUTE_STRIP | {CODEX_SESSION_HEADER.lower()},
-                "relay-model-service",
-            )
-        return (
-            AUTHORIZATION_HEADER,
-            _DATABRICKS_ROUTE_STRIP | {"chatgpt-account-id", CODEX_SESSION_HEADER.lower()},
-            "databricks",
+    def _use_provider_relay(self, model: str | None) -> bool:
+        if (
+            not self.default_provider
+            or self.headers.get(MODEL_PROVIDER_SERVICE_HEADER) != self.default_provider
+        ):
+            return False
+        # Native OpenAI model IDs can contain a version dot, e.g. gpt-5.2.
+        return not (
+            model and (is_uc_model_service(model) or model.startswith(("system.", "databricks-")))
         )
 
 
@@ -1016,6 +1026,7 @@ def start_codex_model_service_proxy(
     token_provider: Callable[[bool], str],
     *,
     session_secret: str,
+    default_provider: str | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     from ucode.databricks import OPENAI_PROVIDER_TYPE, RelayLookup, model_service_relay_lookup
 
@@ -1038,6 +1049,7 @@ def start_codex_model_service_proxy(
         handler_attrs={
             "session_secret": session_secret,
             "routes_to_subscription_relay": staticmethod(relayed),
+            "default_provider": default_provider,
         },
         metrics_proxy_mode="relay",
     )

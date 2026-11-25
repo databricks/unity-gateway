@@ -1921,10 +1921,16 @@ class TestCodexLaunch:
             assert not codex.use_model_service_relay(state)
 
     @pytest.mark.parametrize(
-        ("provider", "checked"), [(None, True), (None, False), ("cat.s.mps", False)]
+        ("provider", "checked", "saved"),
+        [
+            (None, True, False),
+            (None, False, False),
+            ("cat.s.mps", False, False),
+            ("cat.s.mps", False, True),
+        ],
     )
     def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
-        self, tmp_path, monkeypatch, provider, checked
+        self, tmp_path, monkeypatch, provider, checked, saved
     ):
         self._patch(tmp_path, monkeypatch)
         server = Mock(server_address=("127.0.0.1", 54321))
@@ -1935,7 +1941,7 @@ class TestCodexLaunch:
         start = Mock(return_value=(server, cache, client))
         monkeypatch.setattr(
             gateway_proxy,
-            "start_relay_proxy" if provider else "start_codex_model_service_proxy",
+            "start_relay_proxy" if provider and not saved else "start_codex_model_service_proxy",
             start,
         )
         monkeypatch.delenv("UG_CODEX_SESSION_SECRET", raising=False)
@@ -1954,7 +1960,11 @@ class TestCodexLaunch:
                     "workspace": WS,
                     "codex_relayed": True,
                     "_codex_launch_login_checked": checked,
-                    "_codex_launch_provider": provider,
+                    **(
+                        {"provider_services": {"codex": provider}}
+                        if saved
+                        else {"_codex_launch_provider": provider}
+                    ),
                 },
                 ["exec", "hi"],
                 options=LaunchOptions(),
@@ -1965,11 +1975,14 @@ class TestCodexLaunch:
         assert start.call_args.args[1](False) == "tok"
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
-        if provider:
+        if provider and not saved:
             assert start.call_args.kwargs == {"agent": "codex"}
         else:
             secret = os.environ["UG_CODEX_SESSION_SECRET"]
-            assert start.call_args.kwargs == {"session_secret": secret}
+            assert start.call_args.kwargs == {
+                "session_secret": secret,
+                "default_provider": provider,
+            }
             assert any("UG_CODEX_SESSION_SECRET" in arg for arg in argv)
             assert all(secret not in arg for arg in argv)
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)

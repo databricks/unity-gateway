@@ -2219,7 +2219,7 @@ def launch(
 
         provider_config = profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
         token_provider = proxy_token_provider(state, workspace)
-        if provider:
+        if provider and "_codex_launch_provider" in state:
             relay = gateway_proxy.start_relay_proxy(workspace, token_provider, 0, agent=AGENT_CODEX)
         else:
             secret = secrets.token_urlsafe(32)
@@ -2228,7 +2228,7 @@ def launch(
                 gateway_proxy.CODEX_SESSION_HEADER
             ] = "UG_CODEX_SESSION_SECRET"
             relay = gateway_proxy.start_codex_model_service_proxy(
-                workspace, token_provider, session_secret=secret
+                workspace, token_provider, session_secret=secret, default_provider=provider
             )
         threading.Thread(target=relay[0].serve_forever, daemon=True).start()
         port = relay[0].server_address[1]

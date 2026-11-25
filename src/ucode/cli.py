@@ -4932,7 +4932,8 @@ def _launch_tool(
         elif tool == AGENT_CODEX:
             if parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-            elif provider or persisted_provider:
+            elif explicit_provider or managed_provider or (persisted_provider and not provider):
+                # A saved relay is a default for native model IDs; only an explicit or managed MPS pins the session.
                 state = {**state, "_codex_launch_provider": provider}
             if relayed and not provider:
                 state = {**state, "_codex_launch_login_checked": True}

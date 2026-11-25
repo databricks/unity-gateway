@@ -2427,7 +2427,11 @@ def test_codex_explicit_model_with_configured_provider(provider_source, relay_se
     assert result.exit_code == 0, result.output
     expected = None if relay_services else provider
     assert calls["configure"].call_args.kwargs["provider"] == expected
-    assert calls["launch"].call_args.args[1]["_codex_launch_provider"] == expected
+    launch_state = calls["launch"].call_args.args[1]
+    if provider_source == "saved" and expected:
+        assert "_codex_launch_provider" not in launch_state
+    else:
+        assert launch_state["_codex_launch_provider"] == expected
     assert lookup.called == (provider_source == "saved")
 
 
