@@ -436,7 +436,8 @@ the stuck tree on failure. It
 then clicks an absent label in the same app and requires a nonzero helper exit with the native
 four-column accessibility tree captured before the fatal error in command evidence.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
-Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
+Automation: each screen gets 60 seconds and the answer four minutes, and the only retry is one
+visible Try again per sandbox-readiness error screen, within that screen's deadline; it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
 The Windows inference-only journey explicitly completes sandbox setup and the same
