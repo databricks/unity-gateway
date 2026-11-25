@@ -4,28 +4,35 @@ Requires hk 2.13.0, Pkl, uv and just on PATH; missing tools fail rather than ski
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
+GIT_ROUTING_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
 
 
-def run(repo, *args, check=True):
+def run(repo, *args, check=True, timeout=30):
     executable = shutil.which(args[0])
     assert executable, f"Required hook-test tool is missing: {args[0]}"
+    env = os.environ.copy()
+    for name in GIT_ROUTING_ENV:
+        env.pop(name, None)
     return subprocess.run(
         [executable, *args[1:]],
         cwd=repo,
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=timeout,
         check=check,
+        env=env,
     )
 
 
@@ -38,15 +45,26 @@ def repo(tmp_path, monkeypatch):
         assert shutil.which(tool), f"Required hook-test tool is missing: {tool}"
     for name in ("hk.pkl", "justfile"):
         shutil.copyfile(ROOT / name, tmp_path / name)
+    root_pyproject = (ROOT / "pyproject.toml").read_text()
+    ruff_config = root_pyproject[root_pyproject.index("[tool.ruff]") :]
+    dev_dependencies = tomllib.loads(root_pyproject)["dependency-groups"]["dev"]
+    lint_dependencies = [
+        dependency
+        for dependency in dev_dependencies
+        if dependency.split("=", 1)[0] in {"ruff", "ty"}
+    ]
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "hook-check"\nversion = "0.0.0"\nrequires-python = ">=3.12"\n'
-        '[dependency-groups]\ndev = ["ruff==0.16.5", "ty==0.0.75"]\n'
+        + "[dependency-groups]\ndev = ["
+        + ", ".join(f'"{dependency}"' for dependency in lint_dependencies)
+        + "]\n"
+        + ruff_config
     )
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "src/example.py").write_text("value = 1\n")
     (tmp_path / "tests/example.py").write_text("assert True\n")
-    run(tmp_path, "uv", "sync", "--no-frozen")
+    run(tmp_path, "uv", "sync", "--no-frozen", timeout=120)
     run(tmp_path, "git", "init")
     run(tmp_path, "git", "config", "user.name", "Hook test")
     run(tmp_path, "git", "config", "user.email", "hook-test@example.invalid")
@@ -57,9 +75,19 @@ def repo(tmp_path, monkeypatch):
     return tmp_path
 
 
+def hook_timeout_seconds(repo):
+    values = {
+        int(value) for value in re.findall(r'timeout = "(\d+)s"', (repo / "hk.pkl").read_text())
+    }
+    assert len(values) == 1, f"Expected one shared hook timeout, found {values}"
+    return values.pop()
+
+
 def snapshot(repo):
     tracked = run(repo, "git", "ls-files", "-z").stdout.split("\0")
     return (
+        run(repo, "git", "rev-parse", "HEAD").stdout,
+        run(repo, "git", "config", "--local", "--list", "--show-origin").stdout,
         run(repo, "git", "ls-files", "--stage").stdout,
         run(repo, "git", "status", "--porcelain").stdout,
         {name: (repo / name).read_bytes() for name in tracked if name and (repo / name).is_file()},
@@ -75,6 +103,28 @@ def hook(repo, name):
     print(f"{name}: {elapsed:.3f}s, exit {result.returncode}")
     assert snapshot(repo) == before, result.stdout + result.stderr
     return result, elapsed
+
+
+def test_pre_commit_ignores_inherited_git_routing(repo, tmp_path, monkeypatch):
+    external = tmp_path / "external"
+    external.mkdir()
+    run(external, "git", "init")
+    run(external, "git", "config", "user.name", "External repository")
+    run(external, "git", "config", "user.email", "external@example.invalid")
+    (external / "outside.py").write_text("outside = 1\n")
+    run(external, "git", "add", ".")
+    run(external, "git", "commit", "-m", "external baseline")
+    external_state = snapshot(external)
+
+    monkeypatch.setenv("GIT_DIR", str(external / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(external))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(external / ".git" / "index"))
+    run(repo, "git", "add", "src/example.py")
+    result, elapsed = hook(repo, "pre-commit")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert elapsed < hook_timeout_seconds(repo)
+    assert snapshot(external) == external_state
 
 
 @pytest.mark.parametrize(
@@ -94,7 +144,7 @@ def test_pre_commit_preserves_partial_staging(repo, staged, unstaged, success):
     path.write_text(staged + unstaged)
     result, elapsed = hook(repo, "pre-commit")
     assert (result.returncode == 0) == success, result.stdout + result.stderr
-    assert elapsed < 9
+    assert elapsed < hook_timeout_seconds(repo)
 
 
 def test_pre_commit_rejects_invalid_spaced_path(repo):
@@ -105,7 +155,7 @@ def test_pre_commit_rejects_invalid_spaced_path(repo):
     result, elapsed = hook(repo, "pre-commit")
     assert result.returncode != 0, result.stdout + result.stderr
     assert "file with spaces.py" in result.stdout + result.stderr
-    assert elapsed < 9
+    assert elapsed < hook_timeout_seconds(repo)
 
 
 def test_pre_commit_accepts_clean_spaced_path_and_deletions(repo):
@@ -116,7 +166,7 @@ def test_pre_commit_accepts_clean_spaced_path_and_deletions(repo):
     run(repo, "git", "rm", "src/example.py")
     result, elapsed = hook(repo, "pre-commit")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert elapsed < 9
+    assert elapsed < hook_timeout_seconds(repo)
 
 
 def test_pre_commit_never_re_resolves_a_stale_manifest(repo):
@@ -131,7 +181,7 @@ def test_pre_commit_never_re_resolves_a_stale_manifest(repo):
     run(repo, "git", "add", "src/example.py")
     result, elapsed = hook(repo, "pre-commit")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert elapsed < 9
+    assert elapsed < hook_timeout_seconds(repo)
 
 
 @pytest.mark.parametrize("success", [True, False], ids=["clean", "unstaged-format-error"])
@@ -140,7 +190,7 @@ def test_pre_push_checks_full_tree(repo, success):
         (repo / "src/example.py").write_text("value=2\n")
     result, elapsed = hook(repo, "pre-push")
     assert (result.returncode == 0) == success, result.stdout + result.stderr
-    assert elapsed < 9
+    assert elapsed < hook_timeout_seconds(repo)
 
 
 @pytest.mark.parametrize("name", ["pre-commit", "pre-push"])
@@ -148,7 +198,7 @@ def test_timeout_preserves_index_and_unstaged_edits(repo, name):
     # Delay the checker, not hk's timeout or its staging/recovery settings.
     config = repo / "hk.pkl"
     original = "uv run ruff format --check {{files}}" if name == "pre-commit" else "just lint"
-    delay = f'\\"{sys.executable}\\" -c \\"import time; time.sleep(30)\\"'
+    delay = f'\\"{sys.executable}\\" -c \\"import time; time.sleep(20)\\"'
     # Seed the user's own stash entry while the normal hook is still fast: hk's
     # git-stash recovery must leave it intact alongside its own push/pop
     # (hook() compares refs/stash across the run).
@@ -158,7 +208,9 @@ def test_timeout_preserves_index_and_unstaged_edits(repo, name):
     run(repo, "git", "commit", "-m", "seed file")
     seed.write_text("seed = 2\n")
     run(repo, "git", "stash", "push", "src/seed.py")
-    config.write_text(config.read_text().replace(original, delay))
+    config_text = config.read_text()
+    assert config_text.count(original) == 1
+    config.write_text(config_text.replace(original, delay, 1))
     run(repo, "git", "add", "hk.pkl")
     path = repo / "src/example.py"
     path.write_text("value = 2\n")
@@ -167,4 +219,5 @@ def test_timeout_preserves_index_and_unstaged_edits(repo, name):
     result, elapsed = hook(repo, name)
     assert result.returncode != 0, result.stdout + result.stderr
     assert "timed out" in (result.stdout + result.stderr).lower()
-    assert 9 <= elapsed < 15
+    hook_timeout = hook_timeout_seconds(repo)
+    assert hook_timeout <= elapsed < hook_timeout + 6
