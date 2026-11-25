@@ -1,6 +1,7 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import importlib.util
 import io
 import json
 import os
@@ -2197,6 +2198,32 @@ def test_cuj_shards_deselect_through_a_real_pytest_run(tmp_path):
     assert set().union(*shards) == {
         line for line in baseline.stdout.splitlines() if line.startswith("test_")
     }
+
+
+def test_run_integration_accepts_both_shard_flags():
+    # The flags left the mutually exclusive group once (argparse: "not allowed with argument"),
+    # which failed every Full journeys - Claude - Windows shard in 28 s.
+    spec = importlib.util.spec_from_file_location(
+        "run_integration", Path(__file__).parent.parent / "scripts/run_integration.py"
+    )
+    run_integration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_integration)
+    base = [
+        "--claude-version",
+        "2.1.290",
+        "--python",
+        "3.12",
+        "--ug-version",
+        "checkout",
+        "--workspace",
+        "https://example.databricks.com",
+        "--profile",
+        "ci",
+    ]
+    args = run_integration.arguments(base + ["--test-shard", "1/4", "--shard-lane", "full-claude"])
+    assert args.test_shard == "1/4" and args.shard_lane == "full-claude"
+    with pytest.raises(SystemExit):
+        run_integration.arguments(base + ["--test-shard", "1/4"])
 
 
 def test_live_shard_coverage_gate_downloads_every_shard_artifact():

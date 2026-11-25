@@ -744,11 +744,11 @@ def arguments(
         action="store_true",
         help="Also collect the journeys that drive the installed ChatGPT desktop app.",
     )
-    mode.add_argument(
+    parser.add_argument(
         "--test-shard",
         help="Run only this shard's cases of the selected lane, e.g. 1/4 (tests/integration/conftest.py).",
     )
-    mode.add_argument(
+    parser.add_argument(
         "--shard-lane",
         help="Lane key into tests/live_test_times.json that balances --test-shard, e.g. full-claude.",
     )
