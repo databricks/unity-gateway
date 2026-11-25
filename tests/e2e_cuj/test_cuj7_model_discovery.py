@@ -35,9 +35,10 @@ from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
-    assert_served,
+    canonical_model,
     claude_file_task,
     served_inference_request,
+    task_inference_request,
 )
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
@@ -469,7 +470,6 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         and task.filename in request.payload.get("task", {}).get("prompt", "")
     ]
     assert routes, "No routing request matched the delegated file task"
-    selected_models = set()
     for route in routes:
         assert route.headers[PROVIDER_HEADER] == provider
         options = route.payload["route_options"]
@@ -481,7 +481,14 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         selected = selections[0]["route_option"]
         assert selected in options
         assert selected["harness"] == agent, selected
-        selected_models.add(selected["model"])
+        child = task_inference_request(
+            requests, agent, route.payload["task"]["prompt"], after=route.sequence
+        )
+        child = served_inference_request(recorder, requests, child, agent)
+        assert canonical_model(child.payload["model"]) == canonical_model(selected["model"]), (
+            child.payload["model"],
+            selected,
+        )
     inference = [
         request
         for request in requests
@@ -490,14 +497,9 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         and task.filename in json.dumps(request.payload)
     ]
     assert inference, "No provider inference request matched the delegated file task"
-    served_models = set()
     for request in inference:
         assert request.headers[PROVIDER_HEADER] == provider
-        served = served_inference_request(recorder, inference, request, agent)
-        assert_served(recorder, served, served.payload["model"])
-        served_models.add(served.payload["model"])
-    # The parent may run on another provider target; each routed child must run on its pick.
-    assert selected_models <= served_models, (selected_models, served_models)
+        served_inference_request(recorder, inference, request, agent)
     task.assert_completed(session, agent, child=True)
     task.assert_completed(session, agent)
     assert_subagent_routed(session, agent, task)

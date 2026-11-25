@@ -26,6 +26,7 @@ from tests.e2e_cuj.helpers.evidence import (
     assert_models,
     claude_file_task,
     served_inference_request,
+    task_inference_request,
 )
 from tests.e2e_cuj.helpers.poll import poll
 from tests.e2e_cuj.helpers.session import (
@@ -39,7 +40,6 @@ from tests.e2e_cuj.helpers.skills import codex_exec_final_answer
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
 from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
-from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 
 
 def _client(headers):
@@ -589,7 +589,7 @@ def test_cuj_inference_accepts_verified_thinking_display_recovery(
     if contract == "catalog":
         assert_inference_evidence(recorder, 0, CLAUDE, task, model)
     else:
-        inference = _task_inference_request(requests, CLAUDE, task.prompt)
+        inference = task_inference_request(requests, CLAUDE, task.prompt)
         assert served_inference_request(recorder, requests, inference, CLAUDE) is requests[1]
 
 
@@ -648,7 +648,7 @@ def test_cuj_inference_rejects_unverified_recovery(thinking_display_exchange, fa
         if contract == "catalog":
             assert_inference_evidence(recorder, 0, agent, task, model)
         else:
-            inference = _task_inference_request(requests, agent, task.prompt)
+            inference = task_inference_request(requests, agent, task.prompt)
             served_inference_request(recorder, requests, inference, agent)
 
 
@@ -722,7 +722,7 @@ def test_cuj_inference_accepts_chained_native_compatibility_recovery(
     if contract == "catalog":
         assert_inference_evidence(recorder, 0, CLAUDE, task, model)
     else:
-        inference = _task_inference_request(requests, CLAUDE, task.prompt)
+        inference = task_inference_request(requests, CLAUDE, task.prompt)
         assert served_inference_request(recorder, requests, inference, CLAUDE) is requests[2]
 
 
@@ -785,7 +785,7 @@ def test_cuj_inference_rejects_unverified_safeguards_recovery(
         if contract == "catalog":
             assert_inference_evidence(recorder, 0, agent, task, model)
         else:
-            inference = _task_inference_request(requests, agent, task.prompt)
+            inference = task_inference_request(requests, agent, task.prompt)
             served_inference_request(recorder, requests, inference, agent)
 
 
