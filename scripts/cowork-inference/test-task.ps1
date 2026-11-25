@@ -115,7 +115,7 @@ function Select-Folder {
         'Allow Claude to change files in “CoworkProbe”?',
         'Allow Claude to access “CoworkProbe”?',
         'Allow Claude to work in “CoworkProbe”?'
-    ) -Seconds 20
+    )
     Invoke-Control (Wait-Control -Names @('Allow') -Seconds 10 -Root $permission)
     $report.folderSelected = $true
     Save-UI 'folder-selected'
