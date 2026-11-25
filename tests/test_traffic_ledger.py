@@ -126,6 +126,33 @@ def test_duplicate_response_with_different_models_is_unmapped():
     assert result["coverage"] == "unmapped"
 
 
+def test_secondary_workspace_claude_model_stays_visible_to_basic_guard(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(tmp_path / "root", project, tmp_path / "ug", tmp_path / "artifacts/case")
+    rollout = session.home / ".claude/projects/example.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-11-25T00:00:01Z",
+                "sessionId": "s",
+                "message": {
+                    "id": "r",
+                    "model": "system.ai.claude-opus-5-5[1m]",
+                    "usage": {"input_tokens": 2, "output_tokens": 3},
+                },
+            }
+        )
+        + "\n"
+    )
+    ledger.record_case_usage(session, workspace=None)
+    result = ledger.finish_lane(tmp_path, lane="basic-claude")
+    assert result["coverage"] == "unmapped" and result["model_coverage"] == "partial"
+    assert result["responses"][0]["reported_model"] == "system.ai.claude-opus-5-5[1m]"
+
+
 def test_conflicting_models_for_one_turn_are_unmapped():
     sessions = {
         "file": [
@@ -222,6 +249,45 @@ def test_model_guard_uses_current_fixture_sets(lane, observed, accepted):
             )
 
 
+@pytest.mark.parametrize(
+    ("lane", "reported", "accepted"),
+    [
+        ("basic-claude", "system.ai.claude-opus-5-5[1m]", True),
+        ("basic-claude", "system.ai.gpt-6-sol", False),
+        ("basic-codex", "system.ai.gpt-6-sol", False),
+        ("basic-codex", "system.ai.gpt-5-6-sol", False),
+        ("basic-codex", "system.ai.claude-opus-5-5", False),
+    ],
+)
+def test_basic_lanes_reject_observed_cross_model_use(lane, reported, accepted):
+    event = {"model": None, "reported_model": reported, "workspace": None}
+    kwargs = {
+        "lane": lane,
+        "desktop_models": {"system.ai.gpt-5-6-sol"},
+        "smart_models": {"system.ai.gpt-6-sol"},
+    }
+    if accepted:
+        ledger.check_model_separation([event], **kwargs)
+    else:
+        with pytest.raises(ValueError):
+            ledger.check_model_separation([event], **kwargs)
+
+
+def test_basic_guard_rejects_conflicting_reported_and_canonical_models():
+    event = {
+        "model": "system.ai.gpt-6-sol",
+        "reported_model": "system.ai.claude-opus-5-5",
+        "workspace": "managed-primary",
+    }
+    with pytest.raises(ValueError, match="model"):
+        ledger.check_model_separation(
+            [event],
+            lane="basic-claude",
+            desktop_models={"system.ai.gpt-5-6-sol"},
+            smart_models={"system.ai.gpt-6-sol"},
+        )
+
+
 def test_model_sets_follow_current_desktop_and_smart_fixtures(tmp_path):
     def write_fixture(name, model):
         (tmp_path / f"{name}.json").write_text(
@@ -251,6 +317,21 @@ def test_model_sets_follow_current_desktop_and_smart_fixtures(tmp_path):
         )
 
 
+def test_smart_lane_rejects_missing_model_coverage(tmp_path):
+    case = tmp_path / "artifacts/case"
+    case.mkdir(parents=True)
+    (case / "model-ledger.json").write_text(
+        json.dumps(
+            {
+                "coverage": "partial",
+                "responses": [{"model": "system.ai.gpt-6-sol", "workspace": "managed-primary"}],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="unmapped"):
+        ledger.finish_lane(tmp_path, lane="smart")
+
+
 def test_lane_guard_cli_fails_on_cross_model_response(tmp_path):
     case = tmp_path / "artifacts/case"
     case.mkdir(parents=True)
@@ -258,6 +339,7 @@ def test_lane_guard_cli_fails_on_cross_model_response(tmp_path):
         json.dumps(
             {
                 "coverage": "partial",
+                "model_coverage": "partial",
                 "responses": [{"model": "system.ai.gpt-5-6-sol", "workspace": "managed-primary"}],
             }
         )
@@ -271,6 +353,23 @@ def test_lane_guard_cli_fails_on_cross_model_response(tmp_path):
     )
     assert result.returncode != 0 and "Overlapping model" in result.stderr
     assert (tmp_path / "model-ledger.json").is_file()
+
+
+def test_basic_lane_allows_unknown_workspace_but_rejects_unknown_model_coverage(tmp_path):
+    case = tmp_path / "artifacts/case"
+    case.mkdir(parents=True)
+    file = case / "model-ledger.json"
+    response = {"model": None, "reported_model": "system.ai.claude-opus-5-5[1m]", "workspace": None}
+    file.write_text(
+        json.dumps({"coverage": "unmapped", "model_coverage": "partial", "responses": [response]})
+    )
+    result = ledger.finish_lane(tmp_path, lane="basic-claude")
+    assert result["coverage"] == "unmapped" and result["model_coverage"] == "partial"
+    file.write_text(
+        json.dumps({"coverage": "unmapped", "model_coverage": "unmapped", "responses": []})
+    )
+    with pytest.raises(ValueError, match="unmapped"):
+        ledger.finish_lane(tmp_path, lane="basic-claude")
 
 
 def test_lane_ledger_retains_partial_rows_when_one_case_is_unmapped(tmp_path):
@@ -297,6 +396,7 @@ def test_lane_ledger_keeps_evidence_when_cross_model_guard_fails(tmp_path):
         json.dumps(
             {
                 "coverage": "partial",
+                "model_coverage": "partial",
                 "responses": [{"model": "system.ai.gpt-5-6-sol", "workspace": "managed-primary"}],
             }
         )

@@ -1091,7 +1091,6 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         agent: [claude, codex]
     env:
@@ -1101,7 +1100,7 @@ jobs:
       AGENT: ${{ matrix.agent }}
       CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}
       ARTIFACT_NAME: integration-managed-${{ matrix.agent }}
-      UG_MODEL_LEDGER: basic
+      UG_MODEL_LEDGER: basic-${{ matrix.agent }}
       TEST_MARKER: (managed_fixture or workspace_switch) and ${{ matrix.agent }} and not soft_fail and not anthropic_mps and not codex_smart_routing
     steps: &managed-steps
       - *budget-start
@@ -1120,6 +1119,24 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
+      - name: Cache Codex 0.156.0
+        if: ${{ env.UG_MODEL_LEDGER == 'smart' }}
+        id: old-codex-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/codex-0.156.0
+          key: codex-old-${{ runner.os }}-${{ runner.arch }}-node-22.19.0-0.156.0
+      - name: Install Codex 0.156.0
+        if: ${{ env.UG_MODEL_LEDGER == 'smart' && steps.old-codex-cache.outputs.cache-hit != 'true' }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-0.156.0" --save-exact --no-audit --no-fund \
+            --registry "$NPM_REGISTRY" '@openai/codex@0.156.0'
+      - name: Verify isolated Codex 0.156.0
+        if: ${{ env.UG_MODEL_LEDGER == 'smart' }}
+        run: |
+          old_bin="$RUNNER_TEMP/codex-0.156.0/node_modules/.bin"
+          "$old_bin/codex" --version | grep -Eq '(^|[^0-9.])0\.156\.0([^0-9.]|$)'
+          echo "UG_INTEGRATION_OLD_CODEX_BIN_DIR=$old_bin" >> "$GITHUB_ENV"
       - *budget-setup-done
       - name: Run the managed cases against the managed e2e workspace
         shell: bash
@@ -1164,7 +1181,6 @@ jobs:
 
   managed-smart:
     name: ${{ inputs.mode == 'advisory' && 'Managed config · Codex · Smart routing (runs in Integration)' || 'Managed config · Codex · Smart routing' }}
-    needs: managed
     if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -1397,8 +1413,7 @@ jobs:
 
   codex-desktop-macos:
     name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · macOS (runs in Integration)' || 'Codex desktop inference · macOS' }}
-    # Basic managed cases include the desktop model; smart routing uses a separate guarded set.
-    needs: managed
+    # Model ledgers reject observed overlap with managed lanes.
     if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
     timeout-minutes: 30
@@ -1485,7 +1500,7 @@ jobs:
   codex-desktop-windows:
     name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · Windows (runs in Integration)' || 'Codex desktop inference · Windows' }}
     # Both desktop lanes use the same model and workspace, so keep them serialized.
-    needs: [managed, codex-desktop-macos]
+    needs: codex-desktop-macos
     if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 30

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,12 @@ def model_sets(fixtures):
             raise ValueError(f"Expected nonempty model services in {name}")
         result.append(set(models))
     return tuple(result)
+
+
+def reported_model(model):
+    if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9_.\-\[\]]{1,160}", model):
+        return model
+    return None
 
 
 def canonical_model(model, known_models):
@@ -75,8 +82,10 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
     responses = []
     seen = {}
     unmapped = workspace is None
+    model_unmapped = False
     for path, records in codex_sessions.items():
         contexts = {}
+        reported_contexts = {}
         for record in records:
             if not isinstance(record, dict) or record.get("type") != "turn_context":
                 continue
@@ -86,27 +95,35 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
             turn_id = payload.get("turn_id")
             if not isinstance(turn_id, str) or not turn_id:
                 continue
-            model = canonical_model(payload.get("model"), known_models)
-            if turn_id in contexts and contexts[turn_id] != model:
-                unmapped = True
+            raw = reported_model(payload.get("model"))
+            model = canonical_model(raw, known_models)
+            if turn_id in contexts and (contexts[turn_id] or reported_contexts[turn_id]) != (
+                model or raw
+            ):
+                unmapped = model_unmapped = True
             contexts[turn_id] = model
+            reported_contexts[turn_id] = raw
         for record in records:
             if not isinstance(record, dict) or record.get("type") != "token_usage_record":
                 continue
             payload = record.get("payload")
             if not isinstance(payload, dict):
-                unmapped = True
+                unmapped = model_unmapped = True
                 continue
             identifier = payload.get("response_id")
             if not isinstance(identifier, str) or not identifier:
-                unmapped = True
+                unmapped = model_unmapped = True
                 continue
             key = ("codex", payload.get("session_id") or path, identifier)
-            model = canonical_model(contexts.get(payload.get("turn_id")), known_models)
+            turn_id = payload.get("turn_id")
+            model = contexts.get(turn_id)
+            raw = reported_contexts.get(turn_id)
             if key in seen:
-                unmapped |= seen[key] != model
+                if seen[key] != (model or raw):
+                    unmapped = model_unmapped = True
                 continue
-            seen[key] = model
+            seen[key] = model or raw
+            model_unmapped |= raw is None
             timestamp = _timestamp(record.get("timestamp"))
             usage, complete_usage = _usage(payload.get("usage"))
             unmapped |= (
@@ -117,6 +134,7 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
                     "source": "codex-native",
                     "timestamp": timestamp,
                     "model": model,
+                    "reported_model": raw,
                     "workspace": workspace,
                     "usage": usage,
                 }
@@ -127,18 +145,21 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
                 continue
             message = record.get("message")
             if not isinstance(message, dict):
-                unmapped = True
+                unmapped = model_unmapped = True
                 continue
             identifier = message.get("id")
             if not isinstance(identifier, str) or not identifier:
-                unmapped = True
+                unmapped = model_unmapped = True
                 continue
             key = ("claude", record.get("sessionId") or path, identifier)
-            model = canonical_model(message.get("model"), known_models)
+            raw = reported_model(message.get("model"))
+            model = canonical_model(raw, known_models)
             if key in seen:
-                unmapped |= seen[key] != model
+                if seen[key] != (model or raw):
+                    unmapped = model_unmapped = True
                 continue
-            seen[key] = model
+            seen[key] = model or raw
+            model_unmapped |= raw is None
             timestamp = _timestamp(record.get("timestamp"))
             usage, complete_usage = _usage(message.get("usage"))
             unmapped |= (
@@ -149,6 +170,7 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
                     "source": "claude-native",
                     "timestamp": timestamp,
                     "model": model,
+                    "reported_model": raw,
                     "workspace": workspace,
                     "usage": usage,
                 }
@@ -156,6 +178,7 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
     responses.sort(key=lambda response: response["timestamp"] or "")
     return {
         "coverage": "unmapped" if unmapped else "partial",
+        "model_coverage": "unmapped" if model_unmapped else "partial",
         "timestamp_semantics": "native-response-recorded",
         "responses": responses,
     }
@@ -187,60 +210,81 @@ def record_case_usage(session, *, workspace):
 
 
 def check_model_separation(responses, *, lane, desktop_models, smart_models):
-    if lane not in ("desktop", "smart"):
+    if lane not in ("desktop", "smart", "basic-claude", "basic-codex"):
         raise ValueError("Unknown model-guard lane")
-    if not responses:
+    if not responses and lane in ("desktop", "smart"):
         raise ValueError("No observed model responses")
     known_models = desktop_models | smart_models
-    forbidden = desktop_models if lane == "smart" else smart_models
     for response in responses:
-        model = canonical_model(response.get("model"), known_models)
-        if response.get("workspace") != "managed-primary" or model is None:
-            raise ValueError("Unmapped workspace or model response")
-        if model in forbidden:
-            raise ValueError(f"Overlapping model observed in {lane} lane: {model}")
+        if lane.startswith("basic-"):
+            raw = reported_model(response.get("reported_model") or response.get("model"))
+            if raw is None:
+                raise ValueError("Unmapped basic-lane model response")
+            bare = raw.removeprefix("system.ai.").split("[", 1)[0]
+            mapped = response.get("model")
+            if mapped and mapped.removeprefix("system.ai.") != bare:
+                raise ValueError("Conflicting basic-lane model attribution")
+            model = canonical_model(bare, known_models)
+            if (
+                model in known_models
+                or (lane == "basic-claude" and bare.startswith("gpt-"))
+                or (lane == "basic-codex" and not bare.startswith("gpt-"))
+            ):
+                raise ValueError(f"Overlapping model observed in {lane} lane: {raw}")
+        else:
+            model = canonical_model(response.get("model"), known_models)
+            if response.get("workspace") != "managed-primary" or model is None:
+                raise ValueError("Unmapped workspace or model response")
+            forbidden = desktop_models if lane == "smart" else smart_models
+            if model in forbidden:
+                raise ValueError(f"Overlapping model observed in {lane} lane: {model}")
 
 
 def finish_lane(output, *, lane):
-    if lane not in ("basic", "smart", "desktop"):
+    if lane not in ("basic-claude", "basic-codex", "smart", "desktop"):
         raise ValueError("Unknown model-ledger lane")
     files = sorted((output / "artifacts").glob("*/model-ledger.json"))
     responses = []
     unmapped = not files
+    model_unmapped = not files
     for path in files:
         try:
             case = json.loads(path.read_text(encoding="utf-8"))
             if case.get("coverage") != "partial":
                 unmapped = True
+            if case.get("model_coverage") != "partial":
+                model_unmapped = True
             if isinstance(case.get("responses"), list):
                 responses.extend(case["responses"])
             else:
-                unmapped = True
+                unmapped = model_unmapped = True
         except (OSError, ValueError, AttributeError):
-            unmapped = True
+            unmapped = model_unmapped = True
     result = {
         "lane": lane,
         "coverage": "unmapped" if unmapped else "partial",
+        "model_coverage": "unmapped" if model_unmapped else "partial",
         "timestamp_semantics": "native-response-recorded",
         "case_count": len(files),
         "responses": responses,
     }
     (output / "model-ledger.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if lane in ("smart", "desktop"):
-        if unmapped:
-            raise ValueError("Model ledger contains unmapped case evidence")
-        fixtures = Path(__file__).resolve().parents[2] / "fixtures/managed_config"
-        desktop_models, smart_models = model_sets(fixtures)
-        check_model_separation(
-            responses, lane=lane, desktop_models=desktop_models, smart_models=smart_models
-        )
+    if model_unmapped or (lane in ("smart", "desktop") and unmapped):
+        raise ValueError("Model ledger contains unmapped case evidence")
+    fixtures = Path(__file__).resolve().parents[2] / "fixtures/managed_config"
+    desktop_models, smart_models = model_sets(fixtures)
+    check_model_separation(
+        responses, lane=lane, desktop_models=desktop_models, smart_models=smart_models
+    )
     return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--lane", required=True, choices=("basic", "smart", "desktop"))
+    parser.add_argument(
+        "--lane", required=True, choices=("basic-claude", "basic-codex", "smart", "desktop")
+    )
     args = parser.parse_args()
     try:
         finish_lane(args.output, lane=args.lane)

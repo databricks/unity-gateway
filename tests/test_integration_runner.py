@@ -1,5 +1,6 @@
 import base64
 import io
+import os
 import urllib.error
 from pathlib import Path
 
@@ -18,6 +19,7 @@ def test_isolated_runner_forwards_only_explicit_uia_diagnostic_settings():
         "UG_UIA_BASELINE_SAMPLE": "1",
         "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
         "UG_MODEL_LEDGER": "smart",
+        "UG_INTEGRATION_OLD_CODEX_BIN_DIR": "/old/bin",
         "DATABRICKS_BEARER": "secret",
         "UNRELATED_SETTING": "private",
     }
@@ -26,7 +28,43 @@ def test_isolated_runner_forwards_only_explicit_uia_diagnostic_settings():
         "UG_UIA_BASELINE_SAMPLE": "1",
         "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
         "UG_MODEL_LEDGER": "smart",
+        "UG_INTEGRATION_OLD_CODEX_BIN_DIR": "/old/bin",
     }
+
+
+def test_old_codex_selection_is_confined_to_one_session(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "integration"))
+    from tests.integration import conftest as integration_fixtures
+    from tests.integration.utils.harness import UserSession
+
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    executable = "codex.cmd" if os.name == "nt" else "codex"
+    for directory in (old_dir, new_dir):
+        path = directory / executable
+        path.write_text("placeholder")
+        path.chmod(0o755)
+    project = tmp_path / "projects"
+    project.mkdir()
+    one = UserSession(tmp_path / "one", project, tmp_path / "ug", tmp_path / "artifacts-one")
+    project_two = tmp_path / "projects-two"
+    project_two.mkdir()
+    other = UserSession(tmp_path / "two", project_two, tmp_path / "ug", tmp_path / "artifacts-two")
+    one.env["PATH"] = other.env["PATH"] = str(new_dir)
+    monkeypatch.setenv("UG_MODEL_LEDGER", "smart")
+    monkeypatch.setenv("UG_INTEGRATION_OLD_CODEX_BIN_DIR", str(old_dir))
+    selected = integration_fixtures.version_aware_codex_session.__wrapped__(one)
+    assert selected.which("codex").resolve() == (old_dir / executable).resolve()
+    assert other.which("codex").resolve() == (new_dir / executable).resolve()
+    monkeypatch.delenv("UG_INTEGRATION_OLD_CODEX_BIN_DIR")
+    with pytest.raises(AssertionError, match="old Codex"):
+        integration_fixtures.version_aware_codex_session.__wrapped__(other)
+    monkeypatch.delenv("UG_MODEL_LEDGER")
+    assert (
+        integration_fixtures.version_aware_codex_session.__wrapped__(other).which("codex").resolve()
+        == (new_dir / executable).resolve()
+    )
 
 
 def test_secrets_are_redacted_from_build_output():

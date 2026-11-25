@@ -253,6 +253,16 @@ def live_session(session, workspace):
     return session
 
 
+@pytest.fixture
+def version_aware_codex_session(live_session):
+    old_bin = os.environ.get("UG_INTEGRATION_OLD_CODEX_BIN_DIR")
+    if os.environ.get("UG_MODEL_LEDGER") == "smart":
+        assert old_bin, "The smart lane requires its isolated old Codex prefix"
+    if old_bin:
+        live_session.env["PATH"] = os.pathsep.join((old_bin, live_session.env["PATH"]))
+    return live_session
+
+
 @pytest.fixture(scope="session")
 def claude_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER"]

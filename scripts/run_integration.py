@@ -825,7 +825,7 @@ def arguments(
 
 
 def isolated_base_environment(environment: Mapping[str, str]) -> dict[str, str]:
-    """Carry only platform settings and explicit UIA diagnostics into the runner."""
+    """Carry platform settings and explicitly selected test inputs into the runner."""
     keep = (
         "PATH",
         "SYSTEMROOT",
@@ -844,6 +844,7 @@ def isolated_base_environment(environment: Mapping[str, str]) -> dict[str, str]:
         "UG_UIA_BASELINE_SAMPLE",
         "UG_UIA_PROBE_ASSEMBLY",
         "UG_MODEL_LEDGER",
+        "UG_INTEGRATION_OLD_CODEX_BIN_DIR",
     )
     return {key: environment[key] for key in keep if key in environment}
 

@@ -386,14 +386,23 @@ def test_model_ledger_case_directories_do_not_collide():
         assert len(names) == len(set(names)), job_name
 
 
+def test_managed_smart_uses_a_cached_side_by_side_old_codex():
+    job = _integration_jobs()["managed"]
+    assert "Cache Codex 0.156.0" in job
+    assert "codex-old-${{ runner.os }}-${{ runner.arch }}-node-22.19.0-0.156.0" in job
+    assert "@openai/codex@0.156.0" in job
+    assert "UG_INTEGRATION_OLD_CODEX_BIN_DIR" in job
+    assert "env.UG_MODEL_LEDGER == 'smart'" in job
+
+
 def test_managed_smart_overlap_keeps_model_guard_and_required_rollup():
     jobs = _integration_jobs()
-    assert "needs: managed" in jobs["managed-smart"]
+    assert not re.search(r"(?m)^    needs:", jobs["managed-smart"])
+    assert not re.search(r"(?m)^    needs:", jobs["codex-desktop-macos"])
     assert "if: ${{ !cancelled() && " in jobs["managed-smart"]
-    assert "needs: managed" in jobs["codex-desktop-macos"]
-    assert "managed-smart" not in re.search(
-        r"(?m)^    needs: (.*)$", jobs["codex-desktop-macos"]
-    ).group(1)
+    assert "if: ${{ !cancelled() && " in jobs["codex-desktop-macos"]
+    assert "needs: codex-desktop-macos" in jobs["codex-desktop-windows"]
+    assert "max-parallel: 1" not in jobs["managed"]
     assert "managed-smart" in re.search(r"(?m)^    needs: (.*)$", jobs["cujs"]).group(1)
     assert "UG_MODEL_LEDGER: smart" in jobs["managed-smart"]
     assert "steps: *managed-steps" in jobs["managed-smart"]
@@ -441,7 +450,8 @@ def test_managed_integration_ci_is_blocking():
         "test_ug_smart_routing_hooks.py::"
         "test_smart_router_managed_default_matches_codex_version_at_launch"
     )
-    assert version_aware in baseline
+    assert version_aware not in baseline
+    assert version_aware in routing
     assert version_aware in _collect_integration_cases(
         "harness_latest and codex and managed_fixture"
     )
@@ -3098,19 +3108,13 @@ def test_required_tests_requires_unit_shard_coverage(coverage):
     assert (result.returncode == 0) is (coverage == "success"), result.stderr
 
 
-@pytest.mark.parametrize(
-    ("job_name", "needs"),
-    [
-        ("codex-desktop-macos", "managed"),
-        ("codex-desktop-windows", "[managed, codex-desktop-macos]"),
-    ],
-)
-def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
-    # Basic managed and the two desktop lanes can use the same model in one workspace.
+def test_desktop_chain_is_serial_and_basic_lanes_are_independent():
     jobs = _integration_jobs()
-    assert f"\n    needs: {needs}\n" in jobs[job_name]
-    assert "    if: ${{ !cancelled() && " in jobs[job_name]
-    assert "      max-parallel: 1\n" in jobs["managed"]
+    assert not re.search(r"(?m)^    needs:", jobs["codex-desktop-macos"])
+    assert "\n    needs: codex-desktop-macos\n" in jobs["codex-desktop-windows"]
+    for name in ("codex-desktop-macos", "codex-desktop-windows", "managed-smart"):
+        assert "    if: ${{ !cancelled() && " in jobs[name]
+    assert "      max-parallel: 1\n" not in jobs["managed"]
 
 
 def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
