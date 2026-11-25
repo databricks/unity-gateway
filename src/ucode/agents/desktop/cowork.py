@@ -382,11 +382,7 @@ def _cowork_mcp_aliases(urls: dict[str, str]) -> dict[str, str]:
             else name
         )
         # Cowork drops web_search when it collides with Desktop's built-in connector.
-        aliases[name] = (
-            "ug_web_search"
-            if full_name == "system.ai.web_search" and alias == "web_search"
-            else alias
-        )
+        aliases[name] = "ug_web_search" if alias == "web_search" else alias
 
     counts = Counter(aliases.values())
     used = set(aliases.values())  # Reserve custom names before allocating qualifiers.

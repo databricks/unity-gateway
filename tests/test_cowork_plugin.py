@@ -409,13 +409,27 @@ def test_cowork_mcp_config_shortens_uc_names_and_preserves_routing(tmp_path, mon
         }
 
 
-def test_cowork_mcp_config_avoids_native_web_search_name(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        (
+            "system-ai-web_search",
+            "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search",
+        ),
+        (
+            "main-tools-web_search",
+            "https://workspace.example/ai-gateway/mcp-services/main.tools.web_search",
+        ),
+        ("web_search", "https://external.example/mcp"),
+    ],
+)
+def test_cowork_mcp_config_avoids_native_web_search_name(tmp_path, monkeypatch, name, url):
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
     config = cowork._cowork_mcp_config(
         [
             {
-                "name": "system-ai-web_search",
-                "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search",
+                "name": name,
+                "url": url,
                 "clients": ["claude"],
             }
         ],
