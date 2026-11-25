@@ -1,5 +1,6 @@
 """Exercise the persistent UIA helper against stub and native Windows controls."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -108,14 +109,17 @@ namespace Stub {
 """
 
 
-def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(tmp_path, monkeypatch):
+def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
+    tmp_path, monkeypatch, record_property
+):
     pwsh = shutil.which("pwsh")
     assert pwsh, "PowerShell Core is required for the UIA helper contract"
     source = UIA_CLIENT.read_text(encoding="utf-8")
     source = source.replace(
-        "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing",
+        "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes",
         "Add-Type -TypeDefinition @'\n" + STUB_TYPES + "\n'@",
     )
+    source = source.replace("Add-Type -AssemblyName System.Windows.Forms, System.Drawing", "")
     source = source.replace("[Windows.Automation.", "[Stub.")
     source = source.replace("[Windows.Forms.SendKeys]", "[Stub.SendKeys]")
     source = source.replace("[Drawing.Imaging.ImageFormat]", "[Stub.ImageFormat]")
@@ -125,15 +129,27 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(tmp_p
     script.write_text(source, encoding="utf-8")
     events = tmp_path / "events.txt"
     monkeypatch.setenv("UIA_TEST_EVENTS", str(events))
-    helper = WindowsUIAProcess([pwsh, "-NoProfile", "-File", str(script), "session", "123"])
+    helper = WindowsUIAProcess(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script), "session", "123"]
+    )
     try:
         assert "ControlType.Button\tPress" in helper.request("tree")
         assert helper.request("wait", "ControlType.Text", "Ready", "5") == "1"
-        assert helper.last_metrics["init_ms"] >= 0
-        assert helper.last_metrics["wait_ms"] >= 0
+        for key in (
+            "process_to_script_ms",
+            "module_ms",
+            "uia_assembly_ms",
+            "forms_assembly_ms",
+            "root_ms",
+            "init_ms",
+            "process_ready_ms",
+            "wait_ms",
+        ):
+            assert helper.last_metrics[key] >= 0
         assert helper.request("click", "ControlType.Button", "Press", "5") == "1"
         assert helper.last_metrics["click_ms"] >= 0
         assert helper.last_metrics["wait_ms"] >= 0
+        record_property("stub_uia_startup", json.dumps(helper.last_metrics, sort_keys=True))
         helper.request("invoke", "ControlType.Button", "Press")
         helper.request("click", "ControlType.Edit", "", "5")
         helper.request("type", "hello", "")
@@ -156,7 +172,7 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(tmp_p
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows UI Automation requires native Windows")
-def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path):
+def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_property):
     powershell = shutil.which("powershell.exe")
     assert powershell, "Windows PowerShell is required for the UIA helper contract"
     marker = tmp_path / "clicked.txt"
@@ -191,10 +207,22 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path):
     )
     try:
         helper = WindowsUIAProcess(
-            [powershell, "-NoProfile", "-STA", "-File", str(UIA_CLIENT), "session", str(app.pid)]
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-STA",
+                "-File",
+                str(UIA_CLIENT),
+                "session",
+                str(app.pid),
+            ]
         )
         try:
             assert int(helper.request("wait", "ControlType.Button", "Press", "30")) >= 1
+            record_property(
+                "windows_powershell_5_1_startup", json.dumps(helper.last_metrics, sort_keys=True)
+            )
             assert "ControlType.Button\tPress" in helper.request("tree")
             helper.request("click", "ControlType.Button", "Press", "30")
             deadline = time.monotonic() + 10
@@ -210,6 +238,36 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path):
             assert image.stat().st_size > 0
         finally:
             helper.close()
+        pwsh = shutil.which("pwsh.exe")
+        if not pwsh:
+            record_property("powershell_7_startup", json.dumps({"status": "not-installed"}))
+        else:
+            modern = WindowsUIAProcess(
+                [
+                    pwsh,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-STA",
+                    "-File",
+                    str(UIA_CLIENT),
+                    "session",
+                    str(app.pid),
+                ]
+            )
+            try:
+                try:
+                    modern.request("wait", "ControlType.Button", "Press", "30")
+                except AssertionError as error:
+                    record_property(
+                        "powershell_7_startup",
+                        json.dumps({"status": "unavailable", "error": str(error)}),
+                    )
+                else:
+                    record_property(
+                        "powershell_7_startup", json.dumps(modern.last_metrics, sort_keys=True)
+                    )
+            finally:
+                modern.close()
     finally:
         if app.poll() is None:
             app.terminate()

@@ -9,13 +9,31 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$processToScriptMs = [Math]::Max(0, ([DateTime]::UtcNow - [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime()).TotalMilliseconds)
 $initClock = [Diagnostics.Stopwatch]::StartNew()
 [Console]::Error.WriteLine('uia phase=load-assemblies')
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
+$moduleClock = [Diagnostics.Stopwatch]::StartNew()
+Import-Module Microsoft.PowerShell.Utility
+$moduleMs = $moduleClock.Elapsed.TotalMilliseconds
+$uiaClock = [Diagnostics.Stopwatch]::StartNew()
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$uiaMs = $uiaClock.Elapsed.TotalMilliseconds
+$formsClock = [Diagnostics.Stopwatch]::StartNew()
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$formsMs = $formsClock.Elapsed.TotalMilliseconds
+$rootClock = [Diagnostics.Stopwatch]::StartNew()
 $automation = [Windows.Automation.AutomationElement]
 $root = $automation::RootElement
 $byProcess = [Windows.Automation.PropertyCondition]::new($automation::ProcessIdProperty, $ProcessId)
-$initMs = $initClock.Elapsed.TotalMilliseconds
+$rootMs = $rootClock.Elapsed.TotalMilliseconds
+$initMetrics = @{
+    process_to_script_ms = $processToScriptMs
+    module_ms = $moduleMs
+    uia_assembly_ms = $uiaMs
+    forms_assembly_ms = $formsMs
+    root_ms = $rootMs
+    init_ms = $initClock.Elapsed.TotalMilliseconds
+}
 $script:metrics = @{}
 
 function Get-Windows {
@@ -136,8 +154,9 @@ function Invoke-Action($action, $argsList) {
 }
 
 if ($Command -eq 'session') {
+    [Console]::Out.WriteLine((@{ event = 'ready'; metrics = $initMetrics } | ConvertTo-Json -Compress -Depth 4))
     while ($null -ne ($line = [Console]::ReadLine())) {
-        $script:metrics = @{ init_ms = $initMs }
+        $script:metrics = @{} + $initMetrics
         $actionClock = [Diagnostics.Stopwatch]::StartNew()
         try {
             $request = $line | ConvertFrom-Json

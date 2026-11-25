@@ -24,6 +24,7 @@ MODEL = "system.ai.gpt-5-6-sol"
 def test_persistent_windows_uia_protocol_preserves_process_and_errors():
     helper = (
         "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
         "for line in sys.stdin:\n"
         " r=json.loads(line)\n"
         " print(json.dumps({'ok':r['command'] != 'bad', 'output':str(len(r['args'])), "
@@ -52,6 +53,33 @@ def test_persistent_uia_preserves_helper_stderr_after_exit():
     assert "startup failed" in client.stderr_output
 
 
+def test_persistent_uia_waits_for_helper_ready_before_sending_command():
+    class Responses:
+        def __init__(self):
+            self.messages = iter(
+                [
+                    '{"event":"ready","metrics":{"init_ms":12}}',
+                    '{"ok":true,"output":"1","error":"","metrics":{"wait_ms":3}}',
+                ]
+            )
+            self.timeouts = []
+
+        def get(self, timeout):
+            self.timeouts.append(timeout)
+            return next(self.messages)
+
+    client = object.__new__(windows_app.WindowsUIAProcess)
+    client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    client.responses = Responses()
+    client.broken = False
+    client.ready = False
+    client.started = windows_app.time.monotonic()
+    assert client.request("wait", "ControlType.Text", "Ready", "30") == "1"
+    assert client.responses.timeouts == [60, 35]
+    assert client.last_metrics["init_ms"] == 12
+    assert client.last_metrics["wait_ms"] == 3
+
+
 def test_persistent_uia_timeout_cannot_reuse_a_stale_response():
     class Responses:
         def get(self, timeout):
@@ -61,6 +89,8 @@ def test_persistent_uia_timeout_cannot_reuse_a_stale_response():
     client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
     client.responses = Responses()
     client.broken = False
+    client.ready = True
+    client.init_metrics = {}
     with pytest.raises(AssertionError, match="did not respond"):
         client.request("tree")
     with pytest.raises(AssertionError, match="unavailable"):
@@ -79,6 +109,8 @@ def test_persistent_uia_wait_keeps_the_original_timeout():
     client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
     client.responses = Responses()
     client.broken = False
+    client.ready = True
+    client.init_metrics = {}
     assert client.request("wait", "ControlType.Text", "answer", "240") == "1"
     assert client.responses.timeout >= 240
 
@@ -110,6 +142,7 @@ def test_windows_failed_native_click_records_accessibility_tree():
 def test_windows_uia_uses_persistent_client_for_each_action():
     helper = (
         "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
         "for line in sys.stdin:\n"
         " r=json.loads(line)\n"
         " print(json.dumps({'ok':True, 'output':r['command'], 'error':''}),flush=True)\n"
@@ -130,6 +163,7 @@ def test_windows_uia_uses_persistent_client_for_each_action():
 def test_windows_uia_records_native_click_poll_count():
     helper = (
         "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
         "for line in sys.stdin:\n"
         " print(json.dumps({'ok':True, 'output':'3', 'error':'', "
         "'metrics':{'init_ms':11, 'wait_ms':22, 'click_ms':3, 'secret':'private'}}),flush=True)\n"
@@ -191,6 +225,7 @@ def test_windows_app_log_redacts_service_principal_secret(monkeypatch):
 def test_windows_uia_timing_excludes_input_and_records_failed_actions():
     helper = (
         "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
         "for line in sys.stdin:\n"
         " print(json.dumps({'ok':False, 'output':'', 'error':'failed'}),flush=True)\n"
     )
@@ -235,6 +270,7 @@ def test_windows_wait_requires_the_returned_tree_to_contain_the_target():
 def test_windows_wait_records_poll_count_without_control_text():
     helper = (
         "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
         "for line in sys.stdin:\n"
         " print(json.dumps({'ok':True, 'output':'2', 'error':''}),flush=True)\n"
     )

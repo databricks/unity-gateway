@@ -64,6 +64,7 @@ def _capture_app_log(stream, path: Path) -> None:
 
 class WindowsUIAProcess:
     def __init__(self, argv: list[str]):
+        started = time.monotonic()
         self.stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         try:
             self.proc = subprocess.Popen(
@@ -82,6 +83,9 @@ class WindowsUIAProcess:
             raise
         self.responses = queue.Queue()
         self.broken = False
+        self.ready = False
+        self.started = started
+        self.init_metrics: dict[str, float] = {}
         self.last_metrics: dict[str, float] = {}
 
         def read_responses():
@@ -92,25 +96,55 @@ class WindowsUIAProcess:
         self.reader = threading.Thread(target=read_responses, daemon=True)
         self.reader.start()
 
-    def request(self, command: str, *args: str) -> str:
-        self.last_metrics = {}
-        assert not self.broken, "UI Automation helper is unavailable"
-        assert self.proc.poll() is None, "UI Automation helper exited"
-        self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
-        self.proc.stdin.flush()
-        timeout = float(args[2]) + 5 if command in ("click", "wait") else 60
+    def _receive(self, timeout: float) -> dict:
         try:
             line = self.responses.get(timeout=timeout)
         except queue.Empty as error:
             self.broken = True
             raise AssertionError("UI Automation helper did not respond") from error
-        assert line is not None, "UI Automation helper exited without a response"
-        response = json.loads(line)
-        metrics = response.get("metrics", {})
+        if line is None:
+            self.broken = True
+            raise AssertionError("UI Automation helper exited without a response")
+        try:
+            return json.loads(line)
+        except ValueError as error:
+            self.broken = True
+            raise AssertionError("UI Automation helper returned invalid JSON") from error
+
+    def request(self, command: str, *args: str) -> str:
+        self.last_metrics = {}
+        assert not self.broken, "UI Automation helper is unavailable"
+        assert self.proc.poll() is None, "UI Automation helper exited"
+        if not self.ready:
+            ready = self._receive(60)
+            if ready.get("event") != "ready":
+                self.broken = True
+                raise AssertionError("UI Automation helper did not send a ready event")
+            self.init_metrics = ready.get("metrics", {})
+            self.init_metrics["process_ready_ms"] = (time.monotonic() - self.started) * 1000
+            self.ready = True
+        self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
+        self.proc.stdin.flush()
+        timeout = float(args[2]) + 5 if command in ("click", "wait") else 60
+        response = self._receive(timeout)
+        metrics = {**self.init_metrics, **response.get("metrics", {})}
         self.last_metrics = {
             key: value
             for key, value in metrics.items()
-            if key in {"init_ms", "action_ms", "wait_ms", "click_ms", "polls"}
+            if key
+            in {
+                "init_ms",
+                "process_to_script_ms",
+                "module_ms",
+                "uia_assembly_ms",
+                "forms_assembly_ms",
+                "root_ms",
+                "process_ready_ms",
+                "action_ms",
+                "wait_ms",
+                "click_ms",
+                "polls",
+            }
             and isinstance(value, (int, float))
             and not isinstance(value, bool)
         }
@@ -168,6 +202,7 @@ class WindowsApp:
                 [
                     str(self.powershell),
                     "-NoProfile",
+                    "-NonInteractive",
                     "-STA",
                     "-File",
                     str(UIA_CLIENT),
@@ -243,6 +278,7 @@ class WindowsApp:
                         [
                             str(self.powershell),
                             "-NoProfile",
+                            "-NonInteractive",
                             "-STA",
                             "-File",
                             str(UIA_CLIENT),
