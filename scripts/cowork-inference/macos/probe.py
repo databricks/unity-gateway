@@ -240,6 +240,12 @@ def main(private, capability="inference"):
     }
     app = None
     task = None
+    policy_backup = private / "desktop-profile.backup"
+    profile_path = (
+        Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    )
+    policy_script = Path(__file__).parents[1] / "desktop-policy.py"
     raw_log = private / "native.log"
     handlers = {sig: signal.signal(sig, stop_probe) for sig in (signal.SIGTERM, signal.SIGALRM)}
     signal.alarm(PROBE_TIMEOUT_SECONDS)
@@ -256,6 +262,17 @@ def main(private, capability="inference"):
             task = tasks.prepare_task(capability, sys.modules[__name__])
             save("task.json", json.dumps(task, indent=2))
             report.update(capability=capability, passed=False, submitted=False)
+            if capability == "mcp":
+                process.run(
+                    [
+                        sys.executable,
+                        str(policy_script),
+                        "apply",
+                        str(profile_path),
+                        str(policy_backup),
+                    ],
+                    check=True,
+                )
         with os.fdopen(os.open(raw_log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as log:
             app = process.popen(
                 [
@@ -331,6 +348,21 @@ def main(private, capability="inference"):
             except OSError as exc:
                 report["logError"] = str(exc)
                 report["responseAsserted"] = False
+            if policy_backup.exists():
+                try:
+                    process.run(
+                        [
+                            sys.executable,
+                            str(policy_script),
+                            "restore",
+                            str(profile_path),
+                            str(policy_backup),
+                        ],
+                        check=True,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    report["policyRestoreError"] = str(exc)
+                    report["responseAsserted"] = False
             if task:
                 report["passed"] = report["responseAsserted"]
                 try:

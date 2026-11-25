@@ -83,8 +83,9 @@ After inference, three fresh Cowork tasks run through the same native UI:
    `--mcp system.ai.web_search` (the service in `task-fixture.json`). The task requires the
    Desktop profile's `web_search` connector to be UG's stdio proxy for that
    service. Ask Cowork to search for Databricks' official website with that connector's
-   `mcp__web_search__web_search` tool, and not Desktop's native `WebSearch`; on Anthropic-direct
-   sources native search works and the model otherwise prefers it. Require a
+   `mcp__web_search__web_search` tool. For this task only, Desktop's managed
+   `disabledBuiltinTools` setting removes the competing native `WebSearch`; the original profile
+   is restored after the app stops. Require a
    successful `mcp__web_search__web_search` call with a nonempty query whose result contains a
    `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
    URLs, including its path, ignoring Markdown, trailing slashes, and the `utm_source` attribution

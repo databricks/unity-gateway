@@ -34,6 +34,80 @@ def test_desktop_evidence_redacts_credentials_and_preserves_diagnostics(monkeypa
     assert redact("Claude responded: 48213") == "Claude responded: 48213"
 
 
+@pytest.mark.parametrize("existing", [None, ["Read(secret/**)"], ["WebSearch"]])
+def test_mcp_search_policy_restores_profile_bytes(tmp_path, existing):
+    profile = tmp_path / "profile.json"
+    backup = tmp_path / "profile.backup"
+    data = {"inferenceProvider": "gateway", "managedMcpServers": [{"name": "web_search"}]}
+    if existing is not None:
+        data["disabledBuiltinTools"] = existing
+    original = (json.dumps(data, indent=4) + "\n").encode()
+    profile.write_bytes(original)
+    script = SCRIPTS.parent / "desktop-policy.py"
+    args = [sys.executable, str(script), "apply", str(profile), str(backup)]
+    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(profile.read_text())
+    assert actual["managedMcpServers"] == [{"name": "web_search"}]
+    assert actual["disabledBuiltinTools"] == list(dict.fromkeys([*(existing or []), "WebSearch"]))
+    assert backup.read_bytes() == original
+    result = subprocess.run(
+        [sys.executable, str(script), "restore", str(profile), str(backup)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert profile.read_bytes() == original
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize("invalid", ["WebSearch", ["Read", 42]])
+def test_mcp_search_policy_rejects_malformed_existing_rules(tmp_path, invalid):
+    profile = tmp_path / "profile.json"
+    backup = tmp_path / "profile.backup"
+    original = json.dumps({"disabledBuiltinTools": invalid}).encode()
+    profile.write_bytes(original)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS.parent / "desktop-policy.py"),
+            "apply",
+            str(profile),
+            str(backup),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert profile.read_bytes() == original
+    assert not backup.exists()
+
+
+def test_mcp_search_policy_refuses_to_overwrite_existing_backup(tmp_path):
+    profile = tmp_path / "profile.json"
+    backup = tmp_path / "profile.backup"
+    original = b'{"inferenceProvider":"gateway"}'
+    profile.write_bytes(original)
+    backup.write_bytes(b"earlier backup")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS.parent / "desktop-policy.py"),
+            "apply",
+            str(profile),
+            str(backup),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert profile.read_bytes() == original
+    assert backup.read_bytes() == b"earlier backup"
+
+
 @pytest.mark.parametrize(
     ("snapshot", "expected"),
     [
@@ -640,6 +714,64 @@ def tasks(monkeypatch, tmp_path):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module.Path, "home", lambda: tmp_path)
     return module
+
+
+def test_mcp_task_restricts_native_search_only_while_desktop_runs(harness, tasks, monkeypatch):
+    private = harness.root / "private"
+    private.mkdir(mode=0o700)
+    evidence = harness.probe.EVIDENCE
+    (evidence / "configuration.json").write_text(json.dumps({"label": harness.probe.MODEL}))
+    profile = (
+        harness.root / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    )
+    profile.parent.mkdir(parents=True)
+    original = b'{"disabledBuiltinTools":["Read(secret/**)"],"managedMcpServers":[]}\n'
+    profile.write_bytes(original)
+    observed = []
+    monkeypatch.setattr(tasks, "prepare_task", lambda *_: {"capability": "mcp"})
+    monkeypatch.setattr(tasks, "capture_sessions", lambda *_: None)
+
+    def native_run(args, **kwargs):
+        if len(args) > 1 and str(args[1]).endswith("desktop-policy.py"):
+            return subprocess.run(args, **kwargs)
+        raise OSError("Accessibility unavailable")
+
+    def launch_native(*args, **kwargs):
+        observed.append(json.loads(profile.read_text())["disabledBuiltinTools"])
+        return SimpleNamespace(
+            terminate=lambda: observed.append(
+                json.loads(profile.read_text())["disabledBuiltinTools"]
+            ),
+            wait=lambda **kwargs: 0,
+            poll=lambda: 0,
+        )
+
+    monkeypatch.setattr(
+        harness.probe, "process", SimpleNamespace(run=native_run, popen=launch_native)
+    )
+    monkeypatch.setitem(sys.modules, "tasks", tasks)
+    monkeypatch.setitem(sys.modules, harness.probe.__name__, harness.probe)
+    monkeypatch.setattr(
+        harness.probe,
+        "sys",
+        SimpleNamespace(platform="darwin", modules=sys.modules, executable=sys.executable),
+    )
+    if os.name == "nt":
+        monkeypatch.setattr(
+            harness.probe,
+            "signal",
+            SimpleNamespace(
+                SIGTERM=signal.SIGTERM,
+                SIGALRM=999,
+                SIG_IGN=signal.SIG_IGN,
+                signal=lambda *_: None,
+                alarm=lambda *_: None,
+            ),
+        )
+    assert harness.probe.main(private, "mcp") == 1
+    assert observed == [["Read(secret/**)", "WebSearch"]] * 2
+    assert profile.read_bytes() == original
 
 
 @pytest.mark.skipif(os.name != "posix", reason="macOS probe uses POSIX signals and permissions")

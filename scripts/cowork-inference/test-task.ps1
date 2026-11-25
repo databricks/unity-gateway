@@ -24,6 +24,8 @@ New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $report = [ordered]@{ capability = $Capability; passed = $false; submitted = $false }
 $taskPath = Join-Path $env:RUNNER_TEMP "cowork-$Capability-task.json"
 $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+$profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
+$policyBackup = Join-Path $env:RUNNER_TEMP ("cowork-desktop-profile-" + [Guid]::NewGuid().ToString('N') + '.backup')
 $script:window = $null
 $started = Get-Date
 
@@ -116,6 +118,10 @@ try {
     $task = New-CoworkTask -Capability $Capability -EvidenceDirectory $evidence
     $task.startedAfter = $started.ToUniversalTime().ToString('o')
     $task | ConvertTo-Json | Set-Content -LiteralPath $taskPath
+    if ($Capability -eq 'mcp') {
+        & $python "$PSScriptRoot/desktop-policy.py" apply $profilePath $policyBackup
+        if ($LASTEXITCODE -ne 0) { throw 'Could not restrict native web search for the MCP task' }
+    }
     Start-Process -FilePath $env:CLAUDE_DESKTOP_EXECUTABLE -ArgumentList '--force-renderer-accessibility' | Out-Null
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     do {
@@ -189,6 +195,13 @@ try {
     $processes | Stop-Process -Force -ErrorAction SilentlyContinue
     foreach ($process in $processes) {
         try { [void]$process.WaitForExit(10000) } catch { }
+    }
+    if (Test-Path -LiteralPath $policyBackup) {
+        & $python "$PSScriptRoot/desktop-policy.py" restore $profilePath $policyBackup
+        if ($LASTEXITCODE -ne 0) {
+            $report.policyRestoreError = 'Could not restore the Desktop profile after the MCP task'
+            $report.passed = $false
+        }
     }
     if ($report.session.transcript) {
         try {
