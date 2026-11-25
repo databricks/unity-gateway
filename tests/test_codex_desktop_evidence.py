@@ -48,16 +48,14 @@ def test_persistent_windows_uia_protocol_preserves_process_and_errors():
     assert client.proc.poll() is not None
 
 
-def test_persistent_uia_reports_closed_input_and_preserves_stderr():
-    helper = (
-        "import os,sys,time\n"
-        "os.close(0)\n"
-        "print('helper evidence',file=sys.stderr,flush=True)\n"
-        'print(\'{"event":"ready","metrics":{}}\',flush=True)\n'
-        "time.sleep(1)\n"
-    )
+def test_persistent_uia_reports_closed_input_and_preserves_stderr(monkeypatch):
+    helper = "import sys; print('helper evidence', file=sys.stderr, flush=True)"
     client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
     try:
+        client.proc.wait(timeout=5)
+        client.ready = True
+        # Model an exit immediately after a successful liveness check.
+        monkeypatch.setattr(client.proc, "poll", lambda: None)
         with pytest.raises(AssertionError, match="helper input closed"):
             client.request("tree")
         assert client.broken
