@@ -86,6 +86,16 @@ def evaluate_mcp(answer, calls, results, task):
     }
 
 
+def matches_task_prompt(records, task):
+    return any(
+        isinstance(record, dict)
+        and isinstance(message := record.get("message"), dict)
+        and message.get("role") == "user"
+        and task["prompt"] in content_text(message.get("content", []))
+        for record in records
+    )
+
+
 def evaluate(records, task):
     paths = posixpath if task.get("platform") == "macos" else ntpath
     messages = [
@@ -93,10 +103,7 @@ def evaluate(records, task):
         for record in records
         if isinstance(record, dict) and isinstance(record.get("message"), dict)
     ]
-    if not any(
-        message.get("role") == "user" and task["prompt"] in content_text(message.get("content", []))
-        for message in messages
-    ):
+    if not matches_task_prompt(records, task):
         return {"status": "pending"}
     answers = [
         content_text(message.get("content", []))
@@ -190,13 +197,7 @@ def inspect_sessions(root, task):
         result = evaluate(records, task)
         if result["status"] != "pending":
             return {**result, "transcript": str(path)}
-        if "transcript" not in pending and any(
-            isinstance(record, dict)
-            and isinstance(message := record.get("message"), dict)
-            and message.get("role") == "user"
-            and task["prompt"] in content_text(message.get("content", []))
-            for record in records
-        ):
+        if "transcript" not in pending and matches_task_prompt(records, task):
             pending["transcript"] = str(path)
     return pending
 

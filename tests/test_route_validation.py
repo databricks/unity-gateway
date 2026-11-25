@@ -277,13 +277,36 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     assert session_routing_enabled(controls) is False
 
 
+def test_router_verdict_keeps_untrusted_reason_separate_from_diagnostics():
+    reason = "network error: timed out; diagnostics: synthetic-secret"
+    result = validation._verdict(
+        None, reason, "stable", time.monotonic(), "codex", diagnostics="connect_dns_tcp=42ms"
+    )
+    assert result["validation_failure_reason"] == "Smart Router didn't respond in time"
+    assert result["validation_diagnostics"] == "connect_dns_tcp=42ms"
+    assert "synthetic-secret" not in json.dumps(result)
+
+
+def test_http_error_with_timeout_text_does_not_become_a_timeout_diagnostic():
+    result = validation._verdict(
+        None,
+        "HTTP 504: upstream timed out",
+        "stable",
+        time.monotonic(),
+        "codex",
+        diagnostics="connect_dns_tcp=42ms",
+    )
+    assert result["validation_failure_reason"] == "Smart Router returned an error (HTTP 504)"
+    assert "validation_diagnostics" not in result
+
+
 def test_timeout_diagnostics_exclude_untrusted_reason_text():
     reason = (
         "network error: timed out; diagnostics: synthetic-secret; diagnostics: connect_dns_tcp=42ms"
     )
     result = validation._verdict(None, reason, "stable", time.monotonic(), "codex")
     assert result["validation_failure_reason"] == "Smart Router didn't respond in time"
-    assert result["validation_diagnostics"] == "connect_dns_tcp=42ms"
+    assert "validation_diagnostics" not in result
     assert "synthetic-secret" not in json.dumps(result)
     plain = validation._verdict(
         None, "network error: timed out", "stable", time.monotonic(), "codex"
@@ -356,6 +379,22 @@ def test_network_trace_records_real_loopback_transport(router, monkeypatch):
     assert "transport=pooled" in summary
     assert "connection=new" in summary
     assert "request_id=test-request-id" in summary
+
+
+@pytest.mark.parametrize("status", [400, 500])
+def test_urllib_error_response_preserves_request_id(router, monkeypatch, status):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: False)
+    router.status = status
+    timings = validation._NetworkTimings()
+    token = databricks._HTTP_TRACE.set(timings.trace)
+    try:
+        payload, reason = databricks._http_post_json(
+            f"{router.url}/validate", "test-token", {}, timeout=4
+        )
+    finally:
+        databricks._HTTP_TRACE.reset(token)
+    assert payload is None and f"HTTP {status}" in reason
+    assert "request_id=test-request-id" in timings.summary()
 
 
 def test_network_trace_records_real_connection_closed_before_response(monkeypatch):

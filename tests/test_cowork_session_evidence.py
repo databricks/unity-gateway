@@ -226,6 +226,22 @@ def test_pending_matching_transcript_is_available_for_timeout_evidence(mcp_evide
     assert result == {"status": "pending", "transcript": str(pending)}
 
 
+@pytest.mark.parametrize("role", ["user", "assistant"])
+def test_pending_session_requires_the_task_prompt_from_the_user(mcp_evidence, tmp_path, role):
+    _, task = mcp_evidence
+    task["startedAfter"] = datetime.fromtimestamp(0, tz=UTC).isoformat()
+    directory = tmp_path / "projects" / "session"
+    directory.mkdir(parents=True)
+    transcript = directory / "pending.jsonl"
+    transcript.write_text(json.dumps({"message": {"role": role, "content": task["prompt"]}}))
+    result = inspect_sessions(tmp_path, task)
+    assert result == (
+        {"status": "pending", "transcript": str(transcript)}
+        if role == "user"
+        else {"status": "pending"}
+    )
+
+
 def test_transcript_permission_errors_are_not_hidden(tmp_path, monkeypatch):
     directory = tmp_path / "projects" / "session"
     directory.mkdir(parents=True)

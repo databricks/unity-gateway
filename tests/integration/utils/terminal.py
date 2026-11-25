@@ -7,6 +7,7 @@ gateway, application function, configuration file, or model response.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import queue
 import re
@@ -354,6 +355,42 @@ class TerminalProcess:
                             if key in record
                         }
                     )
+        mcp_diagnostics = []
+        for path in sorted((self.session.home / ".ucode/mcp-proxy").glob("*/backend.log")):
+            try:
+                lines = self.session.redact(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError as error:
+                mcp_diagnostics.append(
+                    {"backend": path.parent.name, "read_error": type(error).__name__}
+                )
+                continue
+            events = []
+            for line in lines.splitlines():
+                if not line.startswith("mcp-diagnostic "):
+                    continue
+                try:
+                    record = json.loads(line.removeprefix("mcp-diagnostic "))
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    events.append(
+                        {
+                            key: record[key]
+                            for key in (
+                                "timestamp_ms",
+                                "session_id",
+                                "event",
+                                "request_id",
+                                "method",
+                                "phase",
+                                "elapsed_ms",
+                                "status",
+                                "error_type",
+                            )
+                            if key in record
+                        }
+                    )
+            mcp_diagnostics.append({"backend": path.parent.name, "events": events})
         self.session.record(
             f"{self.name}.json",
             {
@@ -367,6 +404,7 @@ class TerminalProcess:
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
                 "route_validations": route_validations,
+                "mcp_transport_diagnostics": mcp_diagnostics,
                 "proxy_diagnostics": self.proxy_diagnostics.read_text(encoding="utf-8")
                 if self.proxy_diagnostics.is_file()
                 else None,

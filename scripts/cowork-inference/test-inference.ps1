@@ -31,10 +31,10 @@ function Wait-Control {
 $report = [ordered]@{}
 $process = $null
 $vmLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/cowork_vm_node.log'
-$vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
 $nativeLogDirectory = Join-Path $env:RUNNER_TEMP ('claude-native-' + [Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $nativeLogDirectory | Out-Null
 try {
+    $vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
     $process = Start-Process -FilePath $env:CLAUDE_DESKTOP_EXECUTABLE -ArgumentList '--force-renderer-accessibility' -PassThru `
         -RedirectStandardOutput (Join-Path $nativeLogDirectory 'native-stdout.log') `
         -RedirectStandardError (Join-Path $nativeLogDirectory 'native-stderr.log')
@@ -84,6 +84,7 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(240)
     do {
         Start-Sleep -Seconds 2
+        if (-not $report.vmReady -and (Test-CoworkVmReady -LogPath $vmLog -Offset $vmCheckpoint.offset -PrefixHash $vmCheckpoint.prefixHash)) { $report.vmReady = $true }
         $paneCondition = [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::NameProperty, 'Primary pane')
         $pane = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $paneCondition)
@@ -103,7 +104,6 @@ try {
             $report.responseFinished = $true
             $report.expectedResponse = '48213'
         }
-        if (Test-CoworkVmReady -LogPath $vmLog -Offset $vmCheckpoint.offset -PrefixHash $vmCheckpoint.prefixHash) { $report.vmReady = $true }
         if ($report.responseAsserted -and $report.vmReady) { break }
     } until ([DateTime]::UtcNow -ge $deadline)
     if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }
@@ -154,6 +154,8 @@ try {
             $text | Set-Content -LiteralPath (Join-Path $OutputDirectory $log.Name) -Encoding utf8
         }
     }
+    try { Save-CoworkLogTail -LogPath $vmLog -OutputPath (Join-Path $OutputDirectory 'native-vm.log') }
+    catch { $report.vmLogCaptureError = $_.Exception.Message }
     $json = $report | ConvertTo-Json -Depth 8
     $json = Protect-DiagnosticText $json
     $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8

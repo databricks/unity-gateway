@@ -68,6 +68,45 @@ try {
         Set-Content -LiteralPath $vmLog -Value ('[VM:start] Startup complete' + ('x' * 200)) -Encoding utf8
         if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A longer replacement must still show readiness' }
     } finally { Remove-Item -LiteralPath $vmLog -Force }
+    $sourceLog = [IO.Path]::GetTempFileName()
+    $savedLog = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllText($sourceLog, "startup known-fixture-token`nready`n")
+        Save-CoworkLogTail -LogPath $sourceLog -OutputPath $savedLog
+        $captured = [IO.File]::ReadAllText($savedLog)
+        if ($captured -notmatch 'startup \[REDACTED\]' -or $captured -notmatch 'ready' -or $captured -match 'known-fixture-token') {
+            throw 'VM log evidence must preserve state while redacting credentials'
+        }
+    } finally { Remove-Item -LiteralPath $sourceLog, $savedLog -Force }
+    $raceLog = [IO.Path]::GetTempFileName()
+    function Test-Path {
+        param([string]$LiteralPath)
+        if ($LiteralPath -eq $raceLog) {
+            Remove-Item -LiteralPath $LiteralPath -Force
+            return $true
+        }
+        Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath
+    }
+    try {
+        if (Test-CoworkVmReady -LogPath $raceLog -Offset 0 -PrefixHash '') {
+            throw 'A disappearing VM log is not ready'
+        }
+        [IO.File]::WriteAllText($raceLog, 'old')
+        $checkpoint = Get-CoworkLogCheckpoint -LogPath $raceLog
+        if ($checkpoint.offset -ne 0 -or $checkpoint.prefixHash -ne '') {
+            throw 'A disappearing VM log must use an empty checkpoint'
+        }
+    } finally {
+        Remove-Item Function:\Test-Path
+        Remove-Item -LiteralPath $raceLog -Force -ErrorAction SilentlyContinue
+    }
+    $lockedLog = [IO.Path]::GetTempFileName()
+    $exclusive = [IO.File]::Open($lockedLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        if (Test-CoworkVmReady -LogPath $lockedLog -Offset 0 -PrefixHash '') {
+            throw 'An exclusively locked VM log is not ready'
+        }
+    } finally { $exclusive.Dispose(); Remove-Item -LiteralPath $lockedLog -Force }
     foreach ($events in @(
         @('ready', 'permission'),
         @('permission', 'ready')
@@ -104,6 +143,31 @@ try {
     if ($rows.Count -ne 3 -or $rows[0].ContainsKey('nativeHandle') -or $rows[1].ContainsKey('nativeHandle') -or
         $rows[2].nativeHandle -ne 66102 -or $rows[2].handleClass -cne 'Edit' -or $script:classReads -ne 1) {
         throw 'UI snapshots must tolerate null handles and classify only a real folder field'
+    }
+    $stale = Convert-CoworkUiControl -Current $controls[2] -Value '' -GetClass {
+        param($Handle) throw [ComponentModel.Win32Exception]::new(1400)
+    }
+    if ($stale.nativeHandle -ne 66102 -or $stale.handleClassError -ne 1400) {
+        throw 'A stale folder handle must remain visible in the UI snapshot'
+    }
+    $script:staleReads = 0
+    $script:staleWrites = 0
+    $field = Set-CoworkFolderInput -ReadEdit {
+        $script:staleReads++
+        if ($script:staleReads -eq 1) { throw [ComponentModel.Win32Exception]::new(1400) }
+        return @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Edit' }
+    } -WriteAndRead { param($State, $Value, $Deadline) $script:staleWrites++; return $Value } `
+        -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3))
+    if ($script:staleReads -ne 2 -or $script:staleWrites -ne 1 -or $field.value -ne '/tmp/CoworkProbe') {
+        throw 'A destroyed handle must be re-observed before writing the folder once'
+    }
+    try {
+        Set-CoworkFolderInput -ReadEdit { throw [ComponentModel.Win32Exception]::new(5) } `
+            -WriteAndRead { param($State, $Value, $Deadline) return $Value } `
+            -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3)) | Out-Null
+        throw 'Unrelated Win32 errors must not be hidden'
+    } catch [ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 5) { throw }
     }
     $script:pickerReads = 0
     $script:fieldWrites = 0

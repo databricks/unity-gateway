@@ -95,6 +95,7 @@ class ExportBuffer:
         self.closed = threading.Event()
 
     def receive(self, message: dict) -> None:
+        diagnostics_enabled = bool(os.environ.get("UG_TEST_METRICS_DIAGNOSTICS"))
         with self.lock:
             if "credentials" in message:
                 self.credentials = message["credentials"]
@@ -114,11 +115,14 @@ class ExportBuffer:
                 self.context = context
             for workspace, name, value, labels in message.get("observations", []):
                 self.pending.append((workspace or self.workspace, name, value, labels))
-        if os.environ.get("UG_TEST_METRICS_DIAGNOSTICS"):
+            if diagnostics_enabled:
+                pending_count = len(self.pending)
+                credential_count = len(self.credentials)
+        if diagnostics_enabled:
             _test_diagnostic(
                 "frame",
-                pending=len(self.pending),
-                credentials=len(self.credentials),
+                pending=pending_count,
+                credentials=credential_count,
                 flush=bool(message.get("flush")),
             )
         if message.get("flush"):
@@ -132,11 +136,13 @@ class ExportBuffer:
                     _test_diagnostic("invalid-frame")
                     break
                 self.receive(json.loads(line))
+            else:
+                _test_diagnostic("eof")
         except Exception:
             _test_diagnostic("read-error")
             return
         finally:
-            _test_diagnostic("eof")
+            _test_diagnostic("closed")
             self.closed.set()
             self.wake.set()
 
@@ -150,7 +156,8 @@ class ExportBuffer:
                 else:
                     unbound.append((workspace, name, value, labels))
             self.pending = unbound
-            return [
+            pending_count = len(unbound)
+            batches = [
                 {
                     "workspace": workspace,
                     "token": self.credentials[workspace][0],
@@ -159,6 +166,10 @@ class ExportBuffer:
                 }
                 for workspace, points in grouped.items()
             ]
+        _test_diagnostic(
+            "drain", batches=len(batches), pending=pending_count, closed=self.closed.is_set()
+        )
+        return batches
 
     def run(self, stream: BinaryIO) -> None:
         # Keep draining the pipe while SDK initialization or an HTTP upload is in progress.
@@ -168,9 +179,6 @@ class ExportBuffer:
             self.wake.clear()
             closed = self.closed.is_set()
             batches = self.drain()
-            _test_diagnostic(
-                "drain", batches=len(batches), pending=len(self.pending), closed=closed
-            )
             for batch in batches:
                 try:
                     export_batch(batch)

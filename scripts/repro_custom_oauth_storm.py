@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 from databricks.sdk import oauth
 
 from ucode.agents import codex
-from ucode.custom_oauth import CustomOAuthConfig, get_custom_client_token
+from ucode.custom_oauth import CUSTOM_OAUTH_CLI_ENV_VAR, CustomOAuthConfig, get_custom_client_token
 from ucode.state import build_agent_state
 
 WORKSPACE = "https://example.databricks.com"
@@ -93,7 +93,7 @@ def _helper(cache_dir, login_seconds, ready, start, browsers, callback_port, bro
         expiry=datetime.now(UTC) + timedelta(hours=1),
     )
     with (
-        patch.dict("os.environ", {"ENABLE_CUSTOM_OAUTH_FROM_CLI": "0"}),
+        patch.dict("os.environ", {CUSTOM_OAUTH_CLI_ENV_VAR: "0"}),
         patch.object(oauth.TokenCache, "BASE_PATH", cache_dir),
         patch.object(oauth, "get_workspace_endpoints", return_value=endpoints),
         patch.object(oauth, "retrieve_token", return_value=token),

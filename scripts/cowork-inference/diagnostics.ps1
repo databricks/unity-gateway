@@ -14,6 +14,13 @@ function Protect-DiagnosticText {
     return $Text
 }
 
+function Save-CoworkLogTail {
+    param([string]$LogPath, [string]$OutputPath)
+    if (-not (Test-Path -LiteralPath $LogPath)) { return }
+    $text = (Get-Content -LiteralPath $LogPath -Tail 2000) -join "`n"
+    Protect-DiagnosticText $text | Set-Content -LiteralPath $OutputPath -Encoding utf8
+}
+
 function Get-CoworkLogPrefixHash {
     param([IO.Stream]$Stream, [long]$Length)
     [void]$Stream.Seek(0, [IO.SeekOrigin]::Begin)
@@ -33,7 +40,11 @@ function Get-CoworkLogPrefixHash {
 function Get-CoworkLogCheckpoint {
     param([string]$LogPath)
     if (-not (Test-Path -LiteralPath $LogPath)) { return @{ offset = 0; prefixHash = '' } }
-    $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {
+        return @{ offset = 0; prefixHash = '' }
+    }
     try {
         $offset = $stream.Length
         return @{ offset = $offset; prefixHash = Get-CoworkLogPrefixHash $stream $offset }
@@ -44,7 +55,15 @@ function Get-CoworkLogCheckpoint {
 function Test-CoworkVmReady {
     param([string]$LogPath, [long]$Offset, [string]$PrefixHash)
     if (-not (Test-Path -LiteralPath $LogPath)) { return $false }
-    $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {
+        return $false
+    } catch [IO.IOException] {
+        # EAGAIN and Windows sharing/lock violations mean another process temporarily owns the file.
+        if ($_.Exception.HResult -in @(11, -2147024864, -2147024863)) { return $false }
+        throw
+    }
     try {
         if ($stream.Length -lt $Offset -or ($Offset -gt 0 -and (Get-CoworkLogPrefixHash $stream $Offset) -ne $PrefixHash)) { $Offset = 0 }
         [void]$stream.Seek($Offset, [IO.SeekOrigin]::Begin)
@@ -82,7 +101,8 @@ function Convert-CoworkUiControl {
         $handle = [IntPtr]$Current.NativeWindowHandle
         if ($handle -ne [IntPtr]::Zero) {
             $row.nativeHandle = $handle.ToInt64()
-            $row.handleClass = & $GetClass $handle
+            try { $row.handleClass = & $GetClass $handle }
+            catch [ComponentModel.Win32Exception] { $row.handleClassError = $_.Exception.NativeErrorCode }
         }
     }
     return $row
@@ -91,7 +111,11 @@ function Convert-CoworkUiControl {
 function Set-CoworkFolderInput {
     param([scriptblock]$ReadEdit, [scriptblock]$WriteAndRead, [string]$Folder, [DateTime]$Deadline)
     do {
-        $state = & $ReadEdit
+        try { $state = & $ReadEdit }
+        catch [ComponentModel.Win32Exception] {
+            if ($_.Exception.NativeErrorCode -ne 1400) { throw }
+            $state = $null
+        }
         if ($state -and $state.enabled -and $null -ne $state.handle -and [IntPtr]$state.handle -ne [IntPtr]::Zero -and [DateTime]::UtcNow -lt $Deadline) {
             if ($state.class -cne 'Edit') { throw "Folder field 1152 has class $($state.class), not Edit" }
             $actual = & $WriteAndRead $state $Folder $Deadline

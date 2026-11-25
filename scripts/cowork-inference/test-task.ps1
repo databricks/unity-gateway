@@ -63,7 +63,13 @@ $policyBackup = Join-Path $env:RUNNER_TEMP ("cowork-desktop-profile-" + [Guid]::
 $script:window = $null
 $started = Get-Date
 $vmLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/cowork_vm_node.log'
-$vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
+
+function Get-SessionEvidence {
+    $raw = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
+        --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
+    return $raw | ConvertFrom-Json
+}
 
 function Find-Control {
     param([string[]]$Names, $Root = $script:window)
@@ -185,8 +191,10 @@ function Select-Folder {
                 $_.Current.Name -like 'Address:*' -and -not $_.Current.IsOffscreen
             } catch [Windows.Automation.ElementNotAvailableException] { $false }
         } | Select-Object -First 1
+        $addressName = try { if ($address) { $address.Current.Name } else { '' } }
+            catch [Windows.Automation.ElementNotAvailableException] { '' }
         @{
-            address = if ($address) { $address.Current.Name } else { '' }
+            address = $addressName
             button = Find-Control -Names @('Select Folder', 'Select folder', 'Open') -Root $dialog
         }
     }
@@ -203,6 +211,7 @@ function Select-Folder {
 }
 
 try {
+    $vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
     $task = New-CoworkTask -Capability $Capability -EvidenceDirectory $evidence
     $task.startedAfter = $started.ToUniversalTime().ToString('o')
     $task | ConvertTo-Json | Set-Content -LiteralPath $taskPath
@@ -256,10 +265,7 @@ try {
                 Invoke-Control $allow
             }
         }
-        $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
-            --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
-        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
-        $sessionEvidence = $rawEvidence | ConvertFrom-Json
+        $sessionEvidence = Get-SessionEvidence
         $report.session = $sessionEvidence
         if ($sessionEvidence.status -eq 'pending') { continue }
         if ($sessionEvidence.status -ne 'passed') { throw $sessionEvidence.error }
@@ -297,10 +303,7 @@ try {
     }
     if ($Capability -eq 'mcp' -and $report.submitted -and -not $report.session.transcript) {
         try {
-            $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
-                --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
-            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
-            $report.session = $rawEvidence | ConvertFrom-Json
+            $report.session = Get-SessionEvidence
         } catch { $report.captureError = $_.Exception.Message }
     }
     if ($report.session.transcript) {

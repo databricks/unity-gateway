@@ -332,6 +332,37 @@ def test_backend_diagnostics_do_not_break_when_stderr_is_unavailable(monkeypatch
         mcp_proxy_daemon._log_diagnostic("synthetic-session", "session_start", {})
 
 
+def test_backend_diagnostics_do_not_block_session_when_output_stalls(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class BlockingStream:
+        def write(self, _value):
+            entered.set()
+            release.wait()
+
+        def flush(self):
+            finished.set()
+
+    monkeypatch.setattr(mcp_proxy_daemon.sys, "stderr", BlockingStream())
+    writer = mcp_proxy_daemon._DiagnosticWriter()
+    record = writer.record
+    returned = threading.Event()
+    thread = threading.Thread(
+        target=lambda: (record("synthetic-session", "session_start", {}), returned.set())
+    )
+    try:
+        thread.start()
+        assert entered.wait(2), "diagnostic output did not start"
+        assert returned.wait(2), "blocked diagnostic output delayed the session"
+    finally:
+        release.set()
+        thread.join()
+        assert finished.wait(2)
+        writer.close()
+
+
 def test_backend_logs_session_scoped_transport_events_without_secrets(clients, peer, tmp_path):
     good = clients(peer[0] + "/mcp")
     good.initialize()

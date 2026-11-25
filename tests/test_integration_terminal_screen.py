@@ -52,6 +52,40 @@ def test_terminal_preserves_redacted_proxy_diagnostics_outside_screen(tmp_path, 
     assert event == {"event": "request_start", "request_id": "<redacted>"}
 
 
+def test_terminal_preserves_redacted_mcp_transport_diagnostics_on_failure(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    session.env["DATABRICKS_BEARER"] = 'synthetic-"secret'
+    log_dir = session.home / ".ucode/mcp-proxy/component"
+    log_dir.mkdir(parents=True)
+    event = {
+        "timestamp_ms": 123,
+        "session_id": "session-one",
+        "event": "transport",
+        "phase": "connection.connect_tcp.failed",
+        "error_type": "ConnectTimeout",
+        "request_id": 'synthetic-"secret',
+        "private_data": "private-prompt",
+    }
+    (log_dir / "backend.log").write_text(
+        "private backend message\n" + "mcp-diagnostic " + json.dumps(event) + "\n"
+    )
+    command = [str(session.binary), "-c", "print('ready', flush=True); input()"]
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        with TerminalProcess(session, "ug", command, "mcp-diagnostics") as terminal:
+            terminal.wait_for(lambda screen: "ready" in screen, "prompt")
+            raise RuntimeError("simulated failure")
+    recorded = json.loads((session.artifacts / "mcp-diagnostics.json").read_text())
+    expected = {key: value for key, value in event.items() if key != "private_data"}
+    expected["request_id"] = "<redacted>"
+    assert recorded["mcp_transport_diagnostics"] == [{"backend": "component", "events": [expected]}]
+    assert 'synthetic-\\"secret' not in json.dumps(recorded)
+    assert "private backend message" not in json.dumps(recorded)
+    assert "private-prompt" not in json.dumps(recorded)
+
+
 def test_terminal_preserves_redacted_router_validation_on_failure(tmp_path):
     root, project = tmp_path / "session", tmp_path / "project"
     root.mkdir()

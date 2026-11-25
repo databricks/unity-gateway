@@ -16,6 +16,8 @@ receipt against its tool and run ID. Expected receipts are withheld from the pro
 A completed parent turn must answer with a short run-specific marker after both calls;
 it does not copy the long receipts, which models can mistype.
 Terminal actions, rendered screens, and native transcripts are recorded by the harness.
+Terminal artifacts also retain redacted, allowlisted session and transport events from the MCP
+backend logs; raw backend messages and request contents are excluded.
 
 Both inventories must omit `ug_e2e.other_tools`, including the accessible
 `fixture_decoy` service and its `decoy_status` tool. Claude traverses the server menu

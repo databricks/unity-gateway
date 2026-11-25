@@ -121,7 +121,9 @@ deadline = time.monotonic() + 3
 assert runtime.test_idle is not None, 'test idle signal was not initialized'
 directory = Path(os.environ['UG_TEST_METRICS_DIAGNOSTICS'])
 while time.monotonic() < deadline:
-    if any('"event": "reader-ready"' in p.read_text() for p in directory.glob('exporter-*.jsonl')):
+    if any(json.loads(line).get('event') == 'reader-ready'
+           for p in directory.glob('exporter-*.jsonl')
+           for line in p.read_text().splitlines(keepends=True) if line.endswith('\n')):
         break
     time.sleep(0.01)
 else:
@@ -191,7 +193,12 @@ print('command completed')
                 file.name: file.read_text(encoding="utf-8") for file in diagnostics.glob("*.jsonl")
             }
             assert "parent.jsonl" in logs
-            assert any('"event": "http-start"' in value for value in logs.values())
+            assert any(
+                json.loads(line).get("event") == "http-start"
+                for value in logs.values()
+                for line in value.splitlines(keepends=True)
+                if line.endswith("\n")
+            )
             assert all(
                 "test-workspace-token" not in value and host not in value for value in logs.values()
             )
@@ -248,6 +255,72 @@ def test_exporter_diagnostics_record_state_without_credentials(tmp_path, monkeyp
     assert frame["credentials"] == 1 and frame["pending"] == 1
     assert all(isinstance(event["monotonic_ns"], int) for event in events)
     assert "synthetic-secret" not in text and "private.example" not in text
+
+
+@pytest.mark.parametrize(
+    ("data", "failure"),
+    [(b"incomplete", "invalid-frame"), (b"not-json\n", "read-error")],
+)
+def test_exporter_diagnostics_do_not_label_failed_reads_as_eof(
+    tmp_path, monkeypatch, data, failure
+):
+    import io
+
+    from ucode.metrics.exporter import ExportBuffer
+
+    monkeypatch.setenv("UG_TEST_METRICS_DIAGNOSTICS", str(tmp_path))
+    ExportBuffer().read(io.BytesIO(data))
+    [path] = tmp_path.glob("exporter-*.jsonl")
+    events = {json.loads(line)["event"] for line in path.read_text().splitlines()}
+    assert failure in events and "closed" in events
+    assert "eof" not in events
+
+
+def test_exporter_frame_diagnostics_snapshot_counts_under_lock(monkeypatch):
+    from ucode.metrics import exporter
+
+    buffer = exporter.ExportBuffer()
+    events = []
+    monkeypatch.setenv("UG_TEST_METRICS_DIAGNOSTICS", "enabled")
+    monkeypatch.setattr(
+        exporter, "_test_diagnostic", lambda event, **fields: events.append((event, fields))
+    )
+
+    class DrainAfterRelease:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            buffer.pending.clear()
+            buffer.credentials.clear()
+
+    buffer.lock = DrainAfterRelease()
+    buffer.receive(
+        {"credentials": {"workspace": ["token", {}]}, "observations": [[None, "x", 1, {}]]}
+    )
+    assert events == [("frame", {"pending": 1, "credentials": 1, "flush": False})]
+
+
+def test_exporter_drain_diagnostics_snapshot_remaining_count_under_lock(monkeypatch):
+    from ucode.metrics import exporter
+
+    buffer = exporter.ExportBuffer()
+    buffer.pending.append((None, "x", 1, {}))
+    events = []
+    monkeypatch.setattr(
+        exporter, "_test_diagnostic", lambda event, **fields: events.append((event, fields))
+    )
+
+    class ReceiveAfterRelease:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            buffer.pending.append((None, "new", 1, {}))
+
+    buffer.lock = ReceiveAfterRelease()
+    assert buffer.drain() == []
+    assert events == [("drain", {"batches": 0, "pending": 1, "closed": False})]
 
 
 def test_exporter_buffer_bounds_unbound_observations_and_preserves_workspace_tokens():

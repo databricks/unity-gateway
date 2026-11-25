@@ -263,7 +263,7 @@ def _check_route_options(
     token: str,
     body: dict[str, Any],
     provider: str | None,
-) -> tuple[object, str | None]:
+) -> tuple[object, str | None, str | None]:
     outcome: dict[str, Any] = {}
     timings = _NetworkTimings()
     # The probe shares this measurement, so its HTTP status labels it; a late probe only fills `outcome`.
@@ -275,9 +275,10 @@ def _check_route_options(
     probe.start()
     probe.join(VALIDATION_TIMEOUT_SECONDS)
     payload, reason = outcome.get("response", (None, ROUTE_VALIDATION_TIMED_OUT))
-    if reason and TIMED_OUT_MARKER in reason:
-        reason = f"{reason}; diagnostics: {timings.summary()}"
-    return payload, reason
+    diagnostics = (
+        timings.summary() if _failure_reason(payload, reason) == TIMED_OUT_FAILURE_REASON else None
+    )
+    return payload, diagnostics, reason
 
 
 def _request_body(route_options: list[tuple[str, str]], router_name: str) -> dict[str, Any]:
@@ -293,6 +294,8 @@ def _verdict(
     router_name: str,
     started: float,
     available_harness: str,
+    *,
+    diagnostics: str | None = None,
 ) -> dict[str, Any]:
     if reason and reason.startswith(NOT_FOUND_REASON_PREFIX):
         return {"routing_disabled": False}
@@ -309,10 +312,8 @@ def _verdict(
         **details,
         "validation_ms": round((time.monotonic() - started) * 1000),
     }
-    if reason and TIMED_OUT_MARKER in reason:
-        _, separator, diagnostics = reason.rpartition("; diagnostics: ")
-        if separator and diagnostics:
-            result["validation_diagnostics"] = diagnostics
+    if failure == TIMED_OUT_FAILURE_REASON and diagnostics:
+        result["validation_diagnostics"] = diagnostics
     return result
 
 
@@ -337,12 +338,14 @@ def validate(
     """Return the verdict; an unsupported list or a failed check disables routing."""
     started = time.monotonic()
     try:
-        payload, reason = _check_route_options(
+        payload, diagnostics, reason = _check_route_options(
             workspace, token, _request_body(route_options, router_name), provider
         )
     except Exception:
-        payload, reason = None, CHECK_FAILED_REASON
-    return _verdict(payload, reason, router_name, started, available_harness)
+        payload, diagnostics, reason = None, None, CHECK_FAILED_REASON
+    return _verdict(
+        payload, reason, router_name, started, available_harness, diagnostics=diagnostics
+    )
 
 
 def start(
@@ -359,8 +362,10 @@ def start(
 
     def check() -> None:
         started = time.monotonic()
-        payload, reason = _check_route_options(workspace, token, body, provider)
-        result = _verdict(payload, reason, router_name, started, available_harness)
+        payload, diagnostics, reason = _check_route_options(workspace, token, body, provider)
+        result = _verdict(
+            payload, reason, router_name, started, available_harness, diagnostics=diagnostics
+        )
         if result["routing_disabled"]:
             try:
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))

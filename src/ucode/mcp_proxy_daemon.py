@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import os
+import queue
 import secrets
 import sys
 import threading
@@ -33,9 +34,11 @@ from ucode.ug_headers import scoped_ug_headers
 from ucode.workspace import pin
 
 
-def _log_diagnostic(session_id: str, event: str, fields: dict) -> None:
+def _log_diagnostic(
+    session_id: str, event: str, fields: dict, *, timestamp_ms: int | None = None
+) -> None:
     payload = {
-        "timestamp_ms": int(time.time() * 1000),
+        "timestamp_ms": timestamp_ms if timestamp_ms is not None else int(time.time() * 1000),
         "session_id": session_id,
         "event": event,
         **fields,
@@ -43,6 +46,23 @@ def _log_diagnostic(session_id: str, event: str, fields: dict) -> None:
     with suppress(OSError, ValueError):
         sys.stderr.write("mcp-diagnostic " + json.dumps(payload, separators=(",", ":")) + "\n")
         sys.stderr.flush()
+
+
+class _DiagnosticWriter:
+    def __init__(self) -> None:
+        self._events: queue.SimpleQueue[tuple[str, str, dict, int] | None] = queue.SimpleQueue()
+        threading.Thread(target=self._write, daemon=True).start()
+
+    def record(self, session_id: str, event: str, fields: dict) -> None:
+        self._events.put((session_id, event, fields, int(time.time() * 1000)))
+
+    def _write(self) -> None:
+        while (entry := self._events.get()) is not None:
+            session_id, event, fields, timestamp_ms = entry
+            _log_diagnostic(session_id, event, fields, timestamp_ms=timestamp_ms)
+
+    def close(self) -> None:
+        self._events.put(None)
 
 
 def session_token_provider(workspace: str, profile: str | None, use_pat: bool) -> Callable[[], str]:
@@ -124,6 +144,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
     last_disconnect = asyncio.get_running_loop().time()
     unset = object()
     selection: object = unset
+    diagnostics: _DiagnosticWriter
 
     async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         nonlocal active, last_disconnect, selection
@@ -133,7 +154,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
         started = False
 
         def diagnostic(event: str, fields: dict) -> None:
-            _log_diagnostic(session_id, event, fields)
+            diagnostics.record(session_id, event, fields)
 
         try:
             async with asyncio.timeout(5):
@@ -206,6 +227,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
             last_disconnect = asyncio.get_running_loop().time()
 
     server = await asyncio.start_server(accept, "127.0.0.1", 0, limit=MAX_FRAME_BYTES)
+    diagnostics = _DiagnosticWriter()
     metadata = {
         "protocol": PROTOCOL_VERSION,
         "port": server.sockets[0].getsockname()[1],
@@ -229,7 +251,10 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
                     break
     finally:
         # The lifetime lock remains held through metadata removal.
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        finally:
+            diagnostics.close()
 
 
 def main() -> None:

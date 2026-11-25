@@ -510,7 +510,12 @@ def _http_open(request: urllib_request.Request, *, timeout: float):
         # urllib's own path — its proxy handling and trust store — exactly as main ran it.
         if trace:
             trace("transport.urllib", {})
-        response = urllib_request.urlopen(request, timeout=timeout)
+        try:
+            response = urllib_request.urlopen(request, timeout=timeout)
+        except urllib_error.HTTPError as error:
+            if trace and error.headers:
+                trace("response.headers", {"headers": list(error.headers.items())})
+            raise
         if trace:
             trace("response.headers", {"headers": list(response.headers.items())})
         return response
