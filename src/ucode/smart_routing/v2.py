@@ -498,6 +498,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "title": "Subagent router",
                     "description": "CLI argument list for a subagent routing decision",
                 },
+                "modelSettingCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Model recovery",
+                    "description": "CLI argument list for native saved-default receipts",
+                },
                 "logsCommand": {
                     "type": "string",
                     "multiple": True,
@@ -545,6 +552,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
+        "model-setting-recovery.ts",
+        "model-setting-receipt.py",
         "routing-state.ts",
         "routing-logs.ts",
         "smart-routing-status.ts",
@@ -788,8 +797,10 @@ class _ClaudeModelSettingGuard:
         self._cancelled = False
         self._manual_model: str | None = None
         self._manual_confirmed: bool | None = None
+        self._manual_saved_default: dict | None = None
         self._manual_registered = False
         self._manual_started_at = 0
+        self._manual_started_monotonic_ns = 0
         self._begin_error_warned = False
         self._token = uuid.uuid4().hex
         settings_key = hashlib.sha256(str(settings_path.resolve()).encode()).hexdigest()[:16]
@@ -849,7 +860,15 @@ class _ClaudeModelSettingGuard:
             or manual["pid"] <= 0
         ):
             raise ValueError(f"Invalid manual model recovery in {self._recovery_path}")
-        if type(recovery.get("manual_started_at", 0)) is not int:
+        manual_order = recovery.get("manual_order")
+        if type(recovery.get("manual_started_at", 0)) is not int or (
+            manual_order is not None
+            and (
+                not isinstance(manual_order, dict)
+                or not isinstance(manual_order.get("token"), str)
+                or type(manual_order.get("monotonic_ns")) is not int
+            )
+        ):
             raise ValueError(f"Invalid manual model order in {self._recovery_path}")
         return recovery
 
@@ -950,8 +969,10 @@ class _ClaudeModelSettingGuard:
         self._cancelled = False
         self._manual_model = None
         self._manual_confirmed = None
+        self._manual_saved_default = None
         self._manual_registered = False
         self._manual_started_at = 0
+        self._manual_started_monotonic_ns = 0
         self._release_settings_lock()
         self._release_owner_lock()
 
@@ -1033,8 +1054,11 @@ class _ClaudeModelSettingGuard:
         self._cancelled = True
         self._manual_model = manual_model
         self._manual_confirmed = None
+        self._manual_saved_default = None
         self._manual_registered = False
         self._manual_started_at = time.time_ns()
+        # Windows wall-clock ticks can cover more than one manual input.
+        self._manual_started_monotonic_ns = time.monotonic_ns()
         return self._try_abandon()
 
     def _try_abandon(self) -> bool:
@@ -1046,18 +1070,28 @@ class _ClaudeModelSettingGuard:
             return False
         try:
             recovery = self._read_recovery()
+            manual_order = recovery.get("manual_order") or {}
+            # An older writer may retain another choice's optional ordering record.
+            recorded_order = (
+                recovery.get("manual_started_at", 0),
+                manual_order.get("monotonic_ns", 0)
+                if manual_order.get("token") == recovery.get("manual_choice")
+                else 0,
+            )
             if (
-                recovery.get("manual_started_at", 0) > self._manual_started_at
+                recorded_order > (self._manual_started_at, self._manual_started_monotonic_ns)
                 or self._manual_registered
                 and recovery.get("manual_choice") != self._token
             ):
                 self._clear()
                 return True
-            if manual_model is not None:
-                recovery["pending"].pop(self._token, None)
             recovery["manual_choice"] = self._token
             # Keep input order when registration has to wait for another writer.
             recovery["manual_started_at"] = self._manual_started_at
+            recovery["manual_order"] = {
+                "token": self._token,
+                "monotonic_ns": self._manual_started_monotonic_ns,
+            }
             if recovery["pending"] or manual_model is None:
                 # Opaque input stays tentative until the native command or prompt settles.
                 recovery["manual"] = {
@@ -1075,6 +1109,8 @@ class _ClaudeModelSettingGuard:
         return True
 
     def _finish_manual_choice(self, *, confirmed: bool, deadline: float | None = None) -> bool:
+        if confirmed and self._manual_model is None and self._manual_saved_default is None:
+            return False
         if confirmed and not self._manual_registered:
             if self._try_abandon():
                 return True
@@ -1088,15 +1124,14 @@ class _ClaudeModelSettingGuard:
             recovery = self._read_recovery()
             if recovery.get("manual", {}).get("token") == self._token:
                 if confirmed:
-                    if self._manual_model is None:
-                        # A native opaque choice cannot supply the raw saved-default selector.
-                        recovery["pending"].clear()
-                    else:
-                        recovery["before"] = {"model": self._manual_model}
+                    recovery["before"] = (
+                        self._manual_saved_default
+                        if self._manual_saved_default is not None
+                        else {"model": self._manual_model}
+                    )
                 del recovery["manual"]
-            resume_routed = (
-                not confirmed and self._manual_model is None and self._token in recovery["pending"]
-            )
+            # A native child can still finish its earlier routed write after a manual save.
+            resume_routed = self._token in recovery["pending"]
             if not resume_routed:
                 recovery["pending"].pop(self._token, None)
             finished = {
@@ -1118,8 +1153,10 @@ class _ClaudeModelSettingGuard:
             self._cancelled = False
             self._manual_model = None
             self._manual_confirmed = None
+            self._manual_saved_default = None
             self._manual_registered = False
             self._manual_started_at = 0
+            self._manual_started_monotonic_ns = 0
             return False
         self._clear()
         return True
@@ -1127,6 +1164,25 @@ class _ClaudeModelSettingGuard:
     def confirm_manual_choice(self) -> bool:
         if not self._cancelled:
             return True
+        if self._manual_model is None:
+            return self._try_abandon()
+        self._manual_confirmed = True
+        return self._finish_manual_choice(confirmed=True)
+
+    def prepare_saved_model_choice(self) -> bool:
+        if not self._cancelled:
+            return self.abandon()
+        # Native confirmation belongs to the input's existing cross-session order.
+        self._manual_model = None
+        self._manual_saved_default = None
+        self._manual_confirmed = None
+        return self._try_abandon()
+
+    def confirm_saved_model_choice(self, model: str | None) -> bool:
+        """Accept the raw selector returned by a native saved-default change."""
+        if not self._cancelled:
+            return True
+        self._manual_saved_default = {"model": model} if model is not None else {}
         self._manual_confirmed = True
         return self._finish_manual_choice(confirmed=True)
 
@@ -1458,6 +1514,12 @@ def launch_claude(
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }
+            if route_first_prompt:
+                mod_options["modelSettingCommand"] = [
+                    sys.executable,
+                    str(plugin_dir / "hooks" / "model-setting-receipt.py"),
+                    str(socket_path),
+                ]
             # The managed recipe mod, which alone writes the extra body, reads its recipe here:
             # pluginConfigs are the user tier's options and need not reach a policy-tier mod.
             env[routing.ROUTER_NAME_ENV_VAR] = (
@@ -1523,6 +1585,8 @@ def launch_claude(
                     defer_model_setting=model_setting.defer,
                     abandon_model_setting=model_setting.abandon,
                     confirm_manual_model_setting=model_setting.confirm_manual_choice,
+                    prepare_saved_model_setting=model_setting.prepare_saved_model_choice,
+                    confirm_saved_model_setting=model_setting.confirm_saved_model_choice,
                     cancel_manual_model_setting=model_setting.cancel_manual_choice,
                     log_path=CLAUDE_PTY_LOG,
                 )

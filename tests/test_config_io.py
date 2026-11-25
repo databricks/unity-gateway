@@ -328,6 +328,47 @@ class TestWriteHelpers:
         assert json.loads(path.read_text()) == {"original": True}
         assert not list(tmp_path.glob(".out.json.*"))
 
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    def test_atomic_preserving_write_rejects_a_successful_copier_that_replaces_the_staged_file(
+        self, tmp_path, monkeypatch
+    ):
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        copier = binaries / "cp"
+        copied = tmp_path / "copier-finished"
+        # Exercise replacement by the external dependency while retaining the real writer.
+        copier.write_text(
+            f"#!{sys.executable}\n"
+            "import os\nimport shutil\nimport sys\nfrom pathlib import Path\n"
+            "staged = Path(sys.argv[-1])\n"
+            "replacement = staged.with_suffix('.replacement')\n"
+            "shutil.copy2(sys.argv[-2], replacement)\n"
+            "os.replace(replacement, staged)\n"
+            f"Path({str(copied)!r}).touch()\n"
+        )
+        copier.chmod(0o700)
+        monkeypatch.setenv("PATH", str(binaries))
+        path = tmp_path / "out.json"
+        original = b'{"original": true}\n'
+        path.write_bytes(original)
+        path.chmod(0o640)
+        before = path.stat()
+
+        with pytest.raises(RuntimeError, match="Failed to write file") as error:
+            config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+
+        after = path.stat()
+        assert copied.exists()
+        assert str(error.value.__cause__) == "Could not preserve file permissions"
+        assert path.read_bytes() == original
+        assert (after.st_ino, after.st_uid, after.st_gid, after.st_mode) == (
+            before.st_ino,
+            before.st_uid,
+            before.st_gid,
+            before.st_mode,
+        )
+        assert not list(tmp_path.glob(".out.json.*"))
+
 
 # ---------------------------------------------------------------------------
 # read_json_safe / read_toml_safe

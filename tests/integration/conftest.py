@@ -224,11 +224,31 @@ def session(request, installed_binary):
 
 @pytest.fixture(autouse=True)
 def antigravity_request_evidence(request):
-    if request.node.get_closest_marker("antigravity") is None:
-        yield
-        return
-    with antigravity.record_requests(request.getfixturevalue("session")):
-        yield
+    if request.node.get_closest_marker("antigravity") is not None:
+        return request.getfixturevalue("session")
+    return None
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_setup(item):
+    try:
+        return (yield)
+    except BaseException:
+        session = item.funcargs.get("antigravity_request_evidence")
+        if session is None:
+            raise
+        with antigravity.record_requests(session):
+            raise
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_call(item):
+    session = item.funcargs.get("antigravity_request_evidence")
+    if session is None:
+        return (yield)
+    # The hook sees the call exception before pytest formats its failure report.
+    with antigravity.record_requests(session):
+        return (yield)
 
 
 @pytest.fixture

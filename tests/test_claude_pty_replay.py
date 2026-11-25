@@ -440,6 +440,8 @@ try:
         abandon_model_setting=abandon,
         confirm_manual_model_setting=guard.confirm_manual_choice,
         cancel_manual_model_setting=guard.cancel_manual_choice,
+        prepare_saved_model_setting=guard.prepare_saved_model_choice,
+        confirm_saved_model_setting=guard.confirm_saved_model_choice,
         log_path=root / "routing.log",
     )
 finally:
@@ -700,13 +702,24 @@ finally:
             == {"model": "haiku", "unrelated": "preserved"}
         )
 
-    @pytest.mark.parametrize("completion", [b"Kept model as sonnet\n", b"Model switch cancelled\n"])
+    @pytest.mark.parametrize(
+        "completion",
+        [
+            b"Kept model as sonnet\n",
+            b"Model switch cancelled\n",
+            pytest.param(
+                b"Model switch to {model} was blocked by a PreModelSwitch hook: policy\n",
+                id="premodel-rejection",
+            ),
+        ],
+    )
     @pytest.mark.parametrize("manual_model", ["opus", "sonnet"])
     def test_cancelled_manual_switch_releases_another_sessions_recovery(
         self, replay_model_switch, tmp_path, completion, manual_model
     ):
         body = (
-            f"COMPLETION = {completion!r}\nMANUAL_MODEL = {manual_model!r}\n"
+            f"COMPLETION = {completion.replace(b'{model}', manual_model.encode())!r}\n"
+            f"MANUAL_MODEL = {manual_model!r}\n"
             + """\
 from ucode.smart_routing import v2
 
@@ -780,10 +793,23 @@ finally:
         body = (
             f"FAIL_HANDOFF = {fail_handoff}\nAFTER_SUBMISSION = {after_submission}\n"
             + """\
+import subprocess
+from ucode import agents
+
+helper = Path(agents.__file__).parent / "claude_mods" / "model-setting-receipt.py"
+def receipt(payload):
+    response = subprocess.run(
+        [sys.executable, str(helper), socket_path], input=json.dumps(payload),
+        text=True, capture_output=True, timeout=10,
+    )
+    assert response.returncode == 0, response.stderr
+    assert json.loads(response.stdout)["acknowledged"]
+
 assert send_hook(socket_path, "hello")["action"] == "block"
 tty.setraw(0)
 print("blocked", flush=True)
 read_until(b"\\r")
+receipt({"event": "command", "id": 1, "command": "model", "origin": "composer"})
 if AFTER_SUBMISSION:
     os.write(1, b"Set model to sonnet\\n")
     paste = read_until(b"\\x1b[201~")
@@ -805,7 +831,10 @@ try:
         assert (test_dir / "handoff-failed").exists()
 finally:
     recovery_dir.chmod(0o700)
+receipt({"event": "command", "id": 2, "command": "model", "origin": "composer"})
+receipt({"event": "prepare", "id": 3, "command_id": 2})
 Path(sys.argv[3]).write_text(json.dumps({"model": "sonnet"}))
+receipt({"event": "saved", "id": 3, "model": "sonnet"})
 os.write(1, b"Set model to sonnet\\n")
 time.sleep(0.8)
 capture_path.write_text(json.dumps({
@@ -1088,6 +1117,37 @@ capture_path.write_text(json.dumps({
 
 
 class TestManualModelConfirmation:
+    @pytest.mark.parametrize(
+        "model, output, expected",
+        [
+            ("opus", b"Model switch to opus was blocked by a PreModelSwitch hook\n", "cancelled"),
+            (
+                "opus",
+                b"Model switch to Claude Opus 5.5 was blocked by a PreModelSwitch hook: policy\n",
+                "cancelled",
+            ),
+            (
+                None,
+                b"Model switch to Custom Display was blocked by a PreModelSwitch hook\n",
+                "cancelled",
+            ),
+            ("opus", b"Model switch to sonnet was blocked by a PreModelSwitch hook\n", None),
+            ("opus", b"Model switch to opus was blocked by a PreModelSwitch hook", None),
+            (
+                None,
+                b"Please explain: Model switch to opus was blocked by a PreModelSwitch hook\n",
+                None,
+            ),
+            (None, "❯ Model switch to opus was blocked by a PreModelSwitch hook\n".encode(), None),
+        ],
+    )
+    def test_premodel_rejection_requires_a_complete_matching_native_result(
+        self, model, output, expected
+    ):
+        confirmation = claude_pty.ManualModelConfirmation(model)
+        observations = [confirmation.observe(bytes([byte])) for byte in output]
+        assert next((result for result in observations if result is not None), None) == expected
+
     @pytest.mark.parametrize(
         "model, output, expected",
         [
@@ -1530,9 +1590,12 @@ class TestOpaqueInputRecovery:
             (b"/model\r", None, b"Set model to fable\n"),
             (b"\x1b[A\r", None, b"Set model to fable\n"),
             (b"/mo\t\r", None, b"Set model to fable\n"),
+            (b"/model\r", None, b"Set model to fable for this session only\n"),
             (b"/model\r", None, b"Kept model as haiku\n"),
             (b"\x1b[A\r", None, b"Model switch cancelled\n"),
             (b"/mo\t\r", None, b"Kept model as haiku\n"),
+            (b"\x1b[A\r", None, b"<session-clear>"),
+            (b"/cl\t\r", None, b"<session-clear>"),
         ],
         ids=[
             "history-prompt",
@@ -1541,9 +1604,12 @@ class TestOpaqueInputRecovery:
             "picker-choice",
             "history-choice",
             "completion-choice",
+            "picker-session-only",
             "picker-cancel",
             "history-cancel",
             "completion-cancel",
+            "history-clear-session",
+            "completion-clear-session",
         ],
     )
     def test_opaque_input_waits_for_native_classification(
@@ -1577,17 +1643,38 @@ try:
     recovery = json.loads(other._recovery_path.read_text())
     assert other._token in recovery["pending"]
     assert recovery["before"] == {"model": "haiku"}
-    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
-    deadline = time.monotonic() + 3
-    while not other.is_routed():
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
+    saves_default = OUTCOME and OUTCOME.startswith(b"Set model") and b"for this session only" not in OUTCOME
+    if not saves_default:
+        settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+        deadline = time.monotonic() + 3
+        while not other.is_routed():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
     assert other.restore() is False, "a possible manual choice must settle first"
     if PROMPT is not None:
         assert send_hook(socket_path, PROMPT)["action"] == "allow"
+    elif OUTCOME == b"<session-clear>":
+        from ucode.smart_routing.claude_pty import request_first_prompt_route
+        request_first_prompt_route(Path(socket_path), {
+            "hook_event_name": "SessionStart", "source": "clear", "session_id": "s2",
+        })
     else:
-        if OUTCOME.startswith(b"Set model"):
+        if saves_default:
+            from ucode import agents
+            import subprocess
+            helper = Path(agents.__file__).parent / "claude_mods" / "model-setting-receipt.py"
+            def receipt(payload):
+                response = subprocess.run(
+                    [sys.executable, str(helper), socket_path], input=json.dumps(payload),
+                    text=True, capture_output=True, timeout=10,
+                )
+                assert response.returncode == 0, response.stderr
+                assert json.loads(response.stdout)["acknowledged"]
+            receipt({"event": "command", "id": 1, "command": "model", "origin": "composer"})
+            receipt({"event": "prepare", "id": 2, "command_id": 1})
             settings.write_text(json.dumps({"model": "fable", "unrelated": "preserved"}))
+            receipt({"event": "saved", "id": 2, "model": "fable"})
+            settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
         os.write(1, OUTCOME[:5])
         os.write(1, OUTCOME[5:])
     deadline = time.monotonic() + 3
@@ -1601,7 +1688,10 @@ finally:
         )
         with _stdin_after(tmp_path / "ready", [command]):
             capture, settings, _ = replay_model_switch(body)
-        expected = "fable" if outcome and outcome.startswith(b"Set model") else "haiku"
+        saved = (
+            outcome and outcome.startswith(b"Set model") and b"for this session only" not in outcome
+        )
+        expected = "fable" if saved else "haiku"
         assert (
             capture["settings_while_running"]
             == settings
@@ -1631,10 +1721,15 @@ finally:
 
 
 class TestOpaqueInputAcknowledgements:
-    def test_ordinary_prompt_keeps_its_own_delayed_routed_write_recoverable(
-        self, replay_model_switch, tmp_path
+    @pytest.mark.parametrize(
+        "clear_session", [False, True], ids=["ordinary-prompt", "clear-session"]
+    )
+    def test_non_model_input_keeps_its_own_delayed_routed_write_recoverable(
+        self, replay_model_switch, tmp_path, clear_session
     ):
-        body = r"""
+        body = (
+            f"CLEAR_SESSION = {clear_session!r}\n"
+            + r"""
 settings = Path(sys.argv[3])
 assert send_hook(socket_path, "hello")["action"] == "block"
 tty.setraw(0)
@@ -1644,7 +1739,13 @@ read_until(b"\r")
 assert read_until(b"\r") == b"\x1b[A\r"
 recovery_path = next((Path.home() / ".ucode").glob("claude-v2-model-*.json"))
 assert json.loads(recovery_path.read_text())["pending"]
-assert send_hook(socket_path, "a different ordinary prompt")["action"] == "allow"
+if CLEAR_SESSION:
+    from ucode.smart_routing.claude_pty import request_first_prompt_route
+    request_first_prompt_route(Path(socket_path), {
+        "hook_event_name": "SessionStart", "source": "clear", "session_id": "s2",
+    })
+else:
+    assert send_hook(socket_path, "a different ordinary prompt")["action"] == "allow"
 deadline = time.monotonic() + 3
 while "manual" in json.loads(recovery_path.read_text()):
     assert time.monotonic() < deadline
@@ -1659,55 +1760,7 @@ while not (test_dir / "restored").exists():
     time.sleep(0.01)
 capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
 """
-        with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
-            capture, settings, _ = replay_model_switch(body)
-        assert (
-            capture["settings_while_running"]
-            == settings
-            == {"model": "haiku", "unrelated": "preserved"}
         )
-
-    def test_old_replay_acknowledgement_does_not_cancel_a_new_opaque_choice(
-        self, replay_model_switch, tmp_path
-    ):
-        body = r"""
-from ucode.smart_routing import v2
-
-settings = Path(sys.argv[3])
-assert send_hook(socket_path, "hello")["action"] == "block"
-tty.setraw(0)
-print("blocked", flush=True)
-read_until(b"\r")
-settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
-os.write(1, b"Set model to sonnet\n")
-read_until(b"\x1b[201~")
-assert os.read(0, 1) == b"\r"
-other = v2._ClaudeModelSettingGuard(settings)
-try:
-    assert other.begin("opus")
-    (test_dir / "ready").touch()
-    assert read_until(b"\r") == b"\x1b[A\r"
-    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
-    deadline = time.monotonic() + 3
-    while not other.is_routed():
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-    assert other.restore() is False
-    assert send_hook(socket_path, "hello")["action"] == "allow"
-    deadline = time.monotonic() + 0.5
-    while time.monotonic() < deadline:
-        assert other.restore() is False
-        time.sleep(0.01)
-    assert "manual" in json.loads(other._recovery_path.read_text())
-    os.write(1, b"Kept model as haiku\n")
-    deadline = time.monotonic() + 3
-    while not other.restore():
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-    capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
-finally:
-    other.finish()
-"""
         with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
             capture, settings, _ = replay_model_switch(body)
         assert (
@@ -1717,15 +1770,19 @@ finally:
         )
 
     @pytest.mark.parametrize(
-        "reply",
-        [b"Set model to fable\n", b"Here is the explanation.\n"],
-        ids=["model-result-text", "ordinary-text"],
+        "old_clear, ordinary_prompt, reply",
+        [
+            pytest.param(False, False, b"Kept model as haiku\n", id="replay-ack-model-cancel"),
+            pytest.param(True, False, b"Kept model as haiku\n", id="clear-session-model-cancel"),
+            pytest.param(False, True, b"Set model to fable\n", id="replay-ack-prompt-model-text"),
+            pytest.param(False, True, b"Here is the explanation.\n", id="replay-ack-prompt-text"),
+        ],
     )
-    def test_ordinary_prompt_after_old_replay_acknowledgement_releases_recovery(
-        self, replay_model_switch, tmp_path, reply
+    def test_prior_native_event_does_not_settle_a_new_opaque_choice(
+        self, replay_model_switch, tmp_path, old_clear, ordinary_prompt, reply
     ):
         body = (
-            f"REPLY = {reply!r}\n"
+            f"OLD_CLEAR = {old_clear!r}\nORDINARY_PROMPT = {ordinary_prompt!r}\nREPLY = {reply!r}\n"
             + r"""
 from ucode.smart_routing import v2
 
@@ -1738,6 +1795,12 @@ settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
 os.write(1, b"Set model to sonnet\n")
 read_until(b"\x1b[201~")
 assert os.read(0, 1) == b"\r"
+if OLD_CLEAR:
+    from ucode.smart_routing.claude_pty import request_first_prompt_route
+    assert send_hook(socket_path, "hello")["action"] == "allow"
+    request_first_prompt_route(Path(socket_path), {
+        "hook_event_name": "SessionStart", "source": "clear", "session_id": "s2",
+    })
 other = v2._ClaudeModelSettingGuard(settings)
 try:
     assert other.begin("opus")
@@ -1749,13 +1812,15 @@ try:
         assert time.monotonic() < deadline
         time.sleep(0.01)
     assert other.restore() is False
-    assert send_hook(socket_path, "hello")["action"] == "allow"
+    if not OLD_CLEAR:
+        assert send_hook(socket_path, "hello")["action"] == "allow"
     deadline = time.monotonic() + 0.5
     while time.monotonic() < deadline:
         assert other.restore() is False
         time.sleep(0.01)
     assert "manual" in json.loads(other._recovery_path.read_text())
-    assert send_hook(socket_path, "quote the model result")["action"] == "allow"
+    if ORDINARY_PROMPT:
+        assert send_hook(socket_path, "quote the model result")["action"] == "allow"
     os.write(1, REPLY)
     deadline = time.monotonic() + 3
     while not other.restore():
@@ -1912,3 +1977,237 @@ class TestPromptHookAcknowledgement:
             stop.set()
             server.join(timeout=2)
         assert not server.is_alive()
+
+
+def test_prompt_recovery_saves_a_private_copy_for_later(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_pty, "APP_DIR", tmp_path)
+    prompt = 'Keep this "quoted" prompt.\r\n\x1b[2J\x7f'
+
+    note = claude_pty.prompt_recovery_note(prompt)
+
+    saved = list(tmp_path.glob("claude-prompt-*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_bytes() == prompt.encode()
+    assert saved[0].stat().st_mode & 0o777 == 0o600
+    assert str(saved[0]) in note and "then delete the recovery file" in note
+
+
+def test_prompt_recovery_full_directory_preserves_every_existing_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_pty, "APP_DIR", tmp_path)
+    original = {
+        tmp_path / f"claude-prompt-{index}.txt": f"unrecovered prompt {index}"
+        for index in range(claude_pty.MAX_PROMPT_RECOVERY_FILES)
+    }
+    for path, content in original.items():
+        path.write_text(content)
+    unrelated = tmp_path / "user-notes.txt"
+    unrelated.write_text("user owned")
+    prompt = 'Keep this "quoted" prompt.\n\x1b[2J\x7f'
+
+    note = claude_pty.prompt_recovery_note(prompt)
+
+    assert "recovery file limit" in note
+    assert json.loads(note.split("JSON string: ", 1)[1]) == prompt
+    assert "\x1b" not in note and "\x7f" not in note and "\n" not in note
+    assert set(tmp_path.glob("claude-prompt-*.txt")) == set(original)
+    assert all(path.read_text() == content for path, content in original.items())
+    assert unrelated.read_text() == "user owned"
+
+
+def test_prompt_recovery_preserves_unknown_links_when_full(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_pty, "APP_DIR", tmp_path)
+    target = tmp_path / "user-input.txt"
+    target.write_text("user owned")
+    links = [
+        tmp_path / f"claude-prompt-unknown-{index}.txt"
+        for index in range(claude_pty.MAX_PROMPT_RECOVERY_FILES)
+    ]
+    for path in links:
+        path.symlink_to(target)
+
+    note = claude_pty.prompt_recovery_note("recover later")
+
+    assert json.loads(note.split("JSON string: ", 1)[1]) == "recover later"
+    assert set(tmp_path.glob("claude-prompt-*.txt")) == set(links)
+    assert all(path.is_symlink() and path.readlink() == target for path in links)
+    assert target.read_text() == "user owned"
+
+
+def test_prompt_recovery_uses_inline_copy_when_another_writer_holds_the_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_pty, "APP_DIR", tmp_path)
+    with (tmp_path / "claude-prompt-recovery.lock").open("a+") as lock:
+        claude_pty.acquire_exclusive_file_lock(lock, timeout=0)
+        try:
+            note = claude_pty.prompt_recovery_note("recover after contention")
+        finally:
+            claude_pty.release_file_lock(lock)
+
+    assert list(tmp_path.glob("claude-prompt-*.txt")) == []
+    assert json.loads(note.split("JSON string: ", 1)[1]) == "recover after contention"
+
+
+def test_prompt_recovery_concurrent_writers_respect_the_file_limit(tmp_path):
+    copies = tmp_path / "copies"
+    copies.mkdir()
+    original = {
+        copies / f"claude-prompt-existing-{index}.txt": f"preserved {index}"
+        for index in range(claude_pty.MAX_PROMPT_RECOVERY_FILES - 1)
+    }
+    for path, content in original.items():
+        path.write_text(content)
+    ready = tmp_path / "ready"
+    ready.mkdir()
+    script = """\
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from ucode.smart_routing import claude_pty
+
+claude_pty.APP_DIR = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+(ready / sys.argv[3]).touch()
+deadline = time.monotonic() + 10
+while len(list(ready.iterdir())) != 4:
+    assert time.monotonic() < deadline, 'writers did not reach the barrier'
+    time.sleep(0.005)
+os.umask(0)
+print(json.dumps(claude_pty.prompt_recovery_note(sys.argv[4])), flush=True)
+"""
+    processes = []
+    notes = []
+    try:
+        for index in range(4):
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        script,
+                        str(copies),
+                        str(ready),
+                        str(index),
+                        f"prompt {index}",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            assert process.returncode == 0, stderr
+            notes.append(json.loads(stdout))
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+    saved = set(copies.glob("claude-prompt-*.txt"))
+    assert len(saved) == claude_pty.MAX_PROMPT_RECOVERY_FILES
+    assert all(path.read_text() == content for path, content in original.items())
+    new = saved - set(original)
+    assert len(new) == 1
+    recovered = new.pop()
+    assert recovered.stat().st_mode & 0o777 == 0o600
+    assert sum(str(recovered) in note for note in notes) == 1
+    assert {recovered.read_text()} | {
+        json.loads(note.split("JSON string: ", 1)[1]) for note in notes if "JSON string: " in note
+    } == {f"prompt {index}" for index in range(4)}
+
+
+@pytest.mark.parametrize("manual_model", ["opus", "sonnet"])
+@pytest.mark.parametrize("persisted_before", [False, True], ids=["late-write", "already-written"])
+@pytest.mark.parametrize("rejected", [False, True], ids=["cancelled", "premodel-rejection"])
+def test_cancelled_manual_switch_keeps_its_own_routed_write_recoverable(
+    replay_model_switch, tmp_path, manual_model, persisted_before, rejected
+):
+    body = (
+        f"MANUAL_MODEL = {manual_model!r}\nPERSISTED_BEFORE = {persisted_before!r}\n"
+        f"REJECTED = {rejected!r}\n"
+        + r"""
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+if PERSISTED_BEFORE:
+    settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+(test_dir / "ready").touch()
+command = read_until(b"\r")
+assert command == f"/model {MANUAL_MODEL}\r".encode()
+recovery_paths = list((Path.home() / ".ucode").glob("claude-v2-model-*.json"))
+assert len(recovery_paths) == 1, "manual command discarded the pending routed write"
+assert json.loads(recovery_paths[0].read_text())["pending"], "manual command discarded the pending routed write"
+if REJECTED:
+    os.write(1, f"Model switch to {MANUAL_MODEL} was blocked by a PreModelSwitch hook: policy\n".encode())
+else:
+    os.write(1, b"Model switch cancelled\n")
+if not PERSISTED_BEFORE:
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        assert not (test_dir / "restored").exists(), "cancellation acknowledged a future write"
+        assert json.loads(settings.read_text())["model"] == "haiku"
+        time.sleep(0.01)
+    settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+    os.write(1, b"Set model to sonnet\n")
+deadline = time.monotonic() + 3
+while not (test_dir / "restored").exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.01)
+assert not sel.select([0], [], [], 0.1)[0], "cancellation resumed automatic input"
+capture_path.write_text(json.dumps({
+    "command": command.hex(), "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
+    )
+    with _stdin_after(tmp_path / "ready", [f"/model {manual_model}\r".encode()]):
+        capture, settings, _ = replay_model_switch(body)
+
+    assert capture["command"] == f"/model {manual_model}\r".encode().hex()
+    assert (
+        capture["settings_while_running"]
+        == settings
+        == {"model": "haiku", "unrelated": "preserved"}
+    )
+
+
+class TestLateAutomaticModelResult:
+    def test_late_automatic_result_cannot_confirm_a_history_prompt(
+        self, replay_model_switch, tmp_path
+    ):
+        body = r"""
+settings = Path(sys.argv[3])
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\r")
+(test_dir / "ready").touch()
+assert read_until(b"\r") == b"\x1b[A\r"
+recovery_path = next((Path.home() / ".ucode").glob("claude-v2-model-*.json"))
+assert json.loads(recovery_path.read_text())["pending"]
+os.write(1, b"Set model to sonnet\n")
+deadline = time.monotonic() + 0.5
+while time.monotonic() < deadline:
+    assert recovery_path.exists(), "a late automatic result consumed the history prompt"
+    recovery = json.loads(recovery_path.read_text())
+    assert recovery["pending"] and "manual" in recovery
+    time.sleep(0.01)
+assert send_hook(socket_path, "a different ordinary prompt")["action"] == "allow"
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+deadline = time.monotonic() + 3
+while not (test_dir / "restored").exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.01)
+capture_path.write_text(json.dumps({"settings_while_running": json.loads(settings.read_text())}))
+"""
+        with _stdin_after(tmp_path / "ready", [b"\x1b[A\r"]):
+            capture, settings, _ = replay_model_switch(body)
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )

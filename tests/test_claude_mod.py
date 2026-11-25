@@ -26,6 +26,8 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
+        "model-setting-recovery.ts",
+        "model-setting-receipt.py",
         "routing-logs.ts",
         "routing-state.ts",
         "smart-routing-status.ts",

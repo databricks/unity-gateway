@@ -911,6 +911,10 @@ trust screens through visible choices, and reads the answer from a finished agen
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
+The offline `../test_integration_evidence.py` subprocess check loads the real pytest plugin and
+uses synthetic native logs to exercise setup, call and capture failures. It preserves the original
+exception when capture also fails, fails capture-only errors, and keeps unmarked tests lazy.
+This check makes no agent or gateway calls.
 
 VS Code Copilot Chat has four live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
 no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
@@ -1382,6 +1386,15 @@ by component tests in `../test_claude_smart_routing_v2.py`, not by a live regist
 
 Exact candidate-model and router-name preservation in decision logs has component
 coverage in `../test_claude_smart_routing_v2.py`; this suite does not assert those fields.
+Offline PTY cases cover native PreModelSwitch rejection and history/completion-derived `/clear`
+with pending own or peer model writes. They exercise clear-session hook payloads and retain the
+first-prompt claim without acknowledging replay. A shared parameterized scenario covers old replay
+acknowledgements and clear hooks, then cancellation or an ordinary prompt with normal or model-like
+reply text. These cases do not establish native ordering or concurrent picker acceptance at the
+current source revision. Native saved-default receipt handling has offline component coverage;
+its current-source native acceptance and delayed persistence remain unverified. Model-recovery component tests
+also cover equal wall-clock input times, delayed registration, and persisted journals from
+older versions or before a monotonic-counter reset; those checks do not run a native picker.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
@@ -2115,15 +2128,6 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 the file task, and normal exit. The managed default routes Claude and supported Codex subagents
 with the orchestrator. The version-aware Codex journey covers old-version fallback and routed child work; the
 routing-lane journey additionally requires supported-version routing.
-
-See the [component coverage inventory](../README.md) for delayed Claude model-switch
-recovery, direct manual model choices across sessions, fragmented terminal input, and
-filesystem-failure coverage and gaps. Recovery after an unconfirmed chooser crashes requires
-POSIX process liveness; the normal exit case runs on all platforms. Windows disables first-prompt
-PTY routing. History and picker choices do not expose a model target to the wrapper and retain
-their conservative cleanup behavior.
-Those checks use temporary settings and fake TUIs; they do not establish live Claude or gateway
-coverage or replace the completed file task required by these live journeys.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

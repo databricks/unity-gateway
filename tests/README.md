@@ -1294,6 +1294,25 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 command, and the replay must arrive unchanged after a confirmed switch or cancellation, or a
 missing quiet window. These are component checks; live first-prompt routing on a pinned Claude Code
 version is not executed here.
+Recovery cases retain pending writes after same-session manual cancellation or a native
+PreModelSwitch rejection, including a write that arrives later. History/completion-derived `/clear`
+settles tentative recovery through the clear-session hook without acknowledging a replay or resetting
+its routing claim. Prior replay acknowledgements and clear hooks leave a newer opaque choice pending
+until its own cancellation or ordinary-prompt hook. Model-like reply text cannot turn that ordinary
+prompt into a model change. A late automatic model result also leaves a history prompt pending.
+Saved-default changes carry the raw selector through the native config receipt, and live routed
+writers keep their recovery entries after a manual choice. Session-only choices keep the prior
+default. `claude_model_setting_recovery.test.mjs` exercises the production hook handlers with a
+fake process boundary, including delayed replies and rejected saves. These use fake TUIs and
+native hook payloads; current-source native ordering, delayed
+native persistence and concurrent picker acceptance remain unverified.
+Model-recovery component cases force equal wall-clock timestamps and verify manual-choice
+order through both registration-lock contention paths. They also cover old journals without
+a monotonic timestamp, stale ordering records left by older writers, and newer wall-clock
+input after the monotonic counter resets.
+Prompt-copy checks cover private files, a ten-file creation limit, concurrent writers,
+and escaped inline fallback while preserving existing copies. `test_config_io.py` rejects an external
+copier that exits successfully after replacing the staged inode, preserving the original file.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
