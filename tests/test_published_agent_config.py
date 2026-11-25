@@ -566,10 +566,10 @@ class TestRun:
         raw = _raw_config(
             claude_config={
                 "default_models": {"default_model": "system.ai.claude-x"},
-                "claude_code": {"managed_settings_file": "managed-settings.json"},
+                "claude_code": {"managed_settings_json": "managed-settings.json"},
             },
             codex_config={
-                "codex": {"config_file": "config.toml", "requirements_file": "requirements.toml"}
+                "codex": {"config_toml": "config.toml", "requirements_toml": "requirements.toml"}
             },
         )
         raw["spec_version"] = 3
@@ -611,9 +611,9 @@ class TestRun:
         raw = _raw_config(
             claude_config={
                 "default_models": {"default_model": "system.ai.claude-x"},
-                "claude_code": {"managed_settings_file": "claude.json"},
+                "claude_code": {"managed_settings_json": "claude.json"},
             },
-            codex_config={"codex": {"requirements_file": "requirements.toml"}},
+            codex_config={"codex": {"requirements_toml": "requirements.toml"}},
         )
         monkeypatch.setattr(
             claude,
@@ -623,7 +623,8 @@ class TestRun:
         with pytest.raises(machine.ManagedRunError) as exc:
             _run(raw, source=str(tmp_path / "draft.json"))
         assert exc.value.code == machine.EXIT_USAGE
-        assert "_file" in str(exc.value)
+        reference = "managed_settings_json" if failure == "invalid-json" else "requirements_toml"
+        assert reference in str(exc.value)
         assert {path: path.read_bytes() for path in before} == before
         assert saved == saved_before
         assert written == {}
@@ -647,7 +648,7 @@ class TestRun:
                 _raw_config(
                     claude_config={
                         "claude_code": {
-                            "managed_settings_file": "/Volumes/main/ai/configs/settings.json"
+                            "managed_settings_json": "/Volumes/main/ai/configs/settings.json"
                         }
                     }
                 ),
@@ -1251,7 +1252,7 @@ class TestGlobalCli:
                     **_raw_config(
                         claude_config={
                             "default_models": {"default_model": "system.ai.claude-x"},
-                            "claude_code": {"managed_settings_file": "native.json"},
+                            "claude_code": {"managed_settings_json": "native.json"},
                         }
                     ),
                     "spec_version": 3,

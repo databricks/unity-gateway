@@ -85,8 +85,8 @@ written as given, including `null` for Claude Code. Codex drops `null` values, b
 
 A published configuration can reference UTF-8 files in ordinary UC Volumes instead of inline
 objects. File-backed configurations require `spec_version` 3. Each role accepts one source:
-`managed_settings` or `managed_settings_file`, `config` or `config_file`, and `requirements` or
-`requirements_file`. Different roles can mix inline and file sources.
+`managed_settings` or `managed_settings_json`, `config` or `config_toml`, and `requirements` or
+`requirements_toml`. Different roles can mix inline and file sources.
 
 ```json
 {
@@ -94,15 +94,15 @@ objects. File-backed configurations require `spec_version` 3. Each role accepts 
   "config": {
     "agent_native_config": {
       "codex": {
-        "config_file": "/Volumes/main/ai/agent_configs/codex/config.toml",
-        "requirements_file": "/Volumes/main/ai/agent_configs/codex/requirements.toml"
+        "config_toml": "/Volumes/main/ai/agent_configs/codex/config.toml",
+        "requirements_toml": "/Volumes/main/ai/agent_configs/codex/requirements.toml"
       }
     }
   }
 }
 ```
 
-Claude Code uses `agent_native_config.claude_code.managed_settings_file` to reference a native
+Claude Code uses `agent_native_config.claude_code.managed_settings_json` to reference a native
 JSON object. Codex files use native TOML. Each file is limited to 1 MiB. The ownership rules
 below apply after parsing, so Unity Gateway's required settings retain precedence.
 
