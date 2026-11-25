@@ -6,6 +6,7 @@ on:
     - cron: '5 * * * *'
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
   push:
     branches: [main]
@@ -256,7 +257,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: security-gate
     # The merge queue runs only lint and unit tests; e2e already ran on the PR.
-    if: ${{ github.event_name != 'merge_group' }}
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     defaults:
       run:
         shell: bash
@@ -363,7 +364,7 @@ jobs:
     name: Integration
     needs: security-gate
     # Integration needs CI secrets, so it runs only after the security gate passes.
-    if: ${{ github.event_name != 'merge_group' && needs.security-gate.result == 'success' && !cancelled() }}
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.security-gate.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
@@ -391,7 +392,7 @@ jobs:
 
   required-e2e:
     name: e2e
-    if: ${{ !cancelled() }}
+    if: ${{ always() && (github.event_name == 'pull_request' || !cancelled()) }}
     needs: [e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
