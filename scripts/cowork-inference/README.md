@@ -81,11 +81,11 @@ After inference, three fresh Cowork tasks run through the same native UI:
    calls, the reference file's value in the tool result, and an identical completed answer.
 3. The hosted Desktop jobs set `UG_COWORK_MCP`, so the initial `ug configure` also passes
    `--mcp system.ai.web_search` (the service in `task-fixture.json`). The task requires the
-   Desktop profile's `web_search` connector to be UG's stdio proxy for that
+   Desktop profile's `ug_web_search` connector to be UG's stdio proxy for that
    service. Ask Cowork to search for Databricks' official website with that connector's
-   `mcp__web_search__web_search` tool, and not Desktop's native `WebSearch`; on Anthropic-direct
+   `mcp__ug_web_search__web_search` tool, and not Desktop's native `WebSearch`; on Anthropic-direct
    sources native search works and the model otherwise prefers it. Require a
-   successful `mcp__web_search__web_search` call with a nonempty query whose result contains a
+   successful `mcp__ug_web_search__web_search` call with a nonempty query whose result contains a
    `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
    URLs, ignoring Markdown and trailing slashes. Search ranking and wording are not asserted;
    Desktop's native web search cannot satisfy it. Desktop asks before the connector's first use;
