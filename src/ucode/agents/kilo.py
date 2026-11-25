@@ -15,11 +15,6 @@ from ucode import metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
-    apply_json_mcp_diff,
-    backup_existing_file,
-    deep_merge_dict,
-    read_json_safe,
-    write_json_file,
     write_text_file,
 )
 from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
@@ -29,7 +24,7 @@ from ucode.databricks import (
     model_token_limits,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import mark_tool_managed, save_state
+from ucode.state import save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.workspace import workspace_headers
 
@@ -65,6 +60,8 @@ _SETTINGS = opencode_family.FamilySettings(
         "Run `ug configure --agent kilo` to discover models, then choose a "
         "discovered model id or pass a provider/model selector."
     ),
+    tool="kilo",
+    stale_provider_ids=("databricks-anthropic", "databricks-google", "databricks-oss"),
 )
 
 _parse_version = opencode_family.parse_version
@@ -190,73 +187,39 @@ def write_tool_config(
     model: str,
     token: str | None = None,
 ) -> tuple[dict, str]:
-    backup_existing_file(KILO_CONFIG_PATH, KILO_BACKUP_PATH)
-    if token is None:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
-    opencode_base_urls = state.get("base_urls", {}).get("opencode") or build_opencode_base_urls(
-        state["workspace"]
-    )
-    overlay, managed_keys = render_overlay(
+    return opencode_family.write_tool_config(
+        _SETTINGS,
+        state,
         model,
         token,
-        opencode_base_urls,
-        state.get("opencode_models") or {},
+        config_path=KILO_CONFIG_PATH,
+        backup_path=KILO_BACKUP_PATH,
+        get_token=get_databricks_token,
+        render_overlay=render_overlay,
+        write_auth_plugin=write_auth_plugin,
+        save_state=save_state,
+        build_base_urls=build_opencode_base_urls,
     )
-    existing = read_json_safe(KILO_CONFIG_PATH)
-    write_auth_plugin(state)
-    providers = existing.get("provider")
-    if isinstance(providers, dict):
-        for stale in (
-            "databricks-anthropic",
-            "databricks-google",
-            "databricks-oss",
-        ):
-            providers.pop(stale, None)
-    merged = deep_merge_dict(existing, overlay)
-    write_json_file(KILO_CONFIG_PATH, merged)
-    state = mark_tool_managed(state, "kilo", managed_keys)
-    save_state(state)
-    return state, token
 
 
-def build_mcp_server_entry(argv: list[str]) -> dict:
-    # A `local` MCP server runs a command over stdio; `command` is the full
-    # argv. ug registers the `ug mcp-proxy ...` bridge here so Kilo
-    # never speaks HTTP+bearer directly — the proxy mints fresh tokens itself.
-    return {
-        "type": "local",
-        "command": list(argv),
-        "enabled": True,
-    }
+build_mcp_server_entry = opencode_family.build_mcp_server_entry
 
 
 def write_mcp_server_config(name: str, argv: list[str]) -> bool:
-    backup_existing_file(KILO_CONFIG_PATH, KILO_BACKUP_PATH)
-    existing = read_json_safe(KILO_CONFIG_PATH)
-    mcp_servers = existing.get("mcp")
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-    removed = name in mcp_servers
-    mcp_servers[name] = build_mcp_server_entry(argv)
-    existing["mcp"] = mcp_servers
-    write_json_file(KILO_CONFIG_PATH, existing)
-    return removed
+    return opencode_family.write_mcp_server_config(
+        name, argv, config_path=KILO_CONFIG_PATH, backup_path=KILO_BACKUP_PATH
+    )
 
 
 def remove_mcp_server_config(name: str) -> bool:
-    existing = read_json_safe(KILO_CONFIG_PATH)
-    mcp_servers = existing.get("mcp")
-    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
-        return False
-    mcp_servers.pop(name)
-    existing["mcp"] = mcp_servers
-    write_json_file(KILO_CONFIG_PATH, existing)
-    return True
+    return opencode_family.remove_mcp_server_config(name, config_path=KILO_CONFIG_PATH)
 
 
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Kilo's `mcp` table in a single read-modify-write. Returns the names actually removed."""
-    return apply_json_mcp_diff(KILO_CONFIG_PATH, "mcp", add, remove, backup_path=KILO_BACKUP_PATH)
+    return opencode_family.write_user_mcp_servers(
+        add, remove, config_path=KILO_CONFIG_PATH, backup_path=KILO_BACKUP_PATH
+    )
 
 
 def default_model(state: dict) -> str | None:
