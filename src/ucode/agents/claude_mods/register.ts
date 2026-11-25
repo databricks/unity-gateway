@@ -9,7 +9,7 @@ import {
   warnUnsupportedModelList,
   warnValidationFailed,
 } from './smart-routing-status.ts';
-import { routeAgentStream, endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routeAgentStream, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   MODEL_SET_PREFIX,
@@ -486,6 +486,11 @@ export function register(on: On, options: PluginOptions): void {
       session: {id: () => $.session.id(), model: () => $.session.model()},
       // A server-side auto-mode verdict covers the call as the model wrote it.
       serverReview: async () => await $.env.get('CLAUDE_CODE_AUTO_MODE_SERVER') === '1',
+      // Claude's local auto-mode fallback check is off when any of these is set, mirroring its
+      // own CT(): any non-empty value for the first two, 1/true/yes/on for DO_NOT_TRACK.
+      fallbackOff: async () => Boolean(await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'))
+        || Boolean(await $.env.get('DISABLE_TELEMETRY'))
+        || ['1', 'true', 'yes', 'on'].includes(`${await $.env.get('DO_NOT_TRACK') ?? ''}`.toLowerCase().trim()),
       routingEnabled: async () => isRoutingEnabled({
         ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
         ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),

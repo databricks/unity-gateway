@@ -380,13 +380,14 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
         assert result["stdout"] == result["stderr"] == "", result
 
 
+@pytest.mark.parametrize("server_mode", [None, "1"], ids=["server-default", "server-explicit"])
 @pytest.mark.parametrize("background", [False, True])
 @pytest.mark.parametrize(
     ("language", "setting_sources"),
     [("Chinese", "user"), (None, "user"), ("Chinese", "project,local")],
 )
 def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
-    native_binary, tmp_path, background, language, setting_sources
+    native_binary, tmp_path, background, language, setting_sources, server_mode
 ):
     """Scenario: Auto Mode approves or flags a native Agent call.
 
@@ -650,7 +651,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                     "DISABLE_AUTOUPDATER": "1",
                     "CLAUDE_CODE_MAX_RETRIES": "0",
-                    "CLAUDE_CODE_AUTO_MODE_SERVER": "1",
+                    **({"CLAUDE_CODE_AUTO_MODE_SERVER": server_mode} if server_mode else {}),
                     "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
                     "CLAUDE_CODE_ELEGANT_MEADOW": "1",
                     "AUTOMODE_DECISION_LOG": "1",
@@ -760,6 +761,9 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
                 )
                 assert false_claim in saved
+                # The reviewed call keeps the description the model wrote, whatever
+                # CLAUDE_CODE_AUTO_MODE_SERVER or nonessential traffic say.
+                assert original["description"] in saved
                 for state in ("Running", "Finished"):
                     status = f" · {selected_model} · {state}"
                     assert not any(status in answer for answer in parent_answers), parent_answers
