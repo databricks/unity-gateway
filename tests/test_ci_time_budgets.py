@@ -735,10 +735,10 @@ def test_windows_shard_budget_covers_recorded_runner_outlier():
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
     data = budgets["_unit_calibration"]["windows"]
     recent = data["recent_outlier_calibration"]
-    assert data["samples"] == 3264
+    assert data["samples"] == 4096
     assert data["p50"] == {"setup": 10, "run": 17, "total": 27}
-    assert data["p99"] == {"setup": 22, "run": 30, "total": 45}
-    assert recent["phase_margin"] == {"setup": 4, "run": 8, "total": 12}
+    assert data["p99"] == {"setup": 22, "run": 30, "total": 46}
+    assert recent["phase_margin"] == {"setup": 9, "run": 8, "total": 12}
     assert len(set(recent["run_ids"])) >= 3
     assert recent["samples"] == 256
     assert recent["outlier_run"] in recent["run_ids"]
@@ -748,7 +748,7 @@ def test_windows_shard_budget_covers_recorded_runner_outlier():
     assert recent["run_margin"] == 8
     assert recent["reason"]
     for budget in budgets["ci"]["unit-windows"].values():
-        assert budget == {"setup": 55, "run": 65, "total": 85}
+        assert budget == {"setup": 60, "run": 65, "total": 85}
         assert budget["run"] - recent["run_max"] == recent["run_margin"]
         assert all(budget[phase] >= data["observed_max"][phase] for phase in budget)
 
@@ -778,6 +778,67 @@ def test_every_enforced_nonshard_budget_cites_samples_and_headroom():
     source = (WORKFLOWS / "security-gate.yml").read_text(encoding="utf-8")
     limit = int(re.search(r'\[ "\$elapsed" -gt (\d+) \]', source).group(1))
     assert limit >= max(1.25 * gate["p99"], gate["p99"] + 10, gate["observed_max"])
+
+
+def test_all_budget_limits_cover_audited_phase_distributions():
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
+    for job, system in (("unit-linux", "linux"), ("unit-windows", "windows")):
+        entry = budgets["_unit_calibration"][system]
+        for budget in budgets["ci"][job].values():
+            for phase in budget:
+                assert (
+                    0 <= entry["p50"][phase] <= entry["p99"][phase] <= entry["observed_max"][phase]
+                )
+                assert budget[phase] >= 1.125 * entry["observed_max"][phase]
+    for workflow, jobs in budgets.items():
+        if workflow.startswith("_"):
+            continue
+        for job, variants in jobs.items():
+            if workflow == "ci" and job in ("unit-linux", "unit-windows"):
+                continue
+            for name, budget in variants.items():
+                entry = budgets["_job_calibration"]["jobs"][f"{workflow}/{job}/{name}"]
+                assert entry["distinct_runs"] >= 3
+                for phase in budget:
+                    assert (
+                        0
+                        <= entry["p50"][phase]
+                        <= entry["p99"][phase]
+                        <= entry["observed_max"][phase]
+                    )
+                    assert budget[phase] >= 1.125 * entry["observed_max"][phase]
+    gate = budgets["_job_calibration"]["gate"]
+    assert gate["scope"] == "successful PR gates"
+    assert gate["excluded_failed"] == 20
+    assert gate["p50"] <= gate["p99"] <= gate["observed_max"]
+
+
+def test_pi_windows_budget_covers_observed_successful_test_run():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--budgets",
+            str(BUDGETS),
+            "--workflow",
+            "ci",
+            "--job",
+            "e2e-shards",
+            "--name",
+            "Agent launch tests · Pi · Windows",
+            "--started",
+            "100",
+            "--run-started",
+            "321",
+            "--ended",
+            "607",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "setup: 221s / 270s, run: 286s / 330s, total: 507s / 585s" in result.stdout
 
 
 def test_artifact_audit_budget_allows_observed_download_latency():

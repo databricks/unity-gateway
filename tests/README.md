@@ -7,8 +7,10 @@ workflow-contract tests; they do not verify GitHub event delivery or live suites
 
 `test_ci_time_budgets.py` checks that PR CI jobs have setup, run and total budgets,
 that each phase can fail a blocking job, and that dependency changes produce a notice.
-The budgets are in `.github/ci-time-budgets.json`; the Security Gate's budget is inline
-because the gate never checks out PR code. Live shard coverage reports checkout and each
+The budgets are in `.github/ci-time-budgets.json`; contracts validate measured phase
+percentiles and margins. The Security Gate's budget is inline because the gate never checks
+out PR code; its calibration uses successful PR gates and records already-failed exclusions.
+Live shard coverage reports checkout and each
 artifact-download interval in the job summary without excluding them from the budget.
 Budget checks do not run in the merge queue.
 
