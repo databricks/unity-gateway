@@ -9,6 +9,7 @@ import sys
 import threading
 from collections import defaultdict, deque
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,6 +19,8 @@ from ucode.metrics import EXPORT_INTERVAL_SECONDS, MAX_HANDOFF_BYTES, MAX_OBSERV
 if TYPE_CHECKING:
     from opentelemetry.sdk.metrics.export import MetricsData
 
+_ARCLET_REGION_FILE = Path("/etc/arclet/region")
+_METRIC_PROXY_DIR = Path("/etc/metric_proxy")
 INGEST_PATH = "/api/2.0/ai-gateway/ug-cli/otel/v1/metrics"
 EXPORT_TIMEOUT_SECONDS = 5
 MAX_POINTS_PER_REQUEST = 100
@@ -150,6 +153,20 @@ class ExportBuffer:
                 return
 
 
+def _read_host_metadata(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _client_region() -> str | None:
+    region = _read_host_metadata(_ARCLET_REGION_FILE)
+    if not region and _read_host_metadata(_METRIC_PROXY_DIR / "env") == "arca":
+        region = _read_host_metadata(_METRIC_PROXY_DIR / "region")
+    return f"aws-{region}" if region else None
+
+
 def aggregate(observations: list) -> MetricsData | None:
     import platform
 
@@ -163,6 +180,13 @@ def aggregate(observations: list) -> MetricsData | None:
     from ucode.metrics import COUNTER_METRICS, METRICS, PROXY_RESPONSE_BYTES, _labels
     from ucode.telemetry import normalize_arch, normalize_os, ug_version
 
+    resource_attributes = {
+        "ug_version": ug_version(),
+        "os": normalize_os(sys.platform),
+        "arch": normalize_arch(platform.machine()),
+    }
+    if region := _client_region():
+        resource_attributes["client_region"] = region
     reader = InMemoryMetricReader(
         preferred_temporality={
             Counter: AggregationTemporality.DELTA,
@@ -172,13 +196,7 @@ def aggregate(observations: list) -> MetricsData | None:
     provider = MeterProvider(
         metric_readers=[reader],
         shutdown_on_exit=False,
-        resource=Resource(
-            {
-                "ug_version": ug_version(),
-                "os": normalize_os(sys.platform),
-                "arch": normalize_arch(platform.machine()),
-            }
-        ),
+        resource=Resource(resource_attributes),
         views=[
             View(
                 instrument_type=Histogram,

@@ -24,6 +24,38 @@ from ucode.metrics.exporter import start_exporter
 HOST = "https://dbc-test.cloud.databricks.com"
 
 
+@pytest.mark.parametrize(
+    "env,region,arclet_region,expected",
+    [
+        (b"arca\n", b"us-east-1\n", None, "aws-us-east-1"),
+        (None, None, b"eu-west-1\n", "aws-eu-west-1"),
+        (b"arca", b"us-east-1", b"eu-west-1", "aws-eu-west-1"),
+        (b"arca", b"us-east-1", b"\xff", "aws-us-east-1"),
+        (None, None, b" \n", None),
+        (None, b"us-east-1", None, None),
+        (b"prod", b"us-east-1", None, None),
+        (b"arca", None, None, None),
+        (b"arca", b"  \n", None, None),
+        (b"arca", b"\xff", None, None),
+    ],
+)
+def test_client_region_resource_attribute(
+    tmp_path, monkeypatch, env, region, arclet_region, expected
+):
+    monkeypatch.setattr(exporter, "_METRIC_PROXY_DIR", tmp_path)
+    monkeypatch.setattr(exporter, "_ARCLET_REGION_FILE", tmp_path / "arclet-region")
+    for name, value in (("env", env), ("region", region), ("arclet-region", arclet_region)):
+        if value is not None:
+            (tmp_path / name).write_bytes(value)
+
+    result = exporter.aggregate([("ug_usage_duration_ms", 10, {})])
+    attrs = result.resource_metrics[0].resource.attributes
+    if expected is None:
+        assert "client_region" not in attrs
+    else:
+        assert attrs["client_region"] == expected
+
+
 def test_bounds_buffer_and_drops_oldest(metrics_recorder):
     for n in range(1500):
         metrics.record("http_request_duration_ms", n, api_operation="models_list")

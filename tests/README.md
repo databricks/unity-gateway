@@ -75,6 +75,9 @@ On Windows it also repairs a temporary package file with a protected ACL, requir
 but no write access, preserved owner access, and failure on an invalid target. These checks do not
 provision a machine or establish an Intune end-to-end pass.
 
+`test_metrics.py` checks the exported `client_region` attribute using local metadata files
+and its omission when host metadata is unavailable.
+
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,
