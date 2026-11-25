@@ -1978,6 +1978,18 @@ def relay_model_services(state: dict, models: list[str], *, configuring: bool = 
     )
 
 
+def selected_service_overrides_saved_provider(
+    state: dict, selected_service: str | None, provider: str | None, explicit_provider: str | None
+) -> bool:
+    """A verified relay service can displace a saved MPS for this launch."""
+    return bool(
+        provider
+        and not explicit_provider
+        and selected_service
+        and relay_model_services(state, [selected_service])
+    )
+
+
 def use_model_service_relay(
     state: dict,
     selected_model: str | None = None,
@@ -2006,7 +2018,13 @@ def use_model_service_relay(
     path = codex_managed_config_path()
     if path:
         for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
-            conflicts = _managed_relayed_conflicts(policy, withdraw_ug_auth=True)
+            try:
+                conflicts = _managed_relayed_conflicts(policy, withdraw_ug_auth=True)
+            except RuntimeError as exc:
+                if selected_relay:
+                    raise
+                print_note(f"Using Databricks authentication for this model list: {exc}")
+                return False
             if conflicts:
                 if selected_relay:
                     raise RuntimeError(

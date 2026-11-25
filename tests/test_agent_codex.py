@@ -1897,6 +1897,25 @@ class TestCodexLaunch:
                 codex.use_model_service_relay({"workspace": WS}, "cat.s.seat")
 
     @pytest.mark.parametrize("selected", [False, True])
+    def test_model_service_relay_when_managed_update_fails(self, tmp_path, monkeypatch, selected):
+        self._patch(tmp_path, monkeypatch)
+        policy = tmp_path / "managed_config.toml"
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+        monkeypatch.setattr(codex, "relay_model_services", lambda *_a, **_kw: ["cat.s.seat"])
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: policy)
+        monkeypatch.setattr(
+            codex,
+            "_managed_relayed_conflicts",
+            Mock(side_effect=RuntimeError("changed while preparing")),
+        )
+        state = {"workspace": WS, "codex_static_models": ["cat.s.seat"]}
+        if selected:
+            with pytest.raises(RuntimeError, match="changed while preparing"):
+                codex.use_model_service_relay(state, "cat.s.seat")
+        else:
+            assert not codex.use_model_service_relay(state)
+
+    @pytest.mark.parametrize("selected", [False, True])
     @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
     def test_enforced_auth_keeps_gateway_even_when_writes_are_skipped(
         self, tmp_path, monkeypatch, filename, selected

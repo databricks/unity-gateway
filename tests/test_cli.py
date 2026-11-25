@@ -2333,6 +2333,18 @@ class TestManagedConfigLaunchSourceGuard:
         ([], ["main.team.foundry"], False, False),
         (["--enable-smart-routing"], ["main.team.chatgpt"], False, False),
         (
+            ["--enable-smart-routing", "--model", "main.team.chatgpt"],
+            ["main.team.chatgpt"],
+            False,
+            True,
+        ),
+        (
+            ["--enable-smart-routing", "--model", "main.team.foundry"],
+            ["main.team.chatgpt"],
+            False,
+            False,
+        ),
+        (
             ["--enable-smart-routing", "--", "exec", "-m", "main.team.chatgpt", "hi"],
             ["main.team.chatgpt"],
             False,
@@ -2398,8 +2410,11 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
     assert bool(calls["launch"].call_args.args[1].get("_codex_launch_login_checked")) is relay
     if args == ["--enable-smart-routing"]:
         lookup.assert_not_called()
-    if old_codex:
-        assert "Running without smart routing." in _strip_ansi(result.output)
+    if "--model" in args:
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is not relay
+    if old_codex or ("--model" in args and relay):
+        assert not calls["launch"].call_args.kwargs["options"].launch_smart_routing
+        assert "Running without smart routing." in " ".join(_strip_ansi(result.output).split())
 
 
 @pytest.mark.parametrize(

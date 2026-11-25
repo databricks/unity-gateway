@@ -4465,12 +4465,8 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        elif (
-            tool == AGENT_CODEX
-            and provider
-            and not explicit_provider
-            and selected_service
-            and codex_agent.relay_model_services(state, [selected_service])
+        elif tool == AGENT_CODEX and codex_agent.selected_service_overrides_saved_provider(
+            state, selected_service, provider, explicit_provider
         ):
             provider = None
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
@@ -4671,6 +4667,7 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        routing_unavailable = None
         if tool == AGENT_CODEX and managed_smart_routing_applies:
             if relayed:
                 routing_unavailable = (
@@ -4689,23 +4686,28 @@ def _launch_tool(
                         routing_unavailable = None
                 except RuntimeError as exc:
                     routing_unavailable = str(exc)
-            if routing_unavailable:
-                print_warning(f"{routing_unavailable} Running without smart routing.")
-                smart_routing_enabled = False
-                managed_smart_routing_applies = False
-                previous = {**smart_routing_v2.disable_smart_routing(), **previous}
         if tool == AGENT_CODEX and not provider and (not parent_schema or selected_service):
-            routed = _routes_launch(
+            routed = not routing_unavailable and _routes_launch(
                 tool,
                 ctx.args,
                 smart_routing_enabled=smart_routing_enabled,
                 explicit_prompt=explicit_prompt,
-                model=model or forwarded_model,
+                model=selected_service,
                 provider=None,
             )
-            relayed = not routed and codex_agent.use_model_service_relay(
-                state, selected_service, selected_only=bool(parent_schema)
-            )
+            if not routed or selected_service:
+                relayed = codex_agent.use_model_service_relay(
+                    state, selected_service, selected_only=routed or bool(parent_schema)
+                )
+                if routed and relayed:
+                    routing_unavailable = (
+                        "Smart routing is unavailable with a ChatGPT subscription relay."
+                    )
+        if routing_unavailable:
+            print_warning(f"{routing_unavailable} Running without smart routing.")
+            smart_routing_enabled = False
+            managed_smart_routing_applies = False
+            previous = {**smart_routing_v2.disable_smart_routing(), **previous}
         if tool == AGENT_CLAUDE and not provider and not parent_schema:
             # A static model list (no provider) can still name a model service that routes to a
             # subscription relay; that launch must swap credentials like a relayed provider.
