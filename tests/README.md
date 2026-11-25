@@ -436,6 +436,11 @@ plugin must carry the host, the profile, `--use-pat` and `--force-refresh`. Thes
 Version, path and token lookups are patched on the wrapper modules, so they do not establish live
 OpenCode or Kilo behavior.
 
+`test_opencode_family_models.py` covers how both agents resolve an explicit model, pick a default
+model and check the installed version: the exact error messages, Kilo's configure hint and Kilo
+ignoring `opencode_default_model`. The installed version is patched on each wrapper module, so these
+are component checks and do not establish live OpenCode or Kilo behavior.
+
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
