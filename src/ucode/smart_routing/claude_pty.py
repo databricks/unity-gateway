@@ -26,6 +26,7 @@ import tty
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from ucode import metrics
 
@@ -46,6 +47,13 @@ CLEAR_LINE = b"\x15"
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+_INPUT_ESCAPE_RE = re.compile(
+    rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~]|\][^\x07]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)"
+)
+_TERMINAL_REPLY_RE = re.compile(
+    rb"\x1b(?:\[\?[0-9]+u|\[\??[0-9]+;[0-4]\$y|P(?:>\||[01][$+]r)[ -~]*\x1b\\)"
+)
+_MODEL_SWITCH_COMMANDS = ("/model", "/config", "/settings", "/fast", "/auto")
 
 
 def strip_ansi(data: bytes) -> str:
@@ -125,6 +133,187 @@ class OutputMarkerDetector:
         if any(_squash(marker) in self._buf for marker in self._markers):
             self.triggered = True
         return self.triggered
+
+
+class ManualModelConfirmation:
+    """Match a completed native model result after a possible manual command."""
+
+    def __init__(self, model: str | None) -> None:
+        self._model = _squash(model).casefold() if model is not None else None
+        self._buffer = b""
+
+    def observe(self, chunk: bytes) -> Literal["confirmed", "cancelled"] | None:
+        self._buffer = (self._buffer + chunk)[-8192:]
+        text = re.sub(r"[^\S\r\n]+", "", strip_ansi(self._buffer)).casefold()
+        prefix = r"(?:^|[\r\n])(?:⎿)?"
+        if re.search(prefix + r"modelswitchcancelled[\r\n]", text):
+            return "cancelled"
+        for result in re.finditer(
+            prefix + r"(setmodelto|modelsetto|keptmodelas)(.*?)"
+            r"(?:andsavedasyourdefaultfornewsessions|[\r\n])",
+            text,
+        ):
+            if result[1] == "keptmodelas":
+                return "cancelled"
+            label = result[2]
+            if label and (self._model is None or label == self._model):
+                return "confirmed"
+            # Native family shortcuts render a display version instead of the saved alias.
+            if self._model in {"opus", "sonnet", "haiku", "fable"} and re.fullmatch(
+                rf"(?:claude)?{self._model}(?:[0-9]+(?:\.[0-9]+)*)?", label
+            ):
+                return "confirmed"
+        return None
+
+
+@dataclass(frozen=True)
+class ModelSwitchInputResult:
+    edited: bool
+    model_command: bool
+    manual_model: str | None = None
+
+
+class ModelSwitchInput:
+    """Distinguish edits and possible model commands from terminal traffic."""
+
+    def __init__(self) -> None:
+        self._pending = b""
+        self._line = b""
+        self._cursor = 0
+        self._line_known = True
+        self._last_input = 0.0
+        self._pasting = False
+
+    @property
+    def pending(self) -> bool:
+        return bool(self._pending) or self._pasting
+
+    def _move_cursor(self, direction: bytes, count: int = 1) -> None:
+        if (
+            not self._line_known
+            or not self._line
+            or b"\n" in self._line
+            or not self._line.isascii()
+        ):
+            # Native cursor movement counts graphemes and visual rows.
+            self._line_known = False
+            return
+        if direction == b"D":
+            self._cursor = max(0, self._cursor - count)
+        elif direction == b"C":
+            self._cursor = min(len(self._line), self._cursor + count)
+        else:
+            self._cursor = 0 if direction == b"H" else len(self._line)
+
+    def observe(self, data: bytes, now: float) -> ModelSwitchInputResult:
+        if data:
+            self._pending += data
+            self._last_input = now
+        edited = model_command = False
+        manual_model = None
+        while self._pending:
+            if self._pending.startswith(b"\x1b"):
+                match = _INPUT_ESCAPE_RE.match(self._pending)
+                if match:
+                    sequence = match[0]
+                    self._pending = self._pending[match.end() :]
+                    if sequence in (b"\x1b[200~", b"\x1b[201~"):
+                        self._pasting = sequence == b"\x1b[200~"
+                        edited |= self._pasting
+                    elif cursor := re.fullmatch(rb"\x1b(?:\[([0-9]*)|O)([CDHF])", sequence):
+                        count = cursor[1] or b"1"
+                        if len(count) > 4:
+                            self._line_known = False
+                        else:
+                            self._move_cursor(cursor[2], max(1, int(count)))
+                    elif sequence == b"\x1b[3~":
+                        start = self._cursor
+                        self._move_cursor(b"C")
+                        self._line = self._line[:start] + self._line[self._cursor :]
+                        self._cursor = start
+                        edited = True
+                    elif (
+                        sequence.startswith(b"\x1bO")
+                        or sequence in (b"\x1b[1~", b"\x1b[4~")
+                        or sequence[-1:] in (b"A", b"B", b"C", b"D", b"F", b"H")
+                    ):
+                        # History and cursor motion leave the submitted text unknown,
+                        # but navigation alone must not interrupt automatic replay.
+                        self._line_known = False
+                    elif (
+                        _TERMINAL_REPLY_RE.fullmatch(sequence)
+                        or sequence.startswith(b"\x1b]")
+                        or sequence[-1:]
+                        in (
+                            b"I",
+                            b"O",
+                            b"c",
+                            b"R",
+                            b"n",
+                        )
+                    ):
+                        pass  # Focus and terminal replies do not edit the prompt.
+                    else:
+                        edited = True
+                        self._line_known = False
+                    continue
+                if (
+                    len(self._pending) <= 4096
+                    and now - self._last_input < ESC_GAP_S
+                    and (len(self._pending) == 1 or self._pending[1:2] in (b"[", b"O", b"]", b"P"))
+                ):
+                    break  # An escape sequence may span several stdin reads.
+            char, self._pending = self._pending[:1], self._pending[1:]
+            edited = True
+            if char in (b"\r", b"\n") and not self._pasting:
+                command = self._line.decode("utf-8", "replace").split()
+                possible_model = not self._line_known or (
+                    b"\n" not in self._line
+                    and b"\r" not in self._line
+                    and bool(command)
+                    # Enter may accept a partially typed command from native completion.
+                    and any(name.startswith(command[0]) for name in _MODEL_SWITCH_COMMANDS)
+                )
+                if possible_model:
+                    model_command = True
+                    manual_model = None
+                    if (
+                        self._line_known
+                        and len(command) == 2
+                        and command[0] == "/model"
+                        and valid_model_name(command[1])
+                    ):
+                        manual_model = command[1]
+                self._line = b""
+                self._cursor = 0
+                self._line_known = True
+            elif self._pasting:
+                self._line_known &= len(self._line) < 4096
+                self._line = (self._line[: self._cursor] + char + self._line[self._cursor :])[
+                    -4096:
+                ]
+                self._cursor = min(self._cursor + 1, len(self._line))
+            elif char in (b"\x08", b"\x7f"):
+                end = self._cursor
+                self._move_cursor(b"D")
+                self._line = self._line[: self._cursor] + self._line[end:]
+            elif char == CLEAR_LINE:
+                self._line = self._line[self._cursor :]
+                self._cursor = 0
+                self._line_known = False  # Native Ctrl-U may stop at a wrapped screen row.
+            elif char >= b" ":
+                self._line_known &= len(self._line) < 4096
+                self._line = (self._line[: self._cursor] + char + self._line[self._cursor :])[
+                    -4096:
+                ]
+                self._cursor = min(self._cursor + 1, len(self._line))
+            else:
+                # Completion, search, and editing bindings can change text without
+                # sending its contents back through stdin.
+                self._line_known = False
+        return ModelSwitchInputResult(
+            edited=edited, model_command=model_command, manual_model=manual_model
+        )
 
 
 def terminal_columns(fd: int) -> int:
