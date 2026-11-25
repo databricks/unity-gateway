@@ -58,11 +58,16 @@ function Invoke-Control {
     } elseif ($Control.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         $pattern.Select()
     } elseif ($Control.Current.Name -eq 'Select Folder' -and $Control.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane') {
-        $point = $Control.GetClickablePoint()
-        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
-        [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-        [CapabilityWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        Click-Control $Control
     } else { throw "No activation pattern for $($Control.Current.Name)" }
+}
+
+function Click-Control {
+    param($Control)
+    $point = $Control.GetClickablePoint()
+    [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
+    [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    [CapabilityWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
 }
 
 function Save-UI {
@@ -78,7 +83,8 @@ function Save-UI {
 function Select-Folder {
     $folderButton = Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder')
     $folderButtonName = $folderButton.Current.Name
-    Invoke-Control $folderButton
+    # UI Automation activation left this visible picker closed on hosted Windows.
+    Click-Control $folderButton
     Start-Sleep -Seconds 1
     Save-UI 'folder-menu'
     $choices = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
