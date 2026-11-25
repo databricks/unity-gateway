@@ -16,7 +16,15 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE, ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import (
+    claude_hooks,
+    config,
+    orchestrator,
+    routing,
+    session_env,
+    session_log,
+    v2,
+)
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty

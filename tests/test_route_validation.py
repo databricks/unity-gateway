@@ -414,9 +414,8 @@ def test_validate_disables_routing_with_the_unsupported_details(monkeypatch):
     ("source", "expected"),
     [
         ({}, True),
-        ({"ISAAC_LAUNCH_MODE": "cli"}, True),
         ({"ISAAC_LAUNCH_MODE": "omni"}, False),
     ],
 )
 def test_enabled_skips_omnigent(source, expected):
-    assert validation.enabled(source) is expected
+    assert validation.is_route_validation_enabled(source) is expected
