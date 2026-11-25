@@ -3,6 +3,10 @@ name: Integration
 on:
   workflow_call:
     inputs:
+      mode:
+        description: Run required, advisory, or all integration jobs
+        type: string
+        default: all
       ref:
         description: Commit to test; fork-integration.yml passes the PR head pinned by /integration-test
         type: string
@@ -55,7 +59,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
+  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}-${{ inputs.mode || 'all' }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
@@ -75,6 +79,7 @@ env:
 
 jobs:
   installation:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Installation tests
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -112,6 +117,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   installation-windows:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Windows installation tests
     runs-on: windows-latest
     timeout-minutes: 20
@@ -160,7 +166,7 @@ jobs:
   cowork-inference-windows:
     name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
-    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -287,7 +293,7 @@ jobs:
   cowork-inference-macos:
     name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
-    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 80
     strategy:
       fail-fast: false
@@ -405,6 +411,7 @@ jobs:
           PY
 
   smoke:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
@@ -586,7 +593,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-latest]
-        agent: [claude, copilot]
+        agent: ${{ fromJSON(inputs.mode == 'required' && '["claude"]' || inputs.mode == 'advisory' && '["copilot"]' || '["claude", "copilot"]') }}
     env:
       PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
       NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
@@ -606,6 +613,7 @@ jobs:
     steps: *live-steps
 
   headless-windows:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Windows headless journey · Claude
     needs: workspace
     runs-on: windows-latest
@@ -677,20 +685,19 @@ jobs:
 
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
-    needs: [workspace, smoke]
+    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
     runs-on: ${{ matrix.os }}
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # Native Codex routing needs a newer binary; other journeys retain the baseline.
-      max-parallel: 4
       matrix:
         os: [ubuntu-22.04, windows-latest]
         agent: [claude, codex]
         smart_routing: [false]
+        # Native Codex routing needs a newer binary; other journeys retain the baseline.
         include:
           - os: ubuntu-22.04
             agent: codex
@@ -705,12 +712,13 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || inputs.codex_version || '0.156.0' }}
-      # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
+      # Smoke cases run separately on this OS; don't repeat them here.
       TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and not codex_relay and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}
     steps: *live-steps
 
   codex-relay:
+    if: ${{ inputs.mode != 'advisory' }}
     name: Codex relay login and inference
     needs: workspace
     runs-on:
@@ -732,7 +740,7 @@ jobs:
   # See tests/integration/README.md#soft-fail-tests for supported cases and restoration criteria.
   soft-fail:
     name: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, full, managed]
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -756,7 +764,7 @@ jobs:
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
     name: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -778,7 +786,7 @@ jobs:
   # cujs `needs`.
   copilot:
     name: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -800,7 +808,7 @@ jobs:
   # and Linux, and ug installs no Windows build.
   antigravity:
     name: Full journeys · Antigravity · Linux
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -817,7 +825,7 @@ jobs:
   # `needs`. On Linux the tests drive the VS Code window on a private Xvfb display.
   vscode:
     name: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -840,7 +848,7 @@ jobs:
   # OpenCode (a service principal authenticates it, like the `managed` lane).
   managed-opencode:
     name: Managed OpenCode self-managed (non-blocking)
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ inputs.mode != 'required' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     continue-on-error: true
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -898,7 +906,7 @@ jobs:
   # settings on Windows too. Dedicated CUJs require POSIX PTYs.
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
@@ -969,7 +977,7 @@ jobs:
 
   dedicated-cuj-plan:
     name: Plan E2E CUJs
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -992,6 +1000,7 @@ jobs:
           echo "cujs=$cujs" >> "$GITHUB_OUTPUT"
 
   dedicated-cuj:
+    if: ${{ inputs.mode != 'advisory' }}
     name: E2E CUJs · ${{ matrix.name }}
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     # One runner per file: CUJs own separate workspaces but share machine-wide /etc agent settings.
@@ -1051,7 +1060,7 @@ jobs:
 
   cujs:
     name: All integration tests
-    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1076,7 +1085,7 @@ jobs:
     name: Codex desktop inference · macOS
     # Codex lanes on the managed service principal share one model quota; see the Windows lane.
     needs: managed
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -1144,7 +1153,7 @@ jobs:
     # principal at a time: five merge-queue entries stay under the ~10 concurrent callers at which
     # that quota returned 429s.
     needs: [managed, codex-desktop-macos]
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:

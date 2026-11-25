@@ -366,6 +366,17 @@ jobs:
     # Integration needs CI secrets, so it runs only after the security gate passes.
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.security-gate.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
+    with:
+      mode: required
+    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
+
+  integration-advisory:
+    name: Integration advisory
+    needs: [security-gate, integration]
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && needs.security-gate.result == 'success' }}
+    uses: ./.github/workflows/integration.yml
+    with:
+      mode: advisory
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
   # Preserve the exact contexts required by the repository's branch rules.

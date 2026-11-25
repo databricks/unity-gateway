@@ -1921,11 +1921,10 @@ separate CI model-selection job; the full agent lanes include scoped model
 discovery. Real `ug configure` performs its normal workspace discovery inside
 each test; only explicit-model scenarios choose and record a discovered
 `system.ai` model as a test argument.
-Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
-**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
-headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
-on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
+Every same-repository PR and push to `main` runs **Smoke journeys** and **Full journeys**
+in parallel. Smoke runs the Hosted configure/TUI, headless argument, and custom OAuth CLI TUI
+journeys for each agent (six cases, two agent jobs per OS). Full excludes the smoke cases,
+which run separately on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
 full/managed journeys, and dedicated CUJs. Routing cases run in separate required
 matrix rows with Codex 0.171.0; dedicated CUJ4 and CUJ7 runners use that newer pin too.
 The full selections are disjoint within each agent and OS:
@@ -1959,8 +1958,8 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. Full runs at most four
-matrix rows in parallel: cases share no workspace state, only inference capacity.
+separate runners isolate those writes as well as the PTYs. Full matrix rows run in parallel:
+cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,
 and other PRs, so rate limits remain possible.
 No test retries or assertion changes
@@ -1971,9 +1970,10 @@ all full rows, and all **Managed config** rows to pass for full/live runs. Each 
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
-The advisory Windows installation and headless lanes are not yet included in that aggregate check.
-The existing required `e2e` context also waits for the complete integration workflow, so integration
-cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+The required `e2e` context waits for the blocking integration jobs. Advisory jobs run in a
+separate gated workflow call after the blocking call, so their checks remain visible without
+holding up `e2e`. Manual and authorized fork runs retain both sets in one call. Full coverage
+on PRs needs no label or opt-in.
 
 ### Soft-fail tests
 
