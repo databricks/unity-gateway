@@ -77,7 +77,6 @@ def clean_environment(home: Path) -> dict[str, str]:
             # agy requires the literal "true"; "1" leaves background updates enabled.
             "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
             "COLUMNS": "160",
