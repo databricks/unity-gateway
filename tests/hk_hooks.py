@@ -149,6 +149,15 @@ def test_timeout_preserves_index_and_unstaged_edits(repo, name):
     config = repo / "hk.pkl"
     original = "uv run ruff format --check {{files}}" if name == "pre-commit" else "just lint"
     delay = f'\\"{sys.executable}\\" -c \\"import time; time.sleep(30)\\"'
+    # Seed the user's own stash entry while the normal hook is still fast: hk's
+    # git-stash recovery must leave it intact alongside its own push/pop
+    # (hook() compares refs/stash across the run).
+    seed = repo / "src/seed.py"
+    seed.write_text("seed = 1\n")
+    run(repo, "git", "add", "src/seed.py")
+    run(repo, "git", "commit", "-m", "seed file")
+    seed.write_text("seed = 2\n")
+    run(repo, "git", "stash", "push", "src/seed.py")
     config.write_text(config.read_text().replace(original, delay))
     run(repo, "git", "add", "hk.pkl")
     path = repo / "src/example.py"
