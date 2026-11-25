@@ -415,10 +415,18 @@ def _restart_experiment_summary(timings: list[dict], events: list[dict]) -> dict
     }
 
 
+class WindowsUIATimeout(AssertionError, subprocess.TimeoutExpired):
+    def __init__(self, timeout: float, stderr: str):
+        subprocess.TimeoutExpired.__init__(self, "UI Automation helper", timeout, stderr=stderr)
+
+    def __str__(self) -> str:
+        return "UI Automation helper did not respond"
+
+
 class WindowsUIAProcess:
     def __init__(self, argv: list[str]):
         started = time.monotonic()
-        self.stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+        self.stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace")
         try:
             self.proc = subprocess.Popen(
                 argv,
@@ -455,7 +463,14 @@ class WindowsUIAProcess:
             line = self.responses.get(timeout=timeout)
         except queue.Empty as error:
             self.broken = True
-            raise AssertionError("UI Automation helper did not respond") from error
+            try:
+                self.stderr.flush()
+                self.stderr.seek(0)
+                diagnostic = self.stderr.read()[-2000:]
+                self.stderr.seek(0, os.SEEK_END)
+            except OSError:
+                diagnostic = ""
+            raise WindowsUIATimeout(timeout, diagnostic) from error
         if line is None:
             self.broken = True
             raise AssertionError("UI Automation helper exited without a response")
@@ -638,6 +653,20 @@ class WindowsApp:
         try:
             output = self.uia_process.request(command, *args)
             return output
+        except subprocess.TimeoutExpired as error:
+            diagnostic = error.stderr or ""
+            if isinstance(diagnostic, bytes):
+                diagnostic = diagnostic.decode("utf-8", errors="replace")
+            try:
+                self.session.record(
+                    f"{self.name}-uia-{command}-timeout.json",
+                    {"command": command, "stderr": self.session.redact(diagnostic[-2000:])},
+                )
+            except OSError as evidence_error:
+                error.add_note(
+                    f"Could not record UI Automation timeout evidence: {type(evidence_error).__name__}"
+                )
+            raise
         finally:
             timing = {
                 "action": command,

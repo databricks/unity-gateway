@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -110,11 +111,14 @@ def test_persistent_uia_timeout_cannot_reuse_a_stale_response():
     client = object.__new__(windows_app.WindowsUIAProcess)
     client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
     client.responses = Responses()
+    client.stderr = io.StringIO("uia phase=find-descendants\n")
     client.broken = False
     client.ready = True
     client.init_metrics = {}
-    with pytest.raises(AssertionError, match="did not respond"):
+    with pytest.raises(AssertionError, match="did not respond") as error:
         client.request("tree")
+    assert isinstance(error.value, subprocess.TimeoutExpired)
+    assert error.value.stderr == "uia phase=find-descendants\n"
     with pytest.raises(AssertionError, match="unavailable"):
         client.request("tree")
 
