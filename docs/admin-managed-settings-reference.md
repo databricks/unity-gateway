@@ -221,7 +221,7 @@ Check the tables for the `ug` version that your fleet runs.
 | Key | Class | Feature | Written by Unity Gateway | Value | Note |
 | --- | --- | --- | --- | --- | --- |
 | `model_provider` | Reserved |  | No |  | Unity Gateway sets it in requirements.toml, so a value here has no effect. |
-| `model_providers.Databricks` | Reserved |  | No |  | Unity Gateway sets it in requirements.toml, so a value here has no effect. A per-user subscription relay can withdraw unchanged authentication introduced by an earlier self-managed ug configuration. |
+| `model_providers.Databricks` | Reserved |  | No |  | Unity Gateway sets it in requirements.toml, so a value here has no effect. |
 | `model` | Reserved |  | Yes |  | The default model comes from `default_models.default_model`. |
 | `model_catalog_json` | Reserved |  | No |  | Use `models.sources`. Unity Gateway names its model catalog in managed_config.toml. |
 | `mcp_servers` | Shared table |  | Yes |  | Unity Gateway registers its MCP servers for each developer. Your entries with the same names are dropped. |

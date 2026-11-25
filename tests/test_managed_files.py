@@ -411,7 +411,6 @@ class TestSudoReplace:
                 display="Claude Code",
                 owned_paths=[["env"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
 
         assert result == "unchanged"
@@ -1236,7 +1235,6 @@ class TestManagedSettingsSkipped:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
         assert result == "unsupported"
 
@@ -1266,7 +1264,6 @@ class TestWindowsManagedWrites:
             display="Claude Code",
             owned_paths=[["apiKeyHelper"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
     def _reconcile_codex(self, path, text):
@@ -1277,7 +1274,6 @@ class TestWindowsManagedWrites:
             display="Codex",
             owned_paths=[["model_provider"]],
             parser=tomllib.loads,
-            expected_current_text=None,
         )
 
     def test_path_is_under_64_bit_program_files(self, windows, tmp_path):
@@ -1511,7 +1507,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["apiKeyHelper"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
 
         assert not path.exists()
@@ -1532,7 +1527,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
 
@@ -1570,7 +1564,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["apiKeyHelper"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
             == "written"
         )
@@ -1610,7 +1603,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["apiKeyHelper"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
 
         assert path.read_text() == original
@@ -1633,7 +1625,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "written"
@@ -1652,7 +1643,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "unsupported"
@@ -1673,7 +1663,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["ucode"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
         assert (backup_dir / "manifest.json").exists()
 
@@ -1694,7 +1683,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["ucode"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
 
     def test_reconcile_backs_up_before_write(self, tmp_path, backup_dir, monkeypatch):
@@ -1713,7 +1701,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "written"
@@ -1741,7 +1728,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         snapshots = managed_files.managed_file_snapshots("claude", json.loads)
@@ -1769,7 +1755,6 @@ class TestManagedFileLifecycle:
                     display=tool.title(),
                     owned_paths=[["ucode"]],
                     parser=json.loads,
-                    expected_current_text=None,
                 )
 
         assert notes == ["Enter password to configure settings for Codex and Claude Code."]
@@ -1789,7 +1774,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["env"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "unchanged"
@@ -1811,7 +1795,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["a"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "unchanged"
@@ -1836,7 +1819,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["a"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "written"
@@ -1858,7 +1840,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["User-Agent"], ["a"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "unchanged"
@@ -1881,7 +1862,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["User-Agent"], ["a"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         assert result == "written"
@@ -1992,7 +1972,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         result = managed_files.revert_managed_file(
@@ -2021,7 +2000,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
 
         result = managed_files.revert_managed_file(
@@ -2049,7 +2027,6 @@ class TestManagedFileLifecycle:
             display="Claude Code",
             owned_paths=[["ucode"]],
             parser=json.loads,
-            expected_current_text=None,
         )
         path.write_text(
             '{"enterprise": "new-policy", "ucode": "gateway", "new": true}\n',
@@ -2086,7 +2063,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["ucode"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
 
         assert calls == 2
@@ -2108,7 +2084,6 @@ class TestManagedFileLifecycle:
                 display="Claude Code",
                 owned_paths=[["ucode"]],
                 parser=json.loads,
-                expected_current_text=None,
             )
 
         assert json.loads(path.read_text()) == {"enterprise": "new"}
@@ -2173,7 +2148,6 @@ def test_revert_semantic_noop_preserves_bytes_without_sudo(tmp_path, backup_dir,
         display="Claude Code",
         owned_paths=[["ucode"]],
         parser=json.loads,
-        expected_current_text=None,
     )
     admin_text = '{"ucode":"admin","enterprise":true,"note":"x"}\n'  # reordered + extra key
     path.write_text(admin_text, encoding="utf-8")

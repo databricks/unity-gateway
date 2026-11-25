@@ -100,7 +100,6 @@ from ucode.managed_files import (
     reconcile_privileged_files,
     revert_managed_file,
     warn_managed_write_skipped,
-    withdraw_ug_managed_paths,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -1039,7 +1038,6 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
     """Point Codex desktop's trace exporter at ug's login service; None removes both.
 
     It goes in the Codex App settings, which a ``ug codex`` session's own ``-c`` exporter outranks.
-    A CLI model-service relay has a session-local URL, so Desktop gets its own gateway credential helper.
     Returns whether that file changed; setup problems only warn.
     """
     if current_os() == OS.OTHER or is_dry_run():
@@ -1179,8 +1177,8 @@ def _sync_desktop_relay(
         return False
 
 
-def _managed_relayed_conflicts(path: Path, *, withdraw_ug_auth: bool) -> list[str]:
-    """Return relay blockers, optionally withdrawing unchanged authentication introduced by ug."""
+def _managed_relayed_conflicts(path: Path) -> list[str]:
+    """Return managed settings that would override a ChatGPT relay launch's ``-c`` provider."""
     text = read_managed_file(path)
     if text is None:
         return []
@@ -1195,29 +1193,12 @@ def _managed_relayed_conflicts(path: Path, *, withdraw_ug_auth: bool) -> list[st
     provider = (doc.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}
     if provider and path.name == CODEX_REQUIREMENTS_FILE:
         # requirements.toml replaces the whole provider entry, dropping the relay's `-c` keys.
-        conflicts.append(f"model_providers.{CODEX_MODEL_PROVIDER_NAME}")
-    else:
-        conflicts += [
-            f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
-            for key in ("base_url", "auth")
-            if key in provider
-        ]
-    if (
-        conflicts
-        and withdraw_ug_auth
-        and not managed_settings_skipped()
-        and path == codex_managed_config_path()
-        and withdraw_ug_managed_paths(
-            "codex",
-            path,
-            [key.split(".") for key in conflicts],
-            display="Codex",
-            parser=_parse_managed_config,
-            dumper=tomlkit.dumps,
-        )
-    ):
-        return []
-    return conflicts
+        return [*conflicts, f"model_providers.{CODEX_MODEL_PROVIDER_NAME}"]
+    return conflicts + [
+        f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
+        for key in ("base_url", "auth")
+        if key in provider
+    ]
 
 
 def _reconcile_managed_config(
@@ -1250,8 +1231,8 @@ def _reconcile_managed_config(
             "regular file or contact your administrator."
         )
     if relayed:
-        # Withdraw ug's old auth; the session's loopback URL stays in per-user launch settings.
-        conflicts = _managed_relayed_conflicts(path, withdraw_ug_auth=True)
+        # The relay's loopback proxy only runs during `ug codex`, so skip the machine-wide file.
+        conflicts = _managed_relayed_conflicts(path)
         if conflicts:
             raise RuntimeError(
                 "Codex ChatGPT relay cannot start because enterprise managed settings define "
@@ -1297,7 +1278,6 @@ def _reconcile_managed_config(
                 display="Codex",
                 owned_paths=[*MANAGED_KEYS, ["model_catalog_json"]],
                 parser=_parse_managed_config,
-                expected_current_text=None,
             )
     except ManagedFileWriteUnavailable:
         # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
@@ -1523,7 +1503,6 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             display="Codex",
             owned_paths=[[MANAGED_MCP_CONFIG_KEY]],
             parser=_parse_managed_config,
-            expected_current_text=None,
         )
     except ManagedFileWriteUnavailable:
         # Without --global the caller falls back to user scope; `--global` has no fallback, so a
@@ -2021,7 +2000,7 @@ def use_model_service_relay(
     if path:
         for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
             try:
-                conflicts = _managed_relayed_conflicts(policy, withdraw_ug_auth=True)
+                conflicts = _managed_relayed_conflicts(policy)
             except RuntimeError as exc:
                 if selected_relay:
                     raise

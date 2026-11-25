@@ -79,7 +79,7 @@ note = "Unity Gateway sets it in requirements.toml, so a value here has no effec
 path = "model_providers.Databricks"
 class = "reserved"
 in_managed_file = false
-note = "Unity Gateway sets it in requirements.toml, so a value here has no effect. A per-user subscription relay can withdraw unchanged authentication introduced by an earlier self-managed ug configuration."
+note = "Unity Gateway sets it in requirements.toml, so a value here has no effect."
 
 [[config]]
 path = "model"

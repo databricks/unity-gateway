@@ -1384,7 +1384,6 @@ def reconcile_managed_mcp(
             display="Claude Code",
             owned_paths=owned_paths,
             parser=_parse_managed_settings,
-            expected_current_text=None,
         )
     except ManagedFileWriteUnavailable:
         # Without --global the caller falls back to user scope; `--global` has no fallback, so a
@@ -2652,7 +2651,6 @@ def _reconcile_managed_settings(
                     display="Claude Code",
                     owned_paths=owned_paths,
                     parser=_parse_managed_settings,
-                    expected_current_text=None,
                 )
             except ManagedFileWriteUnavailable as exc:
                 print_warning(str(exc))
@@ -2665,7 +2663,6 @@ def _reconcile_managed_settings(
             display="Claude Code",
             owned_paths=owned_paths,
             parser=_parse_managed_settings,
-            expected_current_text=None,
         )
     except ManagedFileWriteUnavailable:
         # `ug configure` must leave the machine-wide file correct, so it never degrades silently.

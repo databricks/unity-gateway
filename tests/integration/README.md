@@ -1484,13 +1484,14 @@ removed from its environment, and asks `gpt-6-luna`
 for a short random reply without tools. It requires a completed turn with exactly that answer
 and a forwarded `/v1/responses` request that completes with HTTP 200.
 
-The saved token must appear in native `codex login status` as an access token. Component
-tests check both the personal-access-token status and the ChatGPT browser-login status.
-Component tests in `../test_cli.py` cover selecting a relay model service outside a saved
-discovery schema. `../test_agent_codex.py` checks errors before launch for an explicit relay
-service when ChatGPT login is missing or managed authentication conflicts with the relay.
-They also cover migrating authentication recorded as ug's own, retaining unrelated settings,
-and refusing migration of pre-existing, externally changed, or concurrently changed auth.
+Set `UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE` to run the same check through a UC model
+service. Set `UG_INTEGRATION_LITESWAP_ID` to route it to a staging LiteSwap.
+
+Component tests in `../test_agent_codex.py` cover native browser sign-in for an explicitly
+selected seat service, reuse of a saved ChatGPT login or personal access token, and rejection
+of conflicting managed authentication. A signed-out user with a seat service only in the
+static model list stays on Databricks authentication. Tests in `../test_cli.py` cover
+selecting a relay service outside the saved discovery schema.
 
 This deliberately covers only token login and relay inference. File-tool execution, desktop
 configure/revert, desktop inference, managed-file conflict refusal, and browser sign-in are
