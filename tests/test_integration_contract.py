@@ -35,6 +35,112 @@ def _markers(nodes):
     }
 
 
+def test_quota_diagnostics_emit_only_rate_and_caller_permission_fields():
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    assert script.is_file()
+    diagnostics = runpy.run_path(str(script))
+    service = {
+        "config": {
+            "rate_limits": [
+                {
+                    "key": "RATE_LIMIT_KEY_SERVICE_PRINCIPAL",
+                    "principal": "caller-id",
+                    "requests": 4,
+                },
+                {"key": "RATE_LIMIT_KEY_SERVICE_PRINCIPAL", "principal": "other-id", "tokens": 8},
+            ],
+            "secret": "never-print",
+        }
+    }
+    summary = diagnostics["summarize_service"](service, "caller-id")
+    assert summary == [
+        {"key": "RATE_LIMIT_KEY_SERVICE_PRINCIPAL", "requests": 4, "applies_to_caller": True},
+        {"key": "RATE_LIMIT_KEY_SERVICE_PRINCIPAL", "tokens": 8, "applies_to_caller": False},
+    ]
+    assert "never-print" not in repr(summary)
+    assert "caller-id" not in repr(summary)
+
+
+def test_quota_diagnostics_report_malformed_json_without_failing(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    diagnostics = runpy.run_path(str(script))
+
+    class Response(io.BytesIO):
+        status = 200
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request: Response(b"not-json"))
+    assert diagnostics["read_api"]("https://private.example", "token", "/api") == (
+        "invalid-json",
+        None,
+    )
+
+
+def test_quota_diagnostics_handle_absent_optional_rate_configuration():
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    diagnostics = runpy.run_path(str(script))
+    assert diagnostics["summarize_service"]({"config": None}, "caller") == []
+    assert diagnostics["summarize_endpoint"]({"ai_gateway": None}, "caller") == []
+
+
+def test_quota_diagnostics_read_ai_gateway_endpoint_limits():
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    diagnostics = runpy.run_path(str(script))
+    endpoint = {"ai_gateway": {"rate_limits": [{"key": "endpoint", "calls": 9}]}}
+    assert diagnostics["summarize_endpoint"](endpoint, "caller-id") == [
+        {"key": "endpoint", "calls": 9}
+    ]
+
+
+def test_quota_diagnostics_use_m2m_and_do_not_print_credentials(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    main = runpy.run_path(str(script))["main"]
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://private.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "private-id")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "private-secret")
+    monkeypatch.setitem(
+        sys.modules,
+        "run_integration",
+        SimpleNamespace(mint_m2m_token=lambda host, caller, secret: "private-token"),
+    )
+    monkeypatch.setitem(main.__globals__, "read_api", lambda host, token, path: (403, None))
+    main()
+    output = capsys.readouterr().out
+    assert "model_service_status" in output and "403" in output
+    for value in ("private.example", "private-id", "private-secret", "private-token"):
+        assert value not in output
+
+
+def test_claude_quota_diagnostics_include_models_used_by_managed_fixtures(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    main = runpy.run_path(str(script))["main"]
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://private.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "caller")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("AGENT", "claude")
+    monkeypatch.setitem(
+        sys.modules, "run_integration", SimpleNamespace(mint_m2m_token=lambda *args: "token")
+    )
+    monkeypatch.setitem(main.__globals__, "read_api", lambda *args: (403, None))
+    main()
+    models = {json.loads(line)["model"] for line in capsys.readouterr().out.splitlines()}
+    assert {"system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"} <= models
+
+
+def test_managed_and_desktop_lanes_run_read_only_quota_diagnostics():
+    jobs = _integration_jobs()
+    job = jobs["managed"]
+    assert "python scripts/managed_quota_diagnostics.py" in job
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}" in job
+    assert "DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}" in job
+    assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}" in job
+    for name in ("codex-desktop-macos", "codex-desktop-windows"):
+        assert "- *managed-quota-diagnostics" in jobs[name]
+
+
 def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
 

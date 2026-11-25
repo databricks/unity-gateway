@@ -210,6 +210,15 @@ class TuiRequestRecorder:
             for sequence, response in responses
         ]
 
+    def _overload_responses(self) -> list[dict]:
+        with self._condition:
+            responses = list(self._responses.items())
+        return [
+            {"sequence": sequence, **_overload_details(response)}
+            for sequence, response in responses
+            if response.status_code in (429, 503)
+        ]
+
     def _forward(self, handler: BaseHTTPRequestHandler) -> None:
         assert self._client
         length = int(handler.headers.get("Content-Length", 0))
@@ -283,6 +292,39 @@ class TuiRequestRecorder:
                 )
                 self._condition.notify_all()
             handler.send_error(502, "upstream request failed")
+
+
+def _rate_limit_headers(response: RecordedResponse) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in response.headers.items()
+        if name.lower() in {"retry-after", "x-request-id", "server"}
+        or name.lower().startswith("x-ratelimit-")
+    }
+
+
+def _overload_details(response: RecordedResponse) -> dict:
+    try:
+        body = httpx.Response(
+            response.status_code, headers=response.headers, content=response.body
+        ).text
+    except httpx.DecodingError:
+        return {
+            "status": response.status_code,
+            "headers": _rate_limit_headers(response),
+            "body": "<invalid response omitted>",
+        }
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = None
+    allowed = {"error", "error_code", "message", "type", "request_id", "status"}
+    is_error = isinstance(payload, dict) and bool(set(payload) & {"error", "error_code"})
+    if not is_error or not set(payload) <= allowed:
+        body = "<non-error response omitted>"
+    elif isinstance(payload.get("error"), dict) and not set(payload["error"]) <= allowed:
+        body = "<non-error response omitted>"
+    return {"status": response.status_code, "headers": _rate_limit_headers(response), "body": body}
 
 
 def _response_protocol(response: RecordedResponse | None) -> dict:
@@ -424,6 +466,9 @@ def record_claude_response_protocol(session, workspace: str) -> Iterator[TuiRequ
     finally:
         try:
             session.record("claude-response-protocol.json", recorder._claude_response_protocol())
+            overloads = recorder._overload_responses()
+            if overloads:
+                session.record("overload-responses.json", overloads)
         except BaseException:
             if failure is None:
                 raise
@@ -444,6 +489,9 @@ def assert_served(recorder, request, model):
             {"name": tool.get("name"), "defer_loading": tool.get("defer_loading")}
             for tool in request.payload.get("tools", [])
         ],
+        "response_headers": _rate_limit_headers(response)
+        if response.status_code in (429, 503)
+        else {},
         "response_body": httpx.Response(
             response.status_code, headers=response.headers, content=response.body
         ).text[:2000],

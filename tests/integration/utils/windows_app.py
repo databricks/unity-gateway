@@ -1,8 +1,14 @@
 """Launch a packaged Windows app in the session environment and drive it with UI Automation."""
 
+import json
+import os
+import queue
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .harness import process_group_options, stop_process
@@ -42,27 +48,126 @@ def _installed_package(package: str) -> tuple[str, str]:
     return full_name.split("_")[1], location
 
 
+def _redact_app_log(session, text: str) -> str:
+    secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+    if secret:
+        text = text.replace(secret, "<redacted>")
+    return session.redact(text)
+
+
+def _capture_app_log(stream, path: Path) -> None:
+    with path.open("w", encoding="utf-8") as log:
+        for line in stream:
+            log.write(f"{datetime.now(UTC).isoformat(timespec='milliseconds')} {line}")
+            log.flush()
+
+
+class WindowsUIAProcess:
+    def __init__(self, argv: list[str]):
+        self.stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+        try:
+            self.proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self.stderr,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
+            )
+        except OSError:
+            self.stderr.close()
+            raise
+        self.responses = queue.Queue()
+        self.broken = False
+
+        def read_responses():
+            for line in self.proc.stdout:
+                self.responses.put(line)
+            self.responses.put(None)
+
+        self.reader = threading.Thread(target=read_responses, daemon=True)
+        self.reader.start()
+
+    def request(self, command: str, *args: str) -> str:
+        assert not self.broken, "UI Automation helper is unavailable"
+        assert self.proc.poll() is None, "UI Automation helper exited"
+        self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
+        self.proc.stdin.flush()
+        timeout = float(args[2]) + 5 if command in ("click", "wait") else 60
+        try:
+            line = self.responses.get(timeout=timeout)
+        except queue.Empty as error:
+            self.broken = True
+            raise AssertionError("UI Automation helper did not respond") from error
+        assert line is not None, "UI Automation helper exited without a response"
+        response = json.loads(line)
+        assert response["ok"], f"UI Automation {command} failed: {response['error']}"
+        return response["output"]
+
+    def close(self) -> None:
+        self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        self.reader.join(timeout=5)
+        self.proc.stdout.close()
+        self.stderr.close()
+
+
 class WindowsApp:
     def __init__(self, session, package: str, executable: str, name: str):
         self.session = session
         self.name = name
         self.log = session.home.parent / f"{name}.log"
         self.powershell = Path(shutil.which("powershell.exe") or "powershell.exe")
+        self.timings: list[dict] = []
+        self.baseline_sampled = False
         self.version, location = _installed_package(package)
         self.executable = str(Path(location) / executable)
 
     def __enter__(self):
         self.session.record(f"{self.name}-app.json", {"version": self.version})
-        with self.log.open("w") as log:
-            # Chromium exposes its web content to UI Automation only when asked.
-            self.proc = subprocess.Popen(
-                [self.executable, "--force-renderer-accessibility"],
-                env=self.session.env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                **process_group_options(),
+        started = time.monotonic()
+        # Chromium exposes its web content to UI Automation only when asked.
+        self.proc = subprocess.Popen(
+            [self.executable, "--force-renderer-accessibility"],
+            env=self.session.env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **process_group_options(),
+        )
+        self.reader = threading.Thread(
+            target=_capture_app_log, args=(self.proc.stdout, self.log), daemon=True
+        )
+        self.reader.start()
+        self.timings.append({"action": "app_spawn", "seconds": time.monotonic() - started})
+        started = time.monotonic()
+        try:
+            self.uia_process = WindowsUIAProcess(
+                [
+                    str(self.powershell),
+                    "-NoProfile",
+                    "-STA",
+                    "-File",
+                    str(UIA_CLIENT),
+                    "session",
+                    str(self.proc.pid),
+                ]
             )
+        except OSError:
+            stop_process(self.proc)
+            self.reader.join(timeout=5)
+            raise
+        self.timings.append({"action": "uia_spawn", "seconds": time.monotonic() - started})
         return self
 
     def __exit__(self, *exc):
@@ -71,12 +176,17 @@ class WindowsApp:
         except (AssertionError, subprocess.SubprocessError) as error:
             self.session.record(f"{self.name}-screenshot-error.json", {"error": str(error)})
         finally:
-            stop_process(self.proc)
-            log = self.session.redact(self.log.read_text(errors="replace"))
+            try:
+                self.uia_process.close()
+            finally:
+                stop_process(self.proc)
+            self.reader.join(timeout=5)
+            self.session.record(f"{self.name}-uia-timings.json", self.timings)
+            log = _redact_app_log(self.session, self.log.read_text(errors="replace"))
             self.session.record(
                 f"{self.name}-log.json",
                 {
-                    "log": log[-20000:],
+                    "log": log,
                     "mcp_and_setup": "\n".join(
                         line
                         for line in log.splitlines()
@@ -84,64 +194,95 @@ class WindowsApp:
                     )[-20000:],
                 },
             )
+            assert not self.reader.is_alive(), "Desktop log capture did not finish"
+            self.proc.stdout.close()
 
     def uia(self, command: str, *args: str) -> str:
         assert self.proc.poll() is None, f"{self.name} exited with {self.proc.returncode}"
+        started = time.monotonic()
+        output = ""
         try:
-            result = subprocess.run(
-                [str(self.powershell), "-NoProfile", "-STA", "-File", str(UIA_CLIENT), command]
-                + [str(self.proc.pid), *args],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-                # A console window would take the foreground, and with it our keystrokes.
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        except subprocess.TimeoutExpired as error:
-            diagnostic = error.stderr or b""
-            if isinstance(diagnostic, bytes):
-                diagnostic = diagnostic.decode("utf-8", errors="replace")
-            self.session.record(
-                f"{self.name}-uia-{command}-timeout.json",
-                {"command": command, "stderr": self.session.redact(diagnostic[-2000:])},
-            )
-            raise
-        assert result.returncode == 0, f"UI Automation {command} failed: {result.stderr}"
-        return result.stdout
+            output = self.uia_process.request(command, *args)
+            return output
+        finally:
+            timing = {"action": command, "seconds": time.monotonic() - started}
+            if command in ("click", "wait") and output.isdigit():
+                timing["polls"] = int(output)
+            self.timings.append(timing)
 
     def read_tree(self) -> list[list[str]]:
         """Each element's control type, name and value."""
         try:
-            return [line.split("\t") for line in self.uia("tree").splitlines()]
+            output = self.uia("tree")
+            if (
+                output
+                and os.environ.get("UG_UIA_BASELINE_SAMPLE") == "1"
+                and not self.baseline_sampled
+            ):
+                self.baseline_sampled = True
+                started = time.monotonic()
+                try:
+                    result = subprocess.run(
+                        [
+                            str(self.powershell),
+                            "-NoProfile",
+                            "-STA",
+                            "-File",
+                            str(UIA_CLIENT),
+                            "tree",
+                            str(self.proc.pid),
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        timeout=60,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    code = result.returncode
+                except (OSError, subprocess.TimeoutExpired):
+                    code = "unavailable"
+                self.timings.append(
+                    {
+                        "action": "legacy_tree_sample",
+                        "seconds": time.monotonic() - started,
+                        "returncode": code,
+                    }
+                )
+            return [line.split("\t") for line in output.splitlines()]
         except AssertionError as error:
             # The app has no window yet while it starts.
             if "has no window" not in str(error):
                 raise
             return []
 
+    def _wait_or_click(self, action: str, control: str, name: str | None, timeout: float) -> None:
+        try:
+            self.uia(action, control, name or "", f"{timeout:g}")
+        except AssertionError as error:
+            try:
+                self.session.record(
+                    f"{self.name}-tree.json",
+                    {"waiting_for": [control, name], "tree": self.read_tree()},
+                )
+            except (AssertionError, OSError) as evidence_error:
+                error.add_note(f"Could not record the accessibility tree: {evidence_error}")
+            raise
+
     def wait_for(
         self, control: str, name: str | None, timeout: float = STEP_TIMEOUT
     ) -> list[list[str]]:
         """Wait for a ``control`` element named ``name`` (any name if None)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            tree = self.read_tree()
-            if any(row[0] == control and name in (None, *row[1:]) for row in tree):
-                return tree
-            if time.monotonic() > deadline:
-                self.session.record(
-                    f"{self.name}-tree.json", {"waiting_for": [control, name], "tree": tree}
-                )
-                raise AssertionError(f"{self.name} never showed {control} {name!r}")
-            time.sleep(2)
+        self._wait_or_click("wait", control, name, timeout)
+        tree = self.read_tree()
+        if not any(row[0] == control and name in (None, *row[1:]) for row in tree):
+            self.session.record(
+                f"{self.name}-tree.json", {"waiting_for": [control, name], "tree": tree}
+            )
+            raise AssertionError(f"{self.name} target disappeared before tree capture")
+        return tree
 
     def click(self, control: str, name: str | None, timeout: float = STEP_TIMEOUT) -> None:
         """Activate the first enabled ``control`` element named ``name`` (any name if None)."""
-        self.wait_for(control, name, timeout)
-        self.uia("invoke", control, name or "")
+        self._wait_or_click("click", control, name, timeout)
 
     def type_line(self, text: str, *, submit: bool = True) -> None:
         """Type with real keystrokes, optionally pressing Enter."""

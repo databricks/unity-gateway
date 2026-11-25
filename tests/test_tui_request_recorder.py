@@ -97,6 +97,45 @@ def test_rejected_inference_reports_tool_setup_without_conversation():
     assert "secret" not in str(details)
 
 
+@pytest.mark.parametrize("status", [429, 503])
+def test_overloaded_inference_reports_rate_headers_without_secret_headers(status):
+    request = RecordedRequest(1, "POST", "/messages", {}, b'{"model":"glm"}')
+
+    class Rejected:
+        def response_for(self, request, timeout):
+            return RecordedResponse(
+                status,
+                {"retry-after": "30", "x-ratelimit-remaining": "0", "authorization": "secret"},
+                b'{"error_code":"OVERLOADED"}',
+            )
+
+    with pytest.raises(AssertionError) as error:
+        request_recorder.assert_served(Rejected(), request, "glm")
+    details = error.value.args[0]
+    assert details["response_headers"] == {"retry-after": "30", "x-ratelimit-remaining": "0"}
+    assert "OVERLOADED" in details["response_body"]
+    assert "secret" not in str(details)
+
+
+def test_overloaded_response_evidence_includes_allowlisted_headers_and_body():
+    response = RecordedResponse(
+        429,
+        {"retry-after": "7", "x-request-id": "req", "authorization": "secret"},
+        b'{"error_code":"RATE_LIMITED"}',
+    )
+    evidence = request_recorder._overload_details(response)
+    assert evidence["headers"] == {"retry-after": "7", "x-request-id": "req"}
+    assert "RATE_LIMITED" in evidence["body"]
+    assert "secret" not in str(evidence)
+    private = RecordedResponse(429, {}, json.dumps(_message()).encode())
+    assert _PRIVATE not in str(request_recorder._overload_details(private))
+
+
+def test_overload_diagnostics_do_not_fail_on_malformed_compression():
+    response = RecordedResponse(429, {"content-encoding": "gzip"}, b"not-gzip")
+    assert request_recorder._overload_details(response)["body"] == "<invalid response omitted>"
+
+
 def _configured_session(recorder, tmp_path, commands):
     class Session:
         home = tmp_path

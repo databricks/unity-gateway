@@ -1,11 +1,14 @@
 """Reject false positives in the native desktop skill/MCP evidence checks."""
 
 import copy
+import io
+import re
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from tests.integration.utils import codex_desktop
+from tests.integration.utils import codex_desktop, windows_app
 from tests.integration.utils.codex_desktop import (
     MCP_SERVER,
     SKILL_NAME,
@@ -16,6 +19,225 @@ from tests.integration.utils.codex_desktop import (
 QUERY = "Databricks Unity Catalog documentation a13b42"
 MARKER = "b39c21"
 MODEL = "system.ai.gpt-5-6-sol"
+
+
+def test_persistent_windows_uia_protocol_preserves_process_and_errors():
+    helper = (
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " r=json.loads(line)\n"
+        " print(json.dumps({'ok':r['command'] != 'bad', 'output':str(len(r['args'])), "
+        "'error':'bad command'}),flush=True)\n"
+    )
+    client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        pid = client.proc.pid
+        assert client.request("tree") == "0"
+        assert client.request("type", "private input", "enter") == "2"
+        assert client.proc.pid == pid
+        with pytest.raises(AssertionError, match="bad command"):
+            client.request("bad")
+    finally:
+        client.close()
+    assert client.proc.poll() is not None
+
+
+def test_persistent_uia_timeout_cannot_reuse_a_stale_response():
+    class Responses:
+        def get(self, timeout):
+            raise windows_app.queue.Empty
+
+    client = object.__new__(windows_app.WindowsUIAProcess)
+    client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    client.responses = Responses()
+    client.broken = False
+    with pytest.raises(AssertionError, match="did not respond"):
+        client.request("tree")
+    with pytest.raises(AssertionError, match="unavailable"):
+        client.request("tree")
+
+
+def test_persistent_uia_wait_keeps_the_original_timeout():
+    class Responses:
+        timeout = 0
+
+        def get(self, timeout):
+            self.timeout = timeout
+            return '{"ok":true,"output":"1","error":""}'
+
+    client = object.__new__(windows_app.WindowsUIAProcess)
+    client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    client.responses = Responses()
+    client.broken = False
+    assert client.request("wait", "ControlType.Text", "answer", "240") == "1"
+    assert client.responses.timeout >= 240
+
+
+def test_windows_click_uses_single_native_condition_wait():
+    app = object.__new__(windows_app.WindowsApp)
+    actions = []
+    app.uia = lambda *args: actions.append(args)
+    app.click("ControlType.Button", "Continue", timeout=17)
+    assert actions == [("click", "ControlType.Button", "Continue", "17")]
+
+
+def test_windows_failed_native_click_records_accessibility_tree():
+    app = object.__new__(windows_app.WindowsApp)
+    app.name = "chatgpt"
+    evidence = {}
+    app.session = SimpleNamespace(record=lambda name, value: evidence.update({name: value}))
+    app.read_tree = lambda: [["ControlType.Text", "stuck", ""]]
+
+    def fail(*args):
+        raise AssertionError("target unavailable")
+
+    app.uia = fail
+    with pytest.raises(AssertionError, match="target unavailable"):
+        app.click("ControlType.Button", "Continue")
+    assert evidence["chatgpt-tree.json"]["tree"] == [["ControlType.Text", "stuck", ""]]
+
+
+def test_windows_uia_uses_persistent_client_for_each_action():
+    helper = (
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " r=json.loads(line)\n"
+        " print(json.dumps({'ok':True, 'output':r['command'], 'error':''}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        assert app.uia("tree") == "tree"
+        assert app.uia("type", "hello", "enter") == "type"
+    finally:
+        app.uia_process.close()
+    assert [row["action"] for row in app.timings] == ["tree", "type"]
+
+
+def test_windows_uia_records_native_click_poll_count():
+    helper = (
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " print(json.dumps({'ok':True, 'output':'3', 'error':''}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        app.click("ControlType.Button", "Continue")
+    finally:
+        app.uia_process.close()
+    assert app.timings[0]["polls"] == 3
+    assert "Continue" not in repr(app.timings)
+
+
+def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):
+    monkeypatch.setenv("UG_UIA_BASELINE_SAMPLE", "1")
+    monkeypatch.setattr(windows_app.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        windows_app.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0),
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(pid=123)
+    app.powershell = "powershell"
+    app.uia = lambda command: "ControlType.Text\tReady\t"
+    app.baseline_sampled = False
+    app.timings = []
+    assert app.read_tree() == [["ControlType.Text", "Ready", ""]]
+    assert app.read_tree() == [["ControlType.Text", "Ready", ""]]
+    assert len(calls) == 1
+    assert app.timings[0]["action"] == "legacy_tree_sample"
+    assert app.timings[0]["returncode"] == 0
+
+
+def test_windows_app_log_preserves_and_timestamps_every_line(tmp_path):
+    log = tmp_path / "app.log"
+    windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log)
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ first", lines[0])
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ second", lines[1])
+
+
+def test_windows_app_log_redacts_service_principal_secret(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "private-client-secret")
+    session = SimpleNamespace(redact=lambda text: text)
+    result = windows_app._redact_app_log(session, "error private-client-secret")
+    assert result == "error <redacted>"
+
+
+def test_windows_uia_timing_excludes_input_and_records_failed_actions():
+    helper = (
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " print(json.dumps({'ok':False, 'output':'', 'error':'failed'}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        with pytest.raises(AssertionError, match="UI Automation type failed"):
+            app.uia("type", "private-prompt", "enter")
+    finally:
+        app.uia_process.close()
+    assert len(app.timings) == 1
+    assert app.timings[0]["action"] == "type"
+    assert app.timings[0]["seconds"] >= 0
+    assert "private-prompt" not in repr(app.timings)
+
+
+def test_windows_wait_uses_native_condition_and_returns_tree():
+    app = object.__new__(windows_app.WindowsApp)
+    app.name = "chatgpt"
+    actions = []
+    app.uia = lambda *args: actions.append(args) or "2"
+    app.read_tree = lambda: [["ControlType.Text", "Ready", ""]]
+    assert app.wait_for("ControlType.Text", "Ready", timeout=17) == [
+        ["ControlType.Text", "Ready", ""]
+    ]
+    assert actions == [("wait", "ControlType.Text", "Ready", "17")]
+
+
+def test_windows_wait_requires_the_returned_tree_to_contain_the_target():
+    app = object.__new__(windows_app.WindowsApp)
+    app.name = "chatgpt"
+    app.uia = lambda *args: "1"
+    app.read_tree = lambda: []
+    app.session = SimpleNamespace(record=lambda *args: None)
+    with pytest.raises(AssertionError, match="disappeared"):
+        app.wait_for("ControlType.Text", "Ready")
+
+
+def test_windows_wait_records_poll_count_without_control_text():
+    helper = (
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " print(json.dumps({'ok':True, 'output':'2', 'error':''}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.timings = []
+    app.name = "chatgpt"
+    app.read_tree = lambda: [["ControlType.Text", "private-label", ""]]
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        app.wait_for("ControlType.Text", "private-label")
+    finally:
+        app.uia_process.close()
+    assert app.timings[0]["action"] == "wait"
+    assert app.timings[0]["polls"] == 2
+    assert app.timings[0]["seconds"] >= 0
+    assert "private-label" not in repr(app.timings)
 
 
 @pytest.mark.parametrize("failure", [None, "configure", "identity"])
