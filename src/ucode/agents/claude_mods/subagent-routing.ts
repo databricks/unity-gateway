@@ -455,9 +455,17 @@ export const registerSubagentRouting = (
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || typeof e.props.text !== 'string') return next(e)
-    let closingQuote = e.props.text.startsWith('Agent "') ? e.props.text.indexOf('" ', 7) : -1
-    while (closingQuote >= 0 && safeText(e.props.text.slice(7, closingQuote), 1000) !== saved.description) {
-      closingQuote = e.props.text.indexOf('" ', closingQuote + 1)
+    let closingQuote = -1
+    let quote = e.props.text.startsWith('Agent "') ? e.props.text.indexOf('"', 7) : -1
+    while (quote >= 0) {
+      const candidate = safeText(e.props.text.slice(7, quote), 1000)
+      const after = e.props.text[quote + 1]
+      if (candidate && saved.description.startsWith(candidate)
+          && (!after || /[^\p{L}\p{N}_]/u.test(after))) {
+        closingQuote = quote
+        if (candidate === saved.description) break
+      }
+      quote = e.props.text.indexOf('"', quote + 1)
     }
     const text = closingQuote >= 0
       ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(closingQuote + 1)}` : e.props.text
@@ -509,7 +517,7 @@ export const registerSubagentRouting = (
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    // Grouped cards need a task line; lone rows already show the title in their label.
+    // The native lone row already includes the task title; another line would repeat it.
     return Box({ flexDirection: 'column', children: [original,
       ...selection($, e, record, '  ↳ ', 4),
     ] })

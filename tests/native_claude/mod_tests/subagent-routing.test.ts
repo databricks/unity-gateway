@@ -957,6 +957,7 @@ test('hidden model display does not restore saved native labels', {
   options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: '0' },
 }, async ($, on) => {
   const writes: string[] = [];
+  const renders: any[] = [];
   on('session.id', () => ({ value: 'session-1' }));
   on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
   on('env.set', () => ({ value: undefined }));
@@ -968,8 +969,21 @@ test('hidden model display does not restore saved native labels', {
     animal: 'Fox', title: 'Inspect parser', selected: 'system.ai.model-b', launched: 'system.ai.model-b',
   }) }));
   on('fs.write', ($, e) => { writes.push(e.path); return { value: undefined }; });
+  on('ui.render', ($, e) => {
+    renders.push(e);
+    return { type: 'Text', props: {}, children: [e.props.text ?? e.props.input?.description ?? 'native row'] };
+  });
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
   expect(writes).toEqual([]);
+  const notice = { ...panel, component: 'UserMessage' as const, requestId: 'hidden-notice',
+    props: { text: 'Agent "Inspect parser" finished', origin: { kind: 'task-notification' as const },
+      task: { id: 'child', status: 'completed' } } };
+  const notification = await $.ui.mount(notice);
+  expect(renders[renders.length - 1].props).toEqual(notice.props);
+  await notification.unmount();
+  const tool = await $.ui.mount(row('hidden-call'));
+  expect(renders[renders.length - 1].props.input).toEqual(originalInput);
+  await tool.unmount();
 });
 
 test('completed notification labels restore per child and render without storage reads', async ($, on) => {
@@ -1050,6 +1064,20 @@ test('completed notification labels restore per child and render without storage
   }
   expect([idReads, fileReads, environmentReads]).toEqual(counts);
   expect(notice.props.text).toBe('Agent "Joke from Sonnet" finished');
+  for (const [text, suffix] of [
+    ['Agent "Joke from Sonnet"\nSummary', '\nSummary'],
+    ['Agent "Joke from Sonnet".', '.'],
+    ['Agent "Joke from Sonnet"', ''],
+    ['Agent "Joke from Sonn" finished', ' finished'],
+  ]) {
+    const ui = await $.ui.mount({ ...notice, props: { ...notice.props, text } });
+    expect(renders[renders.length - 1].props.text).toBe(quoted.replace(/ finished$/, suffix));
+    await ui.unmount();
+  }
+  const unmatched = await $.ui.mount({ ...notice, props: { ...notice.props,
+    text: 'Agent "other task" finished' } });
+  expect(renders[renders.length - 1].props.text).toBe('Agent "other task" finished\n⚠ Launched on launched-model, not the selected selected-model');
+  await unmatched.unmount();
   for (const isExpanded of [false, true]) {
     const ui = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded,
       text: 'Original task summary\nFull child output stays visible.' } });
