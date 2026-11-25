@@ -110,6 +110,7 @@ def source_contract(cuj):
         assert config["tracing"]["enabled"] is False, (agent, config)
     assert configs["CODING_AGENT_GITHUB_COPILOT"]["vscode_integration"]["enabled"] is False
     assert shutil.which(COPILOT), "Install the pinned Copilot CLI before running CUJ9"
+    provider_targets = {}
     for provider, target in (
         (SOURCE_ANTHROPIC_PROVIDER, SOURCE_ANTHROPIC_TARGET),
         (SOURCE_OPENAI_PROVIDER, SOURCE_OPENAI_TARGET),
@@ -118,12 +119,8 @@ def source_contract(cuj):
             f"model-provider-services/{provider}"
         )
         assert service.config and service.config.allow_all_targets is not True, provider
-        targets = [item.model for item in service.config.targets or []]
-        if provider == SOURCE_OPENAI_PROVIDER:
-            # Copilot's `providers.openai.*` source lists every target, and COPILOT_MODELS expects one.
-            assert targets == [target], provider
-        else:
-            assert target in targets, provider
+        provider_targets[provider] = [item.model for item in service.config.targets or []]
+        assert target in provider_targets[provider], provider
     for model in (
         CLAUDE_SONNET_MODEL_SERVICE,
         CODEX_LUNA_MODEL_SERVICE,
@@ -143,6 +140,7 @@ def source_contract(cuj):
     }
     payload = workspace.client.api_client.do("GET", "/ai-gateway/codex/v1/models", headers=headers)
     assert set(parse_codex_provider_catalog(payload)) == {SOURCE_CODEX_ALIAS}
+    return provider_targets
 
 
 @pytest.fixture(autouse=True)
@@ -271,7 +269,9 @@ class TestModelSources(BaseCujTest):
 
     @pytest.mark.copilot
     @pytest.mark.tui
-    def test_sources_copilot_discovers_mixed_models_and_uses_service_default(self, cuj):
+    def test_sources_copilot_discovers_mixed_models_and_uses_service_default(
+        self, cuj, source_contract
+    ):
         """Scenario: configure Copilot, inspect its live registry, and complete a TUI file task.
 
         Expected: the exact registry retains the Anthropic deep link, hosted service, and
@@ -300,9 +300,13 @@ class TestModelSources(BaseCujTest):
                 for row in registry["models"]
             ]
             session.record("sources-copilot-models.json", models)
-            assert len(models) == len(COPILOT_MODELS), models
+            expected = COPILOT_MODELS | {
+                f"{SOURCE_OPENAI_PROVIDER}.{target}": "databricks-responses"
+                for target in source_contract[SOURCE_OPENAI_PROVIDER]
+            }
+            assert len(models) == len(expected), models
             # A hosted service is listed under its label, without the `system.ai.` prefix.
-            assert {row["wireModel"]: row["provider"] for row in models} == COPILOT_MODELS, models
+            assert {row["wireModel"]: row["provider"] for row in models} == expected, models
             assert all(
                 row["id"] == row["wireModel"].removeprefix("system.ai.") for row in models
             ), models
