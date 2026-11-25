@@ -1,9 +1,10 @@
 // An Accessibility client for one app: `tree PID` prints its UI elements, `click PID ROLE LABEL
 // [WAIT]` activates the app, waits up to WAIT seconds (60 by default) for the first element
 // matching ROLE and LABEL (any label if LABEL is empty) and clicks that same element with one
-// mouse click at its current frame. The app's web controls accept AXPress without acting on it
-// (run 45506553887: the first onboarding screen stayed up after successful presses), so the
-// mouse click is the click.
+// mouse click — posted only once the element's frame has stopped moving, because a dialog that
+// is still animating in reports a moving frame and a mid-flight click misses it. The app's web
+// controls accept AXPress without acting on it (run 45506553887: the first onboarding screen
+// stayed up after successful presses), so the mouse click is the click.
 import AppKit
 
 let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
@@ -99,17 +100,27 @@ case "click" where arguments.count == 5 || arguments.count == 6:
             let (position, positionError) = pointValue(target, kAXPositionAttribute)
             let (size, sizeError) = sizeValue(target, kAXSizeAttribute)
             if positionError == .success && sizeError == .success && activated {
-                // The frame is read at click time, after activation and from the same traversal
-                // that found the element, so a window that moved or rebuilt is clicked where it
-                // is now.
-                let centre = CGPoint(x: position.x + size.width / 2, y: position.y + size.height / 2)
-                for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-                    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: centre, mouseButton: .left)?.post(tap: .cghidEventTap)
-                    usleep(100_000)
+                // A frame is only clickable once it has stopped moving: a dialog animating in
+                // reports a shifting position, and clicking it mid-flight lands where the button
+                // used to be. Two reads that agree mean the element has settled.
+                usleep(300_000)
+                let (settledPosition, settledPositionError) = pointValue(target, kAXPositionAttribute)
+                let (settledSize, settledSizeError) = sizeValue(target, kAXSizeAttribute)
+                if settledPositionError == .success, settledSizeError == .success,
+                    abs(settledPosition.x - position.x) < 1, abs(settledPosition.y - position.y) < 1,
+                    abs(settledSize.width - size.width) < 1, abs(settledSize.height - size.height) < 1 {
+                    let centre = CGPoint(
+                        x: settledPosition.x + settledSize.width / 2,
+                        y: settledPosition.y + settledSize.height / 2
+                    )
+                    report("clicked \(arguments[3]) '\(arguments[4])' at \(centre.x), \(centre.y)")
+                    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+                        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: centre, mouseButton: .left)?.post(tap: .cghidEventTap)
+                        usleep(100_000)
+                    }
+                    exit(0)
                 }
-                exit(0)
-            }
-            if positionError != .success || sizeError != .success {
+            } else if positionError != .success || sizeError != .success {
                 snap.errors.append("frame of \(arguments[3]): position \(positionError.rawValue), size \(sizeError.rawValue)")
             }
         }

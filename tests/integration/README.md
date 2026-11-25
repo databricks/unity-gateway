@@ -426,8 +426,9 @@ app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. The h
 the app with its Sparkle updater off through the app's own `CODEX_SPARKLE_ENABLED` gate, so it
 cannot replace the SHA-pinned build mid-job, and every launch asserts the installed version is
 the job's pin. Each click is one native command that activates the app, waits for the element
-and clicks it — one mouse click at its current frame, read after activation from the same
-traversal that found the element (the app's web controls accept AXPress without acting on it);
+and clicks it — one mouse click posted once the element's frame has stopped moving, read after
+activation from the same traversal that found the element (the app's web controls accept AXPress
+without acting on it, and a dialog still animating in reports a moving frame);
 traversal failures surface as `AX error:` lines instead of an empty tree, and
 a dismissal wait treats a traversal that failed partway as not settled, so a busy app can no
 longer look like a left dialog. Onboarding dismissals wait for the dialog to leave, recording

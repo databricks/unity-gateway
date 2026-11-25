@@ -124,14 +124,17 @@ class MacApp:
     def wait_gone(self, role: str, label: str | None, timeout: float) -> None:
         """Wait for a ``role`` element labelled ``label`` to disappear.
 
-        The click that should remove it is verified instead of assumed. A traversal that
-        failed partway must not prove the element gone, so the wait continues while the native
-        client reports AX errors, and a screen that never leaves the element fails with the
+        The click that should remove it is verified instead of assumed. A traversal that never
+        reached the app's web content — where every journey target lives — cannot prove the
+        element gone, so such a failed traversal keeps the wait going; AX errors on elements
+        beyond the web content do not, because the app has window buttons whose children fetch
+        fails on every single traversal. A screen that never leaves the element fails with the
         stuck AX tree recorded as evidence."""
         deadline = time.monotonic() + timeout
         while True:
             tree = self.read_tree()
-            if not self.ax_errors and not any(matches(row, role, label) for row in tree):
+            settled = not self.ax_errors or any(row[0] == "AXWebArea" for row in tree)
+            if settled and not any(matches(row, role, label) for row in tree):
                 return
             if time.monotonic() > deadline:
                 tree = self.read_tree()
