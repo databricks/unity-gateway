@@ -124,7 +124,11 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
 
 @pytest.mark.parametrize(
     ("config", "expected"),
-    [(b"[windows]\n", ("readable", "unset")), (b"\xff", ("unreadable", "unset"))],
+    [
+        (b"[windows]\n", ("readable", "unset")),
+        (b"windows = 1\n", ("invalid", "unset")),
+        (b"\xff", ("unreadable", "unset")),
+    ],
 )
 def test_windows_setup_failure_records_config_state(tmp_path, config, expected):
     path = tmp_path / ".codex/config.toml"

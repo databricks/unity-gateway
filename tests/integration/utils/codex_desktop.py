@@ -63,12 +63,14 @@ def finish_windows_readiness_check(app, timeout: float = 60) -> bool:
 def _windows_sandbox_mode(home: Path) -> tuple[str | None, str]:
     path = home / ".codex/config.toml"
     try:
-        mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get("sandbox")
+        windows = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {})
     except FileNotFoundError:
         return None, "missing"
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return None, "unreadable"
-    return mode, "readable"
+    if not isinstance(windows, dict):
+        return None, "invalid"
+    return windows.get("sandbox"), "readable"
 
 
 def wait_for_windows_setup(app, timeout: float = 60) -> None:
