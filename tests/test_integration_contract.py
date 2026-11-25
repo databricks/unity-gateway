@@ -37,6 +37,13 @@ def _markers(nodes):
     }
 
 
+def test_unit_shards_upload_junit_evidence_even_when_a_test_fails():
+    workflow = _workflow("ci.yml")
+    report = workflow.split("      - &unit-report\n", 1)[1].split("\n\n  unit-windows:", 1)[0]
+    assert "if: ${{ !cancelled() }}" in report
+    assert "${{ runner.temp }}/junit.xml" in report
+
+
 def test_quota_diagnostics_emit_only_rate_and_caller_permission_fields():
     script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
     assert script.is_file()

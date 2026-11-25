@@ -1475,7 +1475,6 @@ jobs:
       CHATGPT_APP_VERSION: 26.1103.7773.0
       CHATGPT_APP_SHA256: c043c8032b7a1e6ab383252a910176405265ac3edbc909218d875fb284dea672
       TEST_MARKER: managed_fixture and windows_desktop and codex
-      UG_UIA_BASELINE_SAMPLE: '1'
     steps:
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2

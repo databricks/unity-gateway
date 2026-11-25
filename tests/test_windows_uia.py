@@ -1,10 +1,12 @@
 """Exercise the persistent UIA helper against stub and native Windows controls."""
 
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 
@@ -60,10 +62,12 @@ namespace Stub {
     public class Rect { public int X = 0, Y = 0, Width = 100, Height = 80; }
     public class CurrentInfo {
         public int ProcessId = 123; public bool IsEnabled = true, IsOffscreen = false;
+        public bool HasKeyboardFocus { get { State.Event("focus-check"); return ++State.FocusChecks >= 2; } }
         public string Name; public ControlType ControlType; public Rect BoundingRectangle = new Rect();
     }
     public static class State {
         public static string Value = "";
+        public static int FocusChecks = 0;
         public static void Event(string text) { File.AppendAllText(Environment.GetEnvironmentVariable("UIA_TEST_EVENTS"), text + "\n"); }
     }
     public class AutomationElement {
@@ -88,7 +92,6 @@ namespace Stub {
         }
         public void SetFocus() { FocusedElement = this; State.Event("focus"); }
     }
-    public static class Automation { public static bool Compare(AutomationElement left, AutomationElement right) { return Object.ReferenceEquals(left, right); } }
     public class ValuePattern {
         public static readonly AutomationProperty ValueProperty = new AutomationProperty("value");
         public static readonly AutomationPattern Pattern = new AutomationPattern("value");
@@ -147,15 +150,17 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
             "wait_ms",
         ):
             assert helper.last_metrics[key] >= 0
-        assert helper.request("focus", "ControlType.Button", "Press", "5") == "1"
         assert helper.request("click", "ControlType.Button", "Press", "5") == "1"
         assert helper.last_metrics["click_ms"] >= 0
         assert helper.last_metrics["wait_ms"] >= 0
         record_property("stub_uia_startup", json.dumps(helper.last_metrics, sort_keys=True))
         helper.request("invoke", "ControlType.Button", "Press")
         helper.request("click", "ControlType.Edit", "", "5")
-        helper.request("focus", "ControlType.Edit", "", "5")
         helper.request("type", "hello", "")
+        assert helper.last_metrics["composer_focus_before_wait"] == 0
+        assert helper.last_metrics["composer_focus_at_first_key"] == 1
+        assert helper.last_metrics["composer_focus_wait_ms"] >= 0
+        assert helper.last_metrics["click_to_first_key_ms"] >= 0
         assert helper.request("wait", "ControlType.Edit", "hello", "5") == "1"
         image = tmp_path / "screenshot.png"
         helper.request("screenshot", str(image))
@@ -163,11 +168,12 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
     finally:
         helper.close()
     assert events.read_text().splitlines() == [
-        "focus",
         "invoke",
         "invoke",
         "focus",
-        "focus",
+        "focus-check",
+        "focus-check",
+        "focus-check",
         "type",
     ]
     legacy = subprocess.run(
@@ -181,11 +187,66 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
     assert "ControlType.Button\tPress" in legacy.stdout
 
 
+def _wait_for_form_shown(app, ready, timeout):
+    deadline = time.monotonic() + timeout
+    while not ready.is_file():
+        if (code := app.poll()) is not None:
+            raise AssertionError(f"WinForms process exited with {code} before showing its window")
+        if time.monotonic() >= deadline:
+            raise AssertionError("WinForms window did not become visible")
+        time.sleep(0.05)
+    return max(0.0, deadline - time.monotonic())
+
+
+def _native_failure_details(app, helper, stderr):
+    details = {"form_exit": app.poll(), "wait_metrics": dict(helper.last_metrics)}
+    try:
+        details["tree"] = helper.request("tree")
+    except AssertionError as error:
+        details["tree_error"] = str(error)
+    if app.poll() is None:
+        app.terminate()
+        app.wait(timeout=10)
+    stderr.seek(0)
+    details["form_stderr"] = stderr.read()
+    return details
+
+
+def test_native_form_wait_stops_immediately_if_the_form_process_exits(tmp_path):
+    class Form:
+        def poll(self):
+            return 17
+
+    with pytest.raises(AssertionError, match="exited.*17"):
+        _wait_for_form_shown(Form(), tmp_path / "ready", timeout=30)
+
+
+def test_native_failure_details_preserve_form_exit_stderr_and_wait_metrics():
+    class Form:
+        def poll(self):
+            return 17
+
+    class Helper:
+        last_metrics = {"wait_ms": 30000}
+
+        def request(self, action):
+            raise AssertionError("no window")
+
+    details = _native_failure_details(Form(), Helper(), io.StringIO("form startup error"))
+    assert details == {
+        "form_exit": 17,
+        "wait_metrics": {"wait_ms": 30000},
+        "tree_error": "no window",
+        "form_stderr": "form startup error",
+    }
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows UI Automation requires native Windows")
 def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_property):
     powershell = shutil.which("powershell.exe")
     assert powershell, "Windows PowerShell is required for the UIA helper contract"
     marker = tmp_path / "clicked.txt"
+    ready = tmp_path / "shown.txt"
     form = tmp_path / "form.ps1"
     form.write_text(
         textwrap.dedent(
@@ -194,6 +255,7 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
             $form = [Windows.Forms.Form]::new()
             $form.Text = 'UG UIA contract'
             $form.TopMost = $true
+            $form.Add_Shown({ [IO.File]::WriteAllText($env:UIA_TEST_READY, 'shown') })
             $button = [Windows.Forms.Button]::new()
             $button.Text = 'Press'
             $button.Add_Click({ [IO.File]::WriteAllText($env:UIA_TEST_MARKER, 'clicked') })
@@ -206,15 +268,20 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
         ),
         encoding="utf-8",
     )
-    env = {**os.environ, "UIA_TEST_MARKER": str(marker)}
-    app = subprocess.Popen(
-        [powershell, "-NoProfile", "-STA", "-File", str(form)],
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    env = {**os.environ, "UIA_TEST_MARKER": str(marker), "UIA_TEST_READY": str(ready)}
+    form_stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace")
+    try:
+        app = subprocess.Popen(
+            [powershell, "-NoProfile", "-STA", "-File", str(form)],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=form_stderr,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except OSError:
+        form_stderr.close()
+        raise
     try:
         helper = WindowsUIAProcess(
             [
@@ -229,7 +296,8 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
             ]
         )
         try:
-            assert int(helper.request("wait", "ControlType.Button", "Press", "30")) >= 1
+            remaining = _wait_for_form_shown(app, ready, timeout=30)
+            assert int(helper.request("wait", "ControlType.Button", "Press", f"{remaining:g}")) >= 1
             record_property(
                 "windows_powershell_5_1_startup", json.dumps(helper.last_metrics, sort_keys=True)
             )
@@ -240,12 +308,17 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
                 time.sleep(0.05)
             assert marker.read_text() == "clicked"
             helper.request("invoke", "ControlType.Button", "Press")
-            helper.request("focus", "ControlType.Edit", "", "30")
+            helper.request("click", "ControlType.Edit", "", "30")
             helper.request("type", "hello", "")
             assert int(helper.request("wait", "ControlType.Edit", "hello", "30")) >= 1
             image = tmp_path / "screenshot.png"
             helper.request("screenshot", str(image))
             assert image.stat().st_size > 0
+        except AssertionError as error:
+            details = _native_failure_details(app, helper, form_stderr)
+            record_property("windows_uia_failure", json.dumps(details, sort_keys=True))
+            error.add_note("Native UIA diagnostics: " + json.dumps(details, sort_keys=True))
+            raise
         finally:
             helper.close()
         pwsh = shutil.which("pwsh.exe")
@@ -282,3 +355,4 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
         if app.poll() is None:
             app.terminate()
         app.wait(timeout=10)
+        form_stderr.close()

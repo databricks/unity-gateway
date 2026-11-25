@@ -35,7 +35,8 @@ $initMetrics = @{
     init_ms = $initClock.Elapsed.TotalMilliseconds
 }
 $script:metrics = @{}
-$script:expectedFocus = $null
+$script:composer = $null
+$script:composerClickedAt = 0
 
 function Get-Windows {
     [Console]::Error.WriteLine('uia phase=find-windows')
@@ -89,9 +90,9 @@ function Find-Target($windows, $role, $name, $matchValue) {
 function Invoke-Action($action, $argsList) {
     $first = if ($argsList.Count -gt 0) { [string]$argsList[0] } else { '' }
     $second = if ($argsList.Count -gt 1) { [string]$argsList[1] } else { '' }
-    if ($action -notin @('focus', 'type')) { $script:expectedFocus = $null }
-    $windows = if ($action -in @('click', 'wait', 'focus')) { @() } else { @(Get-Windows) }
-    if (-not $windows.Count -and ($action -notin @('click', 'wait', 'focus'))) { throw "Process $ProcessId has no window" }
+    if ($action -ne 'type') { $script:composer = $null }
+    $windows = if ($action -in @('click', 'wait')) { @() } else { @(Get-Windows) }
+    if (-not $windows.Count -and ($action -notin @('click', 'wait'))) { throw "Process $ProcessId has no window" }
     switch ($action) {
         'tree' {
             foreach ($element in Get-Elements $windows) {
@@ -99,8 +100,8 @@ function Invoke-Action($action, $argsList) {
                 ($fields | ForEach-Object { "$_" -replace '[\t\r\n]', ' ' }) -join "`t"
             }
         }
-        { $_ -in 'invoke', 'click', 'wait', 'focus' } {
-            $timeout = if (($action -in @('click', 'wait', 'focus')) -and $argsList.Count -gt 2) { [double]$argsList[2] } else { 0 }
+        { $_ -in 'invoke', 'click', 'wait' } {
+            $timeout = if (($action -in @('click', 'wait')) -and $argsList.Count -gt 2) { [double]$argsList[2] } else { 0 }
             $deadline = [DateTime]::UtcNow.AddSeconds($timeout)
             $polls = 0
             $waitClock = [Diagnostics.Stopwatch]::StartNew()
@@ -118,20 +119,6 @@ function Invoke-Action($action, $argsList) {
                 $script:metrics.polls = $polls
             }
             if ($action -eq 'wait') { "$polls"; break }
-            if ($action -eq 'focus') {
-                $focusClock = [Diagnostics.Stopwatch]::StartNew()
-                try {
-                    $target.SetFocus()
-                    if (-not [Windows.Automation.Automation]::Compare($target, $automation::FocusedElement)) {
-                        throw 'The selected control did not receive keyboard focus'
-                    }
-                    $script:expectedFocus = $target
-                } finally {
-                    $script:metrics.focus_ms = $focusClock.Elapsed.TotalMilliseconds
-                }
-                "$polls"
-                break
-            }
             $clickClock = [Diagnostics.Stopwatch]::StartNew()
             try {
                 $pattern = $null
@@ -145,16 +132,36 @@ function Invoke-Action($action, $argsList) {
             } finally {
                 $script:metrics.click_ms = $clickClock.Elapsed.TotalMilliseconds
             }
+            if ($action -eq 'click' -and $first -eq 'ControlType.Edit') {
+                $script:composer = $target
+                $script:composerClickedAt = [Diagnostics.Stopwatch]::GetTimestamp()
+            }
             if ($action -eq 'click') { "$polls" }
         }
         'type' {
-            $focusedElement = $automation::FocusedElement
-            $focused = $focusedElement.Current.ProcessId
-            if ($focused -ne $ProcessId) { throw "Keyboard focus is in process $focused, not $ProcessId" }
-            if ($script:expectedFocus -and -not [Windows.Automation.Automation]::Compare($script:expectedFocus, $focusedElement)) {
-                throw 'Keyboard focus moved away from the selected control'
+            if ($script:composer) {
+                $focusClock = [Diagnostics.Stopwatch]::StartNew()
+                $hasFocus = $script:composer.Current.HasKeyboardFocus
+                $script:metrics.composer_focus_before_wait = [int]$hasFocus
+                try {
+                    while (-not $hasFocus) {
+                        $sinceClick = ([Diagnostics.Stopwatch]::GetTimestamp() - $script:composerClickedAt) / [Diagnostics.Stopwatch]::Frequency
+                        if ($sinceClick -ge 60) { throw 'The composer did not receive keyboard focus' }
+                        Start-Sleep -Milliseconds 250
+                        $hasFocus = $script:composer.Current.HasKeyboardFocus
+                    }
+                } finally {
+                    $script:metrics.composer_focus_wait_ms = $focusClock.Elapsed.TotalMilliseconds
+                }
             }
-            $script:expectedFocus = $null
+            $focused = $automation::FocusedElement.Current.ProcessId
+            if ($focused -ne $ProcessId) { throw "Keyboard focus is in process $focused, not $ProcessId" }
+            if ($script:composer) {
+                $script:metrics.composer_focus_at_first_key = [int]$script:composer.Current.HasKeyboardFocus
+                $script:metrics.click_to_first_key_ms = 1000 * ([Diagnostics.Stopwatch]::GetTimestamp() - $script:composerClickedAt) / [Diagnostics.Stopwatch]::Frequency
+                if (-not $script:metrics.composer_focus_at_first_key) { throw 'The composer lost keyboard focus before typing' }
+                $script:composer = $null
+            }
             [Windows.Forms.SendKeys]::SendWait(($first -replace '[+^%~(){}\[\]]', '{$0}'))
             if ($second -eq 'enter') { [Windows.Forms.SendKeys]::SendWait('{ENTER}') }
         }

@@ -125,7 +125,7 @@ class WindowsUIAProcess:
             self.ready = True
         self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
         self.proc.stdin.flush()
-        timeout = float(args[2]) + 5 if command in ("click", "wait", "focus") else 60
+        timeout = float(args[2]) + 5 if command in ("click", "wait") else 60
         response = self._receive(timeout)
         metrics = {**self.init_metrics, **response.get("metrics", {})}
         self.last_metrics = {
@@ -143,7 +143,10 @@ class WindowsUIAProcess:
                 "action_ms",
                 "wait_ms",
                 "click_ms",
-                "focus_ms",
+                "composer_focus_before_wait",
+                "composer_focus_at_first_key",
+                "composer_focus_wait_ms",
+                "click_to_first_key_ms",
                 "polls",
             }
             and isinstance(value, (int, float))
@@ -259,7 +262,7 @@ class WindowsApp:
         finally:
             timing = {"action": command, "seconds": time.monotonic() - started}
             timing.update(self.uia_process.last_metrics)
-            if command in ("click", "wait", "focus") and output.isdigit():
+            if command in ("click", "wait") and output.isdigit():
                 timing["polls"] = int(output)
             self.timings.append(timing)
 
@@ -337,10 +340,6 @@ class WindowsApp:
     def click(self, control: str, name: str | None, timeout: float = STEP_TIMEOUT) -> None:
         """Activate the first enabled ``control`` element named ``name`` (any name if None)."""
         self._control_action("click", control, name, timeout)
-
-    def focus(self, control: str, name: str | None, timeout: float = STEP_TIMEOUT) -> None:
-        """Focus the named visible control and verify it owns the next keystroke."""
-        self._control_action("focus", control, name, timeout)
 
     def type_line(self, text: str, *, submit: bool = True) -> None:
         """Type with real keystrokes, optionally pressing Enter."""

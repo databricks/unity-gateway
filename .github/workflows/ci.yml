@@ -212,6 +212,7 @@ jobs:
             "$VENV_BIN/python" -m pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
       - &unit-report
         name: Upload this shard's timings
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: unit-shard-${{ runner.os }}-${{ matrix.shard }}
