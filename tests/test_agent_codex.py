@@ -12,6 +12,7 @@ from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 
 from ucode import custom_oauth, databricks, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
@@ -2646,6 +2647,113 @@ class TestCodexManagedConfig:
         assert "requires_openai_auth" not in provider
         assert "auth" in provider
         assert "codex_relayed" not in state
+
+    @pytest.mark.parametrize("provider", [None, "cat.s.mps"])
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_relayed_withdraws_only_ug_auth(self, tmp_path, monkeypatch, provider, filename):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path = managed_path.with_name(filename)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        managed_path.parent.mkdir(parents=True)
+        baseline = '[mcp_servers.admin]\nurl = "https://admin.example/mcp"\n'
+        managed_path.write_text(baseline)
+        state = codex.write_tool_config({"workspace": WS})
+        assert "auth" in read_toml_safe(managed_path)["model_providers"]["Databricks"]
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+        monkeypatch.setattr(codex, "_launch_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            databricks,
+            "model_service_relay_lookup",
+            lambda *a, **k: databricks.RelayLookup.RELAYED,
+        )
+
+        if provider is None:
+            assert codex.use_model_service_relay(
+                state, "cat.s.seat", configuring=False, selected_only=False
+            )
+        codex.write_tool_config(state, provider=provider, relayed=True)
+
+        managed = read_toml_safe(managed_path)
+        assert "model_provider" not in managed
+        assert "auth" not in managed.get("model_providers", {}).get("Databricks", {})
+        assert "base_url" not in managed.get("model_providers", {}).get("Databricks", {})
+        assert managed["mcp_servers"]["admin"]["url"] == "https://admin.example/mcp"
+        assert read_toml_safe(config_path)["model_providers"]["Databricks"]["requires_openai_auth"]
+        codex.revert_managed_config()
+        assert read_toml_safe(managed_path) == tomlkit.parse(baseline)
+
+    @pytest.mark.parametrize(
+        "blocker", ["original", "modified", "opted_out", "missing_record", "incomplete_record"]
+    )
+    def test_relay_migration_preserves_auth_policy(self, tmp_path, monkeypatch, blocker):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        if blocker == "original":
+            managed_path.parent.mkdir(parents=True)
+            managed_path.write_text('model_provider = "enterprise"\n')
+        codex.write_tool_config({"workspace": WS})
+        if blocker == "modified":
+            doc = read_toml_safe(managed_path)
+            doc["model_providers"]["Databricks"]["base_url"] = "https://admin.example"
+            managed_path.write_text(tomlkit.dumps(doc))
+        if blocker == "opted_out":
+            monkeypatch.setattr(codex, "managed_settings_skipped", lambda: True)
+        if blocker == "missing_record":
+            managed_files.MANAGED_BACKUP_MANIFEST_PATH.unlink()
+        if blocker == "incomplete_record":
+            manifest_path = managed_files.MANAGED_BACKUP_MANIFEST_PATH
+            manifest = json.loads(manifest_path.read_text())
+            del manifest["files"]["codex"]["last_applied_file"]
+            manifest_path.write_text(json.dumps(manifest))
+        before = managed_path.read_bytes()
+
+        assert codex._prepare_managed_relay(managed_path)
+
+        assert managed_path.read_bytes() == before
+
+    def test_relay_migration_preserves_concurrent_policy_change(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        codex.write_tool_config({"workspace": WS})
+        dumps = tomlkit.dumps
+        policy = 'model_provider = "enterprise"\n'
+
+        def edit_while_rendering(doc):
+            managed_path.write_text(policy)
+            return dumps(doc)
+
+        monkeypatch.setattr(tomlkit, "dumps", edit_while_rendering)
+
+        with pytest.raises(RuntimeError, match="changed while preparing"):
+            codex._prepare_managed_relay(managed_path)
+
+        assert managed_path.read_text() == policy
+
+    @pytest.mark.parametrize("entry_point", ["explicit_service", "static_list", "provider"])
+    def test_requirements_blocker_preserves_ug_auth(self, tmp_path, monkeypatch, entry_point):
+        _, path = self._patch(tmp_path, monkeypatch)
+        state = codex.write_tool_config({"workspace": WS})
+        requirements = path.with_name("requirements.toml")
+        requirements.write_text('[model_providers.Databricks]\nname = "company policy"\n')
+        before = path.read_bytes(), requirements.read_bytes()
+        assert "auth" in read_toml_safe(path)["model_providers"]["Databricks"]
+
+        if entry_point == "provider":
+            with pytest.raises(RuntimeError, match="requirements.toml"):
+                codex.write_tool_config(state, provider="cat.s.mps", relayed=True)
+        else:
+            state["codex_static_models"] = ["cat.s.seat"]
+            monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+            monkeypatch.setattr(codex, "relay_model_services", lambda *a, **kw: ["cat.s.seat"])
+            if entry_point == "explicit_service":
+                with pytest.raises(RuntimeError, match="requirements.toml"):
+                    codex.use_model_service_relay(
+                        state, "cat.s.seat", configuring=False, selected_only=False
+                    )
+            else:
+                assert not codex.use_model_service_relay(
+                    state, None, configuring=False, selected_only=False
+                )
+
+        assert (path.read_bytes(), requirements.read_bytes()) == before
 
     def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)

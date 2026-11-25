@@ -951,6 +951,27 @@ def reconcile_managed_file(
     the last-applied snapshot used for drift-safe three-way restoration. A difference only in ug's
     User-Agent versions counts as unchanged (see ``mask_user_agent_versions``).
     """
+    return _reconcile_managed_file(
+        path,
+        desired_text,
+        tool=tool,
+        display=display,
+        owned_paths=owned_paths,
+        parser=parser,
+        expected_current_text=None,
+    )
+
+
+def _reconcile_managed_file(
+    path: Path,
+    desired_text: str,
+    *,
+    tool: str,
+    display: str,
+    owned_paths: list[list[str]],
+    parser: ManagedParser,
+    expected_current_text: str | None,
+) -> str:
     if not managed_files_supported():
         print_warning(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
@@ -962,6 +983,11 @@ def reconcile_managed_file(
             "Replace it with a regular file or contact your administrator."
         )
     current_text = read_managed_file(path)
+    if expected_current_text is not None and current_text != expected_current_text:
+        raise RuntimeError(
+            f"{display} managed settings changed while preparing the update at {path}. "
+            "Run the command again."
+        )
     if not managed_writes_allowed(repair_existing=current_text is not None) and not is_dry_run():
         if current_os() is not OS.WINDOWS:
             raise RuntimeError(
@@ -1047,6 +1073,51 @@ def reconcile_managed_file(
     if not _managed_write_batch:
         print_success(f"Settings configured for {display}")
     return "created" if created else "written"
+
+
+def withdraw_ug_managed_paths(
+    tool: str,
+    path: Path,
+    paths: list[list[str]],
+    *,
+    display: str,
+    parser: ManagedParser,
+    dumper: ManagedDumper,
+) -> bool:
+    """Withdraw unchanged settings introduced by ug, retaining its baseline for later revert."""
+    if not paths or not managed_files_supported():
+        return False
+    entry = _manifest_files(_load_manifest()).get(tool)
+    if not isinstance(entry, dict) or entry.get("path") != str(path):
+        return False
+    current_text = read_managed_file(path)
+    last_text = _snapshot_text(entry, "last_applied_file")
+    if current_text is None or last_text is None:
+        return False
+    current, last = parser(current_text), parser(last_text)
+    original_text = _original_text(entry)
+    if entry.get("original_existed") and original_text is None:
+        return False
+    original = parser(original_text) if original_text is not None else {}
+    owned = [owner for raw in entry.get("owned_paths", []) if (owner := _owned_path(raw))]
+    for key in paths:
+        if (
+            not any(key[: len(owner)] == owner for owner in owned)
+            or _path_value(original, key) is not _MISSING
+            or _path_value(current, key) != _path_value(last, key)
+        ):
+            return False
+    desired = _three_way_revert(current, original, last, paths)
+    _reconcile_managed_file(
+        path,
+        dumper(desired),
+        tool=tool,
+        display=display,
+        owned_paths=paths,
+        parser=parser,
+        expected_current_text=current_text,
+    )
+    return True
 
 
 def revert_managed_file(
