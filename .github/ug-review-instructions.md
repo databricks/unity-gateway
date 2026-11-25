@@ -68,15 +68,21 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
+   For interactive pickers, check that cancel, interrupt, mode switch, and failed control reads
+   clear pending state so the next prompt still works and the requested mode change is not lost.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
-   edits for every instrumented call site.
+   edits for every instrumented call site. Instrument new validation waits and retries with the
+   existing duration and failure helpers so their effect on launch time can be measured.
 7. **Account for latency and visible UX.** Check new startup requests, proxies, locks, retries,
    polling gates, and per-turn hooks for added waiting. Ask for before/after timing when latency
    changes are material or performance is claimed. Separate local/component timing from real
    agent readiness and CI queue time. An optimization must preserve submitted prompts and avoid
    confusing hook messages; explain the user-visible tradeoff as well as the saved work.
+   For CI budgets that fail required checks, calibrate from representative runs with headroom for
+   runner variance, cache misses, and artifact downloads. Verify the budget against the PR's own
+   required checks; a passing test followed by a timing failure still blocks every dependent PR.
 8. **Preserve supply-chain and CI trust boundaries.** Use internal package sources per
    [go/registry-access](https://go/registry-access). The trusted default-branch
    `.github/workflows/polly-review.yml` records the npm and PyPI proxy endpoints in
@@ -85,6 +91,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+   When a check reads a shallow PR merge checkout, use commits actually present in that checkout
+   or fetch the required base before diffing; the event's base SHA can move independently.
+   Security gates must still inspect jobs that could print credentials after test changes.
 
 ## Voice and tone
 
