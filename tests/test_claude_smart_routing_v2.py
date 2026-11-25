@@ -990,7 +990,6 @@ class TestV2Launch:
 
         claude.exec_or_spawn.assert_not_called()
 
-    @pytest.mark.skipif(os.name == "nt", reason="Claude smart routing requires Unix PTY support")
     def test_setup_failure_launches_claude_unrouted_with_a_warning(self, monkeypatch):
         error = v2.ClaudeRoutingSetupError("Smart routing could not start its socket")
         monkeypatch.setattr(v2, "launch_claude", Mock(side_effect=error))

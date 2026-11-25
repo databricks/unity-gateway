@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ucode import metrics
+from ucode.smart_routing.v2 import ClaudeRoutingSetupError, format_routing_notice
 
 MAX_MODEL_NAME_LEN = 200
 CONFIRM_TIMEOUT_S = 3.0
@@ -203,8 +204,6 @@ def request_first_prompt_route(path: Path, payload: dict, *, timeout: float = 5.
 
 def first_prompt_hook_output(response: dict | None) -> dict | None:
     """Translate the wrapper response into Claude hook output."""
-    from ucode.smart_routing.v2 import format_routing_notice
-
     if not isinstance(response, dict) or response.get("action") != "block":
         return None
     model = response.get("model")
@@ -392,8 +391,6 @@ def run_claude_pty(
     ):
         time.sleep(0.01)
     if not socket_path.exists():
-        from ucode.smart_routing.v2 import ClaudeRoutingSetupError
-
         log("[ERR] first-prompt socket was not ready before Claude launch")
         stop.set()
         raise ClaudeRoutingSetupError(
