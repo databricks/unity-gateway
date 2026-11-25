@@ -1447,10 +1447,11 @@ def _register_web_search_mcp(
             "an unchanged ug-generated registration. Review it before reconfiguring search."
         )
         return False
-    try:
-        remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, MCP_USER_SCOPE)
-    except RuntimeError:
-        pass
+    if existing is not None:
+        try:
+            remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, MCP_USER_SCOPE)
+        except RuntimeError:
+            pass
     entry = _web_search_mcp_entry(workspace, search_model, profile)
     try:
         add_claude_mcp_server(WEB_SEARCH_MCP_NAME, entry)

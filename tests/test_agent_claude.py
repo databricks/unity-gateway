@@ -3691,6 +3691,10 @@ class TestRegisterWebSearchMcp:
         assert claude._web_search_mcp_is_current(state, entry) is False
 
     def test_clears_existing_then_adds(self, monkeypatch):
+        stale = claude._web_search_mcp_entry(WS, "old-model", None)
+        claude.claude_code_config_path().write_text(
+            json.dumps({"mcpServers": {claude.WEB_SEARCH_MCP_NAME: stale}}), encoding="utf-8"
+        )
         removed: list[str] = []
         added: list = []
         monkeypatch.setattr(
@@ -3701,17 +3705,35 @@ class TestRegisterWebSearchMcp:
             "add_claude_mcp_server",
             lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append((name, entry, scope)),
         )
-        claude._register_web_search_mcp(WS, "databricks-gpt-5")
+        claude._register_web_search_mcp(WS, "databricks-gpt-5", previous_entry=stale)
         assert removed == [claude.MCP_USER_SCOPE]
         assert len(added) == 1
         name, entry, _ = added[0]
         assert name == "web_search"
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
 
+    def test_skips_remove_when_no_existing_entry(self, monkeypatch):
+        def boom(name, scope):
+            raise AssertionError("remove must not run when no entry exists")
+
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", boom)
+        added: list = []
+        monkeypatch.setattr(
+            claude,
+            "add_claude_mcp_server",
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append(name),
+        )
+        assert claude._register_web_search_mcp(WS, "m") is True
+        assert added == ["web_search"]
+
     def test_remove_failures_are_swallowed(self, monkeypatch):
         def boom(name, scope):
             raise RuntimeError("nope")
 
+        stale = claude._web_search_mcp_entry(WS, "old-model", None)
+        claude.claude_code_config_path().write_text(
+            json.dumps({"mcpServers": {claude.WEB_SEARCH_MCP_NAME: stale}}), encoding="utf-8"
+        )
         added: list = []
         monkeypatch.setattr(claude, "remove_claude_mcp_server", boom)
         monkeypatch.setattr(
@@ -3719,7 +3741,7 @@ class TestRegisterWebSearchMcp:
             "add_claude_mcp_server",
             lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append(name),
         )
-        claude._register_web_search_mcp(WS, "m")
+        claude._register_web_search_mcp(WS, "m", previous_entry=stale)
         assert added == ["web_search"]
 
     def test_add_failure_is_non_blocking_and_warns(self, monkeypatch, capsys):
