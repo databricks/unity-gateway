@@ -225,6 +225,10 @@ export function registerIsaacFeedback(
   });
   on('command.run', { command: 'isaac-feedback' }, async ($, e, next) => {
     if (!envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return next(e);
+    // Omnigent's Web UI shows neither this form nor its log lines, and the open form holds the
+    // Claude pane's input, so messages sent from the Web UI wait behind it. Isaac's own command
+    // asks through the agent instead, which the Web UI renders.
+    if (await $.env.get('ISAAC_LAUNCH_MODE') === 'omni') return next(e);
     if (state.submitted) return { text: 'Feedback is being prepared.' };
     let message = e.args;
     let category: FeedbackCategory | undefined;

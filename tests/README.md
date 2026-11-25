@@ -1369,7 +1369,10 @@ needed, and the skill never restarts the conversation.
 `mod_tests/register.test.ts` checks that the mod skips the form there
 only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
 form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,
-and that the flag after `on` or with other text gets the usage reply. `native_claude/test_mod.py`
+and that the flag after `on` or with other text gets the usage reply. It also checks that an
+omni launch passes every `/isaac-feedback` form (bare, inline, `--category`, `--`, `retry`) to
+Isaac's command without opening the form, running Isaac, or logging, while another launch mode
+still opens the form. `native_claude/test_mod.py`
 runs the marked off through Claude, the mod and the real CLI.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
