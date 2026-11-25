@@ -545,9 +545,22 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
           fetch-depth: 0
+      - name: Restore pinned Node toolcache
+        id: node-toolcache
+        if: ${{ env.UG_CACHE_PINNED_NODE == 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/node/22.19.0
+          key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22.19.0
+      - name: Save pinned Node toolcache
+        if: ${{ env.UG_CACHE_PINNED_NODE == 'true' && steps.node-toolcache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/node/22.19.0
+          key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.13.5
@@ -739,6 +752,7 @@ jobs:
       UG_COWORK_MODEL: claude-haiku-4-5-20251001
       UG_COWORK_RELAY: false
       UG_COWORK_MCP: true
+      UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' && matrix.agent == 'claude' }}
       LIVE_SHARD: ${{ matrix.shard || '' }}
       LIVE_SHARD_LANE: anthropic-mps-claude
     steps: *live-steps

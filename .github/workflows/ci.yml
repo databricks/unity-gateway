@@ -31,7 +31,7 @@ jobs:
   managed-quota-probe:
     name: Managed quota probe (advisory)
     needs: security-gate
-    if: ${{ !cancelled() && needs.security-gate.result == 'success' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     continue-on-error: true
     runs-on: ubuntu-latest
     env:

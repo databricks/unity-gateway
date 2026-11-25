@@ -254,6 +254,7 @@ def test_model_guard_uses_current_fixture_sets(lane, observed, accepted):
     [
         ("basic-claude", "system.ai.claude-opus-5-5[1m]", True),
         ("basic-claude", "system.ai.gpt-6-sol", False),
+        ("basic-codex", "system.ai.gpt-99", True),
         ("basic-codex", "system.ai.gpt-6-sol", False),
         ("basic-codex", "system.ai.gpt-5-6-sol", False),
         ("basic-codex", "system.ai.claude-opus-5-5", False),

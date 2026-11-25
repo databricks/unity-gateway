@@ -324,6 +324,7 @@ def test_managed_quota_probe_runs_once_after_gate_without_blocking_e2e():
     job = jobs["managed-quota-probe"]
     assert "needs: security-gate" in job
     assert _requires_gate_success(job)
+    assert "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'" in job
     assert "continue-on-error: true" in job
     assert "python scripts/managed_quota_diagnostics.py" in job
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}" in job
@@ -734,6 +735,28 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert needs is not None
     required = {name.strip() for name in needs.group(1).split(",")}
     assert "anthropic-mps" in required
+
+
+def test_staging_windows_node_toolcache_is_restored_before_setup():
+    jobs = _integration_jobs()
+    staging = jobs["anthropic-mps"]
+    assert (
+        "UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' "
+        "&& matrix.agent == 'claude' }}" in staging
+    )
+    live_steps = jobs["smoke"]
+    restore = live_steps.index("name: Restore pinned Node toolcache")
+    setup = live_steps.index("uses: actions/setup-node@", restore)
+    save = live_steps.index("name: Save pinned Node toolcache", setup)
+    assert restore < setup < save
+    segment = live_steps[restore:save]
+    assert "node-version: 22.19.0" in segment
+    assert "actions/cache/restore@" in segment
+    assert "if: ${{ env.UG_CACHE_PINNED_NODE == 'true' }}" in segment
+    assert live_steps.count("path: ${{ runner.tool_cache }}/node/22.19.0") == 2
+    assert live_steps.count("key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0") == 2
+    assert "actions/cache/save@" in live_steps[save:]
+    assert "steps.node-toolcache.outputs.cache-hit != 'true'" in live_steps[save:]
 
 
 def test_anthropic_mps_fixtures_use_the_same_service():
