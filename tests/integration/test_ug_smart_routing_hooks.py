@@ -10,6 +10,7 @@ Smart Router skill and spawn real children before and after its session-local to
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1034,8 +1035,9 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
 def test_smart_router_managed_default_matches_codex_version_at_launch(
-    live_session, workspace, tmp_path
+    version_aware_codex_session, workspace, tmp_path
 ):
     """Scenario: launch the installed Codex with managed smart routing and no explicit opt-in.
 
@@ -1045,11 +1047,14 @@ def test_smart_router_managed_default_matches_codex_version_at_launch(
     install both skills and complete the child with a correlated decision and orchestration
     notice. Neither version routes the first prompt.
     """
-    session = live_session
+    session = version_aware_codex_session
     version_output = session.run("--version", binary=session.which("codex")).stdout
     version_match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", version_output)
     assert version_match is not None, version_output
-    routing_supported = tuple(int(part) for part in version_match.groups()) >= (0, 171, 0)
+    installed_version = tuple(int(part) for part in version_match.groups())
+    if os.environ.get("UG_INTEGRATION_OLD_CODEX_BIN_DIR"):
+        assert installed_version == (0, 156, 0), version_output
+    routing_supported = installed_version >= (0, 171, 0)
     _select_smart_router_version(
         session, "codex", workspace, tmp_path, routing_supported, MANAGED_DEFAULT
     )
