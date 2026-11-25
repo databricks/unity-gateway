@@ -52,6 +52,41 @@ def test_terminal_preserves_redacted_proxy_diagnostics_outside_screen(tmp_path, 
     assert event == {"event": "request_start", "request_id": "<redacted>"}
 
 
+def test_terminal_preserves_redacted_router_validation_on_failure(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    session.env["DATABRICKS_BEARER"] = "synthetic-secret"
+    log_dir = session.home / ".ucode/smart-router/sessions"
+    log_dir.mkdir(parents=True)
+    record = {
+        "type": "route_validation",
+        "validation_failed": True,
+        "validation_failure_reason": "dns=1ms, ttfb=4000ms+, request_id=synthetic-secret",
+        "validation_ms": 4003,
+    }
+    other = {"type": "decision", "prompt": "private-prompt"}
+    (log_dir / "codex-test.jsonl").write_text(json.dumps(record) + "\n" + json.dumps(other) + "\n")
+    (log_dir / "broken.jsonl").write_text("{invalid}\n")
+    command = [str(session.binary), "-c", "print('ready', flush=True); input()"]
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        with TerminalProcess(session, "ug", command, "router-diagnostics") as terminal:
+            terminal.wait_for(lambda screen: "ready" in screen, "prompt")
+            raise RuntimeError("simulated failure")
+    recorded = json.loads((session.artifacts / "router-diagnostics.json").read_text())
+    assert recorded["route_validations"] == [
+        {"read_error": "JSONDecodeError"},
+        {
+            "validation_failed": True,
+            "validation_failure_reason": "dns=1ms, ttfb=4000ms+, request_id=<redacted>",
+            "validation_ms": 4003,
+        },
+    ]
+    assert "private-prompt" not in json.dumps(recorded)
+    assert "synthetic-secret" not in json.dumps(recorded)
+
+
 def _screen() -> TerminalScreen:
     return TerminalScreen(10, 2, lambda data: None)
 

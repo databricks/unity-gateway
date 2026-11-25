@@ -87,9 +87,9 @@ After inference, three fresh Cowork tasks run through the same native UI:
    sources native search works and the model otherwise prefers it. Require a
    successful `mcp__web_search__web_search` call with a nonempty query whose result contains a
    `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
-   URLs, ignoring Markdown, trailing slashes, and the `utm_source` attribution parameter.
-   Other query parameters and fragments must still match. Search ranking and wording are not
-   asserted; Desktop's native web search cannot satisfy it. Desktop asks before the connector's
+   URLs, including its path, ignoring Markdown, trailing slashes, and the `utm_source` attribution
+   parameter. Other query parameters and fragments must still match. Search ranking and wording are
+   not asserted; Desktop's native web search cannot satisfy it. Desktop asks before the connector's
    first use; the task approves it (**Allow for this task** on Windows 2.42304.2, **Allow once** on macOS
    4.23118.0) and records the label. This runs in every Desktop job, including the staging
    `anthropic-mps` lane.

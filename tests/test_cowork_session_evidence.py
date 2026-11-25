@@ -329,6 +329,18 @@ def test_mcp_search_preserves_other_query_parameters_and_fragments(
     assert result["status"] == expected_status
 
 
+def test_mcp_search_requires_full_result_url_not_just_homepage(mcp_evidence):
+    records, task = mcp_evidence
+    result_url = "https://www.databricks.com/example/guide.pdf?source=search"
+    _search_result(records)["content"] = [{"type": "text", "text": result_url}]
+    records[3]["message"]["content"] = [{"type": "text", "text": "https://www.databricks.com"}]
+    assert evaluate(records, task)["status"] == "failed"
+    records[3]["message"]["content"] = [{"type": "text", "text": result_url}]
+    result = evaluate(records, task)
+    assert result["status"] == "passed"
+    assert result["url"] == result_url
+
+
 def test_mcp_search_ignores_malformed_urls_beside_an_official_one(mcp_evidence):
     records, task = mcp_evidence
     _search_result(records)["content"] = [

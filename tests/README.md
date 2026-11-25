@@ -2176,8 +2176,12 @@ recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malfor
 responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
 deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Local
 pooled HTTP and urllib HTTPS tests also check timing and request-ID diagnostics; they do not prove
-which phase caused a live timeout. Only HTTP 404 (the flag-off answer) leaves routing on silently.
-Result-write failures are isolated. The `/smart-router on`
+which phase caused a live timeout. Terminal artifacts retain redacted, allowlisted validation records
+before the temporary session is removed; malformed records are reported without masking test failures.
+The Codex back-on journey also records upstream connection, TLS and response-header phase events
+from its forwarding recorder without recording request bodies or credentials.
+Only HTTP 404 (the flag-off answer) leaves routing on silently. Result-write failures are isolated.
+The `/smart-router on`
 check turns routing on only for a supported list or a 404; an unsupported list or a failed check
 keeps it off and records a logs row. The smart-routing launch tests cover the resolved Claude and
 Codex model/harness list and provider; the Codex test checks them at the HTTP call. The Codex toggle uses the same verdict and is covered in

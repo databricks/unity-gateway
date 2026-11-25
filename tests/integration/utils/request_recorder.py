@@ -38,6 +38,19 @@ _SECRET_HEADERS = {
 }
 # How long teardown waits for in-flight forwards before leaving their connections to them.
 _DRAIN_SECONDS = 10
+ROUTE_VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
+_TIMED_HTTP_EVENTS = (
+    "connect_tcp.started",
+    "connect_tcp.complete",
+    "connect_tcp.failed",
+    "start_tls.started",
+    "start_tls.complete",
+    "start_tls.failed",
+    "send_request_headers.started",
+    "receive_response_headers.started",
+    "receive_response_headers.complete",
+    "receive_response_headers.failed",
+)
 _CONTENT_BLOCK_TYPES = {"text", "tool_use", "server_tool_use", "thinking", "redacted_thinking"}
 _STOP_REASONS = {
     "end_turn",
@@ -93,6 +106,7 @@ class TuiRequestRecorder:
         self._condition = threading.Condition()
         self._requests: list[RecordedRequest] = []
         self._responses: dict[int, RecordedResponse] = {}
+        self._validation_timings: dict[int, dict[str, Any]] = {}
         self._in_flight = 0
         self._client: httpx.Client | None = None
         self._server: _Server | None = None
@@ -160,6 +174,11 @@ class TuiRequestRecorder:
     def checkpoint(self) -> int:
         with self._condition:
             return len(self._requests)
+
+    def validation_timings(self) -> list[dict]:
+        """Return only validation transport timing, status and safe request IDs."""
+        with self._condition:
+            return json.loads(json.dumps(list(self._validation_timings.values())))
 
     def requests_after(self, checkpoint: int) -> tuple[RecordedRequest, ...]:
         """Return the requests recorded after a session boundary."""
@@ -231,6 +250,7 @@ class TuiRequestRecorder:
             name.lower(): "<redacted>" if name.lower() in _SECRET_HEADERS else value
             for name, value in handler.headers.items()
         }
+        started = time.monotonic_ns()
         with self._condition:
             request = RecordedRequest(
                 sequence=len(self._requests) + 1,
@@ -240,7 +260,22 @@ class TuiRequestRecorder:
                 body=body,
             )
             self._requests.append(request)
+            if request.path == ROUTE_VALIDATION_PATH:
+                self._validation_timings[request.sequence] = {
+                    "sequence": request.sequence,
+                    "events": [],
+                }
             self._condition.notify_all()
+
+        def trace(event: str, _info: dict[str, Any]) -> None:
+            if event.endswith(_TIMED_HTTP_EVENTS):
+                with self._condition:
+                    self._validation_timings[request.sequence]["events"].append(
+                        {
+                            "name": event,
+                            "elapsed_ms": round((time.monotonic_ns() - started) / 1_000_000),
+                        }
+                    )
 
         forwarded_headers = {
             name: value
@@ -253,7 +288,22 @@ class TuiRequestRecorder:
                 f"{self.upstream}{handler.path}",
                 headers=forwarded_headers,
                 content=body,
+                extensions={"trace": trace} if request.path == ROUTE_VALIDATION_PATH else None,
             ) as response:
+                if request.path == ROUTE_VALIDATION_PATH:
+                    request_id = next(
+                        (
+                            value
+                            for name in ("x-request-id", "request-id", "x-databricks-request-id")
+                            if (value := response.headers.get(name))
+                            and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value)
+                        ),
+                        None,
+                    )
+                    with self._condition:
+                        self._validation_timings[request.sequence].update(
+                            status_code=response.status_code, request_id=request_id
+                        )
                 handler.send_response(response.status_code)
                 for name, value in response.headers.items():
                     if name.lower() not in _STRIPPED_HEADERS:
@@ -285,6 +335,10 @@ class TuiRequestRecorder:
             # Record the transport failure so a waiter sees the 502 the agent saw
             # instead of timing out for a response that can never arrive.
             with self._condition:
+                if request.path == ROUTE_VALIDATION_PATH:
+                    self._validation_timings[request.sequence]["transport_error"] = type(
+                        error
+                    ).__name__
                 self._responses.setdefault(
                     request.sequence,
                     RecordedResponse(

@@ -42,6 +42,7 @@ from utils.managed import (
     use_smart_routing_fixture,
 )
 from utils.request_recorder import (
+    ROUTE_VALIDATION_PATH,
     TuiRequestRecorder,
     record_claude_response_protocol,
     served_inference_request,
@@ -52,7 +53,6 @@ pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
-ROUTE_VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
 # No selector or legacy flag: the managed config's smart_routing.enabled alone turns routing on.
 MANAGED_DEFAULT = "managed-default"
 
@@ -979,41 +979,49 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     _select_smart_router_version(
         session, "codex", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
     )
-    with TuiRequestRecorder(workspace) as recorder:
-        session.run(
-            "configure",
-            "--workspace",
-            recorder.url,
-            "--skip-validate",
-            "--skip-upgrade",
-            "--disable-databricks-ai-tools",
-        )
-        with AgentTerminal(
-            session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
-        ) as tui:
-            tui.boot()
-            _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
-            _toggle_with_skill(
-                tui,
-                session,
-                "codex",
-                enabled=False,
-                orchestration_enabled=orchestration_enabled,
+    recorder = TuiRequestRecorder(workspace)
+    try:
+        with recorder:
+            session.run(
+                "configure",
+                "--workspace",
+                recorder.url,
+                "--skip-validate",
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
             )
-            # Prove "off" takes effect after a routed child before turning routing back on.
-            _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
-            validation_checkpoint = recorder.checkpoint()
-            _toggle_with_skill(
-                tui,
-                session,
-                "codex",
-                enabled=True,
-                orchestration_enabled=orchestration_enabled,
-            )
-            _assert_route_validation_on_toggle(recorder, validation_checkpoint, "codex")
-            _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
-            tui.exit_normally()
-            transcript = "".join(tui.output)
+            with AgentTerminal(
+                session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
+            ) as tui:
+                tui.boot()
+                _run_calculation(
+                    tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True
+                )
+                _toggle_with_skill(
+                    tui,
+                    session,
+                    "codex",
+                    enabled=False,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                # Prove "off" takes effect after a routed child before turning routing back on.
+                _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
+                validation_checkpoint = recorder.checkpoint()
+                _toggle_with_skill(
+                    tui,
+                    session,
+                    "codex",
+                    enabled=True,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                _assert_route_validation_on_toggle(recorder, validation_checkpoint, "codex")
+                _run_calculation(
+                    tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True
+                )
+                tui.exit_normally()
+                transcript = "".join(tui.output)
+    finally:
+        session.record("route-validation-upstream.json", recorder.validation_timings())
     assert SMART_ROUTING_BANNER not in transcript, transcript
     assert "[ROUTE]" not in session.routing_log("codex")
 

@@ -446,6 +446,7 @@ jobs:
       # short-lived (~1h); rotate when CI starts failing with 401s.
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       AGENT_PACKAGE: ${{ matrix.package }}
+      AGENT_BINARY: ${{ matrix.group }}
       TEST_KEYWORD: ${{ matrix.keyword }}
     steps:
       - *budget-start
@@ -463,7 +464,10 @@ jobs:
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
       - name: Install the shard's agent CLI
         if: ${{ matrix.package != '' }}
-        run: npm install -g "$AGENT_PACKAGE"
+        run: |
+          npm install -g "$AGENT_PACKAGE"
+          agent_executable="$(command -v "$AGENT_BINARY")"
+          "$agent_executable" --version
       - name: Install ug and test dependencies
         run: |
           uv lock

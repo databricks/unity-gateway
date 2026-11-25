@@ -35,6 +35,7 @@ def recorder():
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("x-request-id", "test-request-id")
             self.end_headers()
             self.wfile.write(body)
 
@@ -66,6 +67,28 @@ def test_records_request_and_response(recorder):
     assert recorder.requests_after(checkpoint) == (request,)
     assert_request(request)
     assert_response(recorder.response_for(request))
+
+
+def test_validation_forwarding_records_safe_upstream_timings(recorder):
+    path = request_recorder.ROUTE_VALIDATION_PATH
+    response = httpx.post(
+        f"{recorder.url}{path}",
+        headers={"Authorization": "Bearer synthetic-secret"},
+        json={"prompt": "private-prompt"},
+    )
+    assert response.status_code == 200
+    [row] = recorder.validation_timings()
+    assert row["status_code"] == 200
+    assert row["request_id"] == "test-request-id"
+    names = {event["name"] for event in row["events"]}
+    assert {
+        "connection.connect_tcp.started",
+        "connection.connect_tcp.complete",
+        "http11.receive_response_headers.complete",
+    } <= names
+    assert all(isinstance(event["elapsed_ms"], int) for event in row["events"])
+    assert "private-prompt" not in json.dumps(row)
+    assert "synthetic-secret" not in json.dumps(row)
 
 
 def test_rejected_inference_reports_tool_setup_without_conversation():

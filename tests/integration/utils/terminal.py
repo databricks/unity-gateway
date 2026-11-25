@@ -21,7 +21,7 @@ import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
 from .agents import antigravity
-from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
+from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id, read_jsonl
 
 SELECTED = "[›❯>]"
 
@@ -329,6 +329,30 @@ class TerminalProcess:
             / ".ucode"
             / ("claude-v2-pty.log" if self.agent == "claude" else "codex-v2-interposer.log")
         )
+        route_validations = []
+        validation_dir = self.session.home / ".ucode/smart-router/sessions"
+        for path in sorted(validation_dir.glob("*.jsonl")):
+            try:
+                records = read_jsonl(path)
+            except (OSError, ValueError) as error:
+                route_validations.append({"read_error": type(error).__name__})
+                continue
+            for record in records:
+                if record.get("type") == "route_validation":
+                    route_validations.append(
+                        {
+                            key: record[key]
+                            for key in (
+                                "validation_id",
+                                "at",
+                                "harness",
+                                "validation_failed",
+                                "validation_failure_reason",
+                                "validation_ms",
+                            )
+                            if key in record
+                        }
+                    )
         self.session.record(
             f"{self.name}.json",
             {
@@ -341,6 +365,7 @@ class TerminalProcess:
                 "signalstatus": self.child.signalstatus,
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
+                "route_validations": route_validations,
                 "proxy_diagnostics": self.proxy_diagnostics.read_text(encoding="utf-8")
                 if self.proxy_diagnostics.is_file()
                 else None,

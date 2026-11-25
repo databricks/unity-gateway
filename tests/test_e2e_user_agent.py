@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -127,12 +129,53 @@ class _CaptureServer:
         return None
 
 
+def _opencode_dependency_version(binary: str) -> str:
+    path = Path(binary)
+    manifests = (
+        path.resolve().parent.parent / "package.json",
+        path.parent / "node_modules/opencode-ai/package.json",
+    )
+    for manifest in manifests:
+        if manifest.is_file():
+            package = json.loads(manifest.read_text(encoding="utf-8"))
+            version = package.get("version")
+            if (
+                package.get("name") == "opencode-ai"
+                and isinstance(version, str)
+                and re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version)
+            ):
+                return version
+    return agent_version.__wrapped__(binary)
+
+
+@pytest.mark.parametrize("layout", ["package-bin", "global-shim"])
+@pytest.mark.parametrize("version", ["1.19.6", "1.19.6-beta.1+build.2"])
+def test_opencode_dependency_version_uses_npm_metadata(tmp_path, layout, version):
+    package = tmp_path / "node_modules" / "opencode-ai"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": "opencode-ai", "version": version}))
+    binary = package / "bin" / "opencode" if layout == "package-bin" else tmp_path / "opencode.cmd"
+    binary.touch()
+    assert _opencode_dependency_version(str(binary)) == version
+
+
+def test_opencode_dependency_version_uses_native_probe_without_npm_metadata(tmp_path, monkeypatch):
+    binary = tmp_path / "opencode"
+    binary.touch()
+    monkeypatch.setattr(
+        agent_version, "__wrapped__", lambda value: "2.0.0" if value == str(binary) else "unknown"
+    )
+    assert _opencode_dependency_version(str(binary)) == "2.0.0"
+
+
 @pytest.fixture(scope="session")
 def opencode_dependencies(tmp_path_factory, worker_id):
     _require_binary("opencode")
     npm = shutil.which("npm")
     assert npm, "npm is required to prepare OpenCode's plugin"
-    version = agent_version("opencode")
+    binary = shutil.which("opencode")
+    assert binary, "opencode is required to prepare its plugin"
+    version = _opencode_dependency_version(binary)
     assert version != "unknown", "could not determine the installed OpenCode version"
     base = tmp_path_factory.getbasetemp()
     root = base if worker_id == "master" else base.parent

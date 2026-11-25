@@ -10,12 +10,28 @@ function Protect-DiagnosticText {
     return $Text
 }
 
+function Get-CoworkLogPrefixHash {
+    param([IO.Stream]$Stream, [long]$Length)
+    [void]$Stream.Seek(0, [IO.SeekOrigin]::Begin)
+    $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        $buffer = [byte[]]::new(65536)
+        while ($Length -gt 0) {
+            $count = $Stream.Read($buffer, 0, [int][Math]::Min($buffer.Length, $Length))
+            if ($count -eq 0) { return $null }
+            $hash.AppendData($buffer, 0, $count)
+            $Length -= $count
+        }
+        return [Convert]::ToBase64String($hash.GetHashAndReset())
+    } finally { $hash.Dispose() }
+}
+
 function Test-CoworkVmReady {
-    param([string]$LogPath, [long]$Offset)
+    param([string]$LogPath, [long]$Offset, [string]$PrefixHash)
     if (-not (Test-Path -LiteralPath $LogPath)) { return $false }
     $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
     try {
-        if ($stream.Length -lt $Offset) { $Offset = 0 }
+        if ($stream.Length -lt $Offset -or ($Offset -gt 0 -and (Get-CoworkLogPrefixHash $stream $Offset) -ne $PrefixHash)) { $Offset = 0 }
         [void]$stream.Seek($Offset, [IO.SeekOrigin]::Begin)
         $reader = [IO.StreamReader]::new($stream)
         try { return $reader.ReadToEnd().Contains('[VM:start] Startup complete') }

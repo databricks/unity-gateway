@@ -40,14 +40,20 @@ try {
     $vmLog = [IO.Path]::GetTempFileName()
     try {
         Set-Content -LiteralPath $vmLog -Value '[VM:start] Startup complete, total time: 1ms' -Encoding utf8
-        $offset = (Get-Item -LiteralPath $vmLog).Length
-        if (Test-CoworkVmReady -LogPath $vmLog -Offset $offset) { throw 'An earlier VM startup is not current readiness' }
+        $stream = [IO.File]::OpenRead($vmLog)
+        try {
+            $offset = $stream.Length
+            $prefixHash = Get-CoworkLogPrefixHash $stream $offset
+        } finally { $stream.Dispose() }
+        if (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash) { throw 'An earlier VM startup is not current readiness' }
         Add-Content -LiteralPath $vmLog -Value '[VM:steps] download_and_sdk_prepare started' -Encoding utf8
-        if (Test-CoworkVmReady -LogPath $vmLog -Offset $offset) { throw 'An unfinished VM startup is not ready' }
+        if (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash) { throw 'An unfinished VM startup is not ready' }
         Add-Content -LiteralPath $vmLog -Value '[VM:start] Startup complete, total time: 100ms' -Encoding utf8
-        if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset)) { throw 'Completed VM startup must be ready' }
+        if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'Completed VM startup must be ready' }
         Set-Content -LiteralPath $vmLog -Value '[VM:start] Startup complete' -Encoding utf8
-        if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset)) { throw 'A rotated log must still show readiness' }
+        if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A rotated log must still show readiness' }
+        Set-Content -LiteralPath $vmLog -Value ('[VM:start] Startup complete' + ('x' * 200)) -Encoding utf8
+        if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A longer replacement must still show readiness' }
     } finally { Remove-Item -LiteralPath $vmLog -Force }
 } finally {
     $env:DATABRICKS_BEARER = $savedBearer

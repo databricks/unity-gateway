@@ -5,7 +5,7 @@
   "prompts": {
     "file": "Use the Read tool to read input.txt in the selected local folder. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text. Do not guess the value.",
     "skill": "Use the probe-summary skill from the cowork-probe plugin to produce the capability probe summary. Reply with only its result. Do not use subagents.",
-    "mcp": "Call the mcp__web_search__web_search tool from the web_search connector once to search for: Databricks official website. Do not use the WebSearch tool or any other search tool, and do not use subagents. Reply with only an official Databricks website URL from the search results, without Markdown. You may omit the utm_source attribution parameter."
+    "mcp": "Call the mcp__web_search__web_search tool from the web_search connector once to search for: Databricks official website. Do not use the WebSearch tool or any other search tool, and do not use subagents. Pick one search result whose URL has host databricks.com or www.databricks.com. Copy the URL from the tool result, including its path, file extension, query parameters, and fragment if present. You may omit the utm_source attribution parameter. Do not replace the result with the website homepage. Reply with only the copied URL, without Markdown."
   },
   "mcpService": "system.ai.web_search",
   "mcpServer": "web_search",
