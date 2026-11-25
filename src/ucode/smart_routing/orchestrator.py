@@ -80,6 +80,39 @@ def skill_directory() -> Path:
     return skills._skills_source() / skills.SMART_ROUTER_ORCHESTRATOR_SKILL
 
 
+def skill_version(*, agent: str) -> str | None:
+    """The ``metadata.version`` in the agent's skill frontmatter, or None when it can't be read."""
+    try:
+        text = skills.skill_entrypoint(skill_directory(), agent).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    in_metadata = False
+    metadata_indent: int | None = None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")):
+            in_metadata = line.rstrip() == "metadata:"
+            metadata_indent = None
+            continue
+        if not in_metadata:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if metadata_indent is None:
+            metadata_indent = indent
+        if indent != metadata_indent:
+            continue
+        key, separator, value = line.strip().partition(":")
+        if separator and key == "version":
+            return value.strip().strip("\"'") or None
+    return None
+
+
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
     if feature_enabled(agent=AGENT_CLAUDE):

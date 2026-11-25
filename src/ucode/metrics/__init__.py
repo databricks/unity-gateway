@@ -46,6 +46,7 @@ HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
 HTTP_RETRY_COUNT = "http_retry_count"
 UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
 ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
+SAVINGS_PRICE_REFRESH_OPERATION = "savings_price_refresh"
 ROUTE_VALIDATION_DURATION_MS = "route_validation_duration_ms"
 PROXY_REQUEST_OPERATION = "proxy_request"
 PROXY_REQUEST_DURATION_MS = f"{PROXY_REQUEST_OPERATION}_duration_ms"
@@ -681,6 +682,7 @@ def api_operation(url: str) -> str:
         ("coding-agent-config", "coding_agent_config_fetch"),
         ("budget", "budget_spend_statuses"),
         ("routes:select", "routes_select"),
+        ("endpoint-rates:batchget", "endpoint_rates_batch_get"),
         ("routes:validate", "routes_validate"),
         ("model-provider-services", "model_provider_services_list"),
         ("model-services", "model_services_list"),

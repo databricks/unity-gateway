@@ -8,14 +8,23 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 
 import ucode.databricks as db_mod
 import ucode.workspace as workspace_mod
+from tests.endpoint_rates_transport import (
+    OTHER_WORKSPACE,
+    SYNTHETIC_BEARER,
+    WORKSPACE,
+    EndpointRatesTransport,
+)
 from ucode import gateway_proxy, mcp, mcp_connection_login, skills_usage
 from ucode.agents import claude, codex, copilot, gemini, kilo, opencode, pi, vscode
 from ucode.smart_routing.codex_hooks import _routing_hook_argv
@@ -312,6 +321,158 @@ class TestHelperArgv:
     def test_classic_argv_is_unchanged(self):
         assert "--workspace-id" not in db_mod.build_mcp_proxy_argv(f"{CLASSIC}/x", CLASSIC)
         assert "--workspace-id" not in db_mod.build_otel_headers_argv(CLASSIC)
+
+
+class TestEndpointRatesTransport:
+    def fetch(self, transport, home, models, workspace=WORKSPACE, selected=WORKSPACE):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-P",
+                "-c",
+                "import json, sys; from ucode.databricks import fetch_endpoint_rates; "
+                "from ucode.workspace import pin; data = json.load(sys.stdin); "
+                "pin(data['selected'], data['workspace_id']); "
+                "print(json.dumps(fetch_endpoint_rates(data['workspace'], data['token'], data['models'])))",
+            ],
+            input=json.dumps(
+                {
+                    "selected": selected,
+                    "workspace_id": WSID,
+                    "workspace": workspace,
+                    "token": SYNTHETIC_BEARER,
+                    "models": models,
+                }
+            ),
+            capture_output=True,
+            text=True,
+            timeout=40,
+            env=transport.child_environment(home),
+            cwd=home,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    @pytest.mark.parametrize(
+        "workspace,selected,selectors",
+        [
+            (WORKSPACE + ":8443", WORKSPACE, {}),
+            (WORKSPACE + ":8443?w=111", WORKSPACE + ":8443", SELECTOR),
+            (WORKSPACE + "?w=111", WORKSPACE, SELECTOR),
+            (OTHER_WORKSPACE, WORKSPACE, {}),
+        ],
+    )
+    def test_repeated_names_and_host_scoped_workspace_headers(
+        self, tmp_path, workspace, selected, selectors
+    ):
+        names = ["system.ai.claude-haiku-4-5", "system.ai.claude-sonnet-4-6"]
+        rates = [{"model_service": names[0]}]
+        with EndpointRatesTransport(tmp_path / "tls", {"model_service_rates": rates}) as transport:
+            assert self.fetch(
+                transport,
+                tmp_path / "home",
+                [names[1], "custom.model", names[0], names[1]],
+                workspace,
+                selected,
+            ) == [rates, None]
+        assert transport.targets == [
+            f"{urlsplit(workspace).hostname}:{urlsplit(workspace).port or 443}"
+        ]
+        assert len(transport.requests) == 1
+        request = transport.requests[0]
+        url = urlsplit(request["path"])
+        assert url.path == "/api/ai-gateway/v2/endpoint-rates:batchGet"
+        assert parse_qsl(url.query) == [
+            ("databricks_hosted_model_services", name) for name in names
+        ]
+        assert request["headers"]["authorization"] == f"Bearer {SYNTHETIC_BEARER}"
+        assert {name: request["headers"].get(name.lower()) for name in SELECTOR} == {
+            name: selectors.get(name) for name in SELECTOR
+        }
+
+    def test_endpoint_rates_preserve_http_origin(self, monkeypatch):
+        seen = []
+
+        def get(url, token, *, timeout):
+            seen.append(url)
+            return {"model_service_rates": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        assert db_mod.fetch_endpoint_rates(
+            "http://rates.test:8080?w=111", SYNTHETIC_BEARER, ["system.ai.claude-haiku-4-5"]
+        ) == ([], None)
+        assert seen[0].startswith(
+            "http://rates.test:8080/api/ai-gateway/v2/endpoint-rates:batchGet?"
+        )
+
+    def test_ineligible_models_make_no_request(self, tmp_path):
+        with EndpointRatesTransport(tmp_path / "tls", {}) as transport:
+            assert self.fetch(
+                transport, tmp_path / "home", ["custom.model", "claude-sonnet-4-6"]
+            ) == [[], "no system.ai model services to price"]
+        assert transport.targets == transport.requests == []
+
+    @pytest.mark.parametrize(
+        "payload,expected",
+        [
+            ([], [[], "endpoint-rates returned an unexpected response shape"]),
+            ({}, [[], None]),
+            ({"model_service_rates": []}, [[], None]),
+            (
+                {"model_service_rates": {}},
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
+            (
+                {"model_service_rates": None},
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
+            (
+                {"model_service_rates": "invalid"},
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
+            (
+                {
+                    "model_service_rates": [
+                        None,
+                        "invalid",
+                        [],
+                        {"model_service": "system.ai.example"},
+                    ]
+                },
+                [[], "endpoint-rates returned an unexpected response shape"],
+            ),
+            *[
+                (
+                    {"model_service_rates": [entry]},
+                    [[], "endpoint-rates returned an unexpected response shape"],
+                )
+                for entry in [
+                    "x",
+                    {},
+                    {"model_service": None},
+                    {"model_service": ""},
+                    {"model_service": " "},
+                ]
+            ],
+        ],
+    )
+    def test_response_shapes(self, monkeypatch, payload, expected):
+        # The TLS cases above cover transport; this matrix exercises the real response parser.
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+        assert (
+            list(db_mod.fetch_endpoint_rates(WORKSPACE, SYNTHETIC_BEARER, ["system.ai.example"]))
+            == expected
+        )
+
+    @pytest.mark.parametrize("disconnect", [False, True])
+    def test_http_and_connection_failures_are_optional(self, tmp_path, disconnect):
+        with EndpointRatesTransport(
+            tmp_path / "tls", {}, status=503, disconnect=disconnect
+        ) as transport:
+            rates, reason = self.fetch(transport, tmp_path / "home", ["system.ai.example"])
+        assert rates == []
+        assert reason.startswith("network error:" if disconnect else "HTTP 503")
+        assert len(transport.requests) == 1
 
 
 class TestLoopbackProxy:

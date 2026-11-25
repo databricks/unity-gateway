@@ -7,16 +7,19 @@ import json
 import os
 import sys
 import threading
+from contextlib import nullcontext
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from ucode import custom_oauth
+from tests.conftest import metric_observations
+from ucode import custom_oauth, databricks, metrics, workspace
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import claude_hooks, pricing, routing, session_log, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -940,12 +943,21 @@ class TestV2Launch:
         claude.exec_or_spawn.assert_not_called()
 
     @requires_pty
-    def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("savings_enabled", [False, True])
+    def test_restores_model_captured_immediately_before_switch(
+        self, tmp_path, monkeypatch, savings_enabled
+    ):
         ucode_settings = tmp_path / "ucode-settings.json"
         user_settings = tmp_path / "settings.json"
         ucode_settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gw"}}))
         user_settings.write_text(json.dumps({"model": "opus", "theme": "dark"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SAVINGS", "1" if savings_enabled else "0")
+        # Launch wiring is local; fetching workspace prices is a separate transport boundary.
+        refresh_prices = Mock()
+        monkeypatch.setattr(v2, "_start_savings_price_refresh", refresh_prices)
+        state = {"workspace": "https://example.com", "workspace_id": "111"}
+        workspace.activate_state(state)
         monkeypatch.setattr(claude, "APP_DIR", tmp_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", ucode_settings)
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
@@ -1001,7 +1013,7 @@ class TestV2Launch:
         monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
-                {"workspace": "https://example.com"},
+                state,
                 ["--debug"],
                 binary="claude",
                 user_settings_path=user_settings,
@@ -1012,6 +1024,11 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 0
+        if savings_enabled:
+            refresh_prices.assert_called_once()
+            assert refresh_prices.call_args.args[0] == "https://example.com?w=111"
+        else:
+            refresh_prices.assert_not_called()
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"][-1] == "--debug"
         assert captured["routed_model"] == claude_pty.FirstPromptRoute(
@@ -1045,11 +1062,17 @@ class TestV2Launch:
             "route-subagent-mod",
             "--host",
             "https://example.com",
+            "--workspace-id",
+            "111",
             "--model",
             "system.ai.claude-opus-4-8",
             "--model",
             "system.ai.claude-sonnet-5",
         ]
+        pricer = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "savings_pricer"
+        ]
+        assert ("--baseline-session-start" in pricer) is savings_enabled
         assert "modelPicker" not in captured["settings"]
         assert captured["restored_during_run"] == {
             "model": "haiku",
@@ -1244,6 +1267,7 @@ class TestV2Launch:
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                **v2.CLAUDE_SAVINGS_OPTION_DEFAULTS,
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": route_argv,
                 **(
@@ -1627,6 +1651,32 @@ class TestV2Launch:
         assert argv[argv.index("--model") + 1] == model
         assert captured["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in captured["settings"]["env"]
+
+
+class TestSavingsModelServices:
+    def test_prices_routable_and_main_models_by_system_ai_name(self):
+        services = v2._savings_model_services(
+            [
+                "system.ai.claude-opus-4-8[1m]",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "databricks-claude-sonnet-5",
+                "opus",
+                None,
+            ],
+            {
+                "env": {
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5",
+                    "UNRELATED": "system.ai.not-a-main-model",
+                }
+            },
+        )
+
+        assert services == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+            "system.ai.glm-5-2",
+        ]
 
 
 class TestV2ModelPickerDiscovery:
@@ -2351,3 +2401,175 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [
+        [],
+        [
+            {
+                "model_service": "system.ai.opus",
+                "costs": [
+                    {
+                        "unit": "DBU",
+                        "token_costs": [
+                            {"token_type": "TOKEN_TYPE_INPUT", "cost": "5"},
+                        ],
+                    }
+                ],
+            }
+        ],
+        [
+            {
+                "model_service": "system.ai.opus",
+                "costs": [
+                    {
+                        "unit": "USD",
+                        "token_costs": [
+                            {"token_type": "TOKEN_TYPE_INPUT", "cost": "NaN"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    ],
+    ids=["no-longer-visible", "no-usd-group", "unusable-rate"],
+)
+def test_savings_refresh_removes_unpriced_models(tmp_path, monkeypatch, rates):
+    path = tmp_path / "prices.json"
+    old = pricing.ModelPrice(input=Decimal("5"))
+    pricing.write_price_cache(path, {"system.ai.opus": old, "system.ai.other": old})
+    # Only the HTTP boundary is controlled; exercise the real parser and locked cache update.
+    monkeypatch.setattr(v2, "fetch_endpoint_rates", lambda *_: (rates, None))
+
+    v2._refresh_savings_prices("workspace.example", "test-token", ["system.ai.opus"], path)
+
+    assert pricing.read_price_cache(path) == {"other": old}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "http",
+        "network",
+        "exception",
+        "malformed-rates",
+        "non-object-rate",
+        "unidentified-rate",
+        "mixed-rates",
+    ],
+)
+@pytest.mark.parametrize("cached", [False, True], ids=["cold-cache", "prior-cache"])
+def test_savings_refresh_failure_preserves_cache_and_reports_fallback(
+    tmp_path, monkeypatch, metrics_recorder, failure, cached
+):
+    path = tmp_path / "prices.json"
+    selected_workspace = "https://shared.cloud.databricks.com?w=111"
+    workspace.activate("https://shared.cloud.databricks.com", "111")
+    if cached:
+        pricing.write_price_cache(path, {"opus": pricing.ModelPrice(input=Decimal("5"))})
+    before = path.read_bytes() if cached else None
+
+    def open_request(request, timeout):
+        assert request.full_url == (
+            "https://shared.cloud.databricks.com/api/ai-gateway/v2/endpoint-rates:batchGet"
+            "?databricks_hosted_model_services=system.ai.opus"
+        )
+        headers = {key.lower(): value for key, value in request.header_items()}
+        assert headers["x-databricks-workspace-id"] == "111"
+        assert headers["x-databricks-org-id"] == "111"
+        if failure == "http":
+            raise databricks.urllib_error.HTTPError(
+                request.full_url, 404, "private response detail", {}, None
+            )
+        if failure == "network":
+            raise OSError("private transport detail")
+        if failure == "exception":
+            raise ValueError("private unexpected error")
+        rates = {
+            "malformed-rates": None,
+            "non-object-rate": ["x"],
+            "unidentified-rate": [{}],
+            "mixed-rates": [{"model_service": "system.ai.opus"}, {}],
+        }[failure]
+        return nullcontext(
+            Mock(
+                status=200,
+                headers={},
+                read=lambda: json.dumps({"model_service_rates": rates}).encode(),
+            )
+        )
+
+    # Control the transport boundary so either HTTP backend exercises refresh and telemetry.
+    monkeypatch.setattr(databricks, "_http_open", open_request)
+    v2._refresh_savings_prices(selected_workspace, "test-token", ["system.ai.opus"], path)
+
+    assert (path.read_bytes() if path.exists() else None) == before
+    [(duration, http_labels)] = metric_observations(
+        metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS
+    )
+    assert duration >= 0
+    assert http_labels["api_operation"] == "endpoint_rates_batch_get"
+    assert http_labels["http_method"] == "GET"
+    assert http_labels["attempt"] == 1
+    if failure not in {"network", "exception"}:
+        assert http_labels["http_status_code"] == (404 if failure == "http" else 200)
+    else:
+        assert "http_status_code" not in http_labels
+    [(count, labels)] = [
+        observation
+        for observation in metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        if observation[1]["operation"] == "savings_price_refresh"
+    ]
+    assert count == 1
+    assert [
+        target
+        for target, metric, _value, attrs in metrics_recorder.pending
+        if metric == metrics.UG_CLI_ERROR and attrs.get("operation") == "savings_price_refresh"
+    ] == [selected_workspace]
+    assert labels["continued_with_fallback"] is True
+    assert "private" not in json.dumps(list(metrics_recorder.pending))
+    assert "test-token" not in json.dumps(list(metrics_recorder.pending))
+
+
+def test_savings_refresh_success_is_not_an_error(tmp_path, monkeypatch, metrics_recorder):
+    path = tmp_path / "prices.json"
+    monkeypatch.setattr(
+        v2,
+        "fetch_endpoint_rates",
+        lambda *_: (
+            [
+                {
+                    "model_service": "system.ai.opus",
+                    "costs": [
+                        {
+                            "unit": "USD",
+                            "token_costs": [
+                                {"token_type": "TOKEN_TYPE_INPUT", "cost": "7"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+            None,
+        ),
+    )
+
+    v2._refresh_savings_prices("workspace.example", "test-token", ["system.ai.opus"], path)
+
+    assert pricing.read_price_cache(path) == {"opus": pricing.ModelPrice(input=Decimal("7"))}
+    assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []
+
+
+@pytest.mark.parametrize("existing_cache", [False, True])
+def test_savings_refresh_without_models_preserves_cache(tmp_path, metrics_recorder, existing_cache):
+    path = tmp_path / "prices.json"
+    if existing_cache:
+        pricing.write_price_cache(path, {"opus": pricing.ModelPrice(input=Decimal("5"))})
+    before = path.read_bytes() if existing_cache else None
+
+    v2._refresh_savings_prices("workspace.example", "test-token", [], path)
+
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []

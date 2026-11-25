@@ -353,3 +353,33 @@ but no inherited model or counterfactual native choice is guessed. The existing
 `requested_model` remains UG's routed target, not Claude's original choice.
 Actual execution still requires the child transcript or the separate subagent-start
 audit; that event can omit its model. Existing records are not backfilled.
+
+## Savings estimate
+
+Select `SMART_ROUTER_CONFIG_VERSION=subagent_orch_savings_v0` for Claude savings
+estimates with subagent routing and orchestration. Other presets leave savings off.
+Without a preset, `ENABLE_SMART_ROUTING_SAVINGS=1` opts in with legacy routing flags
+(`ENABLE_SMART_ROUTING_V2=1` or `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1`).
+`--enable-smart-routing` and managed routing select a preset; choose
+`subagent_orch_savings_v0` to include savings.
+Session off/on hides/restores the row and excludes disabled turns from its totals.
+
+The row above the prompt shows the estimated amount and percentage saved, or the
+extra cost, using cached endpoint rates. It replaces the routing status band;
+the prompt hint still shows routing state. An active orchestrator also shows its
+skill version. Rate refresh runs in the background and is scoped to the workspace.
+
+Routed children use the main model selected when they run as their baseline.
+Unrouted children contribute their actual cost to both totals, without a routing saving.
+First-prompt routing keeps the pre-routing baseline for main and routed-child work
+until the user changes the main model. Each request keeps its baseline across model and
+preset changes. Totals and baselines are saved by workspace and native session. They survive mod reloads
+and exiting and reopening with `ug claude --resume`. `/clear` starts fresh accounting;
+resuming a different session restores that session's own totals. Legacy totals without a session
+identity, child routing attribution, or an unambiguous baseline are retained but hide
+the estimate. Missing or expired rates, incomplete usage (including requests still
+pending when the process exits), and failed usage writes also hide it without blocking model requests.
+Rates expire after 24 hours; a visible row disappears when any rate it uses expires.
+Totals are retained, and a later priced turn can restore the row. Turning routing off
+still saves earlier accepted usage. Launches with savings disabled write no usage
+and do not refresh rates.
