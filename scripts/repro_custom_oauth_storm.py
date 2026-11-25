@@ -52,7 +52,7 @@ class Result:
         return self.browsers == 1 and self.succeeded > 0 and not (self.failed or self.timed_out)
 
 
-def _helper(cache_dir, login_seconds, ready, start, browsers, callback_port):
+def _helper(cache_dir, login_seconds, ready, start, browsers, callback_port, browser_opened, pause):
     """Run real ug/SDK code, replacing only external OAuth interactions."""
     callback_state = None
 
@@ -61,6 +61,9 @@ def _helper(cache_dir, login_seconds, ready, start, browsers, callback_port):
         callback_state = parse_qs(urlparse(_url).query)["state"][0]
         with browsers.get_lock():
             browsers.value += 1
+        browser_opened.set()
+        if pause is not None:
+            pause.wait()
 
     class CallbackServer:
         def __init__(self, _address, handler):
@@ -90,6 +93,7 @@ def _helper(cache_dir, login_seconds, ready, start, browsers, callback_port):
         expiry=datetime.now(UTC) + timedelta(hours=1),
     )
     with (
+        patch.dict("os.environ", {"ENABLE_CUSTOM_OAUTH_FROM_CLI": "0"}),
         patch.object(oauth.TokenCache, "BASE_PATH", cache_dir),
         patch.object(oauth, "get_workspace_endpoints", return_value=endpoints),
         patch.object(oauth, "retrieve_token", return_value=token),
@@ -108,17 +112,37 @@ def _helper(cache_dir, login_seconds, ready, start, browsers, callback_port):
             raise SystemExit(1) from None
 
 
-def run_helpers(cache_dir: Path, *, helpers: int, login_seconds: float, timeout: float) -> Result:
+def run_helpers(
+    cache_dir: Path,
+    *,
+    helpers: int,
+    login_seconds: float,
+    timeout: float,
+    terminate_after_browser: bool = False,
+) -> Result:
     """Start helpers together and enforce a common deadline after they are ready."""
+    if terminate_after_browser and helpers != 1:
+        raise ValueError("browser-triggered termination requires one helper")
     ctx = multiprocessing.get_context("spawn")
     ready = ctx.Queue()
     start = ctx.Event()
+    browser_opened = ctx.Event()
+    pause = ctx.Event() if terminate_after_browser else None
     browsers = ctx.Value("i", 0)
     callback_port = ctx.Semaphore(1)
     processes = [
         ctx.Process(
             target=_helper,
-            args=(str(cache_dir), login_seconds, ready, start, browsers, callback_port),
+            args=(
+                str(cache_dir),
+                login_seconds,
+                ready,
+                start,
+                browsers,
+                callback_port,
+                browser_opened,
+                pause,
+            ),
         )
         for _ in range(helpers)
     ]
@@ -130,6 +154,10 @@ def run_helpers(cache_dir: Path, *, helpers: int, login_seconds: float, timeout:
             ready.get(timeout=30)
         deadline = time.monotonic() + timeout
         start.set()
+        if terminate_after_browser:
+            if not browser_opened.wait(timeout=max(0, deadline - time.monotonic())):
+                raise TimeoutError("helper did not open a browser")
+            processes[0].terminate()
         for process in processes:
             process.join(timeout=max(0, deadline - time.monotonic()))
             if process.is_alive():

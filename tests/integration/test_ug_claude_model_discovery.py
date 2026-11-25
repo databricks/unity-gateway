@@ -194,9 +194,13 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
     command = [str(session.binary), "claude", "--model-location", parent_schema]
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
-        screen = tui.open_model_picker(
-            model_visible=_scoped_models_visible(session, _claude_parent_model_ids)
-        )
+        try:
+            screen = tui.open_model_picker(
+                model_visible=_scoped_models_visible(session, _claude_parent_model_ids)
+            )
+        except AssertionError:
+            session.record_claude_gateway_diagnostics(_claude_parent_model_ids)
+            raise
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, _claude_parent_model_ids)
@@ -224,9 +228,13 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
     ]
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
-        screen = tui.open_model_picker(
-            model_visible=_scoped_models_visible(session, _claude_parent_model_ids)
-        )
+        try:
+            screen = tui.open_model_picker(
+                model_visible=_scoped_models_visible(session, _claude_parent_model_ids)
+            )
+        except AssertionError:
+            session.record_claude_gateway_diagnostics(_claude_parent_model_ids)
+            raise
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, _claude_parent_model_ids)

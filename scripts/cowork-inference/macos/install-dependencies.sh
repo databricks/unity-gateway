@@ -7,7 +7,14 @@ claude --version
 runtime="$RUNNER_TEMP/macos-desktop-runtime"
 python -m venv "$runtime"
 PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL='' "$runtime/bin/python" -m pip install \
-  --disable-pip-version-check --index-url https://pypi.org/simple .
+  --disable-pip-version-check --index-url https://pypi.org/simple 'uv==0.13.5'
+"$runtime/bin/uv" export --frozen --no-dev --no-emit-project --format requirements-txt \
+  --output-file "$RUNNER_TEMP/cowork-requirements.txt" > /dev/null
+PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL='' "$runtime/bin/python" -m pip install \
+  --disable-pip-version-check --index-url https://pypi.org/simple \
+  --require-hashes -r "$RUNNER_TEMP/cowork-requirements.txt"
+PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL='' "$runtime/bin/python" -m pip install \
+  --disable-pip-version-check --index-url https://pypi.org/simple --no-deps .
 echo "UG_COWORK_PYTHON=$runtime/bin/python" >> "$GITHUB_ENV"
 # UG writes its own path into Desktop's MCP connectors from PATH, as for an installed ug.
 echo "$runtime/bin" >> "$GITHUB_PATH"

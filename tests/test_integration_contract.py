@@ -420,6 +420,29 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
+def test_claude_gateway_cache_diagnostics_capture_missing_and_present_cache(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    cache = session.home / ".claude/cache/gateway-models.json"
+    output = session.artifacts / "claude-gateway-cache-diagnostics.json"
+
+    session.record_claude_gateway_diagnostics(["model-a"])
+    missing = json.loads(output.read_text())
+    assert missing["path"] == str(cache)
+    assert missing["expected_ids"] == ["model-a"]
+    assert missing["contents"] is None
+    assert missing["mtime_ns"] is None
+
+    cache.parent.mkdir(parents=True)
+    cache.write_text('{"models": []}')
+    session.record_claude_gateway_diagnostics(["model-a"])
+    captured = json.loads(output.read_text())
+    assert captured["contents"] == '{"models": []}'
+    assert captured["mtime_ns"] == cache.stat().st_mtime_ns
+
+
 def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "0")
     root, project = tmp_path / "session", tmp_path / "project"

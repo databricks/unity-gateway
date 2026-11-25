@@ -19,11 +19,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from tests.integration.utils.harness import process_group_options, stop_process
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 
 
@@ -47,6 +51,7 @@ class _CaptureServer:
 
     def __init__(self):
         self.requests: list[_CapturedRequest] = []
+        self.condition = threading.Condition()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -61,6 +66,7 @@ class _CaptureServer:
 
     def start(self) -> None:
         captured = self.requests
+        condition = self.condition
 
         class Handler(BaseHTTPRequestHandler):
             def _record_and_reply(self):
@@ -86,6 +92,8 @@ class _CaptureServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                with condition:
+                    condition.notify_all()
 
             def do_GET(self):  # noqa: N802
                 self._record_and_reply()
@@ -118,6 +126,46 @@ class _CaptureServer:
         return None
 
 
+@pytest.fixture(scope="session")
+def opencode_dependencies(tmp_path_factory, worker_id):
+    _require_binary("opencode")
+    npm = shutil.which("npm")
+    assert npm, "npm is required to prepare OpenCode's plugin"
+    version = agent_version("opencode")
+    assert version != "unknown", "could not determine the installed OpenCode version"
+    base = tmp_path_factory.getbasetemp()
+    root = base if worker_id == "master" else base.parent
+    directory = root / "opencode-dependencies"
+    directory.mkdir(exist_ok=True)
+    marker = directory / "setup-result"
+    with (directory / "setup.lock").open("a+b") as lock:
+        acquire_exclusive_file_lock(lock)
+        try:
+            if not marker.exists():
+                marker.write_text("failed")
+                subprocess_cross_os.run(
+                    [
+                        npm,
+                        "install",
+                        "--prefix",
+                        str(directory),
+                        "--no-audit",
+                        "--no-fund",
+                        "--fetch-retries=0",
+                        f"@opencode-ai/plugin@{version}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=20,
+                )
+                marker.write_text("ok")
+            assert marker.read_text() == "ok", "OpenCode dependency setup failed in another worker"
+        finally:
+            release_file_lock(lock)
+    return directory
+
+
 @pytest.fixture
 def capture_server():
     server = _CaptureServer()
@@ -144,22 +192,53 @@ def _header(req: _CapturedRequest, name: str) -> str | None:
 
 
 def _run_until_first_request(
-    cmd: list[str], env: dict[str, str], timeout: int = 20
+    cmd: list[str], env: dict[str, str], server: _CaptureServer, prefix: str, timeout: int = 20
 ) -> subprocess.CompletedProcess | None:
-    """Spawn the agent. We only need it to fire its first HTTP request; some
-    agents retry on 401 indefinitely. Swallow timeouts — the capture server
-    has what we need by then. Returns the CompletedProcess (or None on
-    timeout) so callers can surface stderr on failure."""
-    try:
-        return subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
+    """Stop the agent after the relevant wire request, or report an early exit or timeout."""
+    process = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        **process_group_options(),
+    )
+    output = []
+
+    def collect():
+        output.append(process.communicate())
+        with server.condition:
+            server.condition.notify_all()
+
+    collector = threading.Thread(target=collect)
+    collector.start()
+    with server.condition:
+        ready = server.condition.wait_for(
+            lambda: server.first_request_with_path_prefix(prefix) is not None or bool(output),
             timeout=timeout,
-            stdin=subprocess.DEVNULL,
         )
-    except subprocess.TimeoutExpired:
+    stop_process(process)
+    collector.join()
+    if not ready:
         return None
+    stdout, stderr = output[0]
+    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+
+
+def test_capture_stops_agent_after_the_matching_request(capture_server):
+    script = (
+        "import time, urllib.error, urllib.request\n"
+        "for path in ('/other', '/wanted'):\n"
+        f"    url = {capture_server.base_url!r} + path\n"
+        "    try: urllib.request.urlopen(url)\n"
+        "    except urllib.error.HTTPError: pass\n"
+        "time.sleep(60)\n"
+    )
+    result = _run_until_first_request(
+        [sys.executable, "-c", script], os.environ.copy(), capture_server, "/wanted", timeout=2
+    )
+    assert result is not None
+    assert [request.path for request in capture_server.requests] == ["/other", "/wanted"]
 
 
 def _no_request_msg(server: _CaptureServer, result: subprocess.CompletedProcess | None) -> str:
@@ -205,7 +284,9 @@ class TestClaudeUserAgent:
             **overlay["env"],
         }
 
-        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+        result = _run_until_first_request(
+            claude.validate_cmd("claude"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -235,7 +316,9 @@ class TestClaudeUserAgent:
             **overlay["env"],
         }
 
-        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+        result = _run_until_first_request(
+            claude.validate_cmd("claude"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -267,7 +350,9 @@ class TestCodexUserAgent:
             "OPENAI_API_KEY": "test-key-not-real",
             "DATABRICKS_BEARER": "test-key-not-real",
         }
-        result = _run_until_first_request(codex.validate_cmd("codex"), env)
+        result = _run_until_first_request(
+            codex.validate_cmd("codex"), env, capture_server, "/ai-gateway/codex"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -301,7 +386,9 @@ class TestCodexUserAgent:
             "OPENAI_API_KEY": "test-key-not-real",
             "DATABRICKS_BEARER": "test-key-not-real",
         }
-        result = _run_until_first_request(codex.validate_cmd("codex"), env)
+        result = _run_until_first_request(
+            codex.validate_cmd("codex"), env, capture_server, "/ai-gateway/codex"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -309,7 +396,9 @@ class TestCodexUserAgent:
 
 
 class TestOpencodeUserAgent:
-    def test_user_agent_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+    def test_user_agent_arrives_at_gateway(
+        self, tmp_path, monkeypatch, capture_server, opencode_dependencies
+    ):
         import ucode.config_io as config_io_mod
         from ucode.agents import opencode
 
@@ -319,6 +408,10 @@ class TestOpencodeUserAgent:
         xdg = tmp_path / "xdg"
         opencode_dir = xdg / "opencode"
         opencode_dir.mkdir(parents=True)
+        for name in ("package.json", "package-lock.json"):
+            shutil.copy2(opencode_dependencies / name, opencode_dir / name)
+        shutil.copytree(opencode_dependencies / "node_modules", opencode_dir / "node_modules")
+        monkeypatch.chdir(tmp_path)
         config_path = opencode_dir / "opencode.json"
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_path)
@@ -344,8 +437,18 @@ class TestOpencodeUserAgent:
             )
             opencode.write_tool_config(state, "test-claude-model", token="test-token")
 
-        env = {**os.environ, "OAUTH_TOKEN": "test-token", "XDG_CONFIG_HOME": str(xdg)}
-        result = _run_until_first_request(opencode.validate_cmd("opencode"), env)
+        env = {
+            **os.environ,
+            "OAUTH_TOKEN": "test-token",
+            "XDG_CONFIG_HOME": str(xdg),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "OPENCODE_DISABLE_MODELS_FETCH": "1",
+        }
+        result = _run_until_first_request(
+            opencode.validate_cmd("opencode"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -378,7 +481,9 @@ class TestGeminiUserAgent:
         monkeypatch.chdir(tmp_path)
 
         env = gemini.build_runtime_env(capture_server.base_url, "test-model", "test-token")
-        result = _run_until_first_request(gemini.validate_cmd("gemini"), env)
+        result = _run_until_first_request(
+            gemini.validate_cmd("gemini"), env, capture_server, "/ai-gateway/gemini"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/gemini")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -429,7 +534,9 @@ class TestPiUserAgent:
         # bearer short-circuit gives that command something to print without a
         # real workspace behind the capture server.
         env["DATABRICKS_BEARER"] = "test-token"
-        result = _run_until_first_request(pi.validate_cmd("pi"), env)
+        result = _run_until_first_request(
+            pi.validate_cmd("pi"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import threading
 import time
@@ -27,6 +28,7 @@ class _Router:
     status = 200
     body = b'{"is_supported": true}'
     pace = 0
+    header_delay = 0
     url = None
     closed_url = None
 
@@ -42,8 +44,10 @@ def _handler(router):
         def do_POST(self):
             self.rfile.read(int(self.headers["Content-Length"]))
             router.requests.append((self.path, self.headers))
+            time.sleep(router.header_delay)
             self.send_response(router.status)
             self.send_header("Content-Length", str(len(router.body)))
+            self.send_header("x-request-id", "test-request-id")
             self.end_headers()
             for byte in router.body:
                 self.wfile.write(bytes([byte]))
@@ -250,6 +254,7 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     the deadline ends the wait and the late body completes afterwards."""
     monkeypatch.setattr(validation, "VALIDATION_TIMEOUT_SECONDS", 0.2)
     router.pace = 0.02
+    router.header_delay = 0.05
     router.body = b'{"is_supported": true}' + b" " * 30
     controls, result = _run_check(router.url, tmp_path)
     assert [
@@ -260,8 +265,32 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     assert router.answered.wait(3)
     assert json.loads(validation_result_path(controls).read_text()) == result
     assert isinstance(result.pop("validation_ms"), int)
+    reason = result.pop("validation_failure_reason")
+    assert reason.startswith("Smart Router didn't respond in time")
+    for detail in ("dns=", "connect=", "tls=", "ttfb=", "request_id="):
+        assert detail in reason, reason
+    result["validation_failure_reason"] = "Smart Router didn't respond in time"
     assert result == _failed("Smart Router didn't respond in time")
     assert session_routing_enabled(controls) is False
+
+
+def test_network_trace_records_request_id_and_connection_reuse():
+    timings = validation._NetworkTimings()
+    timings.trace("transport.pooled", {})
+    timings.trace("http11.send_request_headers.started", {})
+    timings.trace("http11.receive_response_headers.started", {})
+    timings.trace(
+        "http11.receive_response_headers.complete",
+        {"return_value": (b"HTTP/1.1", 200, b"OK", [(b"x-request-id", b"test-request-id")])},
+    )
+    reason = timings.summary()
+    assert "transport=pooled" in reason
+    assert "connection=reused" in reason
+    assert "request_id=test-request-id" in reason
+    assert re.search(r"ttfb=\d+ms", reason)
+    assert "ttfb_source=headers-complete" in reason
+    timings.trace("response.headers", {"headers": [("x-request-id", "Bearer secret")]})
+    assert "Bearer secret" not in timings.summary()
 
 
 class _SynchronousThread:

@@ -324,6 +324,24 @@ class UserSession:
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
 
+    def record_claude_gateway_diagnostics(self, expected_ids: list[str]) -> None:
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        try:
+            contents = path.read_text(encoding="utf-8", errors="replace")
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            contents = None
+            mtime_ns = None
+        self.record(
+            "claude-gateway-cache-diagnostics.json",
+            {
+                "path": str(path),
+                "expected_ids": expected_ids,
+                "contents": contents,
+                "mtime_ns": mtime_ns,
+            },
+        )
+
     def state(self) -> dict:
         return json.loads((self.home / ".ucode/state.json").read_text())
 

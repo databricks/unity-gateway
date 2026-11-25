@@ -10,6 +10,19 @@ function Protect-DiagnosticText {
     return $Text
 }
 
+function Test-CoworkVmReady {
+    param([string]$LogPath, [long]$Offset)
+    if (-not (Test-Path -LiteralPath $LogPath)) { return $false }
+    $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        if ($stream.Length -lt $Offset) { $Offset = 0 }
+        [void]$stream.Seek($Offset, [IO.SeekOrigin]::Begin)
+        $reader = [IO.StreamReader]::new($stream)
+        try { return $reader.ReadToEnd().Contains('[VM:start] Startup complete') }
+        finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 function Get-CoworkResponseError {
     param([string[]]$Names)
     foreach ($name in $Names) {

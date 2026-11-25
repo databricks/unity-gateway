@@ -30,6 +30,8 @@ function Wait-Control {
 
 $report = [ordered]@{}
 $process = $null
+$vmLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/cowork_vm_node.log'
+$vmLogOffset = if (Test-Path -LiteralPath $vmLog) { (Get-Item -LiteralPath $vmLog).Length } else { 0 }
 $nativeLogDirectory = Join-Path $env:RUNNER_TEMP ('claude-native-' + [Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $nativeLogDirectory | Out-Null
 try {
@@ -100,10 +102,12 @@ try {
             $report.responseAsserted = $true
             $report.responseFinished = $true
             $report.expectedResponse = '48213'
-            break
         }
+        if (Test-CoworkVmReady -LogPath $vmLog -Offset $vmLogOffset) { $report.vmReady = $true }
+        if ($report.responseAsserted -and $report.vmReady) { break }
     } until ([DateTime]::UtcNow -ge $deadline)
     if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }
+    if (-not $report.vmReady) { throw 'Cowork VM did not finish startup within 240 seconds' }
 } catch {
     $report.error = $_.Exception.Message
 } finally {

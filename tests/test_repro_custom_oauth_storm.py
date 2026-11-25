@@ -3,7 +3,8 @@
 from scripts.repro_custom_oauth_storm import run_helpers
 
 
-def test_concurrent_helpers_share_one_login(tmp_path):
+def test_concurrent_helpers_share_one_login(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
     result = run_helpers(tmp_path, helpers=4, login_seconds=0.5, timeout=15)
     assert result.browsers == 1
     assert result.succeeded == 4
@@ -11,9 +12,12 @@ def test_concurrent_helpers_share_one_login(tmp_path):
 
 
 def test_killed_helper_releases_lock_for_next_login(tmp_path):
-    interrupted = run_helpers(tmp_path, helpers=1, login_seconds=10, timeout=0.5)
+    interrupted = run_helpers(
+        tmp_path, helpers=1, login_seconds=10, timeout=15, terminate_after_browser=True
+    )
     assert interrupted.browsers == 1
-    assert interrupted.timed_out == 1
+    assert interrupted.failed == 1
+    assert interrupted.timed_out == 0
 
     recovered = run_helpers(tmp_path, helpers=1, login_seconds=0.01, timeout=15)
     assert recovered.browsers == recovered.succeeded == 1
