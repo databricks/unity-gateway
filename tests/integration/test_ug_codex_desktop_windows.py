@@ -46,9 +46,11 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
     is skipped through its visible controls with UI Automation and the prompt is typed with real
     keystrokes followed by Send; nothing is seeded. Windows sandbox setup completes through
-    its visible controls before Send. A failed readiness check is finished through its visible
+    its visible controls before Send, or the setup wait accepts it already saved as elevated.
+    A failed readiness check is finished through its visible
     Try again at the setup screen and after setup's app-server restart; prompts are never
-    resubmitted. Each screen gets 60 seconds, sandbox setup gets
+    resubmitted. The launch screen gets 180 seconds and other screens 60, a hung UI Automation
+    read is polled again within the step deadline, sandbox setup gets
     180 seconds, and the answer four minutes. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered.
     """
@@ -60,12 +62,12 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     )
 
     with WindowsApp(session, CHATGPT_PACKAGE, CHATGPT_EXECUTABLE, "chatgpt") as app:
-        app.click("ControlType.RadioButton", "Engineering")
+        app.click("ControlType.RadioButton", "Engineering", timeout=180)
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
-        wait_for_windows_setup(app)
-        app.click("ControlType.Button", "Continue")
+        if wait_for_windows_setup(app):
+            app.click("ControlType.Button", "Continue")
         wait_for_windows_sandbox(app)
         # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
         app.click("ControlType.Button", MODEL_PICKER)
@@ -115,9 +117,10 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
     The app displays that token and its Databricks-backed completed turn records successful
     native MCP web_search receipts with the exact query on the managed model. User onboarding,
     Windows sandbox setup and Send use visible controls; the rollout must record the prompt
-    before the answer wait. Setup must save elevated sandbox mode; readiness errors get their
-    visible recheck at the setup screen and after the app-server restart, before Send. The
-    expected search is
+    before the answer wait. Setup must save elevated sandbox mode, or the setup wait accepts it
+    already saved; readiness errors get their visible recheck at the setup screen and after the
+    app-server restart, before Send. The launch screen gets 180 seconds and other screens 60,
+    and a hung UI Automation read is polled again within the step deadline. The expected search is
     approved with Allow once; no approval/config
     state is seeded. UC skill downloads, connector
     browser sign-in and built-in web search are outside this journey.
@@ -141,13 +144,13 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
     session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
 
     with WindowsApp(session, CHATGPT_PACKAGE, CHATGPT_EXECUTABLE, "chatgpt") as app:
-        app.click("ControlType.RadioButton", "Engineering")
+        app.click("ControlType.RadioButton", "Engineering", timeout=180)
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
         try:
-            wait_for_windows_setup(app)
-            app.click("ControlType.Button", "Continue")
+            if wait_for_windows_setup(app):
+                app.click("ControlType.Button", "Continue")
             wait_for_windows_sandbox(app)
             app.click("ControlType.Edit", None)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."

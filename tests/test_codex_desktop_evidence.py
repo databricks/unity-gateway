@@ -80,9 +80,12 @@ def test_windows_readiness_recheck_is_visible_and_bounded(state):
     assert clicks == ([] if state == "ready" else [("ControlType.Button", "Try again")])
 
 
-@pytest.mark.parametrize("state", ["banner", "recovers", "repeats", "stuck"])
-def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch):
+@pytest.mark.parametrize("state", ["banner", "recovers", "repeats", "stuck", "elevated"])
+def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch, tmp_path):
     monkeypatch.setattr(codex_desktop.time, "sleep", lambda seconds: None)
+    if state == "elevated":
+        (tmp_path / ".codex").mkdir()
+        (tmp_path / ".codex/config.toml").write_text('[windows]\nsandbox = "elevated"\n')
     banner = "Finish Windows setup to continue"
     error = [["ControlType.Text", "Couldn’t check Windows setup", ""]]
     ready = [["ControlType.Text", banner, ""]]
@@ -92,6 +95,8 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         "recovers": ([error, []], ready),
         "repeats": ([error, []], error),
         "stuck": ([], []),
+        # The app can finish setup after the recheck without ever showing the banner.
+        "elevated": ([error, []], []),
     }[state]
     trees = iter(first)
     clicks = []
@@ -100,7 +105,9 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         name="chatgpt",
         read_tree=lambda: next(trees, rest),
         click=lambda role, label: clicks.append((role, label)),
-        session=SimpleNamespace(record=lambda name, value: evidence.update({name: value})),
+        session=SimpleNamespace(
+            home=tmp_path, record=lambda name, value: evidence.update({name: value})
+        ),
     )
     if state in ("repeats", "stuck"):
         with pytest.raises(AssertionError, match="never showed"):
@@ -108,7 +115,7 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         assert evidence["chatgpt-tree.json"]["waiting_for"] == ["ControlType.Text", banner]
         assert evidence["chatgpt-tree.json"]["tree"] == rest
     else:
-        codex_desktop.wait_for_windows_setup(app, timeout=0.05)
+        assert codex_desktop.wait_for_windows_setup(app, timeout=0.05) == (state != "elevated")
     assert clicks == ([("ControlType.Button", "Try again")] if first else [])
 
 

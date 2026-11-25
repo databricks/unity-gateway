@@ -128,7 +128,14 @@ class WindowsApp:
         """Wait for a ``control`` element named ``name`` (any name if None)."""
         deadline = time.monotonic() + timeout
         while True:
-            tree = self.read_tree()
+            try:
+                tree = self.read_tree()
+            except subprocess.TimeoutExpired:
+                # A hung read proves nothing either way, so only the step deadline ends it.
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(2)
+                continue
             if any(row[0] == control and name in (None, *row[1:]) for row in tree):
                 return tree
             if time.monotonic() > deadline:
