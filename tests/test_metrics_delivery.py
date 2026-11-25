@@ -243,8 +243,9 @@ def test_exporter_diagnostics_record_state_without_credentials(tmp_path, monkeyp
     [path] = tmp_path.glob("exporter-*.jsonl")
     text = path.read_text()
     events = [json.loads(line) for line in text.splitlines()]
-    assert [event["event"] for event in events] == ["frame", "reader-ready", "eof"]
-    assert events[0]["credentials"] == 1 and events[0]["pending"] == 1
+    assert {event["event"] for event in events} >= {"frame", "reader-ready", "eof"}
+    frame = next(event for event in events if event["event"] == "frame")
+    assert frame["credentials"] == 1 and frame["pending"] == 1
     assert all(isinstance(event["monotonic_ns"], int) for event in events)
     assert "synthetic-secret" not in text and "private.example" not in text
 

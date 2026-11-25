@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
+import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -14,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests import tls_ca
 from tests.conftest import metric_observations
 from ucode import databricks, metrics
 from ucode.constants import AGENT_CODEX, ROUTER_HARNESS_CLAUDE_CODE
@@ -297,6 +301,59 @@ def test_network_trace_records_real_loopback_transport(router, monkeypatch):
     assert "request_id=test-request-id" in summary
 
 
+def test_network_trace_records_urllib_https_timings(tmp_path):
+    ca = tmp_path / "ca"
+    tls_ca.write_ca(ca)
+    certificate = tmp_path / "localhost.pem"
+    tls_ca.write_localhost_certificate(ca, certificate)
+    router = _Router()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certificate)
+    script = """
+import json, sys
+from ucode import databricks
+from ucode.smart_routing.route_validation import _NetworkTimings
+trace = _NetworkTimings()
+token = databricks._HTTP_TRACE.set(trace.trace)
+sys.setprofile(trace.profile)
+try:
+    payload, reason = databricks._http_post_json(sys.argv[1], 'test-token', {}, timeout=4)
+finally:
+    sys.setprofile(None)
+    databricks._HTTP_TRACE.reset(token)
+print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary()}))
+"""
+    with ThreadingHTTPServer(("127.0.0.1", 0), _handler(router)) as server:
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            env = {
+                **os.environ,
+                "UG_NO_POOLED_HTTP": "1",
+                "SSL_CERT_FILE": str(ca / tls_ca.CA_CERTIFICATE),
+                "NO_PROXY": "localhost,127.0.0.1",
+            }
+            result = subprocess.run(
+                [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/validate"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+        finally:
+            server.shutdown()
+            worker.join(timeout=2)
+    output = json.loads(result.stdout)
+    assert output["payload"] == {"is_supported": True} and output["reason"] is None
+    summary = output["summary"]
+    for phase in ("dns", "connect", "tls", "ttfb"):
+        assert re.search(rf"{phase}=\d+ms", summary), summary
+    assert "transport=urllib" in summary
+    assert "request_id=test-request-id" in summary
+
+
 def test_network_trace_records_request_id_and_connection_reuse():
     timings = validation._NetworkTimings()
     timings.trace("transport.pooled", {})
@@ -312,6 +369,10 @@ def test_network_trace_records_request_id_and_connection_reuse():
     assert "request_id=test-request-id" in reason
     assert re.search(r"ttfb=\d+ms", reason)
     assert "ttfb_source=headers-complete" in reason
+    timings.trace("response.headers", {"headers": [("request-id", "request-2")]})
+    assert "request_id=request-2" in timings.summary()
+    timings.trace("response.headers", {"headers": [("x-databricks-request-id", "request-3")]})
+    assert "request_id=request-3" in timings.summary()
     timings.trace("response.headers", {"headers": [("x-request-id", "Bearer secret")]})
     assert "Bearer secret" not in timings.summary()
 

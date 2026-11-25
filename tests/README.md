@@ -14,6 +14,10 @@ Live shard coverage reports checkout and each
 artifact-download interval in the job summary without excluding them from the budget.
 Budget checks do not run in the merge queue.
 
+`test_integration_contract.py::test_claude_launch_smoke_does_not_inherit_repo_instructions`
+checks the smoke probe's working-directory isolation with a real child process. It does not
+exercise Claude or gateway inference.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
@@ -2170,8 +2174,10 @@ check against a loopback Smart Router, so the real HTTP transport runs: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
 responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
-deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
-flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
+deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Local
+pooled HTTP and urllib HTTPS tests also check timing and request-ID diagnostics; they do not prove
+which phase caused a live timeout. Only HTTP 404 (the flag-off answer) leaves routing on silently.
+Result-write failures are isolated. The `/smart-router on`
 check turns routing on only for a supported list or a 404; an unsupported list or a failed check
 keeps it off and records a logs row. The smart-routing launch tests cover the resolved Claude and
 Codex model/harness list and provider; the Codex test checks them at the HTTP call. The Codex toggle uses the same verdict and is covered in

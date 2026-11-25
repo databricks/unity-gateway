@@ -420,7 +420,36 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
-def test_claude_gateway_cache_diagnostics_capture_missing_and_present_cache(tmp_path):
+def test_claude_launch_smoke_does_not_inherit_repo_instructions(tmp_path, monkeypatch):
+    from tests import test_e2e
+    from ucode.agents import claude
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "CLAUDE.md").write_text("repository instruction sentinel")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(repository)
+    monkeypatch.setattr(test_e2e, "_require_binary", lambda _name: None)
+    monkeypatch.setattr(claude, "write_tool_config", lambda *_args: None)
+    # A real child checks its working-directory ancestry; no live model or credentials are needed.
+    command = (
+        "from pathlib import Path; "
+        f"assert Path({str(repository)!r}) not in (Path.cwd(), *Path.cwd().parents); "
+        "print('isolated')"
+    )
+    monkeypatch.setattr(claude, "validate_cmd", lambda _binary: [sys.executable, "-c", command])
+    test_e2e.TestClaudeLaunch().test_launch_claude_per_model(
+        ("opus", "system.ai.claude-opus-5-5"),
+        scratch,
+        monkeypatch,
+        {},
+        "https://example.invalid",
+        "synthetic-token",
+    )
+
+
+def test_claude_gateway_cache_diagnostics_capture_missing_and_present_cache(tmp_path, monkeypatch):
     root, project = tmp_path / "session", tmp_path / "project"
     root.mkdir()
     project.mkdir()
@@ -441,6 +470,14 @@ def test_claude_gateway_cache_diagnostics_capture_missing_and_present_cache(tmp_
     captured = json.loads(output.read_text())
     assert captured["contents"] == '{"models": []}'
     assert captured["mtime_ns"] == cache.stat().st_mtime_ns
+
+    secret = 'synthetic"credential\\with-escape'
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", secret)
+    cache.write_text(json.dumps({"models": [{"id": secret}]}))
+    session.record_claude_gateway_diagnostics(["model-a"])
+    contents = json.loads(output.read_text())["contents"]
+    assert json.loads(contents)["models"][0]["id"] == "<redacted>"
+    assert secret not in contents
 
 
 def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):

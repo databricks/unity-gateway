@@ -115,9 +115,11 @@ class _NetworkTimings:
         for key, value in headers:
             name = key.decode("ascii", "ignore") if isinstance(key, bytes) else key
             request_id = value.decode("ascii", "ignore") if isinstance(value, bytes) else value
-            if name.lower() == "x-request-id" and re.fullmatch(
-                r"[A-Za-z0-9._:-]{1,128}", request_id
-            ):
+            if name.lower() in {
+                "x-request-id",
+                "request-id",
+                "x-databricks-request-id",
+            } and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
                 with self.lock:
                     self.request_id = request_id
 

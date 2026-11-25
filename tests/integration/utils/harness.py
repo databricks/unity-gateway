@@ -327,7 +327,7 @@ class UserSession:
     def record_claude_gateway_diagnostics(self, expected_ids: list[str]) -> None:
         path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
         try:
-            contents = path.read_text(encoding="utf-8", errors="replace")
+            contents = self.redact(path.read_text(encoding="utf-8", errors="replace"))
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
             contents = None

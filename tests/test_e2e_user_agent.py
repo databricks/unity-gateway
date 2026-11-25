@@ -18,8 +18,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -195,34 +197,36 @@ def _run_until_first_request(
     cmd: list[str], env: dict[str, str], server: _CaptureServer, prefix: str, timeout: int = 20
 ) -> subprocess.CompletedProcess | None:
     """Stop the agent after the relevant wire request, or report an early exit or timeout."""
-    process = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        **process_group_options(),
-    )
-    output = []
-
-    def collect():
-        output.append(process.communicate())
-        with server.condition:
-            server.condition.notify_all()
-
-    collector = threading.Thread(target=collect)
-    collector.start()
-    with server.condition:
-        ready = server.condition.wait_for(
-            lambda: server.first_request_with_path_prefix(prefix) is not None or bool(output),
-            timeout=timeout,
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            stdin=subprocess.DEVNULL,
+            **process_group_options(),
         )
-    stop_process(process)
-    collector.join()
-    if not ready:
-        return None
-    stdout, stderr = output[0]
-    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+
+        def notify_exit():
+            process.wait()
+            with server.condition:
+                server.condition.notify_all()
+
+        threading.Thread(target=notify_exit, daemon=True).start()
+        with server.condition:
+            ready = server.condition.wait_for(
+                lambda: (
+                    server.first_request_with_path_prefix(prefix) is not None
+                    or process.poll() is not None
+                ),
+                timeout=timeout,
+            )
+        stop_process(process)
+        if not ready:
+            return None
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(cmd, process.returncode, stdout.read(), stderr.read())
 
 
 def test_capture_stops_agent_after_the_matching_request(capture_server):
@@ -239,6 +243,47 @@ def test_capture_stops_agent_after_the_matching_request(capture_server):
     )
     assert result is not None
     assert [request.path for request in capture_server.requests] == ["/other", "/wanted"]
+
+
+def test_capture_does_not_wait_for_a_detached_child_holding_output(tmp_path, capture_server):
+    child_pid = tmp_path / "child.pid"
+    script = (
+        "import os, pathlib, subprocess, sys, time, urllib.error, urllib.request\n"
+        "options = {'start_new_session': True} if os.name == 'posix' else {'creationflags': 8}\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], **options)\n"
+        f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid))\n"
+        f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
+        "except urllib.error.HTTPError: pass\n"
+        "time.sleep(60)\n"
+    )
+    completed = threading.Event()
+    result = []
+
+    def run():
+        try:
+            result.append(
+                _run_until_first_request(
+                    [sys.executable, "-c", script],
+                    os.environ.copy(),
+                    capture_server,
+                    "/wanted",
+                    timeout=2,
+                )
+            )
+        finally:
+            completed.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    finished_without_child = completed.wait(3)
+    try:
+        if child_pid.exists():
+            os.kill(int(child_pid.read_text()), signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    worker.join(timeout=5)
+    assert finished_without_child, "capture waited for detached child output handles"
+    assert result and result[0] is not None
 
 
 def _no_request_msg(server: _CaptureServer, result: subprocess.CompletedProcess | None) -> str:
