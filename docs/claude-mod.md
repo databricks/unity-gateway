@@ -41,30 +41,17 @@ the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
 
-Claude may review an Agent call server-side before a mod sees its streamed response. When
-Claude's local auto-mode fallback check is on — the default, with
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` and `DO_NOT_TRACK` unset —
-a native `turn.step` hook holds a reply that contains Agent calls until the router has
-answered for each one, then replaces only that `description` with
-`<animal> · <model> · <task>` before the call is recorded, so the collapsed parallel-agent
-header and the task list show the routed label. The rewrite voids the server-side verdict,
-so the local fallback check re-approves the rewritten call; that is one extra local
-auto-mode check per routed launch. When the fallback check is off — any of those variables
-set, with Claude's own read: any non-empty value for the first two, 1/true/yes/on for
-`DO_NOT_TRACK` — or `CLAUDE_CODE_AUTO_MODE_SERVER=1` keeps the server's verdict, the stream
-passes through untouched and routing happens at `tool.call` instead, never changing an input
-auto mode has reviewed. The selected model is applied at `agent.spawn` on both paths, and
-parallel calls route as the host dispatches them.
-A model-written description can name the model the parent asked for even though routing
-overrode it, so no other mod surface prints it: routing cards and rows quote the neutral
-title, a lone tool row displays the label through `ui.render`, and the completed-task notice
-is rewritten at render time to quote the routed label. The task title comes from the first
-sentence of the prompt.
-The selected model is a prediction until the child starts. Routing cards, the agent list and
-completed-task notices use the spawn receipt and flag a mismatch with `⚠ selected <model>`.
-Known gap: Anthropic can turn the fallback check off server-side (the
-`tengu_bright_dragonfly` flag) with no environment variable, and the mod cannot detect that;
-those sessions still take the rewrite path and would see auto mode block the rewritten call.
+Claude may review an Agent call server-side before a mod sees its streamed response.
+The mod passes that stream through unchanged in every mode. It routes the original call at
+`tool.call` and applies the selected model at `agent.spawn`, preserving auto mode's verdict.
+The native collapsed parallel-agent header and resumed transcript keep the model-written
+description, which may name the requested model. Routing cards and rows quote the neutral
+task title, a lone tool row shows the routed label through `ui.render`, and the completed-task
+notice quotes the launch receipt. The task title comes from the prompt's first sentence.
+Parallel routing begins as Claude dispatches each call; grouping and latency depend on that
+dispatch. The selected model is a prediction until the child starts. Routing cards, the
+agent list and completed-task notices use the spawn receipt and flag a mismatch with
+`⚠ selected <model>`.
 A host that reports no launch model is logged and its labels are not saved. Session-scoped
 display files keep the receipts across resume. Native task descriptions, full prompts, agent
 addresses and permissions are unchanged.
@@ -83,9 +70,8 @@ results without a success annotation. If Claude reports a different model than t
 the routing row also shows `Launched Model` separately. This is host launch metadata,
 not verification of the provider's underlying model version. Usage telemetry may name a
 provider backend; it does not replace the confirmed launch identity in reports.
-Forks keep their native model; resumed routed children keep the router-selected model. Both
-keep auto mode's verdict usable: forks skip the rewrite, and routed children re-earn the local
-fallback check's approval on the rewrite path.
+Forks keep their native model; resumed routed children keep the router-selected model.
+Neither changes the Agent input that auto mode reviewed.
 The display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
 the plugin is loaded. Animal names are display labels for routing rows, parallel
