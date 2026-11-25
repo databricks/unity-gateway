@@ -255,9 +255,7 @@ const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonP
   return lines
 }
 
-// A grouped call's decision: its task, then the selection. The task is the neutral title, not
-// the model-written description, which can name the model the parent asked for even though
-// routing overrode it.
+// Use the neutral title; the written description may name an overridden model.
 const card = ($: any, e: any, record: RoutingRecord) => {
   const { Box, Text } = $.ui.resolve(e)
   return Box({
@@ -457,9 +455,8 @@ export const registerSubagentRouting = (
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || typeof e.props.text !== 'string') return next(e)
-    const nativeHeading = `Agent "${saved.description}"`
-    const text = e.props.text.startsWith(nativeHeading)
-      ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(nativeHeading.length)}` : e.props.text
+    const text = e.props.text.replace(/^Agent "[\s\S]*?"(?= (?:finished|failed|stopped|killed|completed)\b)/,
+      `Agent "${receiptLabel(saved)}"`)
     const flagged = differs(saved.selected, saved.launched)
       ? `${text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}` : text
     return flagged === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text: flagged } })
@@ -509,7 +506,6 @@ export const registerSubagentRouting = (
     }
     if (grouped.has(e.requestId)) return original
     return Box({ flexDirection: 'column', children: [original,
-      Text({ dimColor: true, children: ['  Task request: ', record.title] }),
       ...selection($, e, record, '  ↳ ', 4),
     ] })
   })
