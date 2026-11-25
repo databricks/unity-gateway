@@ -7,7 +7,7 @@ import posixpath
 import re
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlparse
 
 DATABRICKS_HOSTS = {"databricks.com", "www.databricks.com"}
 
@@ -29,16 +29,22 @@ def content_text(content):
 
 
 def databricks_urls(text):
-    """Official Databricks URLs in text, ignoring surrounding Markdown and trailing slashes."""
+    """Official Databricks URLs without Markdown, trailing slashes, or search attribution."""
     urls = set()
     for url in re.findall(r"https?://[^\s)<>\]`*\"']+", text):
         url = url.rstrip(".,;:/")
         try:
-            hostname = urlparse(url).hostname
+            parsed = urlparse(url)
+            hostname = parsed.hostname
         except ValueError:  # e.g. an unclosed IPv6 bracket in search text
             continue
         if hostname in DATABRICKS_HOSTS:
-            urls.add(url)
+            query = "&".join(
+                part
+                for part in parsed.query.split("&")
+                if unquote_plus(part.partition("=")[0]).lower() != "utm_source"
+            )
+            urls.add(parsed._replace(path=parsed.path.rstrip("/"), query=query).geturl())
     return urls
 
 
