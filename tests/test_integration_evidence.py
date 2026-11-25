@@ -6,6 +6,7 @@ import os
 import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ from tests.integration.utils.evidence import (
 )
 from tests.integration.utils.harness import UserSession
 from tests.integration.utils.terminal import (
+    TerminalProcess,
     claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
@@ -87,6 +89,34 @@ def test_antigravity_native_log_evidence_without_logs(tmp_path):
         "files_omitted": 0,
         "logs": [],
     }
+
+
+def test_antigravity_terminal_cleanup_saves_logs_without_masking_failure(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    log_dir = session.home / antigravity.STATE_DIRECTORY / "log"
+    log_dir.mkdir(parents=True)
+    (log_dir / "cli-1.log").write_text("native diagnostic\n")
+    child = SimpleNamespace(kill=lambda: None, send=lambda _: None, exitstatus=0, signalstatus=None)
+    monkeypatch.setattr("tests.integration.utils.terminal.spawn_pty", lambda *_: child)
+
+    with TerminalProcess(session, "antigravity", ["ug", "antigravity"], "tui"):
+        pass
+    assert (
+        json.loads((session.artifacts / "antigravity-logs.json").read_text())["logs"][0]["tail"]
+        == "native diagnostic\n"
+    )
+
+    def fail_to_read(_session):
+        raise OSError("native log unavailable")
+
+    monkeypatch.setattr(antigravity, "requested_urls", fail_to_read)
+    with pytest.raises(RuntimeError, match="original task failure"):
+        with TerminalProcess(session, "antigravity", ["ug", "antigravity"], "failed-tui"):
+            raise RuntimeError("original task failure")
 
 
 def test_antigravity_native_log_evidence_keeps_recent_files_by_modification_time(tmp_path):
