@@ -358,6 +358,33 @@ def test_network_trace_records_real_loopback_transport(router, monkeypatch):
     assert "request_id=test-request-id" in summary
 
 
+def test_network_trace_records_real_connection_closed_before_response(monkeypatch):
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.close_connection = True
+
+        def log_message(self, *_args):
+            pass
+
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        timings = validation._NetworkTimings()
+        token = databricks._HTTP_TRACE.set(timings.trace)
+        try:
+            payload, reason = databricks._http_post_json(
+                f"http://127.0.0.1:{server.server_port}/validate", "test-token", {}, timeout=4
+            )
+        finally:
+            databricks._HTTP_TRACE.reset(token)
+            server.shutdown()
+            thread.join()
+    assert payload is None and reason
+    assert "ttfb_source=headers-failed" in timings.summary()
+
+
 @pytest.mark.parametrize("disable_pool", [True, False], ids=["urllib", "httpcore"])
 def test_network_trace_records_https_transport(tmp_path, disable_pool):
     ca = tmp_path / "ca"
@@ -441,6 +468,16 @@ def test_network_trace_records_request_id_and_connection_reuse():
     assert "request_id=request-3" in timings.summary()
     timings.trace("response.headers", {"headers": [("x-request-id", "Bearer secret")]})
     assert "Bearer secret" not in timings.summary()
+
+
+def test_network_trace_distinguishes_failed_response_headers():
+    timings = validation._NetworkTimings()
+    timings.trace("http11.receive_response_headers.started", {})
+    timings.trace("http11.receive_response_headers.failed", {})
+    summary = timings.summary()
+    assert re.search(r"ttfb=\d+ms", summary)
+    assert "ttfb_source=headers-failed" in summary
+    assert "ttfb_source=headers-complete" not in summary
 
 
 def test_network_trace_prefers_same_safe_request_id_as_forwarder():

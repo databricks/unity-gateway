@@ -153,6 +153,7 @@ def test_model_picker_dismisses_topmost_dropdown_before_closing_editor():
     [
         ({"modelsEditor": True, "dropdown": True}, "dropdown appeared before the click"),
         ({"modelsEditor": False, "dropdown": False}, "editor closed before the click"),
+        ({"modelsEditor": True, "dropdown": False}, None),
     ],
 )
 def test_editor_close_timeout_reports_observed_transition(screen, message):
@@ -174,8 +175,15 @@ def test_editor_close_timeout_reports_observed_transition(screen, message):
     window.actions = []
     window.page = SimpleNamespace(locator=lambda *_: Element())
     window.screen = lambda: screen
-    assert window._close_models_editor()()
-    assert window.actions == [f"  ({message})"]
+    if message is None:
+        from playwright.sync_api import TimeoutError
+
+        with pytest.raises(TimeoutError, match="click target changed"):
+            window._close_models_editor()
+        assert window.actions == []
+    else:
+        assert window._close_models_editor()()
+        assert window.actions == [f"  ({message})"]
 
 
 def test_pick_model_closes_a_language_models_editor_that_opens_as_the_last_one_closes():

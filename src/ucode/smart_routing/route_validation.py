@@ -97,8 +97,10 @@ class _NetworkTimings:
                 self.sent = True
         if event.endswith("receive_response_headers.started"):
             self.mark("ttfb", True)
-        if event.endswith(("receive_response_headers.complete", "receive_response_headers.failed")):
+        if event.endswith("receive_response_headers.complete"):
             self.mark("ttfb", False, source="headers-complete")
+        elif event.endswith("receive_response_headers.failed"):
+            self.mark("ttfb", False, source="headers-failed")
         headers = info.get("headers", [])
         if event.endswith("receive_response_headers.complete"):
             response = info.get("return_value")
