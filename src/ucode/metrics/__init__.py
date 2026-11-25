@@ -179,6 +179,9 @@ class Recorder:
         self.worker_lock = threading.Lock()
         self.stop = threading.Event()
         self.wake = threading.Event()
+        self.test_idle = (
+            threading.Event() if os.environ.get("UG_TEST_METRICS_DIAGNOSTICS") else None
+        )
         self.thread: threading.Thread | None = None
         self.reporter = None
         self.unsent = b""
@@ -352,8 +355,17 @@ class Recorder:
                         with self.lock:
                             self._handoff_locked()
                 if not self.stop.is_set():
+                    if (
+                        self.test_idle is not None
+                        and self.reporter is not None
+                        and not self.unsent
+                        and not self.wake.is_set()
+                    ):
+                        self.test_idle.set()
                     # Retry backpressure only in the daemon, never on a command thread.
                     self.wake.wait(1 if self.unsent else None)
+                    if self.test_idle is not None:
+                        self.test_idle.clear()
         finally:
             with self.lock:
                 if self.reporter is not None:

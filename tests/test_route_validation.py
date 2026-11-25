@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -272,6 +273,28 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     result["validation_failure_reason"] = "Smart Router didn't respond in time"
     assert result == _failed("Smart Router didn't respond in time")
     assert session_routing_enabled(controls) is False
+
+
+def test_network_trace_records_real_loopback_transport(router, monkeypatch):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    timings = validation._NetworkTimings()
+    token = databricks._HTTP_TRACE.set(timings.trace)
+    previous_profile = sys.getprofile()
+    sys.setprofile(timings.profile)
+    try:
+        payload, reason = databricks._http_post_json(
+            f"{router.url}/validate", "test-token", {"models": ["m"]}, timeout=4
+        )
+    finally:
+        sys.setprofile(previous_profile)
+        databricks._HTTP_TRACE.reset(token)
+    assert payload == {"is_supported": True} and reason is None
+    summary = timings.summary()
+    for phase in ("dns", "connect", "ttfb"):
+        assert re.search(rf"{phase}=\d+ms", summary), summary
+    assert "transport=pooled" in summary
+    assert "connection=new" in summary
+    assert "request_id=test-request-id" in summary
 
 
 def test_network_trace_records_request_id_and_connection_reuse():

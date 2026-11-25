@@ -90,52 +90,111 @@ def test_short_command_delivers_final_metric_after_parent_exits(
         server_thread.start()
         host = f"https://localhost:{server.server_port}"
         code = r"""
-import sys, time
+import json, os, sys, time
+from pathlib import Path
 from ucode import launcher, metrics
 metrics.begin('command')
 runtime = metrics._runtime
-# Wait for OS process creation only in the test, then exercise an immediate exit or agent launch.
-# The old implementation never starts an uploader here, so this is also a regression gate.
+
+def snapshot(event):
+    directory = os.environ.get('UG_TEST_METRICS_DIAGNOSTICS')
+    if not directory:
+        return
+    reporter = runtime.reporter
+    data = {
+        'event': event,
+        'monotonic_ns': time.monotonic_ns(),
+        'locked': runtime.lock.locked(),
+        'reporter_started': reporter is not None,
+        'reporter_alive': reporter is not None and reporter.poll() is None,
+        'workspace_bound': runtime.workspace is not None,
+        'credentials': len(runtime.credentials),
+        'pending': len(runtime.pending),
+        'unsent_bytes': len(runtime.unsent),
+    }
+    with (Path(directory) / 'parent.jsonl').open('a', encoding='utf-8') as output:
+        output.write(json.dumps(data) + '\n')
+
+snapshot('begin')
+# Establish a contention-free precondition without waiting for the upload.
 deadline = time.monotonic() + 3
-while runtime.reporter is None and time.monotonic() < deadline:
+assert runtime.test_idle is not None, 'test idle signal was not initialized'
+directory = Path(os.environ['UG_TEST_METRICS_DIAGNOSTICS'])
+while time.monotonic() < deadline:
+    if any('"event": "reader-ready"' in p.read_text() for p in directory.glob('exporter-*.jsonl')):
+        break
     time.sleep(0.01)
+else:
+    raise AssertionError('exporter pipe reader did not become ready')
+assert runtime.test_idle.wait(max(0, deadline - time.monotonic())), 'exporter worker did not become idle'
 assert runtime.reporter is not None, 'exporter was not started during CLI startup'
-with runtime.lock:
-    pass
+assert not runtime.lock.locked() and not runtime.wake.is_set(), 'exporter worker is not quiescent'
+snapshot('startup-synchronized')
 metrics.record('cli_import_duration_ms', 5)
+snapshot('initial-record')
 metrics.set_command('configure')
 metrics.bind(sys.argv[1], 'test-workspace-token')
+snapshot('bind')
 if sys.argv[2] == 'launch':
     metrics.start_agent('claude')
+    snapshot('agent-start')
     launcher.exec_or_spawn([sys.executable, '-c', "print('agent completed')"])
 metrics.record('agent_configuration_duration_ms', 17, agent='claude')
+snapshot('final-record')
 metrics.finish()
+snapshot('finish')
 print('command completed')
 """
+        diagnostics = tmp_path / "metrics-diagnostics"
+        diagnostics.mkdir()
         env = os.environ.copy()
         env.update(
             UG_ENABLE_METRICS_EXPORT="1",
+            UG_TEST_METRICS_DIAGNOSTICS=str(diagnostics),
             REQUESTS_CA_BUNDLE=str(certificate),
             OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE=str(certificate),
             NO_PROXY="localhost,127.0.0.1",
         )
         env.pop("OTEL_SDK_DISABLED", None)
-        try:
-            result = subprocess.run(
-                [sys.executable, "-c", code, host, "launch" if handoff else "exit"],
-                env=env,
-                cwd=tmp_path,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=4,
+
+        def evidence():
+            return "\n".join(
+                f"{file.name}:\n{file.read_text(encoding='utf-8')}"
+                for file in sorted(diagnostics.glob("*.jsonl"))
             )
-            assert result.returncode == 0, result.stderr
+
+        try:
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-c", code, host, "launch" if handoff else "exit"],
+                    env=env,
+                    cwd=tmp_path,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=4,
+                )
+            except subprocess.TimeoutExpired:
+                pytest.fail(
+                    f"Command exceeded 4 seconds; diagnostics:\n{evidence()}", pytrace=False
+                )
+            assert result.returncode == 0, f"{result.stderr}\n{evidence()}"
             assert result.stdout == ("agent completed\n" if handoff else "command completed\n")
             assert result.stderr == ""
-            path, authorization, request = received.get(timeout=5)
+            try:
+                path, authorization, request = received.get(timeout=5)
+            except queue.Empty:
+                pytest.fail(f"Metrics were not received; diagnostics:\n{evidence()}", pytrace=False)
             assert path == "/api/2.0/ai-gateway/ug-cli/otel/v1/metrics"
             assert authorization == "Bearer test-workspace-token"
+            logs = {
+                file.name: file.read_text(encoding="utf-8") for file in diagnostics.glob("*.jsonl")
+            }
+            assert "parent.jsonl" in logs
+            assert any('"event": "http-start"' in value for value in logs.values())
+            assert all(
+                "test-workspace-token" not in value and host not in value for value in logs.values()
+            )
             points = {
                 metric.name: metric.histogram.data_points[0]
                 for resource in request.resource_metrics
@@ -154,6 +213,40 @@ print('command completed')
             respond.set()
             server.shutdown()
             server_thread.join(timeout=2)
+
+
+def test_idle_signal_is_allocated_only_for_diagnostics(tmp_path, monkeypatch):
+    from ucode.metrics import Recorder
+
+    monkeypatch.delenv("UG_TEST_METRICS_DIAGNOSTICS", raising=False)
+    assert Recorder("command", 0).test_idle is None
+    monkeypatch.setenv("UG_TEST_METRICS_DIAGNOSTICS", str(tmp_path))
+    assert isinstance(Recorder("command", 0).test_idle, threading.Event)
+
+
+def test_exporter_diagnostics_record_state_without_credentials(tmp_path, monkeypatch):
+    import io
+
+    from ucode.metrics.exporter import ExportBuffer
+
+    monkeypatch.setenv("UG_TEST_METRICS_DIAGNOSTICS", str(tmp_path))
+    buffer = ExportBuffer()
+    buffer.receive(
+        {
+            "workspace": "https://private.example",
+            "credentials": {"https://private.example": ["synthetic-secret", {}]},
+            "observations": [[None, "cli_import_duration_ms", 3, {}]],
+            "flush": True,
+        }
+    )
+    buffer.read(io.BytesIO(b""))
+    [path] = tmp_path.glob("exporter-*.jsonl")
+    text = path.read_text()
+    events = [json.loads(line) for line in text.splitlines()]
+    assert [event["event"] for event in events] == ["frame", "reader-ready", "eof"]
+    assert events[0]["credentials"] == 1 and events[0]["pending"] == 1
+    assert all(isinstance(event["monotonic_ns"], int) for event in events)
+    assert "synthetic-secret" not in text and "private.example" not in text
 
 
 def test_exporter_buffer_bounds_unbound_observations_and_preserves_workspace_tokens():
