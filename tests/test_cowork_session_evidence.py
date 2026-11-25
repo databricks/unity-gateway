@@ -238,7 +238,7 @@ def mcp_evidence():
     task = {
         "capability": "mcp",
         "prompt": "Use the web_search connector to find the Databricks website.",
-        "mcpServer": "web_search",
+        "mcpServer": "ug_web_search",
         "mcpTool": "web_search",
     }
     records = [
@@ -250,7 +250,7 @@ def mcp_evidence():
                     {
                         "type": "tool_use",
                         "id": "search",
-                        "name": "mcp__web_search__web_search",
+                        "name": "mcp__ug_web_search__web_search",
                         "input": {"query": "Databricks official website"},
                     }
                 ],
@@ -285,7 +285,7 @@ def test_mcp_search_requires_a_shared_official_databricks_url(mcp_evidence):
     records, task = mcp_evidence
     result = evaluate(records, task)
     assert result["status"] == "passed", result
-    assert result["mcpToolName"] == "mcp__web_search__web_search"
+    assert result["mcpToolName"] == "mcp__ug_web_search__web_search"
     assert result["url"] == "https://www.databricks.com"
 
 

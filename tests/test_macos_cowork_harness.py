@@ -800,7 +800,7 @@ def _mcp_profile(tmp_path, servers):
 
 
 WEB_SEARCH_PROXY = {
-    "name": "web_search",
+    "name": "ug_web_search",
     "transport": "stdio",
     "args": [
         "mcp-proxy",
@@ -814,8 +814,8 @@ WEB_SEARCH_PROXY = {
     ("servers", "error"),
     [
         ([WEB_SEARCH_PROXY], None),
-        ([], "missing the web_search connector"),
-        ([WEB_SEARCH_PROXY, WEB_SEARCH_PROXY], "missing the web_search connector"),
+        ([], "missing the ug_web_search connector"),
+        ([WEB_SEARCH_PROXY, WEB_SEARCH_PROXY], "missing the ug_web_search connector"),
         ([{**WEB_SEARCH_PROXY, "transport": "http"}], "does not proxy"),
         (
             [{**WEB_SEARCH_PROXY, "args": ["mcp-proxy", "--url", "https://other.example/x"]}],
@@ -845,7 +845,7 @@ def test_macos_mcp_task_requires_the_configured_web_search_connector(
         return
     task = tasks.prepare_mcp_task(task, desktop)
     assert saved["mcp-connect.json"] == '{"fullEnvironment": {}}'
-    assert (task["mcpServer"], task["mcpTool"]) == ("web_search", "web_search")
+    assert (task["mcpServer"], task["mcpTool"]) == ("ug_web_search", "web_search")
     assert task["prompt"] == tasks.FIXTURE["prompts"]["mcp"]
 
 
