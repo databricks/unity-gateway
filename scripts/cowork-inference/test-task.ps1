@@ -62,6 +62,8 @@ $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56
 $policyBackup = Join-Path $env:RUNNER_TEMP ("cowork-desktop-profile-" + [Guid]::NewGuid().ToString('N') + '.backup')
 $script:window = $null
 $started = Get-Date
+$vmLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/cowork_vm_node.log'
+$vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
 
 function Find-Control {
     param([string[]]$Names, $Root = $script:window)
@@ -239,6 +241,10 @@ try {
     Invoke-Control (Wait-Control -Names @('Start task'))
     $report.submitted = $true
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    Wait-CoworkVmReady -Deadline $deadline -IsReady {
+        Test-CoworkVmReady -LogPath $vmLog -Offset $vmCheckpoint.offset -PrefixHash $vmCheckpoint.prefixHash
+    }
+    $report.vmReady = $true
     # Desktop may ask before a connector tool's first use; the prompt label is not pinned.
     $toolPermissionLabels = @('Allow once', 'Allow for this task', 'Allow for this chat', 'Always allow')
     do {
@@ -254,8 +260,8 @@ try {
             --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
         $sessionEvidence = $rawEvidence | ConvertFrom-Json
-        if ($sessionEvidence.status -eq 'pending') { continue }
         $report.session = $sessionEvidence
+        if ($sessionEvidence.status -eq 'pending') { continue }
         if ($sessionEvidence.status -ne 'passed') { throw $sessionEvidence.error }
         $report.passed = $true
         break
@@ -289,6 +295,14 @@ try {
             $report.passed = $false
         }
     }
+    if ($Capability -eq 'mcp' -and $report.submitted -and -not $report.session.transcript) {
+        try {
+            $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
+                --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
+            $report.session = $rawEvidence | ConvertFrom-Json
+        } catch { $report.captureError = $_.Exception.Message }
+    }
     if ($report.session.transcript) {
         try {
             $text = Get-Content $report.session.transcript -Raw
@@ -307,7 +321,11 @@ try {
                 Get-ChildItem $_.FullName -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue
             } | Where-Object { $_.FullName -match '[\\/]logs[\\/]' -and $_.LastWriteTime -ge $started })
             # UG's MCP proxy backend explains a connector that Desktop reports as closed.
-            $logs += @(Get-ChildItem (Join-Path $env:USERPROFILE '.ucode/mcp-proxy') -Recurse -File -Filter 'backend.log' -ErrorAction SilentlyContinue)
+            $backendRoot = Join-Path $env:USERPROFILE '.ucode/mcp-proxy'
+            $backendLogs = @(Get-ChildItem $backendRoot -Recurse -File -Filter 'backend.log' -ErrorAction SilentlyContinue)
+            $report.mcpBackendRootExists = Test-Path -LiteralPath $backendRoot
+            $report.mcpBackendLogs = $backendLogs.Count
+            $logs += $backendLogs
             $logDirectory = Join-Path $evidence 'desktop-logs'
             New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
             foreach ($log in $logs) {

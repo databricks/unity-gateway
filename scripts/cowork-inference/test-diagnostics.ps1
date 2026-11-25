@@ -32,6 +32,10 @@ try {
     if ($value -cne 'prefix [REDACTED] suffix' -or $encoded -match 'overlap|secret') {
         throw 'UI values must redact overlapping credentials before JSON serialization'
     }
+    $escaped = @{ authorization = $env:DATABRICKS_CLIENT_SECRET } | ConvertTo-Json -Compress
+    if ((Protect-DiagnosticText $escaped) -match 'overlap|secret') {
+        throw 'JSON-escaped credentials must be redacted from captured transcripts'
+    }
     $env:DATABRICKS_BEARER = 'known-fixture-token'
     $responseError = 'Claude responded: API Error: Request rejected (429)'
     if ((Get-CoworkResponseError @('Start task', "$responseError known-fixture-token")) -cne "$responseError [REDACTED]") {
@@ -48,14 +52,15 @@ try {
     $vmLog = [IO.Path]::GetTempFileName()
     try {
         Set-Content -LiteralPath $vmLog -Value '[VM:start] Startup complete, total time: 1ms' -Encoding utf8
-        $stream = [IO.File]::OpenRead($vmLog)
-        try {
-            $offset = $stream.Length
-            $prefixHash = Get-CoworkLogPrefixHash $stream $offset
-        } finally { $stream.Dispose() }
+        $checkpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
+        $offset = $checkpoint.offset
+        $prefixHash = $checkpoint.prefixHash
+        if ($offset -le 0 -or -not $prefixHash) { throw 'Existing VM log checkpoint must preserve its prefix' }
         if (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash) { throw 'An earlier VM startup is not current readiness' }
         Add-Content -LiteralPath $vmLog -Value '[VM:steps] download_and_sdk_prepare started' -Encoding utf8
         if (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash) { throw 'An unfinished VM startup is not ready' }
+        Add-Content -LiteralPath $vmLog -Value '[startVM] VM already connected' -Encoding utf8
+        if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A fresh VM reconnect must be ready' }
         Add-Content -LiteralPath $vmLog -Value '[VM:start] Startup complete, total time: 100ms' -Encoding utf8
         if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'Completed VM startup must be ready' }
         Set-Content -LiteralPath $vmLog -Value '[VM:start] Startup complete' -Encoding utf8
@@ -63,6 +68,30 @@ try {
         Set-Content -LiteralPath $vmLog -Value ('[VM:start] Startup complete' + ('x' * 200)) -Encoding utf8
         if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A longer replacement must still show readiness' }
     } finally { Remove-Item -LiteralPath $vmLog -Force }
+    foreach ($events in @(
+        @('ready', 'permission'),
+        @('permission', 'ready')
+    )) {
+        $script:eventIndex = 0
+        $script:readyObserved = $false
+        Wait-CoworkVmReady -Deadline ([DateTime]::UtcNow.AddSeconds(5)) -IsReady {
+            $event = $events[$script:eventIndex++]
+            if ($event -eq 'ready') { $script:readyObserved = $true }
+            return $script:readyObserved
+        }
+        if (-not $script:readyObserved) { throw 'Permission cannot be granted before VM readiness' }
+        if ($events[0] -eq 'permission' -and $script:eventIndex -ne 2) {
+            throw 'An early permission prompt must not release the readiness wait'
+        }
+    }
+    $expiredReleased = $false
+    try {
+        Wait-CoworkVmReady -Deadline ([DateTime]::UtcNow.AddSeconds(-1)) -IsReady { $true }
+        $expiredReleased = $true
+    } catch {
+        if ($_.Exception.Message -notmatch 'task deadline') { throw }
+    }
+    if ($expiredReleased) { throw 'VM readiness cannot release an expired task deadline' }
     $script:classReads = 0
     $controls = @(
         [pscustomobject]@{ Name = 'Project'; AutomationId = ''; NativeWindowHandle = $null; ControlType = [pscustomobject]@{ ProgrammaticName = 'ControlType.Pane' }; IsEnabled = $true; IsOffscreen = $false; HasKeyboardFocus = $false },

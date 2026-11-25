@@ -1,7 +1,11 @@
 function Protect-DiagnosticText {
     param([string]$Text)
     $secrets = @($env:DATABRICKS_BEARER, $env:CLAUDE_CODE_OAUTH_TOKEN, $env:DATABRICKS_CLIENT_SECRET, $env:UG_COWORK_PAT) |
-        Where-Object { $_ } | Sort-Object { $_.Length } -Descending
+        Where-Object { $_ } | ForEach-Object {
+            $_
+            $json = ConvertTo-Json -InputObject $_ -Compress
+            $json.Substring(1, $json.Length - 2)
+        } | Sort-Object { $_.Length } -Descending
     foreach ($secret in $secrets) { $Text = $Text.Replace($secret, '[REDACTED]') }
     $Text = $Text -replace '\bsk-ant-[A-Za-z0-9_-]+', '[REDACTED]'
     $Text = $Text -replace '\bdapi[0-9a-f]{32}(-\d+)?\b', '[REDACTED]'
@@ -26,6 +30,17 @@ function Get-CoworkLogPrefixHash {
     } finally { $hash.Dispose() }
 }
 
+function Get-CoworkLogCheckpoint {
+    param([string]$LogPath)
+    if (-not (Test-Path -LiteralPath $LogPath)) { return @{ offset = 0; prefixHash = '' } }
+    $stream = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        $offset = $stream.Length
+        return @{ offset = $offset; prefixHash = Get-CoworkLogPrefixHash $stream $offset }
+    }
+    finally { $stream.Dispose() }
+}
+
 function Test-CoworkVmReady {
     param([string]$LogPath, [long]$Offset, [string]$PrefixHash)
     if (-not (Test-Path -LiteralPath $LogPath)) { return $false }
@@ -34,9 +49,21 @@ function Test-CoworkVmReady {
         if ($stream.Length -lt $Offset -or ($Offset -gt 0 -and (Get-CoworkLogPrefixHash $stream $Offset) -ne $PrefixHash)) { $Offset = 0 }
         [void]$stream.Seek($Offset, [IO.SeekOrigin]::Begin)
         $reader = [IO.StreamReader]::new($stream)
-        try { return $reader.ReadToEnd().Contains('[VM:start] Startup complete') }
+        try {
+            $text = $reader.ReadToEnd()
+            return $text.Contains('[VM:start] Startup complete') -or $text.Contains('[startVM] VM already connected')
+        }
         finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
+}
+
+function Wait-CoworkVmReady {
+    param([DateTime]$Deadline, [scriptblock]$IsReady)
+    do {
+        if ([DateTime]::UtcNow -ge $Deadline) { throw 'Cowork VM did not become ready within the task deadline' }
+        if (& $IsReady) { return }
+        Start-Sleep -Milliseconds 500
+    } while ($true)
 }
 
 function Convert-CoworkUiControl {

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Any, Self
@@ -93,6 +95,7 @@ class RecordedRequest:
     path: str
     headers: dict[str, str]
     body: bytes
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
     def payload(self) -> Any:
@@ -205,6 +208,40 @@ class TuiRequestRecorder:
         """Return the requests recorded after a session boundary."""
         with self._condition:
             return tuple(request for request in self._requests if request.sequence > checkpoint)
+
+    def route_select_diagnostics(self) -> list[dict]:
+        """Describe every routing exchange without exposing its prompt or headers."""
+        with self._condition:
+            exchanges = [
+                (request, self._responses.get(request.sequence))
+                for request in self._requests
+                if request.method == "POST" and request.path.endswith("/routes:select")
+            ]
+        result = []
+        for request, response in exchanges:
+            try:
+                payload = request.payload
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            task = payload.get("task") if isinstance(payload, dict) else None
+            prompt = task.get("prompt") if isinstance(task, dict) else None
+            headers = (
+                [(key.encode(), value.encode()) for key, value in response.headers.items()]
+                if response
+                else []
+            )
+            result.append(
+                {
+                    "timestamp": request.timestamp,
+                    "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()
+                    if isinstance(prompt, str)
+                    else None,
+                    "prompt_length": len(prompt) if isinstance(prompt, str) else None,
+                    "status": response.status_code if response else None,
+                    "response_request_id": safe_request_id(headers),
+                }
+            )
+        return result
 
     def expect_request(
         self,

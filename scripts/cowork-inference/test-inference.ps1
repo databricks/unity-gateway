@@ -31,15 +31,7 @@ function Wait-Control {
 $report = [ordered]@{}
 $process = $null
 $vmLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/cowork_vm_node.log'
-$vmLogOffset = 0
-$vmLogPrefixHash = ''
-if (Test-Path -LiteralPath $vmLog) {
-    $stream = [IO.File]::Open($vmLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-    try {
-        $vmLogOffset = $stream.Length
-        $vmLogPrefixHash = Get-CoworkLogPrefixHash $stream $vmLogOffset
-    } finally { $stream.Dispose() }
-}
+$vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
 $nativeLogDirectory = Join-Path $env:RUNNER_TEMP ('claude-native-' + [Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $nativeLogDirectory | Out-Null
 try {
@@ -111,7 +103,7 @@ try {
             $report.responseFinished = $true
             $report.expectedResponse = '48213'
         }
-        if (Test-CoworkVmReady -LogPath $vmLog -Offset $vmLogOffset -PrefixHash $vmLogPrefixHash) { $report.vmReady = $true }
+        if (Test-CoworkVmReady -LogPath $vmLog -Offset $vmCheckpoint.offset -PrefixHash $vmCheckpoint.prefixHash) { $report.vmReady = $true }
         if ($report.responseAsserted -and $report.vmReady) { break }
     } until ([DateTime]::UtcNow -ge $deadline)
     if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }

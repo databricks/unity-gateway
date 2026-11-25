@@ -175,6 +175,7 @@ def inspect_sessions(root, task):
             continue
         if modified >= started:
             paths.append((modified, path))
+    pending = {"status": "pending"}
     for _, path in sorted(paths, reverse=True):
         try:
             text = path.read_text(encoding="utf-8-sig")
@@ -189,7 +190,15 @@ def inspect_sessions(root, task):
         result = evaluate(records, task)
         if result["status"] != "pending":
             return {**result, "transcript": str(path)}
-    return {"status": "pending"}
+        if "transcript" not in pending and any(
+            isinstance(record, dict)
+            and isinstance(message := record.get("message"), dict)
+            and message.get("role") == "user"
+            and task["prompt"] in content_text(message.get("content", []))
+            for record in records
+        ):
+            pending["transcript"] = str(path)
+    return pending
 
 
 if __name__ == "__main__":

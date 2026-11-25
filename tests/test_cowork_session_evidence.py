@@ -213,6 +213,19 @@ def test_transcript_rotation_preserves_pending_and_valid_sessions(
     assert result["status"] == ("passed" if remaining_session else "pending")
 
 
+def test_pending_matching_transcript_is_available_for_timeout_evidence(mcp_evidence, tmp_path):
+    records, task = mcp_evidence
+    task["startedAfter"] = datetime.fromtimestamp(0, tz=UTC).isoformat()
+    directory = tmp_path / "projects" / "session"
+    directory.mkdir(parents=True)
+    unrelated = directory / "other.jsonl"
+    unrelated.write_text(json.dumps({"message": {"role": "user", "content": "other"}}))
+    pending = directory / "pending.jsonl"
+    pending.write_text("\n".join(map(json.dumps, records[:2])) + "\n{partial")
+    result = inspect_sessions(tmp_path, task)
+    assert result == {"status": "pending", "transcript": str(pending)}
+
+
 def test_transcript_permission_errors_are_not_hidden(tmp_path, monkeypatch):
     directory = tmp_path / "projects" / "session"
     directory.mkdir(parents=True)

@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import socket
 import sys
@@ -59,6 +60,22 @@ def assert_request(request: RecordedRequest):
 def assert_response(response: RecordedResponse):
     assert response.status_code == 200
     assert response.payload["result"] == "ok"
+
+
+def test_route_diagnostics_include_every_recorded_prompt_without_disclosing_it(recorder):
+    path = "/ai-gateway/routing/v1/routes:select"
+    prompts = ["first private prompt", "second private prompt"]
+    for prompt in prompts:
+        httpx.post(f"{recorder.url}{path}", json={"task": {"prompt": prompt}})
+    evidence = recorder.route_select_diagnostics()
+    assert len(evidence) == 2
+    for item, prompt in zip(evidence, prompts, strict=True):
+        assert item["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
+        assert item["prompt_length"] == len(prompt)
+        assert item["status"] == 200
+        assert item["response_request_id"] == "test-request-id"
+        assert item["timestamp"]
+        assert prompt not in json.dumps(item)
 
 
 def test_records_request_and_response(recorder):

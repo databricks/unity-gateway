@@ -469,13 +469,24 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         and request.path.endswith("/routes:select")
         and task.filename in request.payload.get("task", {}).get("prompt", "")
     ]
-    assert routes, "No routing request matched the delegated file task"
+    assert routes, session.redact(
+        "No routing request matched the delegated file task: "
+        + json.dumps(recorder.route_select_diagnostics())
+    )
     for route in routes:
         assert route.headers[PROVIDER_HEADER] == provider
         options = route.payload["route_options"]
         assert 1 <= len(options) <= 128
         response = recorder.response_for(route)
-        assert response.status_code == 200, {"request": route.payload, "response": response.payload}
+        assert response.status_code == 200, session.redact(
+            json.dumps(
+                {
+                    "request": route.payload,
+                    "response": response.payload,
+                    "routes": recorder.route_select_diagnostics(),
+                }
+            )
+        )
         selections = response.payload["route_selection"]
         assert len(selections) == 1, selections
         selected = selections[0]["route_option"]
