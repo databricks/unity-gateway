@@ -1037,7 +1037,7 @@ test('completed notification labels restore per child and render without storage
   const { plugin: _plugin, ...expected } = notice;
   const counts = [idReads, fileReads, environmentReads];
   // The notice quotes the routed label; the description's requested model is not printed.
-  const flagged = /^Agent "[A-Z][a-z]+(?: 2)? · launched-model · inspect the parser ⚠ selected selected-model" finished\n⚠ Launched on launched-model, not the selected selected-model$/;
+  const flagged = /^Agent "[A-Z][a-z]+(?: 2)? · launched-model · inspect the parser ⚠ selected selected-model" finished$/;
   let quoted = '';
   for (let index = 0; index < 3; index++) {
     const ui = await $.ui.mount(notice);
@@ -1069,7 +1069,7 @@ test('completed notification labels restore per child and render without storage
   expect(writes.length).toBe(before + 1);
   expect(writes[writes.length - 1].path.endsWith('/agent-names/agent-child-1.json')).toBe(true);
   expect(warnings).toEqual(['Could not restore a subagent display label; native labels remain where unavailable.']);
-  expect(await resumed.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
+  expect(await resumed.find({ type: 'Text', text: /launched-model · inspect the parser ⚠ selected selected-model/ })).toBeDefined();
   await resumed.unmount();
   failRestore = false;
   for (const value of [null, [], {}, { ...saved, session_id: 'another-session' },
@@ -1104,19 +1104,19 @@ test('completed notification labels restore per child and render without storage
   const cleared = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear' },
   } });
-  expect(await cleared.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
+  expect(await cleared.find({ type: 'Text', text: /launched-model · inspect the parser ⚠ selected selected-model/ })).toBeDefined();
   await cleared.unmount();
   // A failed or killed child launched elsewhere is flagged like a completed one.
   const failed = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear', status: 'failed' },
   } });
-  expect(renders[renders.length - 1].props.text).toMatch(/^Agent "[A-Z][a-z]+(?: 2)? · launched-model · inspect the parser ⚠ selected selected-model" finished\n⚠ Launched on launched-model, not the selected selected-model$/);
+  expect(renders[renders.length - 1].props.text).toMatch(/^Agent "[A-Z][a-z]+(?: 2)? · launched-model · inspect the parser ⚠ selected selected-model" finished$/);
   await failed.unmount();
   await $.session.end({ reason: 'resume' });
   const retained = await $.ui.mount({ ...notice, props: { ...notice.props,
     task: { ...notice.props.task, id: 'after-clear' },
   } });
-  expect(await retained.find({ type: 'Text', text: /Launched on launched-model/ })).toBeDefined();
+  expect(await retained.find({ type: 'Text', text: /launched-model · inspect the parser ⚠ selected selected-model/ })).toBeDefined();
   await retained.unmount();
 });
 

@@ -461,7 +461,7 @@ export const registerSubagentRouting = (
     }
     const text = closingQuote >= 0
       ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(closingQuote + 1)}` : e.props.text
-    const flagged = differs(saved.selected, saved.launched)
+    const flagged = differs(saved.selected, saved.launched) && text === e.props.text
       ? `${text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}` : text
     return flagged === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text: flagged } })
   })
