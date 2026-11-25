@@ -16,7 +16,15 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import (
+    claude_hooks,
+    config,
+    orchestrator,
+    routing,
+    session_env,
+    session_log,
+    v2,
+)
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -884,6 +892,49 @@ class TestFirstPromptHook:
             assert blocked == [("fix the parser", "sonnet")]
         finally:
             stop.set()
+
+    @requires_pty
+    def test_orchestrator_context_survives_the_first_prompt_hold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
+        )
+        controls: dict[str, str] = {}
+        session_env.start_session(controls)
+        for key, value in controls.items():
+            monkeypatch.setenv(key, value)
+        socket_path = tmp_path / "first.sock"
+        stop = threading.Event()
+        ready = threading.Event()
+        claude_pty.serve_first_prompt_socket(
+            socket_path,
+            lambda _prompt: claude_pty.FirstPromptRoute(
+                model="sonnet", display_model="sonnet", rationale="Selected for a narrow task."
+            ),
+            lambda _prompt, _model: None,
+            stop,
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt": "fix the parser",
+        }
+        try:
+            assert ready.wait(5)
+            held = claude_pty.request_first_prompt_route(socket_path, payload)
+            held_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+            replay = claude_pty.request_first_prompt_route(socket_path, payload)
+            replay_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+        finally:
+            stop.set()
+
+        assert claude_pty.first_prompt_hook_output(held)["decision"] == "block"
+        assert claude_pty.first_prompt_hook_output(replay) is None
+        # Claude discards a blocked prompt's context, so a once per session injection would be lost.
+        assert replay_context == held_context
+        context = replay_context["hookSpecificOutput"]["additionalContext"]
+        assert "Smart Router Orchestrator is on for this session" in context
+        assert orchestrator.CLAUDE_AGENT_DESCRIPTION in context
 
     def test_first_prompt_hook_is_per_launch(self):
         settings = {
