@@ -81,7 +81,7 @@ def test_windows_readiness_recheck_is_visible_and_bounded(state):
 
 
 @pytest.mark.parametrize("state", ["banner", "recovers", "repeats", "stuck"])
-def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch):
+def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch, tmp_path):
     monkeypatch.setattr(codex_desktop.time, "sleep", lambda seconds: None)
     banner = "Finish Windows setup to continue"
     error = [["ControlType.Text", "Couldn’t check Windows setup", ""]]
@@ -96,17 +96,27 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
     trees = iter(first)
     clicks = []
     evidence = {}
+    if state == "stuck":
+        config = tmp_path / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_text('[windows]\nsandbox = "elevated"\n')
     app = SimpleNamespace(
         name="chatgpt",
         read_tree=lambda: next(trees, rest),
         click=lambda role, label: clicks.append((role, label)),
-        session=SimpleNamespace(record=lambda name, value: evidence.update({name: value})),
+        session=SimpleNamespace(
+            home=tmp_path, record=lambda name, value: evidence.update({name: value})
+        ),
     )
     if state in ("repeats", "stuck"):
         with pytest.raises(AssertionError, match="never showed"):
             codex_desktop.wait_for_windows_setup(app, timeout=0.05)
         assert evidence["chatgpt-tree.json"]["waiting_for"] == ["ControlType.Text", banner]
         assert evidence["chatgpt-tree.json"]["tree"] == rest
+        assert evidence["windows-setup-state.json"] == {
+            "config_state": "readable" if state == "stuck" else "missing",
+            "sandbox_mode": "elevated" if state == "stuck" else "other",
+        }
     else:
         codex_desktop.wait_for_windows_setup(app, timeout=0.05)
     assert clicks == ([("ControlType.Button", "Try again")] if first else [])

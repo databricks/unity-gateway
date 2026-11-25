@@ -74,6 +74,23 @@ def wait_for_windows_setup(app, timeout: float = 60) -> None:
         if any(row[0] == "ControlType.Text" and banner in row[1:] for row in tree):
             return
         if time.monotonic() >= deadline:
+            path = app.session.home / ".codex/config.toml"
+            try:
+                mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get(
+                    "sandbox"
+                )
+                config_state = "readable"
+            except FileNotFoundError:
+                mode, config_state = None, "missing"
+            except (OSError, tomllib.TOMLDecodeError, AttributeError):
+                mode, config_state = None, "unreadable"
+            app.session.record(
+                "windows-setup-state.json",
+                {
+                    "config_state": config_state,
+                    "sandbox_mode": mode if mode in ("elevated", "unelevated") else "other",
+                },
+            )
             app.session.record(
                 f"{app.name}-tree.json", {"waiting_for": ["ControlType.Text", banner], "tree": tree}
             )
