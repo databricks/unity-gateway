@@ -1370,11 +1370,9 @@ runs the marked off through Claude, the mod and the real CLI.
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete
 dialog cannot borrow the confirmation footer from a previous dialog.
-Windows cases cover the ConPTY replacement selection marker and the `-not`,
-`IsNullOrWhiteSpace`, and `IsNullOrEmpty` checks of the two session environment variables,
-including the wrapped, single-quoted message from Windows CI. Extra commands,
-substitutions, other variables, executable or argument changes, and different conditions
-remain rejected.
+Windows cases cover the ConPTY replacement selection marker and both the `-not`
+and `IsNullOrWhiteSpace` checks of the two session environment variables. Extra
+commands, substitutions, other variables, and different conditions remain rejected.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers
@@ -1932,9 +1930,6 @@ Codex retains its CLI control-file checks. No extra TUI sessions or tasks are ad
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 A native process check runs the real disabled routing CLI from Claude with inherited
 launch flags; it makes no gateway request.
-
-Existing `test_codex_routing.py` cases cover bounded plaintext previews alongside
-child names and omission of encrypted prompts. Live rendering remains unverified.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no

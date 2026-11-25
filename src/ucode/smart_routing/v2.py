@@ -723,6 +723,7 @@ def route_claude_subagent(
             route.decision,
             route.routed_model,
             {**updated_input, "subagent_type": agent_name},
+            task=route.task,
         )
         return {
             "systemMessage": routing_message,

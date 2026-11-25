@@ -190,6 +190,8 @@ class SubagentNoticeConfig:
         decision: RoutingDecision,
         routed_model: str,
         tool_input: dict[str, Any],
+        *,
+        task: str | None = None,
     ) -> str:
         subagent_name = self.name(tool_input)
         if self.name_suffix:
@@ -198,7 +200,7 @@ class SubagentNoticeConfig:
             model_label=self.display_model(decision.model, routed_model),
             is_subagent=True,
             subagent_name=subagent_name,
-            prompt=self.prompt(tool_input),
+            prompt=_plaintext_string(task) if task is not None else self.prompt(tool_input),
         )
         return f"\n{message}" if self.leading_newline else message
 
@@ -644,6 +646,7 @@ def route_spawn_tool(
             route.decision,
             route.routed_model,
             route.tool_input,
+            task=route.task,
         )
         output["permissionDecisionReason"] = routing_message
         result["systemMessage"] = routing_message

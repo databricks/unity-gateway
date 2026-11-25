@@ -592,8 +592,8 @@ Smart-routed Claude and Codex sessions also write a per-session log at
 `~/.ucode/smart-router/sessions/<harness>-<session_id>.jsonl` (for Codex, the root session id
 that its subagents share). Each record keeps the assignment's SHA-256 and length, the full
 reason, the candidate models, and the routing time. Its preview uses the first nonblank
-assignment line, normalizes whitespace, and is bounded to 240 characters including the
-ellipsis. Files are created with `0600` permissions. Logs older than 30 days are removed
+assignment line, normalizes whitespace, replaces control and bidi characters with `�`,
+and is bounded to 240 characters, including a trailing `...` when truncated. Files are created with `0600` permissions. Logs older than 30 days are removed
 when a new session log is created. Unlike the
 decision records above, the reason is not capped, and it can quote task content. Claude's
 `/smart-router logs` pane reads this log. In Codex, `$smart-router logs` prints a table of

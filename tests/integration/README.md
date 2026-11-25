@@ -105,11 +105,10 @@ approval dialogs, preserving the sandbox.
 Toggle approvals accept only the requested command or its exact environment-variable guard
 on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
 remain rejected.
-PowerShell guard matching recognizes the fixed `-not`, `IsNullOrWhiteSpace`, and
-`IsNullOrEmpty` checks of both session variables, a literal missing-variable message with
-or without `Write-Output`, and ConPTY's replacement selection marker. Component tests
-include the wrapped, single-quoted message from Windows CI and reject extra commands,
-substitutions, other variables, executable or argument changes, and different conditions.
+PowerShell guard matching recognizes the fixed `-not` and `IsNullOrWhiteSpace` checks
+of both session variables, a literal missing-variable message with or without `Write-Output`,
+and ConPTY's replacement selection marker. Component
+tests reject extra commands, substitutions, other variables, and different conditions.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
@@ -2460,9 +2459,6 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
-
-Existing `test_codex_routing.py` cases cover bounded plaintext previews alongside
-child names and omission of encrypted prompts. Live rendering remains unverified.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no
