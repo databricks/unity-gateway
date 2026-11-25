@@ -3446,3 +3446,49 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         if FORK_GUARD in condition:
             assert f"({FORK_GUARD})" in condition, name
     assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "DATABRICKS_CLIENT_SECRET",
+        "UG_CUJ_SP_CLIENT_SECRET",
+        "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
+        "UG_BENCH_CLIENT_SECRET",
+        "SLACK_WEBHOOK",
+        "UG_COWORK_PAT",
+        "UG_INTEGRATION_ISSUER_BEARER",
+        "CODEX_OAUTH_TOKEN",
+        "E2E_ADMIN_SP_CLIENT_SECRET",
+        "UG_ANTHROPIC_MPS_CLIENT_SECRET",
+        "UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET",
+        "SLACK_WEBHOOK_UG_CODING_AGENTS_POD",
+    ],
+)
+def test_session_artifacts_redact_workflow_credentials(tmp_path, monkeypatch, name):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    monkeypatch.setenv(name, "outer-fixture-credential")
+    session.env[name] = "session-fixture-credential"
+
+    session.record(
+        "evidence.json", {"message": "outer-fixture-credential session-fixture-credential"}
+    )
+    assert json.loads((session.artifacts / "evidence.json").read_text()) == {
+        "message": "<redacted> <redacted>"
+    }
+
+
+def test_session_artifacts_redact_overlapping_and_json_escaped_credentials(tmp_path, monkeypatch):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    monkeypatch.setenv("DATABRICKS_BEARER", "abc")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", 'abc"long\\value')
+    session.record("evidence.json", {"message": 'abc"long\\value abc'})
+    assert json.loads((session.artifacts / "evidence.json").read_text()) == {
+        "message": "<redacted> <redacted>"
+    }

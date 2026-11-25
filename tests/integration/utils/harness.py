@@ -218,18 +218,36 @@ class UserSession:
         self.commands = 0
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
-        # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
-        for name in (
+        names = (
             "DATABRICKS_BEARER",
             "DATABRICKS_SECOND_BEARER",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN",
             "CODEX_ACCESS_TOKEN",
             "UG_INTEGRATION_CODEX_ACCESS_TOKEN",
-        ):
-            for token in (os.environ.get(name), self.env.get(name)):
-                if token and token.strip():
-                    text = text.replace(token, "<redacted>").replace(token.strip(), "<redacted>")
+            "DATABRICKS_CLIENT_SECRET",
+            "UG_CUJ_SP_CLIENT_SECRET",
+            "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
+            "UG_BENCH_CLIENT_SECRET",
+            "SLACK_WEBHOOK",
+            "UG_COWORK_PAT",
+            "UG_INTEGRATION_ISSUER_BEARER",
+            "CODEX_OAUTH_TOKEN",
+            "E2E_ADMIN_SP_CLIENT_SECRET",
+            "UG_ANTHROPIC_MPS_CLIENT_SECRET",
+            "UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET",
+            "SLACK_WEBHOOK_UG_CODING_AGENTS_POD",
+        )
+        secrets = {
+            variant
+            for name in names
+            for value in (os.environ.get(name), self.env.get(name))
+            if value and value.strip()
+            for token in (value, value.strip())
+            for variant in (token, json.dumps(token)[1:-1])
+        }
+        for secret in sorted(secrets, key=len, reverse=True):
+            text = text.replace(secret, "<redacted>")
         return ANSI.sub("", text) if strip_ansi else text
 
     def run(
