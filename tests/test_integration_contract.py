@@ -448,10 +448,10 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
 
     setup_blocks = []
     for path, step_indent, field_indent in (
-        (WORKFLOW, "      ", "          "),
-        (ADVISORY_WORKFLOW, "      ", "          "),
+        (WORKFLOW, "      ", "        "),
+        (ADVISORY_WORKFLOW, "      ", "        "),
         # The shared live steps install the CLI one indent shallower.
-        (LIVE_STEPS, "    ", "        "),
+        (LIVE_STEPS, "    ", "      "),
     ):
         setup_blocks += re.findall(
             rf"(?m)^{step_indent}- uses: databricks/setup-cli@[^\n]+\n((?:{field_indent}[^\n]*\n)*)",
@@ -574,7 +574,6 @@ def _advisory_jobs():
     workflow = ADVISORY_WORKFLOW.read_text()
     body = workflow.split("\njobs:\n", 1)[1]
     return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
-
 
 
 def _job_text(name):
@@ -819,7 +818,9 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     advisory = _advisory_jobs()["anthropic-mps"]
     for lane in (job, advisory):
         assert not re.search(r"(?m)^    needs:", lane)
-        assert "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in lane
+        assert (
+            "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in lane
+        )
         assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in lane
         assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in lane
         assert "DATABRICKS_BEARER:" not in lane
@@ -855,7 +856,8 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
         assert not selected & cases
         selected |= cases
     assert selected == _collect_integration_cases("anthropic_mps")
-    assert '--npm-registry "$NPM_REGISTRY"' in jobs["smoke"]
+    assert LIVE_STEPS_USE in jobs["smoke"]
+    assert '--npm-registry "$NPM_REGISTRY"' in LIVE_STEPS.read_text()
     for job_name, agent in (
         ("full", "claude"),
         ("managed", "claude"),
@@ -1280,7 +1282,9 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     workflow = _workflow("fork-integration.yml")
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
-    integration = workflow.split("\n  integration:\n", 1)[1].split("\n  integration-advisory:\n", 1)[0]
+    integration = workflow.split("\n  integration:\n", 1)[1].split(
+        "\n  integration-advisory:\n", 1
+    )[0]
     advisory = workflow.split("\n  integration-advisory:\n", 1)[1].split("\n  report:\n", 1)[0]
     gate = workflow.split("\n  security-gate:\n", 1)[1].split("\n  integration:\n", 1)[0]
     report = workflow.split("\n  report:\n", 1)[1]
@@ -2274,10 +2278,10 @@ def test_integration_checkouts_and_caches_are_safe_for_fork_heads():
         (LIVE_STEPS.read_text(), "    ", "      "),
     ):
         checkouts += re.findall(
-            rf"(?m)^{step_indent}- uses: actions/checkout@.*\n((?:{field_indent} .*\n)*)", source
+            rf"(?m)^{step_indent}- uses: actions/checkout@.*\n((?:{field_indent}.*\n)*)", source
         )
         caches += re.findall(
-            rf"(?m)^{step_indent}- uses: astral-sh/setup-uv@.*\n((?:{field_indent} .*\n)*)",
+            rf"(?m)^{step_indent}- uses: astral-sh/setup-uv@.*\n((?:{field_indent}.*\n)*)",
             source,
         )
 
@@ -3446,7 +3450,7 @@ def test_integration_suites_hold_exactly_their_own_lanes():
     advisory = {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"}
     integration = _integration_jobs()
     advisory_jobs = _advisory_jobs()
-    assert set(integration) == blocking | shared
+    assert set(integration) == blocking | shared | {"manual-advisory"}
     assert set(advisory_jobs) == advisory | shared
     # Nothing is mode-gated anymore: no job can appear as a skipped twin.
     for path in (WORKFLOW, ADVISORY_WORKFLOW):
@@ -3463,7 +3467,9 @@ def test_integration_suites_hold_exactly_their_own_lanes():
         for name, job in jobs.items():
             condition = re.search(r"(?m)^    if: (.*)$", job)
             if condition and FORK_GUARD in condition.group(1):
-                assert f"({FORK_GUARD})" in condition.group(1), name
+                assert condition.group(1) == f"${{{{ {FORK_GUARD} }}}}" or (
+                    f"({FORK_GUARD})" in condition.group(1)
+                ), name
     cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", integration["cujs"])
     assert cujs_needs is not None
     assert {name.strip() for name in cujs_needs.group(1).split(",")} == {
@@ -3486,3 +3492,45 @@ def test_integration_suites_hold_exactly_their_own_lanes():
         "dedicated-cuj",
         "live-shard-times",
     }
+
+
+def test_live_composite_action_is_checked_out_after_budget_clock_starts():
+    for jobs in (_integration_jobs(), _advisory_jobs()):
+        for name, job in jobs.items():
+            if LIVE_STEPS_USE not in job:
+                continue
+            assert (
+                job.index("- *budget-start")
+                < job.index("- uses: actions/checkout@")
+                < job.index(LIVE_STEPS_USE)
+            ), name
+            assert "ref: ${{ inputs.ref || github.sha }}" in job
+            assert "persist-credentials: false" in job
+            assert "fetch-depth: 0" in job
+
+
+def test_manual_integration_dispatch_keeps_both_suites_and_inputs():
+    workflow = WORKFLOW.read_text()
+    job = _integration_jobs()["manual-advisory"]
+    assert (
+        "if: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}"
+        in job
+    )
+    assert "uses: ./.github/workflows/integration-advisory.yml" in job
+    assert "secrets: inherit" in job
+    for name in (
+        "ug_version",
+        "entry_point",
+        "claude_version",
+        "codex_version",
+        "opencode_version",
+        "copilot_version",
+        "vscode_version",
+        "dependency",
+        "default_index",
+    ):
+        assert f"{name}: ${{{{ inputs.{name} }}}}" in job
+        assert (
+            f"      {name}:\n"
+            in workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        )

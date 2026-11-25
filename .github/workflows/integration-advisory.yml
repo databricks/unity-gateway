@@ -1,7 +1,7 @@
 name: Integration advisory
 
 # The advisory half of the integration suite: the non-blocking lanes that used to
-# run in integration.yml behind `inputs.mode != 'required'`. Each caller now
+# run in integration.yml under a mode guard. Each caller now
 # instantiates only the jobs that actually run, so PR runs list no mode-skipped
 # twin rows. The blocking lanes stay in integration.yml; both callers run behind
 # the same security gate, and PR/push callers start the advisory lanes only after
@@ -239,6 +239,12 @@ jobs:
       UG_COWORK_MCP: true
       LIVE_SHARD: ''
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -268,6 +274,12 @@ jobs:
       TEST_MARKER: live and ${{ matrix.agent }} and soft_fail
       ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -297,6 +309,12 @@ jobs:
       TEST_MARKER: live and opencode
       ARTIFACT_NAME: integration-full-opencode-${{ matrix.os }}
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -325,6 +343,12 @@ jobs:
       TEST_MARKER: live and copilot and not anthropic_mps
       ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -354,6 +378,12 @@ jobs:
       TEST_MARKER: live and vscode
       ARTIFACT_NAME: integration-full-vscode-${{ matrix.os }}
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}

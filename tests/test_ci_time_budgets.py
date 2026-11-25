@@ -268,8 +268,11 @@ def test_blocking_jobs_do_not_suppress_budget_failures():
         "zizmor",
     ):
         source = (WORKFLOWS / f"{workflow}.yml").read_text()
-        check = source.split("name: Check this job's time budget\n", 1)[1]
-        check = re.split(r"(?m)^(?:      - |  [a-z0-9-]+:)", check, maxsplit=1)[0]
+        check = re.split(
+            r"(?m)^(?:      - |  [a-z0-9-]+:)",
+            source.split("name: Check this job's time budget\n", 1)[1],
+            maxsplit=1,
+        )[0]
         assert "if: ${{ github.event_name == 'pull_request' && !cancelled() }}" in check
         assert "continue-on-error:" not in check
         if workflow != "user-journey-test-required":
@@ -518,7 +521,11 @@ def test_budget_steps_do_not_inherit_job_level_secrets():
     for workflow in ("ci", "integration", "integration-advisory", "publish-skills-test", "zizmor"):
         source = (WORKFLOWS / f"{workflow}.yml").read_text(encoding="utf-8")
         secret_free = source.split("env: &budget-secret-free\n", 1)[1].split("        run:", 1)[0]
-        check = source.split("name: Check this job's time budget\n", 1)[1].split("\n      - ", 1)[0]
+        check = re.split(
+            r"(?m)^(?:      - |  [a-z0-9-]+:)",
+            source.split("name: Check this job's time budget\n", 1)[1],
+            maxsplit=1,
+        )[0]
         cleared_at_start = set(re.findall(r"(?m)^          ([A-Z_]+): ''$", secret_free))
         cleared_at_check = set(re.findall(r"(?m)^          ([A-Z_]+): ''$", check))
         if workflow == "integration":
@@ -555,6 +562,7 @@ def test_budget_steps_do_not_inherit_job_level_secrets():
             header = job.split("\n    steps:", 1)[0]
             names = set(re.findall(r"(?m)^      ([A-Z_]+): .*secrets\.", header))
             assert names <= action_cleared, (workflow, job_id, names - action_cleared)
+
 
 def test_trusted_user_journey_budget_fails_on_overrun(tmp_path):
     import os

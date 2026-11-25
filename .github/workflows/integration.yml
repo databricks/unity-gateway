@@ -8,8 +8,7 @@ on:
         type: string
         default: ''
   workflow_dispatch:
-    # Manual dispatch runs the blocking lanes; dispatch integration-advisory.yml
-    # to also run the advisory ones.
+    # Manual dispatch runs both the blocking and advisory lanes.
     inputs:
       ug_version:
         description: Exact ug release, or checkout
@@ -28,9 +27,21 @@ on:
         description: Exact Codex version
         default: 0.156.0
         required: true
+      opencode_version:
+        description: Exact OpenCode version (non-blocking lane)
+        default: 1.18.31
+        required: true
+      copilot_version:
+        description: Exact GitHub Copilot CLI version (non-blocking lane)
+        default: 1.0.91
+        required: true
       antigravity_build:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
         default: 1.5.4-5037094733742080
+        required: true
+      vscode_version:
+        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux and Windows lane)
+        default: 1.147.0
         required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
@@ -63,6 +74,22 @@ env:
   NPM_REGISTRY: https://registry.npmjs.org
 
 jobs:
+  manual-advisory:
+    name: Manual advisory integration
+    if: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}
+    uses: ./.github/workflows/integration-advisory.yml
+    with:
+      ug_version: ${{ inputs.ug_version }}
+      entry_point: ${{ inputs.entry_point }}
+      claude_version: ${{ inputs.claude_version }}
+      codex_version: ${{ inputs.codex_version }}
+      opencode_version: ${{ inputs.opencode_version }}
+      copilot_version: ${{ inputs.copilot_version }}
+      vscode_version: ${{ inputs.vscode_version }}
+      dependency: ${{ inputs.dependency }}
+      default_index: ${{ inputs.default_index }}
+    secrets: inherit
+
   installation:
     name: Installation tests
     env:
@@ -519,6 +546,12 @@ jobs:
       TEST_MARKER: live and smoke and ${{ matrix.agent }} and not soft_fail
       ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ matrix.os }}
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -571,6 +604,12 @@ jobs:
       LIVE_SHARD: ${{ matrix.shard || '' }}
       LIVE_SHARD_LANE: anthropic-mps-claude
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -667,7 +706,6 @@ jobs:
             ${{ runner.temp }}/cowork-inference/skill/
             ${{ runner.temp }}/cowork-inference/mcp/
           if-no-files-found: warn
-      - *budget-check
       - *budget-check
 
   headless-windows:
@@ -815,6 +853,12 @@ jobs:
       LIVE_SHARD: ${{ matrix.shard || '' }}
       LIVE_SHARD_LANE: full-claude
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -840,6 +884,12 @@ jobs:
       TEST_MARKER: live and codex and codex_relay
       ARTIFACT_NAME: integration-codex-relay
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}
@@ -862,6 +912,12 @@ jobs:
       TEST_MARKER: live and antigravity
       ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/live-steps
         with:
           ref: ${{ inputs.ref }}

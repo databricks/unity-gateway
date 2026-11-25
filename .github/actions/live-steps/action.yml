@@ -1,5 +1,5 @@
 # The live-lane step list shared by .github/workflows/integration.yml and
-# .github/workflows/integration-advisory.yml: budget clock, checkout, toolchain,
+# .github/workflows/integration-advisory.yml: toolchain,
 # the live run, and the evidence upload. YAML anchors cannot cross files, so the
 # two workflows share this action. It deliberately stops before the Cowork
 # Desktop steps (their step-level timeouts are not valid in composite steps) and
@@ -16,33 +16,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Start the budget clock
-      if: ${{ github.event_name == 'pull_request' }}
-      shell: bash
-      working-directory: ${{ github.workspace }}
-      env: &budget-secret-free
-        UCODE_TEST_WORKSPACE: ''
-        UCODE_TEST_SECOND_WORKSPACE: ''
-        DATABRICKS_HOST: ''
-        DATABRICKS_BEARER: ''
-        DATABRICKS_SECOND_BEARER: ''
-        DATABRICKS_CLIENT_ID: ''
-        DATABRICKS_CLIENT_SECRET: ''
-        CLAUDE_CODE_OAUTH_TOKEN: ''
-        CODEX_ACCESS_TOKEN: ''
-        UG_CUJ1_WORKSPACE: ''
-        UG_CUJ_SP_CLIENT_ID: ''
-        UG_CUJ_SP_CLIENT_SECRET: ''
-        UG_BUDGET_CUJ_SP_CLIENT_ID: ''
-        UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
-        DATABRICKS_BEARER_COMMAND: ''
-        UG_COWORK_PAT: ''
-      run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      with:
-        ref: ${{ inputs.ref || github.sha }}
-        persist-credentials: false
-        fetch-depth: 0
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       with:
         node-version: 22.19.0
@@ -82,7 +55,23 @@ runs:
       if: ${{ github.event_name == 'pull_request' }}
       shell: bash
       working-directory: ${{ github.workspace }}
-      env: *budget-secret-free
+      env:
+        UCODE_TEST_WORKSPACE: ''
+        UCODE_TEST_SECOND_WORKSPACE: ''
+        DATABRICKS_HOST: ''
+        DATABRICKS_BEARER: ''
+        DATABRICKS_SECOND_BEARER: ''
+        DATABRICKS_CLIENT_ID: ''
+        DATABRICKS_CLIENT_SECRET: ''
+        CLAUDE_CODE_OAUTH_TOKEN: ''
+        CODEX_ACCESS_TOKEN: ''
+        UG_CUJ1_WORKSPACE: ''
+        UG_CUJ_SP_CLIENT_ID: ''
+        UG_CUJ_SP_CLIENT_SECRET: ''
+        UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+        UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+        DATABRICKS_BEARER_COMMAND: ''
+        UG_COWORK_PAT: ''
       run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
     - name: Run the selected live cases against the e2e workspace
       shell: bash
