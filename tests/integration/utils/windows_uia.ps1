@@ -47,6 +47,7 @@ $script:metrics = @{}
 $script:diagnostics = @{}
 $script:composer = $null
 $script:composerClickedAt = 0
+$script:picker = $null
 $script:pickerWindows = @()
 $script:pickerNewWindows = [Collections.Generic.HashSet[int]]::new()
 
@@ -144,7 +145,7 @@ function Find-Target($windows, $role, $name, $matchValue) {
 function Invoke-Action($action, $argsList) {
     $first = if ($argsList.Count -gt 0) { [string]$argsList[0] } else { '' }
     $second = if ($argsList.Count -gt 1) { [string]$argsList[1] } else { '' }
-    if ($action -ne 'type') { $script:composer = $null }
+    if ($action -ne 'type') { $script:composer = $null; $script:picker = $null }
     $windows = if ($action -in @('click', 'wait')) { @() } else { @(Get-Windows) }
     if (-not $windows.Count -and ($action -notin @('click', 'wait'))) { throw "Process $ProcessId has no window" }
     switch ($action) {
@@ -201,7 +202,7 @@ function Invoke-Action($action, $argsList) {
                     if ($isPicker) { $script:diagnostics.activation = 'selection' }
                     $pattern.Select()
                 } else {
-                    if ($isPicker) { $script:diagnostics.activation = 'focus' }
+                    if ($isPicker) { $script:diagnostics.activation = 'focus'; $script:picker = @($first, $second) }
                     $target.SetFocus()
                 }
                 if ($isPicker) { $script:diagnostics.activation_succeeded = $true }
@@ -239,6 +240,22 @@ function Invoke-Action($action, $argsList) {
                 } finally {
                     $script:metrics.composer_focus_wait_ms = $focusClock.Elapsed.TotalMilliseconds
                 }
+            }
+            if ($script:picker) {
+                # The app takes focus back while it reloads models after a restart; Enter must reach the picker.
+                $refocusClock = [Diagnostics.Stopwatch]::StartNew()
+                $refocuses = 0
+                while ($true) {
+                    $current = Find-Target @(Get-Windows) $script:picker[0] $script:picker[1] $false
+                    try {
+                        if ($current -and $current.Current.HasKeyboardFocus) { break }
+                        if ($current) { $current.SetFocus(); $refocuses++ }
+                    } catch [Windows.Automation.ElementNotAvailableException] { }
+                    if ($refocusClock.Elapsed.TotalSeconds -ge 60) { throw 'The model picker did not keep keyboard focus' }
+                    Start-Sleep -Milliseconds 250
+                }
+                $script:metrics.picker_refocuses = $refocuses
+                $script:picker = $null
             }
             $focused = $automation::FocusedElement.Current.ProcessId
             if ($focused -ne $ProcessId) { throw "Keyboard focus is in process $focused, not $ProcessId" }
