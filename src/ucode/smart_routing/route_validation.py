@@ -27,8 +27,8 @@ from ucode.smart_routing import routing
 from ucode.smart_routing.session_env import validation_result_path
 from ucode.workspace import WorkspaceSelectionReason
 
-# The Claude mod shows routing ON after 5 s without a result, so the check must publish sooner.
-VALIDATION_TIMEOUT_SECONDS = 4
+# The Claude mod shows routing ON after 11 s without a result, so the check must publish sooner.
+VALIDATION_TIMEOUT_SECONDS = 10
 NOT_FOUND_REASON_PREFIX = "HTTP 404"
 HTTP_STATUS_PATTERN = re.compile(r"HTTP (\d{3})\b")
 ROUTE_VALIDATION_TIMED_OUT = "route validation timed out"

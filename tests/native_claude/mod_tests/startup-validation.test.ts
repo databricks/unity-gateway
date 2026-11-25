@@ -136,11 +136,11 @@ for (const { name, launchMode, result, warning } of omniLogCases) {
   });
 }
 
-test('startup validation shows the band ON after 5 seconds without a result and stops polling', { options: VALIDATED }, async ($, on) => {
+test('startup validation shows the band ON after 11 seconds without a result and stops polling', { options: VALIDATED }, async ($, on) => {
   const { clock, state, hint } = engine(on);
   const ui = await $.ui.mount(abovePrompt);
   await $.session.start(start);
-  await clock.advance(4900);
+  await clock.advance(10900);
   expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
   await clock.advance(100);
   const shown = JSON.stringify(await ui.drawn());

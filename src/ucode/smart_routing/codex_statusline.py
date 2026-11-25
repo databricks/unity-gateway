@@ -22,7 +22,7 @@ SERVER_NAME = "ug-smart-router-statusline"
 TOOL_NAME = "statusline"
 RESOURCE_URI = "ui://ug-smart-router/footer"
 LOGS_DETAILS_HINT = "($smart-router logs for details)"
-VALIDATION_PENDING_SECONDS = 5
+VALIDATION_PENDING_SECONDS = 11
 STATE_META_KEY = "com.openai/codex-statusline-state"
 TOOL = {
     "name": TOOL_NAME,

@@ -14,6 +14,7 @@ import pytest
 from ucode.constants import ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR
 from ucode.smart_routing import codex_statusline as statusline
 from ucode.smart_routing.codex_statusline import LOGS_DETAILS_HINT
+from ucode.smart_routing.route_validation import VALIDATION_TIMEOUT_SECONDS
 from ucode.smart_routing.session_env import (
     SESSION_ENV_VAR,
     set_session_environment,
@@ -250,9 +251,10 @@ def test_footer_shows_the_validation_state(
     ("age_seconds", "expected"),
     [
         (1, "smart router · Codex"),
+        (VALIDATION_TIMEOUT_SECONDS + 0.5, "smart router · Codex"),
         (statusline.VALIDATION_PENDING_SECONDS + 1, "smart router ON · Codex"),
     ],
-    ids=["pending", "timed-out"],
+    ids=["pending", "pending-past-the-check-deadline", "timed-out"],
 )
 def test_footer_has_no_badge_while_the_startup_check_is_pending(
     tmp_path, monkeypatch, age_seconds, expected
