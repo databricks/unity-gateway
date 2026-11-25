@@ -1626,11 +1626,7 @@ def test_security_scan_provenance_and_gate():
     assert set(jobs) == gated, f"Publisher jobs without a successful gate: {set(jobs) - gated}"
     assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
-    assert (
-        "group: security-scan-${{ github.event.workflow_run.event }}-"
-        "${{ github.event.workflow_run.head_repository.id }}-"
-        "${{ github.event.workflow_run.head_branch }}" in scan
-    )
+    assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
     assert "cancel-in-progress: true" in scan
     assert "run-name: 'Security Scan for CI run ${{ github.event.workflow_run.id }}'" in scan
     assert "run-name: 'CI #${{ github.event.pull_request.number || github.run_id }}'" in ci
