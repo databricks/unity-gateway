@@ -65,8 +65,16 @@ def test_windows_uia_observer_is_compiled_before_desktop_launch():
     assert windows_job.index("Compile UIA diagnostic observer") < windows_job.index(
         "Complete a Codex turn in the desktop app"
     )
-    assert "UG_UIA_PROBE_ASSEMBLY" in windows_job
-    assert "shell: powershell" in windows_job
+    observer = windows_job.split("      - name: Compile UIA diagnostic observer\n", 1)[1].split(
+        "      - name: Complete a Codex turn", 1
+    )[0]
+    assert observer.count("UG_UIA_PROBE_ASSEMBLY=") == 1
+    assert re.search(
+        r"if \(Test-Path -LiteralPath \$observer\) \{\s*"
+        r'"UG_UIA_PROBE_ASSEMBLY=\$observer" \| Out-File[^\n]*\n\s*\}',
+        observer,
+    )
+    assert "shell: powershell" in observer
 
 
 def test_unit_shards_upload_junit_evidence_even_when_a_test_fails():
@@ -176,7 +184,7 @@ def test_quota_diagnostics_report_malformed_json_without_failing(monkeypatch):
     class Response(io.BytesIO):
         status = 200
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda request: Response(b"not-json"))
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: Response(b"not-json"))
     assert diagnostics["read_api"]("https://private.example", "token", "/api") == (
         "invalid-json",
         None,
@@ -193,7 +201,7 @@ def test_quota_diagnostics_report_truncated_response_without_failing(monkeypatch
         def read(self, *args):
             raise http.client.IncompleteRead(b"partial", 20)
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda request: Response())
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: Response())
     assert diagnostics["read_api"]("https://private.example", "token", "/api") == (
         "incomplete-read",
         None,
@@ -205,7 +213,7 @@ def test_quota_diagnostics_report_connection_failures_without_failing(monkeypatc
     script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
     diagnostics = runpy.run_path(str(script))
 
-    def fail(request):
+    def fail(request, timeout):
         raise error
 
     monkeypatch.setattr(urllib.request, "urlopen", fail)
@@ -284,7 +292,6 @@ def test_claude_quota_diagnostics_include_models_used_by_managed_fixtures(monkey
     monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://private.example")
     monkeypatch.setenv("DATABRICKS_CLIENT_ID", "caller")
     monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("AGENT", "claude")
     monkeypatch.setitem(
         sys.modules, "run_integration", SimpleNamespace(mint_m2m_token=lambda *args: "token")
     )
@@ -389,15 +396,20 @@ def test_managed_quota_probe_runs_once_after_gate_without_blocking_e2e():
     ci = _workflow("ci.yml").split("\njobs:\n", 1)[1]
     jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", ci))
     job = jobs["managed-quota-probe"]
-    assert "needs: security-gate" in job
+    assert "needs: [security-gate, integration]" in job
     assert _requires_gate_success(job)
-    assert "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'" in job
+    assert (
+        "if: ${{ always() && !cancelled() && needs.security-gate.result == 'success' && "
+        "(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}"
+    ) in job
     assert "continue-on-error: true" in job
+    assert "timeout-minutes: 10" in job
     assert "python scripts/managed_quota_diagnostics.py" in job
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}" in job
     assert "DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}" in job
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}" in job
-    assert "managed-quota-probe" not in jobs["required-e2e"]
+    for name in ("e2e", "integration", "required-e2e"):
+        assert "managed-quota-probe" not in jobs[name]
     for name in ("managed", "codex-desktop-macos", "codex-desktop-windows"):
         assert "managed-quota-diagnostics" not in _integration_jobs()[name]
 
@@ -452,6 +464,16 @@ def test_model_ledger_case_directories_do_not_collide():
         cases = _collect_integration_cases(_ci_marker_expression(jobs[job_name], "codex"))
         names = [re.sub(r"[^a-zA-Z0-9_.-]", "_", case.split("::")[-1]) for case in cases]
         assert len(names) == len(set(names)), job_name
+
+
+def test_managed_smart_old_codex_pin_matches_the_version_aware_test():
+    job = _integration_jobs()["managed"]
+    pinned = re.search(r"@openai/codex@(\d+)\.(\d+)\.(\d+)", job)
+    assert pinned, "The managed lane must pin the side-by-side old Codex"
+    source = (Path(__file__).parent / "integration/test_ug_smart_routing_hooks.py").read_text()
+    expected = re.search(r"assert installed_version == \((\d+), (\d+), (\d+)\)", source)
+    assert expected, "The version-aware test must pin the installed old Codex"
+    assert tuple(map(int, pinned.groups())) == tuple(map(int, expected.groups()))
 
 
 def test_managed_smart_uses_a_cached_side_by_side_old_codex():
@@ -1795,6 +1817,28 @@ def test_security_gate_api_errors_block_ci(monkeypatch, error):
     assert "tests remain blocked" in code and "re-run failed CI jobs" in code
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [ConnectionResetError("body-secret"), http.client.IncompleteRead(b"body-secret", 1)],
+)
+def test_security_gate_fails_closed_when_forbidden_body_read_fails(monkeypatch, capsys, failure):
+    class BrokenBody(io.BytesIO):
+        def read(self, size=-1):
+            raise failure
+
+    error = urllib.error.HTTPError(
+        "https://api.github.com", 403, "forbidden", {"X-Private": "header-secret"}, BrokenBody()
+    )
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
+    captured = capsys.readouterr()
+    output = str(code) + captured.out + captured.err
+    assert str(code).startswith("::error::")
+    assert "tests remain blocked" in code
+    assert not observed["sleeps"] and len(observed["fetches"]) == 1
+    assert all(secret not in output for secret in ("test-token", "header-secret", "body-secret"))
+
+
 @pytest.mark.parametrize("status", [500, 502, 503, 504])
 @pytest.mark.parametrize("failure_call", [1, 3, 4])
 def test_security_gate_waits_through_transient_server_error(monkeypatch, status, failure_call):
@@ -1814,13 +1858,14 @@ def test_security_gate_persistent_server_errors_still_fail_closed(monkeypatch, s
     code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
     assert str(code).startswith("::error::")
     assert "did not complete" in code
+    assert f"HTTP {status}" in code
     assert sum(observed["sleeps"]) == 20 * 60
     assert len(observed["fetches"]) == 27
 
 
 @pytest.mark.parametrize("status", [403, 429])
 @pytest.mark.parametrize("failure_call", [1, 3, 4])
-@pytest.mark.parametrize(("reset", "wait"), [(1794602003, 10), (1794602050, 50)])
+@pytest.mark.parametrize(("reset", "wait"), [(1794602003, 10), (1794602050, 51)])
 def test_security_gate_waits_through_rate_limits(monkeypatch, status, failure_call, reset, wait):
     error = urllib.error.HTTPError(
         "https://api.github.com",
@@ -1877,7 +1922,8 @@ def test_security_gate_honors_retry_after_without_a_reset_header(
 
 @pytest.mark.parametrize("status", [403, 429])
 @pytest.mark.parametrize(
-    ("reset", "retry_after", "wait"), [(1794602003, 45, 45), (1794602050, 3, 10)]
+    ("reset", "retry_after", "wait"),
+    [(1794602003, 45, 45), (1794602050, 3, 10), (1794602050, 50, 50)],
 )
 def test_security_gate_waits_for_both_rate_limit_headers(
     monkeypatch, status, reset, retry_after, wait
@@ -1981,9 +2027,28 @@ def test_security_gate_rate_limit_persists_until_the_existing_deadline(monkeypat
     )
     observed = {}
     code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
-    assert "did not complete within 20 minutes" in code
-    assert sum(observed["sleeps"]) == 20 * 60
-    assert len(observed["fetches"]) == (1 if reset == 1794604000 else 27)
+    assert f"HTTP {status}" in code
+    assert str(reset) in code
+    if reset == 1794604000:
+        assert "outlasts the 20-minute wait" in code
+        assert not observed["sleeps"]
+        assert len(observed["fetches"]) == 1
+    else:
+        assert "did not complete within 20 minutes" in code
+        assert sum(observed["sleeps"]) == 20 * 60
+        assert len(observed["fetches"]) == 27
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_security_gate_fails_immediately_when_retry_after_exceeds_budget(monkeypatch, status):
+    error = urllib.error.HTTPError(
+        "https://api.github.com", status, "rate limited", {"Retry-After": "1201"}, None
+    )
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error, observed=observed)
+    assert "outlasts the 20-minute wait" in code
+    assert f"HTTP {status}" in code and "1794603201" in code
+    assert not observed["sleeps"] and len(observed["fetches"]) == 1
 
 
 def test_security_gate_supports_required_workflow_events():
@@ -2538,7 +2603,8 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
         ("merge_group", "skipped", True),
     ],
 )
-def test_required_e2e_enforces_integration_result(event, integration_result, passes):
+@pytest.mark.parametrize("gate_result", ["success", "failure", "skipped", "cancelled"])
+def test_required_e2e_enforces_integration_result(event, integration_result, passes, gate_result):
     required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
     script = required.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()
     result = subprocess.run(
@@ -2546,6 +2612,7 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
         env={
             **os.environ,
             "EVENT_NAME": event,
+            "GATE_RESULT": gate_result,
             "RESULT": "success",
             "INTEGRATION_RESULT": integration_result,
         },
@@ -2554,7 +2621,7 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
         timeout=10,
         check=False,
     )
-    assert (result.returncode == 0) is passes, result.stderr
+    assert (result.returncode == 0) is (passes and gate_result == "success"), result.stderr
 
 
 def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
@@ -2601,6 +2668,7 @@ def test_latest_harness_drives_the_newest_vscode_and_copilot():
     "failing",
     [
         None,
+        "GATE_RESULT",
         "LINT_RESULT",
         "RESULT",
         "WINDOWS_RESULT",
@@ -2619,6 +2687,7 @@ def test_required_tests_enforces_lint_result(failing, bad):
     )
     script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
     names = [
+        "GATE_RESULT",
         "LINT_RESULT",
         "RESULT",
         "WINDOWS_RESULT",
@@ -3201,6 +3270,7 @@ def test_required_tests_requires_unit_shard_coverage(coverage):
     )
     script = required.split("        run: |", 1)[1].split("\n      - ", 1)[0]
     names = [
+        "GATE_RESULT",
         "LINT_RESULT",
         "RESULT",
         "WINDOWS_RESULT",

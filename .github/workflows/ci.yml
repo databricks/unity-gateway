@@ -30,10 +30,11 @@ jobs:
 
   managed-quota-probe:
     name: Managed quota probe (advisory)
-    needs: security-gate
-    if: ${{ !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    needs: [security-gate, integration]
+    if: ${{ always() && !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     continue-on-error: true
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
       DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
@@ -46,6 +47,7 @@ jobs:
         with:
           version: 0.13.5
       - name: Inspect limits and run the bounded probe
+        shell: bash
         run: uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py | tee "$RUNNER_TEMP/managed-quota-probe.jsonl"
       - name: Upload quota probe evidence
         if: ${{ !cancelled() }}
@@ -545,6 +547,7 @@ jobs:
       - *budget-setup-done
       - name: Require checks, every unit shard, the coverage proof and the VS Code extension tests
         env:
+          GATE_RESULT: ${{ needs.security-gate.result }}
           COVERAGE_RESULT: ${{ needs.unit-test-times.result }}
           LINT_RESULT: ${{ needs.checks.result }}
           RESULT: ${{ needs.unit-linux.result }}
@@ -552,7 +555,7 @@ jobs:
           PROVISIONING_RESULT: ${{ needs.windows-provisioning.result }}
           VSCODE_EXTENSION_RESULT: ${{ needs.vscode-extension.result }}
         run: |
-          test "$LINT_RESULT" = success && test "$RESULT" = success &&
+          test "$GATE_RESULT" = success && test "$LINT_RESULT" = success && test "$RESULT" = success &&
             test "$WINDOWS_RESULT" = success && test "$PROVISIONING_RESULT" = success &&
             test "$VSCODE_EXTENSION_RESULT" = success && test "$COVERAGE_RESULT" = success
       - *budget-check
@@ -578,7 +581,8 @@ jobs:
       - name: Require all agent and integration tests to pass
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GATE_RESULT: ${{ needs.security-gate.result }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }
+        run: test "$GATE_RESULT" = success && { test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }; }
       - *budget-check

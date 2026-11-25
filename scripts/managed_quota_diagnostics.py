@@ -47,16 +47,17 @@ def read_api(host, token, path):
         host.rstrip("/") + path, headers={"Authorization": f"Bearer {token}"}
     )
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             return response.status, json.load(response)
     except urllib.error.HTTPError as error:
+        error.close()
         return error.code, None
-    except (urllib.error.URLError, TimeoutError, ConnectionError):
+    except http.client.IncompleteRead:
+        return "incomplete-read", None
+    except OSError:
         return "connection-error", None
     except (json.JSONDecodeError, UnicodeDecodeError):
         return "invalid-json", None
-    except http.client.IncompleteRead:
-        return "incomplete-read", None
 
 
 def provider_limits(host, token, provider, caller):
@@ -122,7 +123,7 @@ def probe_model(host, token, model, agent):
             error.close()
         except http.client.IncompleteRead:
             read_error = "incomplete-read"
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except OSError:
             read_error = "transport-error"
         return {
             "model": "system.ai." + model,
@@ -150,7 +151,7 @@ def main(*, provider_only=False):
 
     try:
         token = mint_m2m_token(host, caller, os.environ["DATABRICKS_CLIENT_SECRET"])
-    except (RuntimeError, urllib.error.URLError):
+    except (RuntimeError, OSError, ValueError):
         print(json.dumps({"quota_diagnostics": "authentication-unavailable"}))
         return
     if provider_only:
@@ -176,9 +177,10 @@ def main(*, provider_only=False):
         config = (service_data or {}).get("config") or {}
         rate_limits_present = "rate_limits" in config if service_data is not None else None
         privileges = []
-        for assignment in (permission_data or {}).get("privilege_assignments", []):
-            if assignment.get("principal") == caller:
-                privileges.extend(assignment.get("privileges", []))
+        if isinstance(permission_data, dict):
+            for assignment in permission_data.get("privilege_assignments") or []:
+                if isinstance(assignment, dict) and assignment.get("principal") == caller:
+                    privileges.extend(assignment.get("privileges") or [])
         print(
             json.dumps(
                 {

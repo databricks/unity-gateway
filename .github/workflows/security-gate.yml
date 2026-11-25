@@ -51,6 +51,7 @@ jobs:
           PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
         run: |
           python3 - <<'PY'
+          import http.client
           import json
           import os
           import re
@@ -65,8 +66,10 @@ jobs:
           if not re.fullmatch(r"[1-9][0-9]*", pr) or not re.fullmatch(r"[0-9a-f]{40}", sha):
               sys.exit("::error::Security Gate requires a PR number and an authorized commit SHA.")
           secondary_backoff = 60
+          last_api_error = None
+          explicit_reset = False
           def workflow_runs(endpoint):
-              global secondary_backoff
+              global secondary_backoff, last_api_error, explicit_reset
               token = os.environ.get("GH_TOKEN")
               headers = {"Authorization": f"Bearer {token}"} if token else {}
               pages = []
@@ -77,25 +80,44 @@ jobs:
                       with urllib.request.urlopen(request, timeout=30) as response:
                           pages.append(json.load(response))
                   except urllib.error.HTTPError as error:
-                      headers = error.headers or {}
+                      error_headers = error.headers or {}
                       if 500 <= error.code <= 599:
+                          last_api_error = f"HTTP {error.code}"
                           print(f"GitHub API returned HTTP {error.code}; the Security Scan remains pending.", flush=True)
                           return None, None
+                      secondary_limit = False
+                      if error.code == 403 and not (
+                          error_headers.get("X-RateLimit-Remaining") == "0"
+                          or error_headers.get("Retry-After")
+                      ):
+                          try:
+                              secondary_limit = b"secondary rate limit" in error.read(4096).lower()
+                          except (OSError, http.client.IncompleteRead):
+                              sys.exit("::error::Could not read GitHub's error response; tests remain blocked.")
                       if error.code == 429 or (error.code == 403 and (
-                          headers.get("X-RateLimit-Remaining") == "0"
-                          or headers.get("Retry-After")
-                          or b"secondary rate limit" in error.read(4096).lower()
+                          error_headers.get("X-RateLimit-Remaining") == "0"
+                          or error_headers.get("Retry-After")
+                          or secondary_limit
                       )):
                           # https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately
-                          reset = headers.get("X-RateLimit-Reset", "")
-                          retry_after = headers.get("Retry-After", "")
+                          reset = error_headers.get("X-RateLimit-Reset", "")
+                          retry_after = error_headers.get("Retry-After", "")
+                          explicit_reset = retry_after.isdecimal() or (
+                              error_headers.get("X-RateLimit-Remaining") == "0" and reset.isdecimal()
+                          )
                           if retry_after.isdecimal():
                               reset_at = time.time() + int(retry_after)
-                          elif headers.get("X-RateLimit-Remaining") == "0" and reset.isdecimal():
-                              reset_at = int(reset)
+                          elif error_headers.get("X-RateLimit-Remaining") == "0" and reset.isdecimal():
+                              reset_at = int(reset) + 1
                           else:
                               reset_at = time.time() + secondary_backoff
                               secondary_backoff = min(secondary_backoff * 2, 1200)
+                          reset_detail = (
+                              f"reported reset {reset}, retry after {int(reset_at)}"
+                              if not retry_after.isdecimal() and reset.isdecimal()
+                              else f"retry after {int(reset_at)}"
+                          )
+                          last_api_error = f"HTTP {error.code}, {reset_detail} UTC epoch seconds"
                           print("GitHub API rate limited; the Security Scan remains pending.", flush=True)
                           return None, reset_at
                       sys.exit(f"::error::GitHub API returned HTTP {error.code}; tests remain blocked. "
@@ -121,6 +143,8 @@ jobs:
                       break
                   delay = delays[attempt - 1]
                   if reset_at is not None:
+                      if explicit_reset and reset_at - time.time() > remaining:
+                          sys.exit(f"::error::GitHub API rate limit outlasts the 20-minute wait; {last_api_error}. Tests remain blocked.")
                       delay = max(delay, reset_at - time.time())
                   delay = min(delay, remaining)
                   time.sleep(delay)
@@ -160,8 +184,9 @@ jobs:
                       print("::error::Security Scan must succeed before CI can run. "
                             "Resolve or approve the scan, then re-run failed CI jobs.")
                   sys.exit(0 if conclusion == "success" else 1)
-          sys.exit("::error::Security Scan did not complete within 20 minutes. "
-                   "Check its run, then re-run failed CI jobs.")
+          detail = f" Last GitHub API error: {last_api_error}." if last_api_error else ""
+          sys.exit("::error::Security Scan did not complete within 20 minutes." + detail +
+                   " Check its run, then re-run failed CI jobs.")
           PY
       - name: Check the gate time budget
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}

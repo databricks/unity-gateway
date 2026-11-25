@@ -4,6 +4,7 @@ import ast
 import os
 import re
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -126,10 +127,11 @@ def test_agent_rollup_requires_every_shard(shards):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="required-e2e runs on Linux")
+@pytest.mark.parametrize("gate", ["success", "failure", "cancelled", "skipped"])
 @pytest.mark.parametrize("agent", ["success", "failure", "cancelled", "skipped"])
 @pytest.mark.parametrize("integration", ["success", "failure", "cancelled", "skipped"])
 @pytest.mark.parametrize("event", ["pull_request", "merge_group"])
-def test_required_rollup_fails_closed(event, agent, integration):
+def test_required_rollup_fails_closed(event, gate, agent, integration):
     required = _job("required-e2e")
     assert "needs: [security-gate, e2e, integration]" in required
     assert (
@@ -138,9 +140,47 @@ def test_required_rollup_fails_closed(event, agent, integration):
     script = required.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()
     result = subprocess.run(
         ["/bin/bash", "-c", script],
-        env={**os.environ, "EVENT_NAME": event, "RESULT": agent, "INTEGRATION_RESULT": integration},
+        env={
+            **os.environ,
+            "EVENT_NAME": event,
+            "GATE_RESULT": gate,
+            "RESULT": agent,
+            "INTEGRATION_RESULT": integration,
+        },
         capture_output=True,
         timeout=10,
         check=False,
     )
-    assert (result.returncode == 0) is (event == "merge_group" or agent == integration == "success")
+    # The gate must succeed on every event; on merge_group the e2e and integration
+    # results are skipped by design and only the gate still fails the rollup.
+    assert (result.returncode == 0) is (
+        gate == "success" and (event == "merge_group" or agent == integration == "success")
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="required-tests runs on Linux")
+@pytest.mark.parametrize("gate", ["success", "failure", "cancelled", "skipped"])
+def test_required_tests_rollup_requires_the_security_gate(gate):
+    required = _job("required-tests")
+    assert (
+        "needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, "
+        "windows-provisioning, vscode-extension]" in required
+    )
+    script = textwrap.dedent(required.split("        run: |", 1)[1])
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        env={
+            **os.environ,
+            "GATE_RESULT": gate,
+            "LINT_RESULT": "success",
+            "RESULT": "success",
+            "WINDOWS_RESULT": "success",
+            "PROVISIONING_RESULT": "success",
+            "VSCODE_EXTENSION_RESULT": "success",
+            "COVERAGE_RESULT": "success",
+        },
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (gate == "success")

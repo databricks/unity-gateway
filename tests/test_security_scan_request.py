@@ -14,6 +14,16 @@ BASE = "b" * 40
 RUN_ID = 123
 
 
+def test_scan_concurrency_partitions_pull_requests_and_empty_payloads():
+    workflow = WORKFLOW.read_text()
+    concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+    assert (
+        "github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id"
+        in concurrency
+    )
+    assert "cancel-in-progress: true" in concurrency
+
+
 def _resolve(
     tmp_path,
     monkeypatch,

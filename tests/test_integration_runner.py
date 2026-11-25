@@ -95,6 +95,11 @@ def test_windows_desktop_session_records_sandbox_selection_on_teardown(
             next(fixture)
     evidence = json.loads((session.artifacts / "windows-sandbox-selection.json").read_text())
     assert evidence == {"lines": [line]}
+    proxy = json.loads((session.artifacts / "windows-mcp-proxy-diagnostics.json").read_text())
+    assert proxy == {"log_count": 0, "events": []}
+    provisioning = json.loads((session.artifacts / "windows-sandbox-provisioning.json").read_text())
+    assert provisioning["before"]["config"]["exists"] is False
+    assert provisioning["after"]["marker"]["exists"] is False
 
 
 def test_staging_session_ledger_uses_staging_workspace(tmp_path, monkeypatch):

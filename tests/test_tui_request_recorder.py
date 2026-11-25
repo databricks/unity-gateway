@@ -83,7 +83,9 @@ def test_rejected_inference_reports_tool_setup_without_conversation():
 
     class Rejected:
         def response_for(self, request, timeout):
-            return RecordedResponse(400, {}, b'{"error_code": "BAD_REQUEST"}')
+            return RecordedResponse(
+                400, {}, b'{"error_code": "BAD_REQUEST", "message": "Bearer private-token"}'
+            )
 
     with pytest.raises(AssertionError) as rejected:
         request_recorder.assert_served(Rejected(), request, "glm")
@@ -95,6 +97,7 @@ def test_rejected_inference_reports_tool_setup_without_conversation():
         {"name": "SubagentHandback", "defer_loading": True},
     ]
     assert "secret" not in str(details)
+    assert "private-token" not in str(details)
 
 
 @pytest.mark.parametrize("status", [429, 503])
@@ -129,6 +132,27 @@ def test_overloaded_response_evidence_includes_allowlisted_headers_and_body():
     assert "secret" not in str(evidence)
     private = RecordedResponse(429, {}, json.dumps(_message()).encode())
     assert _PRIVATE not in str(request_recorder._overload_details(private))
+
+
+def test_overload_diagnostics_never_archive_free_text_credentials():
+    response = RecordedResponse(
+        429,
+        {},
+        json.dumps(
+            {
+                "error": {
+                    "message": "Bearer private-token and private-prompt",
+                    "code": "REQUEST_LIMIT_EXCEEDED",
+                    "type": "rate_limit_error",
+                    "param": "model",
+                }
+            }
+        ).encode(),
+    )
+    evidence = request_recorder._overload_details(response)
+    assert "private" not in str(evidence)
+    assert "REQUEST_LIMIT_EXCEEDED" in evidence["body"]
+    assert "rate_limit_error" in evidence["body"]
 
 
 def test_overload_diagnostics_do_not_fail_on_malformed_compression():

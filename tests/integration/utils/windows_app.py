@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,6 +50,169 @@ def _installed_package(package: str) -> tuple[str, str]:
     return full_name.split("_")[1], location
 
 
+def _sandbox_file_state(path: Path, *, config: bool) -> dict:
+    try:
+        stat = path.stat()
+        text = path.read_text(encoding="utf-8-sig")
+        data = tomllib.loads(text) if config else json.loads(text)
+    except FileNotFoundError:
+        return {"exists": False}
+    except OSError as error:
+        return {"exists": None, "error": type(error).__name__}
+    except (UnicodeError, ValueError) as error:
+        return {"exists": True, "error": type(error).__name__}
+    result = {
+        "exists": True,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(
+            timespec="milliseconds"
+        ),
+    }
+    if not isinstance(data, dict):
+        result["error"] = "invalid-shape"
+    elif config:
+        windows = data.get("windows") if isinstance(data.get("windows"), dict) else {}
+        mode = windows.get("sandbox")
+        result["mode"] = mode if mode in (None, "elevated", "unelevated", "mxc") else "invalid"
+        features = data.get("features") if isinstance(data.get("features"), dict) else {}
+        result["features"] = {
+            name: value
+            for name in (
+                "experimental_windows_sandbox",
+                "elevated_windows_sandbox",
+                "enable_experimental_windows_sandbox",
+                "prefer_mxc",
+            )
+            if type(value := features.get(name)) is bool
+        }
+    else:
+        version = data.get("version")
+        result["version"] = version if type(version) is int else None
+    return result
+
+
+def _windows_sandbox_account(api, name: str) -> dict:
+    import ctypes
+    from ctypes import wintypes
+
+    class UserInfo(ctypes.Structure):
+        _fields_ = [
+            ("name", wintypes.LPWSTR),
+            ("password", wintypes.LPWSTR),
+            ("password_age", wintypes.DWORD),
+            ("privilege", wintypes.DWORD),
+            ("home_dir", wintypes.LPWSTR),
+            ("comment", wintypes.LPWSTR),
+            ("flags", wintypes.DWORD),
+            ("script_path", wintypes.LPWSTR),
+        ]
+
+    buffer = ctypes.c_void_p()
+    status = api.NetUserGetInfo(None, name, 1, ctypes.byref(buffer))
+    if status == 2221:
+        return {"exists": False}
+    if status != 0:
+        return {"exists": None, "error_code": status}
+    if not buffer.value:
+        return {"exists": None, "error": "empty-response"}
+    try:
+        info = ctypes.cast(buffer, ctypes.POINTER(UserInfo)).contents
+        return {"exists": True, "disabled": bool(info.flags & 0x0002)}
+    finally:
+        api.NetApiBufferFree(buffer)
+
+
+def _sandbox_receipt_state(text: str, home: Path) -> dict:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {"exists": True, "error": "invalid-json"}
+    if not isinstance(data, dict):
+        return {"exists": True, "error": "invalid-shape"}
+    runtime = data.get("runtime")
+    if not isinstance(runtime, dict):
+        return {"exists": True, "runtime_present": False}
+    configured_home = data.get("codex_home")
+    entries = runtime.get("accounts")
+    if not isinstance(entries, list):
+        return {"exists": True, "error": "invalid-accounts"}
+    accounts = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("account") not in ("offline", "online"):
+            continue
+        accounts[entry["account"]] = {
+            "alias_present": isinstance(entry.get("alias_path"), str) and bool(entry["alias_path"]),
+            "cleanup_pending": entry.get("cleanup_logon_pending") is True,
+        }
+    try:
+        home_matches = isinstance(configured_home, str) and os.path.normcase(
+            str(Path(configured_home).resolve())
+        ) == os.path.normcase(str((home / ".codex").resolve()))
+    except (OSError, RuntimeError, ValueError):
+        home_matches = None
+    return {
+        "exists": True,
+        "home_matches": home_matches,
+        "ready_package_present": isinstance(runtime.get("ready_package"), str)
+        and bool(runtime["ready_package"]),
+        "retiring": runtime.get("retiring") is not None,
+        "accounts": accounts,
+    }
+
+
+def _windows_machine_provisioning(home: Path) -> dict:
+    if os.name != "nt":
+        return {"status": "unsupported"}
+    import ctypes
+    import winreg
+    from ctypes import wintypes
+
+    try:
+        api = ctypes.WinDLL("netapi32", use_last_error=True)
+        api.NetUserGetInfo.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        api.NetUserGetInfo.restype = wintypes.DWORD
+        api.NetApiBufferFree.argtypes = [ctypes.c_void_p]
+        api.NetApiBufferFree.restype = wintypes.DWORD
+        accounts = {
+            "offline": _windows_sandbox_account(api, "CodexSandboxOffline"),
+            "online": _windows_sandbox_account(api, "CodexSandboxOnline"),
+        }
+    except OSError as error:
+        accounts = {"error": type(error).__name__}
+    base = r"SOFTWARE\OpenAI\Codex\WindowsSandboxService"
+    registration = {}
+    for label, key in (("service", base), ("registered_core", base + r"\RegisteredCore")):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as handle:
+                value, value_type = winreg.QueryValueEx(handle, "ProvisionedInstallation")
+            if value_type != winreg.REG_SZ or not isinstance(value, str):
+                registration[label] = {"exists": True, "error": "invalid-type"}
+            else:
+                registration[label] = _sandbox_receipt_state(value, home)
+        except FileNotFoundError:
+            registration[label] = {"exists": False}
+        except OSError as error:
+            registration[label] = {"exists": None, "error": type(error).__name__}
+    return {"accounts": accounts, "registration": registration}
+
+
+def windows_sandbox_provisioning_snapshot(home: Path) -> dict:
+    codex = home / ".codex"
+    return {
+        "observed_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        "config": _sandbox_file_state(codex / "config.toml", config=True),
+        "marker": _sandbox_file_state(codex / ".sandbox" / "setup_marker.json", config=False),
+        "users_file": _sandbox_file_state(
+            codex / ".sandbox-secrets" / "sandbox_users.json", config=False
+        ),
+        "machine": _windows_machine_provisioning(home),
+    }
+
+
 def record_windows_sandbox_selection(session) -> None:
     pattern = re.compile(
         r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} codex\.exe\] "
@@ -69,6 +233,64 @@ def record_windows_sandbox_selection(session) -> None:
         )
         return
     session.record("windows-sandbox-selection.json", {"lines": lines})
+
+
+def record_windows_proxy_diagnostics(session) -> None:
+    exceptions = {
+        "BrokenPipeError",
+        "ConnectionError",
+        "ConnectionResetError",
+        "OSError",
+        "RuntimeError",
+        "TimeoutError",
+        "ValueError",
+        "httpcore.ConnectError",
+        "httpcore.ConnectTimeout",
+        "httpcore2.ConnectError",
+        "httpcore2.ConnectTimeout",
+        "httpx.ConnectError",
+        "httpx.ConnectTimeout",
+        "httpx.ReadTimeout",
+        "httpx2.ConnectError",
+        "httpx2.ConnectTimeout",
+        "httpx2.ReadTimeout",
+    }
+    frame = re.compile(
+        r'File "[^"]*[/\\](ucode|mcp|httpx2?|httpcore2?|anyio)[/\\]'
+        r'(?:[^"]*[/\\])?([A-Za-z0-9_]+\.py)", line (\d+)'
+    )
+    events = []
+    paths = sorted((session.home / ".ucode" / "mcp-proxy").glob("*/backend.log"))
+    try:
+        for path in paths:
+            for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw.lstrip(" |+")
+                if line.startswith("Traceback (most recent call last):"):
+                    events.append({"kind": "traceback"})
+                elif match := frame.match(line):
+                    events.append(
+                        {
+                            "kind": "frame",
+                            "package": match[1],
+                            "file": match[2],
+                            "line": int(match[3]),
+                        }
+                    )
+                elif (name := line.partition(":")[0]) in exceptions:
+                    events.append({"kind": "exception", "type": name})
+                elif match := re.search(r"\bHTTP ([1-5]\d{2})\b", line):
+                    events.append({"kind": "http_status", "status": int(match[1])})
+                elif match := re.search(r"\bexited with code (\d+)\b", line):
+                    events.append({"kind": "exit_code", "code": int(match[1])})
+    except OSError as error:
+        session.record(
+            "windows-mcp-proxy-diagnostics.json",
+            {"log_count": len(paths), "events": events, "error": type(error).__name__},
+        )
+        return
+    session.record(
+        "windows-mcp-proxy-diagnostics.json", {"log_count": len(paths), "events": events}
+    )
 
 
 def _redact_app_log(session, text: str) -> str:
@@ -256,8 +478,12 @@ class WindowsUIAProcess:
             self.init_metrics = ready.get("metrics", {})
             self.init_metrics["process_ready_ms"] = (time.monotonic() - self.started) * 1000
             self.ready = True
-        self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(json.dumps({"command": command, "args": args}) + "\n")
+            self.proc.stdin.flush()
+        except OSError as error:
+            self.broken = True
+            raise AssertionError("UI Automation helper input closed") from error
         timeout = float(args[2]) + 5 if command in ("click", "wait") else 60
         response = self._receive(timeout)
         self.last_diagnostics = response.get("diagnostics", {})
@@ -292,7 +518,10 @@ class WindowsUIAProcess:
         return response["output"]
 
     def close(self) -> None:
-        self.proc.stdin.close()
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            self.broken = True
         try:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -320,6 +549,10 @@ class WindowsApp:
 
     def __enter__(self):
         self.session.record(f"{self.name}-app.json", {"version": self.version})
+        self.session.record(
+            "windows-sandbox-prelaunch.json",
+            windows_sandbox_provisioning_snapshot(self.session.home),
+        )
         started = time.monotonic()
         # Chromium exposes its web content to UI Automation only when asked.
         self.proc = subprocess.Popen(

@@ -189,14 +189,30 @@ def session(request, installed_binary):
                 if value := os.environ.get(key):
                     user.env[key] = value
             user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        provisioning_before = None
+        if request.node.get_closest_marker("windows_desktop"):
+            from utils.windows_app import windows_sandbox_provisioning_snapshot
+
+            provisioning_before = windows_sandbox_provisioning_snapshot(user.home)
         try:
             try:
                 yield user
             finally:
                 if request.node.get_closest_marker("windows_desktop"):
-                    from utils.windows_app import record_windows_sandbox_selection
+                    from utils.windows_app import (
+                        record_windows_proxy_diagnostics,
+                        record_windows_sandbox_selection,
+                    )
 
                     record_windows_sandbox_selection(user)
+                    record_windows_proxy_diagnostics(user)
+                    user.record(
+                        "windows-sandbox-provisioning.json",
+                        {
+                            "before": provisioning_before,
+                            "after": windows_sandbox_provisioning_snapshot(user.home),
+                        },
+                    )
                 if os.environ.get("UG_MODEL_LEDGER"):
                     from utils.traffic_ledger import record_case_usage
 

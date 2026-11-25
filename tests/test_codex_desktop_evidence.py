@@ -2,6 +2,7 @@
 
 import copy
 import io
+import json
 import re
 import sys
 import threading
@@ -44,6 +45,24 @@ def test_persistent_windows_uia_protocol_preserves_process_and_errors():
     finally:
         client.close()
     assert client.proc.poll() is not None
+
+
+def test_persistent_uia_reports_closed_input_and_preserves_stderr():
+    helper = (
+        "import os,sys,time\n"
+        "os.close(0)\n"
+        "print('helper evidence',file=sys.stderr,flush=True)\n"
+        'print(\'{"event":"ready","metrics":{}}\',flush=True)\n'
+        "time.sleep(1)\n"
+    )
+    client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        with pytest.raises(AssertionError, match="helper input closed"):
+            client.request("tree")
+        assert client.broken
+    finally:
+        client.close()
+    assert "helper evidence" in client.stderr_output
 
 
 def test_persistent_uia_preserves_helper_stderr_after_exit():
@@ -317,6 +336,186 @@ def test_windows_sandbox_diagnostic_records_only_selection_and_availability(tmp_
     windows_app.record_windows_sandbox_selection(session)
     assert evidence["windows-sandbox-selection.json"] == {"lines": [selected, available]}
     assert "secret" not in repr(evidence)
+
+
+def test_windows_provisioning_snapshot_excludes_credentials(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    (codex / ".sandbox").mkdir(parents=True)
+    (codex / ".sandbox-secrets").mkdir()
+    (codex / "config.toml").write_text(
+        '[windows]\nsandbox = "unelevated"\n[features]\nexperimental_windows_sandbox = true\n'
+        'elevated_windows_sandbox = false\n[other]\ntoken = "private-token"\n'
+    )
+    (codex / ".sandbox/setup_marker.json").write_text(
+        json.dumps({"version": 5, "offline_username": "private-name"})
+    )
+    (codex / ".sandbox-secrets/sandbox_users.json").write_text(
+        json.dumps({"version": 5, "offline": {"password": "private-password"}})
+    )
+    monkeypatch.setattr(
+        windows_app,
+        "_windows_machine_provisioning",
+        lambda home: {"offline": {"exists": True, "disabled": False}},
+        raising=False,
+    )
+    snapshot = windows_app.windows_sandbox_provisioning_snapshot(home)
+    assert snapshot["config"]["mode"] == "unelevated"
+    assert snapshot["config"]["features"] == {
+        "experimental_windows_sandbox": True,
+        "elevated_windows_sandbox": False,
+    }
+    assert snapshot["marker"]["version"] == snapshot["users_file"]["version"] == 5
+    assert snapshot["machine"]["offline"]["exists"] is True
+    assert datetime.fromisoformat(snapshot["observed_at"]).utcoffset().total_seconds() == 0
+    assert "private" not in repr(snapshot)
+
+
+def test_windows_registered_receipt_reports_only_provisioning_booleans(tmp_path):
+    receipt = {
+        "user_sid": "private-sid",
+        "codex_home": str(tmp_path / ".codex"),
+        "runtime": {
+            "ready_package": "private-package",
+            "retiring": None,
+            "accounts": [
+                {
+                    "account": "offline",
+                    "alias_path": "private-path",
+                    "cleanup_logon_pending": False,
+                },
+                {"account": "online", "alias_path": "private-path", "cleanup_logon_pending": True},
+            ],
+        },
+    }
+    result = windows_app._sandbox_receipt_state(json.dumps(receipt), tmp_path)
+    assert result == {
+        "exists": True,
+        "home_matches": True,
+        "ready_package_present": True,
+        "retiring": False,
+        "accounts": {
+            "offline": {"alias_present": True, "cleanup_pending": False},
+            "online": {"alias_present": True, "cleanup_pending": True},
+        },
+    }
+    assert "private" not in repr(result)
+
+
+def test_windows_machine_provisioning_reports_platform_state(tmp_path):
+    state = windows_app._windows_machine_provisioning(tmp_path)
+    if sys.platform == "win32":
+        assert "accounts" in state and "registration" in state
+    else:
+        assert state == {"status": "unsupported"}
+
+
+def test_windows_sandbox_account_state_reports_missing_account():
+    api = SimpleNamespace(NetUserGetInfo=lambda server, account, level, buffer: 2221)
+    assert windows_app._windows_sandbox_account(api, "CodexSandboxOffline") == {"exists": False}
+
+
+def test_windows_sandbox_account_reports_disabled_without_password():
+    import ctypes
+    from ctypes import wintypes
+
+    class UserInfo(ctypes.Structure):
+        _fields_ = [
+            ("name", wintypes.LPWSTR),
+            ("password", wintypes.LPWSTR),
+            ("password_age", wintypes.DWORD),
+            ("privilege", wintypes.DWORD),
+            ("home_dir", wintypes.LPWSTR),
+            ("comment", wintypes.LPWSTR),
+            ("flags", wintypes.DWORD),
+            ("script_path", wintypes.LPWSTR),
+        ]
+
+    info = UserInfo()
+    info.password = "private-password"
+    info.flags = 0x0002
+    freed = []
+
+    def get_info(server, account, level, output):
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(info)
+        return 0
+
+    api = SimpleNamespace(
+        NetUserGetInfo=get_info, NetApiBufferFree=lambda ptr: freed.append(ptr.value)
+    )
+    result = windows_app._windows_sandbox_account(api, "CodexSandboxOffline")
+    assert result == {"exists": True, "disabled": True}
+    assert freed == [ctypes.addressof(info)]
+    assert "private" not in repr(result)
+
+
+def test_windows_sandbox_account_empty_success_is_not_reported_as_ready():
+    api = SimpleNamespace(NetUserGetInfo=lambda server, account, level, buffer: 0)
+    assert windows_app._windows_sandbox_account(api, "CodexSandboxOffline") == {
+        "exists": None,
+        "error": "empty-response",
+    }
+
+
+def test_windows_sandbox_account_query_error_is_not_reported_as_absent():
+    api = SimpleNamespace(NetUserGetInfo=lambda server, account, level, buffer: 5)
+    assert windows_app._windows_sandbox_account(api, "CodexSandboxOffline") == {
+        "exists": None,
+        "error_code": 5,
+    }
+
+
+def test_windows_proxy_diagnostics_allowlist_traceback_without_credentials(tmp_path):
+    log = tmp_path / ".ucode/mcp-proxy/private-key/backend.log"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "C:/Users/private/site-packages/httpx2/_transports/default.py", line 115, in map_httpcore_exceptions\n'
+        '  File "C:/Users/private/site-packages/ucode/mcp_proxy.py", line 27, in run\n'
+        "httpx2.ConnectTimeout: private-token\n"
+        "ug mcp-proxy: upstream returned HTTP 429 private-token\n"
+        "ug mcp-proxy: backend exited with code 2 private-token\n"
+        "Authorization: Bearer private-token\n",
+        encoding="utf-8",
+    )
+    evidence = {}
+    session = SimpleNamespace(
+        home=tmp_path, record=lambda name, value: evidence.update({name: value})
+    )
+    windows_app.record_windows_proxy_diagnostics(session)
+    assert evidence["windows-mcp-proxy-diagnostics.json"] == {
+        "log_count": 1,
+        "events": [
+            {"kind": "traceback"},
+            {"kind": "frame", "package": "httpx2", "file": "default.py", "line": 115},
+            {"kind": "frame", "package": "ucode", "file": "mcp_proxy.py", "line": 27},
+            {"kind": "exception", "type": "httpx2.ConnectTimeout"},
+            {"kind": "http_status", "status": 429},
+            {"kind": "exit_code", "code": 2},
+        ],
+    }
+    assert "private" not in repr(evidence)
+
+
+def test_windows_app_records_provisioning_before_launch(tmp_path, monkeypatch):
+    evidence = {}
+    app = object.__new__(windows_app.WindowsApp)
+    app.session = SimpleNamespace(
+        home=tmp_path,
+        env={},
+        record=lambda name, value: evidence.update({name: value}),
+    )
+    app.name = "chatgpt"
+    app.version = "pinned"
+    app.executable = "app"
+    monkeypatch.setattr(
+        windows_app.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("no launch")),
+    )
+    with pytest.raises(OSError, match="no launch"):
+        app.__enter__()
+    assert evidence["windows-sandbox-prelaunch.json"]["config"]["exists"] is False
 
 
 def test_windows_app_log_preserves_and_timestamps_every_line(tmp_path):
