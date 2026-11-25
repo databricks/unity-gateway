@@ -28,34 +28,6 @@ jobs:
       actions: read
     uses: ./.github/workflows/security-gate.yml
 
-  managed-quota-probe:
-    name: Managed quota probe (advisory)
-    needs: [security-gate, integration]
-    if: ${{ always() && !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
-      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
-      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          version: 0.13.5
-      - name: Inspect limits and run the bounded probe
-        shell: bash
-        run: uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py | tee "$RUNNER_TEMP/managed-quota-probe.jsonl"
-      - name: Upload quota probe evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: managed-quota-probe
-          path: ${{ runner.temp }}/managed-quota-probe.jsonl
-
   # Lint, format and types in one job that reports every failing check, not just the first.
   checks:
     name: Checks
@@ -168,6 +140,39 @@ jobs:
             --workflow "$BUDGET_WORKFLOW" --job "$GITHUB_JOB" --name "$BUDGET_JOB_NAME" \
             --started "$BUDGET_JOB_STARTED" --run-started "${BUDGET_RUN_STARTED:-$BUDGET_JOB_STARTED}" \
             --ended "$(date +%s)" --changed-files "$changed"
+
+  managed-quota-probe:
+    name: Managed quota probe (advisory)
+    needs: [security-gate, integration]
+    if: ${{ always() && !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Managed quota probe (advisory)
+      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+      - *budget-setup-done
+      - name: Inspect limits and run the bounded probe
+        shell: bash
+        run: uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py | tee "$RUNNER_TEMP/managed-quota-probe.jsonl"
+      - name: Upload quota probe evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: managed-quota-probe
+          path: ${{ runner.temp }}/managed-quota-probe.jsonl
+      - *budget-check
 
   # Each shard runs its time-balanced files and chunks of the slow files (tests/shard.py), so the
   # shards together run every unit test once. Main uploads JUnit reports and coverage counts

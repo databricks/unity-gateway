@@ -1473,7 +1473,33 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         "windows-provisioning",
         "vscode-extension",
     ):
-        assert not credential.search(jobs[name]), name
+        job = re.sub(
+            r"(?m)^[ \t]*(?:DATABRICKS_CLIENT_ID|DATABRICKS_CLIENT_SECRET|DATABRICKS_BEARER|"
+            r"[A-Z0-9_]*SP_CLIENT_(?:ID|SECRET)): ''$",
+            "",
+            jobs[name],
+        )
+        assert not credential.search(job), name
+
+
+def test_credential_contract_rejects_replacing_an_empty_budget_secret(monkeypatch):
+    workflow = _workflow
+
+    def injected(name):
+        text = workflow(name)
+        if name == "ci.yml":
+            text = text.replace(
+                "DATABRICKS_BEARER: ''", "DATABRICKS_BEARER: ${{ secrets.TOKEN }}", 1
+            )
+        return text
+
+    monkeypatch.setitem(
+        test_pr_jobs_with_credentials_require_a_successful_security_gate.__globals__,
+        "_workflow",
+        injected,
+    )
+    with pytest.raises(AssertionError, match="checks"):
+        test_pr_jobs_with_credentials_require_a_successful_security_gate()
 
 
 @pytest.mark.parametrize(

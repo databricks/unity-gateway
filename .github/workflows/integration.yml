@@ -1224,6 +1224,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Managed config · Codex · Smart routing
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: codex
       CODEX_VERSION: '0.171.0'

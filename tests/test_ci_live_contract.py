@@ -166,7 +166,7 @@ def test_required_tests_rollup_requires_the_security_gate(gate):
         "needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, "
         "windows-provisioning, vscode-extension]" in required
     )
-    script = textwrap.dedent(required.split("        run: |", 1)[1])
+    script = textwrap.dedent(required.split("        run: |", 1)[1].split("\n      - ", 1)[0])
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
