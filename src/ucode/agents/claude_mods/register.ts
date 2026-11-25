@@ -546,6 +546,14 @@ export function register(on: On, options: PluginOptions): void {
         trackSavings = false;
       }
       const beforeUserSwitch = !state?.userSwitched;
+      const useStartBaseline = pricer.includes('--baseline-session-start')
+        && beforeUserSwitch && (agent === null || routed);
+      const startBaseline = state?.startModel ?? null;
+      const pendingState = trackSavings ? state : null;
+      if (pendingState) {
+        pendingState.pendingSteps += 1;
+        pendingState.dirty = true;
+      }
       let completed = false;
       try {
         const result = yield* forward(request);
@@ -553,9 +561,9 @@ export function register(on: On, options: PluginOptions): void {
         try {
           const usage = (result as any)?.usage;
           const served = str(request.model) ?? str(usage?.model);
-          const base = routed ? baseline : served;
-          // Controls and the native session can change while a request is in flight.
-          if (trackSavings && await readSavingsState($) && state && state === sessionUsage && savingsSessionActive) {
+          const base = useStartBaseline ? startBaseline : routed ? baseline : served;
+          // A late response still belongs to its captured session; OFF excludes it.
+          if (trackSavings && state && await readSavingsState($)) {
             if (!validTokenUsage(usage) || !served || !base) {
               markUsageIncomplete($, state);
             } else {
@@ -569,8 +577,13 @@ export function register(on: On, options: PluginOptions): void {
         // A thrown or cancelled request may have been billed without returning usage.
         if (!completed && trackSavings) {
           try {
-            if (await readSavingsState($) && state && state === sessionUsage && savingsSessionActive) markUsageIncomplete($, state);
+            if (state && await readSavingsState($)) markUsageIncomplete($, state);
           } catch {}
+        }
+        if (pendingState) {
+          pendingState.pendingSteps -= 1;
+          pendingState.dirty = true;
+          if (epoch !== sessionEpoch || pendingState !== sessionUsage || !savingsSessionActive) void flush($);
         }
       }
     }
@@ -1117,7 +1130,7 @@ export function register(on: On, options: PluginOptions): void {
 // keep their actual cost in both totals. First-prompt routing preserves the user's
 // pre-routing model until a manual switch. See docs/claude-mod.md.
 
-const USAGE_VERSION = 1;
+const USAGE_VERSION = 2;
 const PRICER_TIMEOUT_MS = 20_000;
 const USAGE_SAVE_TIMEOUT_MS = 5_000;
 const TOKEN_KEYS = [
@@ -1175,6 +1188,7 @@ type SessionUsage = {
   userSwitched: boolean;
   // Later totals cannot recover an unmetered response's possibly billed usage.
   incompleteUsage: boolean;
+  pendingSteps: number;
   seeding?: Promise<void>;
   // A failed load must never replace an existing snapshot with partial totals.
   canPersist: boolean;
@@ -1250,7 +1264,9 @@ function validTokenUsage(usage: any): boolean {
 }
 
 function validSavedUsage(saved: any): boolean {
-  if (!saved || saved.version !== USAGE_VERSION || !Array.isArray(saved.entries)) return false;
+  if (!saved || ![1, USAGE_VERSION].includes(saved.version) || !Array.isArray(saved.entries)) return false;
+  if (saved.pending_steps !== undefined
+    && (!Number.isInteger(saved.pending_steps) || saved.pending_steps < 0)) return false;
   if (saved.session_id !== undefined && str(saved.session_id) === null) return false;
   if (['start_model', 'main_model', 'first_main_model'].some(key =>
     saved[key] != null && str(saved[key]) === null)) return false;
@@ -1273,15 +1289,21 @@ async function loadUsage($: any, state: SessionUsage): Promise<void> {
     }
     const saved = JSON.parse(await $.fs.read(state.usagePath));
     if (state !== sessionUsage || !validSavedUsage(saved)) return;
-    state.canPersist = true;
     if (typeof saved.session_id === 'string' && saved.session_id !== state.sessionId) return;
+    state.canPersist = true;
     // Older snapshots cannot establish which session owns their recorded usage.
     if (saved.session_id !== state.sessionId && saved.entries.length) state.incompleteUsage = true;
     for (const item of saved.entries) {
       const routed = typeof item.routed === 'boolean' ? item.routed : undefined;
-      if (item.agent !== 'main' && routed === undefined && TOKEN_KEYS.some(key => num(item.usage[key]) > 0)) {
+      const hasTokens = TOKEN_KEYS.some(key => num(item.usage[key]) > 0)
+        || CACHE_SPLIT_KEYS.some(key => num(item.usage.cache_creation?.[key]) > 0);
+      if (item.agent !== 'main' && routed === undefined && hasTokens) {
         state.incompleteUsage = true;
       }
+      // Version 1 did not record whether pre-switch work used the session-start baseline.
+      if (saved.version === 1 && hasTokens
+        && !(item.agent !== 'main' && routed === false) && item.before_user_switch !== false
+        && item.baseline !== str(saved.start_model)) state.incompleteUsage = true;
       accumulate(state, item.agent, item.baseline, item.served, item.before_user_switch === true, routed, item.usage);
       state.dirty = true;
     }
@@ -1290,7 +1312,8 @@ async function loadUsage($: any, state: SessionUsage): Promise<void> {
     state.firstMainModel ??= str(saved.first_main_model);
     state.firstPromptSeen ||= saved.first_prompt_seen === true || state.firstMainModel !== null;
     state.userSwitched ||= saved.user_switched === true;
-    state.incompleteUsage ||= saved.incomplete_usage === true;
+    state.incompleteUsage ||= saved.incomplete_usage === true || num(saved.pending_steps) > 0;
+    state.dirty ||= saved.version !== USAGE_VERSION || num(saved.pending_steps) > 0;
   } catch {}
 }
 
@@ -1330,8 +1353,7 @@ async function refreshSavingsState($: EngineInterface, snapshot?: Environment): 
   return savingsActive;
 }
 
-// Concurrent hooks share the load for one native session. A clear/resume changes
-// the object, so in-flight work cannot update the next session's accounting.
+// Concurrent hooks share one load; admitted requests keep their originating session.
 async function ready($: any, snapshot?: Environment): Promise<boolean> {
   try {
     if (!savingsConfigured || !savingsSessionActive) return false;
@@ -1343,21 +1365,17 @@ async function ready($: any, snapshot?: Environment): Promise<boolean> {
       if (sessionUsage) endedUsage.set(sessionUsage.sessionId, sessionUsage);
       const previous = endedUsage.get(sessionId);
       if (previous) {
-        // Keep unflushed totals without waiting for the old pricer. A new object
-        // prevents requests from the ended session from adding late completions.
-        sessionUsage = { ...previous, entries: new Map(), seeding: undefined, dirty: true };
-        for (const [key, entry] of previous.entries) {
-          sessionUsage.entries.set(key, { ...entry, usage: {
-            ...entry.usage,
-            ...(entry.usage.cache_creation ? { cache_creation: { ...entry.usage.cache_creation } } : {}),
-          } });
-        }
+        // Reuse the owner while saves or requests are pending. An unfinished load
+        // gets a fresh object so its old callback cannot populate the resumed state.
+        sessionUsage = previous.canPersist ? previous
+          : { ...previous, entries: new Map(), seeding: undefined };
+        sessionUsage.dirty = true;
       } else {
         sessionUsage = {
           sessionId, usagePath: `${usageDirectory}/${encodeURIComponent(sessionId)}.json`,
           entries: new Map(), startModel: null, firstPromptSeen: false,
           lastMainModel: null, firstMainModel: null, userSwitched: false,
-          incompleteUsage: false, canPersist: false, dirty: false, writeRevision: 0,
+          incompleteUsage: false, pendingSteps: 0, canPersist: false, dirty: false, writeRevision: 0,
         };
       }
       endedUsage.delete(sessionId);
@@ -1436,6 +1454,7 @@ async function writeUsage($: any, state: SessionUsage): Promise<void> {
         first_prompt_seen: state.firstPromptSeen,
         user_switched: state.userSwitched,
         incomplete_usage: state.incompleteUsage,
+        pending_steps: state.pendingSteps,
         entries: Array.from(state.entries.values()),
       }),
     });
@@ -1494,7 +1513,7 @@ function requestPrice($: EngineInterface, state: SessionUsage): void {
 function markUsageIncomplete($: EngineInterface, state: SessionUsage): void {
   state.incompleteUsage = true;
   state.dirty = true;
-  setEstimate($, null);
+  if (state === sessionUsage) setEstimate($, null);
 }
 
 function setEstimate($: EngineInterface, next: Estimate | null): void {
@@ -1519,9 +1538,13 @@ function flush($: EngineInterface): Promise<void> {
       const states = new Map(endedUsage);
       if (sessionUsage) states.set(sessionUsage.sessionId, sessionUsage);
       for (const state of states.values()) {
-        if (!state.canPersist) continue;
+        if (!state.canPersist) {
+          // No request is admitted until loading succeeds; the original file stays untouched.
+          if (state.pendingSteps === 0 && endedUsage.get(state.sessionId) === state) endedUsage.delete(state.sessionId);
+          continue;
+        }
         if (state.dirty) await writeUsage($, state);
-        if (!state.dirty && endedUsage.get(state.sessionId) === state) endedUsage.delete(state.sessionId);
+        if (!state.dirty && state.pendingSteps === 0 && endedUsage.get(state.sessionId) === state) endedUsage.delete(state.sessionId);
       }
     } while (rerun);
   })();

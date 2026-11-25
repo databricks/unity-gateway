@@ -57,9 +57,11 @@ test('a denied savings read preserves orchestration, startup and model requests'
   expect((await $.turn.complete({ answer: 'done' })).text).toBe('done');
 });
 
-type SavedUsageFile = 'missing' | 'unreadable' | 'malformed' | 'unsupported' | 'invalid_entry';
+type SavedUsageFile = 'missing' | 'unreadable' | 'malformed' | 'unsupported' | 'invalid_entry' | 'mismatched_session';
 type SavingsFixture = {
   incompleteUsage?: boolean;
+  pendingSteps?: number;
+  legacyBaseline?: boolean;
   legacyChild?: boolean;
   legacySession?: boolean;
   usageFile?: SavedUsageFile;
@@ -67,7 +69,7 @@ type SavingsFixture = {
 };
 
 async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
-  const { incompleteUsage = false, legacyChild = false, legacySession = false, usageFile, invalidSavedUsage } = fixture;
+  const { incompleteUsage = false, pendingSteps = 0, legacyBaseline = false, legacyChild = false, legacySession = false, usageFile, invalidSavedUsage } = fixture;
   const state = {
     controls: {} as Record<string, string>, failWrites: false, writes: 0, prices: 0,
     usage: null as any, sessionId: 'session',
@@ -109,15 +111,16 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
       if (usageFile === 'malformed') return { value: '{"version":1,"entries":[' };
     }
     return { value: JSON.stringify({
-    version: usageFile === 'unsupported' ? 99 : 1,
-    session_id: legacySession ? undefined : 'session',
+    version: usageFile === 'unsupported' ? 99 : legacyBaseline ? 1 : 2,
+    session_id: legacySession ? undefined : usageFile === 'mismatched_session' ? 'wrong-session' : 'session',
     start_model: 'claude-opus-4-8',
     first_main_model: 'claude-opus-4-8',
     main_model: 'claude-opus-4-8',
     first_prompt_seen: true,
     incomplete_usage: incompleteUsage,
+    pending_steps: pendingSteps,
     entries: [{
-      agent: 'child', baseline: 'claude-opus-4-8', served: 'claude-sonnet-4-6',
+      agent: 'child', baseline: legacyBaseline ? 'claude-sonnet-4-6' : 'claude-opus-4-8', served: 'claude-sonnet-4-6',
       before_user_switch: true, routed: legacyChild ? undefined : true,
       usage: invalidSavedUsage ?? { input_tokens: usageFile === 'invalid_entry' ? 'unknown' : 100, output_tokens: 10 },
     }],
@@ -177,7 +180,7 @@ async function savingsRow($: any, on: On, fixture: SavingsFixture = {}) {
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/session' });
   const row = await $.ui.mount({ plugin: 'ug-smart-router', surface: 'terminal', component: 'AbovePrompt', props: {} });
   await clock.advance(1);
-  expect(JSON.stringify(await row.drawn()).includes('$0.18')).toBe(!incompleteUsage && !legacyChild && !legacySession && usageFile === undefined && invalidSavedUsage === undefined);
+  expect(JSON.stringify(await row.drawn()).includes('$0.18')).toBe(!incompleteUsage && !pendingSteps && !legacyBaseline && !legacyChild && !legacySession && usageFile === undefined && invalidSavedUsage === undefined);
   return { state, clock, row, env, files };
 }
 
@@ -489,6 +492,8 @@ test('a saved off toggle during a request prevents later accounting', { options 
   await $.turn.complete({ answer: 'done', isAborted: false });
   await clock.advance(1);
   expect(state.usage.entries.some((entry: any) => entry.agent === 'off-child')).toBe(false);
+  expect(state.usage.pending_steps).toBe(0);
+  expect(state.usage.incomplete_usage).toBe(false);
 });
 
 for (const failed of [false, true]) {
@@ -647,9 +652,9 @@ for (const reason of ['clear', 'resume'] as const) {
     await $.prompt.submit({ text: 'Next session task.' });
     await clock.advance(1);
     expect(state.usage).toEqual({
-      version: 1, session_id: 'new-session', start_model: state.selectedModel,
+      version: 2, session_id: 'new-session', start_model: state.selectedModel,
       main_model: null, first_main_model: null, first_prompt_seen: true,
-      user_switched: false, incomplete_usage: false, entries: [],
+      user_switched: false, incomplete_usage: false, pending_steps: 0, entries: [],
     });
     expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
     await $.turn.step({ turnId: 'new', index: 0, messageCount: 1, model: state.selectedModel }).next();
@@ -691,7 +696,29 @@ test('process exit saves accepted usage after OFF without waiting for an optiona
   expect(saved.first_main_model).toBe('claude-opus-4-8');
 });
 
-test('reloading the same identified session preserves totals and accounting uncertainty', { options }, async ($, on) => {
+test('process exit records an admitted request that has not completed', { options }, async ($, on) => {
+  const { state, clock, files } = await savingsRow($, on);
+  let release!: () => void;
+  const started = new Promise<void>(resolve => { state.stepStarted = resolve; });
+  state.stepBarrier = new Promise<void>(resolve => { release = resolve; });
+  const request = $.turn.step({ turnId: 'pending-exit', index: 0, messageCount: 1, model: state.selectedModel }).next();
+  await started;
+  try {
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: state.sessionId });
+    const saved = JSON.parse(files.get(`${options.savings_usage_dir}/session.json`)!);
+    expect(saved.pending_steps).toBe(1);
+    expect(saved.entries[0].usage.input_tokens).toBe(100);
+  } finally {
+    release();
+    await request;
+  }
+  await clock.advance(1);
+  const completed = JSON.parse(files.get(`${options.savings_usage_dir}/session.json`)!);
+  expect(completed.pending_steps).toBe(0);
+  expect(completed.entries.find((entry: any) => entry.agent === 'main').usage.input_tokens).toBe(1);
+});
+
+test('reloading the same identified session preserves totals and accounting uncertainty' , { options }, async ($, on) => {
   const { state, clock, row } = await savingsRow($, on, { incompleteUsage: true });
   const saved = JSON.stringify(state.usage);
   await $.session.end({ reason: 'other' });
@@ -710,7 +737,7 @@ test('unidentified legacy session totals remain retained but cannot claim an est
 
 for (const metered of [true, false]) {
   test('an old ' + (metered ? 'metered' : 'unmetered') + ' request cannot alter a new session', { options }, async ($, on) => {
-    const { state, clock } = await savingsRow($, on);
+    const { state, clock, files } = await savingsRow($, on);
     let release!: () => void;
     const started = new Promise<void>(resolve => { state.stepStarted = resolve; });
     state.stepBarrier = new Promise<void>(resolve => { release = resolve; });
@@ -732,6 +759,10 @@ for (const metered of [true, false]) {
     expect(state.usage.incomplete_usage).toBe(false);
     expect(state.usage.entries.length).toBe(1);
     expect(state.usage.entries[0].usage.input_tokens).toBe(1);
+    const ended = JSON.parse(files.get(`${options.savings_usage_dir}/session.json`)!);
+    expect(ended.pending_steps).toBe(0);
+    expect(ended.incomplete_usage).toBe(!metered);
+    expect(ended.entries.find((entry: any) => entry.agent === 'main')?.usage.input_tokens).toBe(metered ? 99 : undefined);
   });
 }
 
@@ -782,7 +813,7 @@ for (const transition of ['clear', 'same-session resume', 'cross-session resume'
   }
 }
 
-test('an ordinary prompt resumes the same session without accepting its late request', { options }, async ($, on) => {
+test('an ordinary prompt resumes the same session and retains its late request', { options }, async ($, on) => {
   const { state, clock } = await savingsRow($, on);
   let release!: () => void;
   const started = new Promise<void>(resolve => { state.stepStarted = resolve; });
@@ -793,7 +824,7 @@ test('an ordinary prompt resumes the same session without accepting its late req
   await $.session.end({ reason: 'resume', sessionId: state.sessionId });
   await $.turn.complete({ answer: 'late completion', isAborted: false });
   await clock.advance(1);
-  expect(JSON.stringify(state.usage)).toBe(saved);
+  expect(state.usage).toEqual({ ...JSON.parse(saved), pending_steps: 1 });
   await $.prompt.submit({ text: 'Continue this session.' });
   state.responseUsage = { input_tokens: 99, output_tokens: 99 };
   release();
@@ -806,7 +837,7 @@ test('an ordinary prompt resumes the same session without accepting its late req
   expect(state.usage.session_id).toBe('session');
   expect(state.usage.incomplete_usage).toBe(false);
   expect(state.usage.entries.find((entry: any) => entry.agent === 'child').usage.input_tokens).toBe(100);
-  expect(state.usage.entries.find((entry: any) => entry.agent === 'main')?.usage.input_tokens).toBe(1);
+  expect(state.usage.entries.find((entry: any) => entry.agent === 'main')?.usage.input_tokens).toBe(100);
 });
 
 test('renders without an estimate do not read savings controls', { options }, async ($, on) => {
@@ -820,7 +851,7 @@ test('renders without an estimate do not read savings controls', { options }, as
 });
 
 
-for (const usageFile of ['unreadable', 'malformed', 'unsupported', 'invalid_entry'] as const) {
+for (const usageFile of ['unreadable', 'malformed', 'unsupported', 'invalid_entry', 'mismatched_session'] as const) {
   test('an ' + usageFile + ' usage snapshot is retained while ordinary requests complete', { options }, async ($, on) => {
     const { state, clock, row } = await savingsRow($, on, { usageFile });
     await $.prompt.submit({ text: 'Continue this session.' });
@@ -834,7 +865,20 @@ for (const usageFile of ['unreadable', 'malformed', 'unsupported', 'invalid_entr
   });
 }
 
-test('a missing usage file starts fresh accounting', { options }, async ($, on) => {
+for (const restored of [{ pendingSteps: 1 }, { legacyBaseline: true }]) {
+  test('restored ' + Object.keys(restored)[0] + ' retains counts but hides unknown accounting', { options }, async ($, on) => {
+    const { state, clock, row } = await savingsRow($, on, restored);
+    await $.turn.complete({ answer: 'done', isAborted: false });
+    await clock.advance(1);
+    expect(state.usage.version).toBe(2);
+    expect(state.usage.pending_steps).toBe(0);
+    expect(state.usage.incomplete_usage).toBe(true);
+    expect(state.usage.entries[0].usage.input_tokens).toBe(100);
+    expect(JSON.stringify(await row.drawn())).not.toContain('$0.18');
+  });
+}
+
+test('a missing usage file starts fresh accounting' , { options }, async ($, on) => {
   const { state, clock } = await savingsRow($, on, { usageFile: 'missing' });
   await $.turn.step({ turnId: 'first', index: 0, messageCount: 1, model: state.selectedModel }).next();
   await $.turn.complete({ answer: 'done', isAborted: false });

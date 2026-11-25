@@ -72,7 +72,7 @@ def entry(
 def write_usage(tmp_path: Path, entries: list, *, start_model: str | None = OPUS_ID) -> Path:
     path = tmp_path / savings.USAGE_FILENAME
     path.write_text(
-        json.dumps({"version": 1, "start_model": start_model, "entries": entries}),
+        json.dumps({"version": 2, "start_model": start_model, "entries": entries}),
         encoding="utf-8",
     )
     return path
@@ -175,25 +175,22 @@ class TestUsageSavings:
         assert priced(write_usage(tmp_path, entries), price_cache) == saved("$0.18", "60%")
 
     def test_first_prompt_routing_prices_against_the_start_model(self, tmp_path, price_cache):
-        # Under first-prompt routing the router picks the main model too, so an entry's own
-        # baseline (the routed model) would hide the saving; until the user switches the main
-        # model its presence or absence is ignored.
         entries = [
-            entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
-            entry("a1", None, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
+            entry("main", OPUS_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
+            entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
         ]
         usage = write_usage(tmp_path, entries, start_model=OPUS_ID)
 
         # Baseline $0.38005 at Opus vs actual $0.15202 on Sonnet.
         assert priced(usage, price_cache, first_prompt=True) == saved("$0.23", "60%")
-        assert priced(usage, price_cache) is None
+        assert priced(usage, price_cache) == saved("$0.23", "60%")
 
     def test_first_prompt_routing_prices_entries_after_a_user_switch_as_their_own(
         self, tmp_path, price_cache
     ):
         entries = [
-            entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
-            entry("a1", SONNET_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
+            entry("main", OPUS_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
+            entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
             # The user's `/model opus`, then `/model sonnet`.
             entry("main", OPUS_ID, OPUS_ID, MAIN_USAGE),
             entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE),
@@ -204,11 +201,14 @@ class TestUsageSavings:
         assert priced(usage, price_cache, first_prompt=True) == saved("$0.23", "47%")
 
     @pytest.mark.parametrize("start_model", [None, ""])
-    def test_first_prompt_routing_without_a_start_model_has_no_estimate(
+    def test_legacy_first_prompt_routing_without_a_start_model_has_no_estimate(
         self, tmp_path, price_cache, start_model
     ):
-        entries = [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)]
+        entries = [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True)]
         usage = write_usage(tmp_path, entries, start_model=start_model)
+        document = json.loads(usage.read_text())
+        document["version"] = 1
+        usage.write_text(json.dumps(document))
 
         assert priced(usage, price_cache, first_prompt=True) is None
 
@@ -554,6 +554,75 @@ def test_zero_counts_and_absent_optional_counts_remain_priceable(tmp_path, price
     assert result.returncode == 0, result.stderr
     assert decoded_savings(result.stdout) == saved("$0.18", "60%")
     assert json.loads(usage.read_bytes()) == json.loads(snapshot)
+
+
+@pytest.mark.parametrize("first_prompt", [False, True])
+def test_legacy_ambiguous_baseline_does_not_depend_on_launch_mode(
+    tmp_path, price_cache, first_prompt
+):
+    usage = write_usage(
+        tmp_path, [entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True)]
+    )
+    document = json.loads(usage.read_text())
+    document["version"] = 1
+    usage.write_text(json.dumps(document))
+    before = usage.read_bytes()
+    assert priced(usage, price_cache, first_prompt=first_prompt) is None
+    assert usage.read_bytes() == before
+
+
+@pytest.mark.parametrize("first_prompt", [False, True])
+@pytest.mark.parametrize(
+    "agent,routed,before,baseline",
+    [
+        ("main", False, True, OPUS_ID),
+        ("main", False, False, SONNET_ID),
+        ("child", False, True, SONNET_ID),
+    ],
+)
+def test_legacy_unambiguous_baseline_remains_priceable(
+    tmp_path, price_cache, first_prompt, agent, routed, before, baseline
+):
+    historical = entry(agent, baseline, SONNET_ID, MAIN_USAGE, before_user_switch=before)
+    historical["routed"] = routed
+    usage = write_usage(
+        tmp_path,
+        [historical, entry("routed", OPUS_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True)],
+    )
+    document = json.loads(usage.read_text())
+    document["version"] = 1
+    usage.write_text(json.dumps(document))
+    assert priced(usage, price_cache, first_prompt=first_prompt) is not None
+    assert priced(usage, price_cache, first_prompt=first_prompt) == priced(
+        usage, price_cache, first_prompt=not first_prompt
+    )
+
+
+@pytest.mark.parametrize("first_prompt", [False, True])
+def test_resumed_presets_keep_each_recorded_baseline(tmp_path, price_cache, first_prompt):
+    entries = [
+        entry("main", OPUS_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
+        entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
+    ]
+    usage = write_usage(tmp_path, entries)
+    expected = priced(usage, price_cache, first_prompt=first_prompt)
+    assert expected is not None
+    assert priced(usage, price_cache, first_prompt=not first_prompt) == expected
+    document = json.loads(usage.read_text())
+    document["entries"].append(entry("child", SONNET_ID, OPUS_ID, SUBAGENT_USAGE))
+    usage.write_text(json.dumps(document))
+    assert priced(usage, price_cache, first_prompt=first_prompt) == priced(
+        usage, price_cache, first_prompt=not first_prompt
+    )
+
+
+@pytest.mark.parametrize("pending", [1, True, -1, 0.5])
+def test_pending_or_malformed_request_counts_hide_the_estimate(tmp_path, price_cache, pending):
+    usage = write_usage(tmp_path, [entry("child", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+    document = json.loads(usage.read_text())
+    document["pending_steps"] = pending
+    usage.write_text(json.dumps(document))
+    assert priced(usage, price_cache) is None
 
 
 def test_native_session_storage_is_durable_and_workspace_scoped(tmp_path):

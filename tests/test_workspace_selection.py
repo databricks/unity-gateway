@@ -324,7 +324,7 @@ class TestHelperArgv:
 
 
 class TestEndpointRatesTransport:
-    def fetch(self, transport, home, models, workspace=WORKSPACE):
+    def fetch(self, transport, home, models, workspace=WORKSPACE, selected=WORKSPACE):
         result = subprocess.run(
             [
                 sys.executable,
@@ -337,7 +337,7 @@ class TestEndpointRatesTransport:
             ],
             input=json.dumps(
                 {
-                    "selected": WORKSPACE,
+                    "selected": selected,
                     "workspace_id": WSID,
                     "workspace": workspace,
                     "token": SYNTHETIC_BEARER,
@@ -354,10 +354,17 @@ class TestEndpointRatesTransport:
         return json.loads(result.stdout)
 
     @pytest.mark.parametrize(
-        "workspace,selectors",
-        [(WORKSPACE + ":8443", SELECTOR), (WORKSPACE + "?w=111", SELECTOR), (OTHER_WORKSPACE, {})],
+        "workspace,selected,selectors",
+        [
+            (WORKSPACE + ":8443", WORKSPACE, {}),
+            (WORKSPACE + ":8443?w=111", WORKSPACE + ":8443", SELECTOR),
+            (WORKSPACE + "?w=111", WORKSPACE, SELECTOR),
+            (OTHER_WORKSPACE, WORKSPACE, {}),
+        ],
     )
-    def test_repeated_names_and_host_scoped_workspace_headers(self, tmp_path, workspace, selectors):
+    def test_repeated_names_and_host_scoped_workspace_headers(
+        self, tmp_path, workspace, selected, selectors
+    ):
         names = ["system.ai.claude-haiku-4-5", "system.ai.claude-sonnet-4-6"]
         rates = [{"model_service": names[0]}]
         with EndpointRatesTransport(tmp_path / "tls", {"model_service_rates": rates}) as transport:
@@ -366,8 +373,11 @@ class TestEndpointRatesTransport:
                 tmp_path / "home",
                 [names[1], "custom.model", names[0], names[1]],
                 workspace,
+                selected,
             ) == [rates, None]
-        assert transport.targets == [f"{urlsplit(workspace).hostname}:443"]
+        assert transport.targets == [
+            f"{urlsplit(workspace).hostname}:{urlsplit(workspace).port or 443}"
+        ]
         assert len(transport.requests) == 1
         request = transport.requests[0]
         url = urlsplit(request["path"])
@@ -379,6 +389,21 @@ class TestEndpointRatesTransport:
         assert {name: request["headers"].get(name.lower()) for name in SELECTOR} == {
             name: selectors.get(name) for name in SELECTOR
         }
+
+    def test_endpoint_rates_preserve_http_origin(self, monkeypatch):
+        seen = []
+
+        def get(url, token, *, timeout):
+            seen.append(url)
+            return {"model_service_rates": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        assert db_mod.fetch_endpoint_rates(
+            "http://rates.test:8080?w=111", SYNTHETIC_BEARER, ["system.ai.claude-haiku-4-5"]
+        ) == ([], None)
+        assert seen[0].startswith(
+            "http://rates.test:8080/api/ai-gateway/v2/endpoint-rates:batchGet?"
+        )
 
     def test_ineligible_models_make_no_request(self, tmp_path):
         with EndpointRatesTransport(tmp_path / "tls", {}) as transport:

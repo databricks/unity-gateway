@@ -30,7 +30,7 @@ from ucode.smart_routing.pricing import (
 
 MODULE = "ucode.smart_routing.savings"
 USAGE_FILENAME = "savings-usage.json"
-_USAGE_VERSION = 1
+_USAGE_VERSION = 2
 _CENT = Decimal("0.01")
 
 
@@ -104,19 +104,21 @@ def usage_savings(
     mod's format at all is an error, not an empty estimate.
     """
     document = json.loads(usage_path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("version") != _USAGE_VERSION:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("version")) is not int
+        or document["version"] not in (1, _USAGE_VERSION)
+    ):
         raise ValueError(f"unsupported savings usage file: {usage_path}")
     entries = document.get("entries")
     if not isinstance(entries, list):
         raise ValueError(f"unsupported savings usage file: {usage_path}")
-    if document.get("incomplete_usage") is True:
+    pending = document.get("pending_steps", 0)
+    if document.get("incomplete_usage") is True or type(pending) is not int or pending != 0:
         return None
-    fixed_baseline = None
-    if baseline_session_start:
-        start = document.get("start_model")
-        if not isinstance(start, str) or not start:
-            return None
-        fixed_baseline = start
+    # The launch flag still tells the mod which baseline to capture for new requests.
+    # It cannot reinterpret a saved request after a preset change.
+    _ = baseline_session_start
     cached = read_price_cache_with_expiry(price_cache)
     if cached is None:
         return None
@@ -144,8 +146,12 @@ def usage_savings(
         baseline = entry.get("baseline")
         if agent != "main" and not routed:
             baseline = served
-        elif fixed_baseline is not None and entry.get("before_user_switch") is True:
-            baseline = fixed_baseline
+        elif (
+            document["version"] == 1
+            and entry.get("before_user_switch") is not False
+            and baseline != document.get("start_model")
+        ):
+            return None
         if not isinstance(baseline, str) or not baseline:
             return None
         served_key, baseline_key = model_key(served), model_key(baseline)
@@ -213,8 +219,11 @@ def main(argv: list[str] | None = None) -> int:
             document = json.loads(sys.stdin.buffer.read())
             if (
                 not isinstance(document, dict)
-                or document.get("version") != _USAGE_VERSION
+                or type(document.get("version")) is not int
+                or document["version"] not in (1, _USAGE_VERSION)
                 or not isinstance(document.get("entries"), list)
+                or type(document.get("pending_steps", 0)) is not int
+                or document.get("pending_steps", 0) < 0
                 or any(
                     not isinstance(entry, dict) or not _valid_token_usage(entry.get("usage"))
                     for entry in document["entries"]

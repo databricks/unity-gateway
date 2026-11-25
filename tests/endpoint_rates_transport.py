@@ -91,7 +91,7 @@ class EndpointRatesTransport:
 
             def do_CONNECT(self):
                 fixture.targets.append(self.path)
-                if self.path not in {"rates.test:443", "other.test:443"}:
+                if self.path not in {"rates.test:443", "rates.test:8443", "other.test:443"}:
                     self.send_error(502, "Unexpected destination")
                     return
                 self.send_response(200)

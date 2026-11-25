@@ -185,7 +185,7 @@ def test_savings_mod_resolves_the_starting_alias(native_binary, tmp_path, alias,
     assert recorded["start_model"] in expected_models
     assert isinstance(recorded["session_id"], str) and recorded["session_id"]
     assert recorded == {
-        "version": 1,
+        "version": 2,
         "session_id": recorded["session_id"],
         "start_model": recorded["start_model"],
         "main_model": None,
@@ -193,6 +193,7 @@ def test_savings_mod_resolves_the_starting_alias(native_binary, tmp_path, alias,
         "first_prompt_seen": False,
         "user_switched": False,
         "incomplete_usage": False,
+        "pending_steps": 0,
         "entries": [],
     }
 
@@ -477,6 +478,7 @@ def test_savings_baseline_survives_routed_replay_and_later_model_change(
     earlier = next(entry for entry in recorded["entries"] if entry["before_user_switch"])
     assert first["entries"] == [earlier]
     assert earlier["before_user_switch"] is True
+    assert earlier["baseline"] == selected
     current = next(entry for entry in recorded["entries"] if not entry["before_user_switch"])
     assert current["served"] == current["baseline"] == (routed if accounting_off else later)
 

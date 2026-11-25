@@ -372,12 +372,13 @@ skill version. Rate refresh runs in the background and is scoped to the workspac
 Routed children use the main model selected when they run as their baseline.
 Unrouted children contribute their actual cost to both totals, without a routing saving.
 First-prompt routing keeps the pre-routing baseline for main and routed-child work
-until the user changes the main model. Later model changes affect subsequent usage only.
-Totals and baselines are saved by workspace and native session. They survive mod reloads
+until the user changes the main model. Each request keeps its baseline across model and
+preset changes. Totals and baselines are saved by workspace and native session. They survive mod reloads
 and exiting and reopening with `ug claude --resume`. `/clear` starts fresh accounting;
 resuming a different session restores that session's own totals. Legacy totals without a session
-identity or child routing attribution are retained but hide the estimate. Missing or expired rates, incomplete usage (including interrupted requests
-without usage), and failed usage writes also hide it without blocking model requests.
+identity, child routing attribution, or an unambiguous baseline are retained but hide
+the estimate. Missing or expired rates, incomplete usage (including requests still
+pending when the process exits), and failed usage writes also hide it without blocking model requests.
 Rates expire after 24 hours; a visible row disappears when any rate it uses expires.
 Totals are retained, and a later priced turn can restore the row. Turning routing off
 still saves earlier accepted usage. Launches with savings disabled write no usage

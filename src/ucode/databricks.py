@@ -3174,7 +3174,7 @@ def fetch_endpoint_rates(
     if not names:
         return [], "no system.ai model services to price"
     query = urlencode([("databricks_hosted_model_services", name) for name in names])
-    url = f"https://{workspace_hostname(workspace)}{_ENDPOINT_RATES_API_PATH}?{query}"
+    url = f"{workspace_origin(workspace)}{_ENDPOINT_RATES_API_PATH}?{query}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if reason is not None:
         return [], reason
