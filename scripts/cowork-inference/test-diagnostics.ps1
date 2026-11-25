@@ -17,6 +17,7 @@ try {
         @{ input = "pat $fakePat end"; expected = 'pat [REDACTED] end' },
         @{ input = 'Authorization: Bearer unrelated-token'; expected = 'Authorization: Bearer [REDACTED]' },
         @{ input = 'token=eyJhbGci.eyJzdWI.signature'; expected = 'token=[REDACTED]' },
+        @{ input = 'callback ?code=synthetic-code&state=synthetic-state'; expected = 'callback ?code=[REDACTED]&state=[REDACTED]' },
         @{ input = 'Claude responded: 48213'; expected = 'Claude responded: 48213' },
         @{ input = ''; expected = '' }
     )

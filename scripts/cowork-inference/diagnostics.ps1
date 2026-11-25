@@ -11,6 +11,7 @@ function Protect-DiagnosticText {
     $Text = $Text -replace '\bdapi[0-9a-f]{32}(-\d+)?\b', '[REDACTED]'
     $Text = $Text -replace '(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+', 'Bearer [REDACTED]'
     $Text = $Text -replace '\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED]'
+    $Text = $Text -replace '(?i)([?&](?:code|state)=)[^&#\s"''<>]+', '$1[REDACTED]'
     return $Text
 }
 

@@ -452,6 +452,8 @@ print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary
         try:
             env = {
                 **os.environ,
+                "HOME": str(tmp_path),
+                "USERPROFILE": str(tmp_path),
                 "UG_NO_POOLED_HTTP": "1" if disable_pool else "0",
                 "SSL_CERT_FILE": str(ca / tls_ca.CA_CERTIFICATE),
                 "NO_PROXY": "localhost,127.0.0.1",
@@ -460,6 +462,7 @@ print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary
                 "http_proxy": "",
                 "https_proxy": "",
             }
+            env.pop("UG_TLS_TRUST_STORE", None)
             result = subprocess.run(
                 [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/validate"],
                 env=env,
