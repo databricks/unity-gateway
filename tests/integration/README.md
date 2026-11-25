@@ -467,6 +467,9 @@ reads the elevated mode saved by the app after success, without writing native s
 depending on the transient success banner, and retains early MCP/setup diagnostics in evidence.
 After setup's app-server restart, a visible readiness error gets one Try again recheck before
 Send. A persistent error fails; this does not resubmit a task or change sandbox permissions.
+Before sending its prompt, the Windows skill journey waits up to 120 seconds for the app's
+first-launch runtime install to report `installed`, because the app restarts MCP servers when
+the install finishes.
 Both platforms wait for the typed draft, click Send, and require the user prompt in the native
 rollout before the answer wait. The GUI prompt names only the skill. Success requires the token on screen,
 a completed Codex Desktop/Databricks turn on the managed model, and native `McpToolCall`

@@ -122,11 +122,13 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
     configure/add. The app and MCP use that token profile with no inherited bearer override.
     Browser OAuth and refresh are not covered. The skill reference supplies the hidden query and token.
     The app displays that token and its Databricks-backed completed turn records successful
-    native MCP web_search receipts with the exact query on the managed model. User onboarding,
-    Windows sandbox setup and Send use visible controls; the rollout must record the prompt
+    native MCP web_search receipts with the exact query on the managed model; every matching
+    call must succeed. User onboarding, Windows sandbox setup and Send use visible controls;
+    the rollout must record the prompt
     before the answer wait. Setup must save elevated sandbox mode; readiness errors get their
-    visible recheck at the setup screen and after the app-server restart, before Send. The
-    expected search is
+    visible recheck at the setup screen and after the app-server restart, before Send. Within
+    120 seconds, the app's first-launch runtime install must report installed before the prompt,
+    because it restarts MCP servers when the install finishes. The expected search is
     approved with Allow once; no approval/config
     state is seeded. UC skill downloads, connector
     browser sign-in and built-in web search are outside this journey.
@@ -165,6 +167,7 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
             wait_for_windows_sandbox(app, timeout=max(0, deadline - time.monotonic()))
             app.mark_setup_phase("sandbox-mode-observed")
             app.wait_for_setup_restart(checkpoint, deadline)
+            app.wait_for_runtime_install(time.monotonic() + 120)
             app.mark_setup_phase("first-interaction-start")
             app.click("ControlType.Edit", None)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."

@@ -352,6 +352,14 @@ def _capture_app_log(
                     event["process_started_at"] = _windows_process_start(pid)
                 except OSError as error:
                     event["process_start_error"] = str(error)
+            elif re.search(r"\bprimary_runtime_install_call_outcome\b", line) and (
+                match := re.search(r"(?:^|\s)outcome=([A-Za-z0-9_-]{1,64})(?:\s|$)", line)
+            ):
+                event = {
+                    "event": "primary-runtime-install-outcome",
+                    "observed_at": observed_at,
+                    "outcome": match.group(1),
+                }
             elif match := re.search(
                 r"method=windowsSandbox/(readiness|setupStart|setupComplete)\b", line
             ):
@@ -717,6 +725,24 @@ class WindowsApp:
                     raise AssertionError(
                         "The post-setup restart did not reach connected model discovery"
                     )
+                self.setup_condition.wait(remaining)
+
+    def wait_for_runtime_install(self, deadline: float) -> None:
+        checkpoint = 0
+        with self.setup_condition:
+            while True:
+                for event in self.setup_events[checkpoint:]:
+                    if event.get("event") == "primary-runtime-install-outcome":
+                        outcome = event["outcome"]
+                        assert outcome == "installed", (
+                            f"First-launch runtime install outcome: {outcome}"
+                        )
+                        self.mark_setup_phase("runtime-install-complete")
+                        return
+                checkpoint = len(self.setup_events)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError("The app never finished its first-launch runtime install")
                 self.setup_condition.wait(remaining)
 
     def read_tree(self) -> list[list[str]]:
