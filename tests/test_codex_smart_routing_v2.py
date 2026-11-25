@@ -13,6 +13,11 @@ import pytest
 
 from ucode import agents, codex_config, custom_oauth, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
+from ucode.constants import (
+    ISAAC_LAUNCH_MODE_ENV_VAR,
+    ISAAC_OMNI_LAUNCH_MODE,
+    UG_ROUTE_VALIDATION_ENV_VAR,
+)
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
@@ -431,6 +436,7 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
+    @pytest.mark.parametrize("omnigent", [False, True], ids=["cli", "omnigent"])
     @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize("first_prompt", [False, True])
     @pytest.mark.parametrize(
@@ -439,7 +445,7 @@ class TestLaunchCodex:
         ids=["default-model", "split-model", "equals-model", "short-model"],
     )
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, tmp_path, monkeypatch, platform_name, first_prompt, model_args
+        self, tmp_path, monkeypatch, platform_name, first_prompt, model_args, omnigent
     ):
         processes = []
         interposer_args = {}
@@ -454,7 +460,9 @@ class TestLaunchCodex:
             return {"is_supported": True}, None
 
         monkeypatch.setattr(v2.route_validation, "_http_post_json", validate)
-        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        monkeypatch.setenv(UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        if omnigent:
+            monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -528,7 +536,7 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 7
-        assert startup_check_sent.wait(3)
+        assert startup_check_sent.wait(3) is not omnigent
         validation_body = {
             "route_options": [
                 {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
@@ -537,7 +545,9 @@ class TestLaunchCodex:
             "route_selector": {"router_name": v2.routing.configured_router_name()},
         }
         provider_header = {v2.route_validation.MODEL_PROVIDER_SERVICE_HEADER: "provider-a"}
-        assert validation_requests == [("token-1", validation_body, provider_header)]
+        assert validation_requests == (
+            [] if omnigent else [("token-1", validation_body, provider_header)]
+        )
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
@@ -664,10 +674,14 @@ class TestLaunchCodex:
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == ("0" if first_prompt else "1")
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
-        assert interposer_args["kwargs"]["validate_model_list"]() == {"routing_disabled": False}
-        assert validation_requests[1:] == [
-            (f"token-{len(token_calls)}", validation_body, provider_header)
-        ]
+        if omnigent:
+            assert interposer_args["kwargs"]["validate_model_list"] is None
+            assert validation_requests == []
+        else:
+            assert interposer_args["kwargs"]["validate_model_list"]() == {"routing_disabled": False}
+            assert validation_requests[1:] == [
+                (f"token-{len(token_calls)}", validation_body, provider_header)
+            ]
         assert stopped == [True]
         assert processes[0].terminated is True
 

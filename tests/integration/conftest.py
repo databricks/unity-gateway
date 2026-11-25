@@ -189,8 +189,51 @@ def session(request, installed_binary):
                 if value := os.environ.get(key):
                     user.env[key] = value
             user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        provisioning_before = None
+        if request.node.get_closest_marker("windows_desktop"):
+            from utils.windows_app import windows_sandbox_provisioning_snapshot
+
+            provisioning_before = windows_sandbox_provisioning_snapshot(user.home)
         try:
-            yield user
+            try:
+                yield user
+            finally:
+                if request.node.get_closest_marker("windows_desktop"):
+                    from utils.windows_app import (
+                        record_windows_proxy_diagnostics,
+                        record_windows_sandbox_selection,
+                    )
+
+                    record_windows_sandbox_selection(user)
+                    record_windows_proxy_diagnostics(user)
+                    user.record(
+                        "windows-sandbox-provisioning.json",
+                        {
+                            "before": provisioning_before,
+                            "after": windows_sandbox_provisioning_snapshot(user.home),
+                        },
+                    )
+                if os.environ.get("UG_MODEL_LEDGER"):
+                    from utils.traffic_ledger import record_case_usage
+
+                    workspace_label = (
+                        None
+                        if request.node.get_closest_marker("workspace_switch")
+                        else "staging"
+                        if os.environ.get("UG_MODEL_LEDGER") == "staging"
+                        else "managed-primary"
+                    )
+                    try:
+                        record_case_usage(user, workspace=workspace_label)
+                    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                        user.record(
+                            "model-ledger.json",
+                            {
+                                "coverage": "unmapped",
+                                "responses": [],
+                                "error": type(error).__name__,
+                            },
+                        )
         finally:
             try:
                 # Restore machine-level settings through the same public CLI that
@@ -230,6 +273,16 @@ def live_session(session, workspace):
             pytest.fail(f"Required integration binary is missing: {binary}")
     session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_BEARER"]
     return session
+
+
+@pytest.fixture
+def version_aware_codex_session(live_session):
+    old_bin = os.environ.get("UG_INTEGRATION_OLD_CODEX_BIN_DIR")
+    if os.environ.get("UG_MODEL_LEDGER") == "smart":
+        assert old_bin, "The smart lane requires its isolated old Codex prefix"
+    if old_bin:
+        live_session.env["PATH"] = os.pathsep.join((old_bin, live_session.env["PATH"]))
+    return live_session
 
 
 @pytest.fixture(scope="session")

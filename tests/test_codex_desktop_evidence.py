@@ -1,11 +1,19 @@
 """Reject false positives in the native desktop skill/MCP evidence checks."""
 
 import copy
+import io
+import json
+import re
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 
-from tests.integration.utils import codex_desktop
+from tests.integration.utils import codex_desktop, windows_app
 from tests.integration.utils.codex_desktop import (
     MCP_SERVER,
     SKILL_NAME,
@@ -16,6 +24,630 @@ from tests.integration.utils.codex_desktop import (
 QUERY = "Databricks Unity Catalog documentation a13b42"
 MARKER = "b39c21"
 MODEL = "system.ai.gpt-5-6-sol"
+
+
+def test_persistent_windows_uia_protocol_preserves_process_and_errors():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " r=json.loads(line)\n"
+        " print(json.dumps({'ok':r['command'] != 'bad', 'output':str(len(r['args'])), "
+        "'error':'bad command'}),flush=True)\n"
+    )
+    client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        pid = client.proc.pid
+        assert client.request("tree") == "0"
+        assert client.request("type", "private input", "enter") == "2"
+        assert client.proc.pid == pid
+        with pytest.raises(AssertionError, match="bad command"):
+            client.request("bad")
+    finally:
+        client.close()
+    assert client.proc.poll() is not None
+
+
+def test_persistent_uia_reports_closed_input_and_preserves_stderr(monkeypatch):
+    helper = "import sys; print('helper evidence', file=sys.stderr, flush=True)"
+    client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        client.proc.wait(timeout=5)
+        client.ready = True
+        # Model an exit immediately after a successful liveness check.
+        monkeypatch.setattr(client.proc, "poll", lambda: None)
+        with pytest.raises(AssertionError, match="helper input closed"):
+            client.request("tree")
+        assert client.broken
+    finally:
+        client.close()
+    assert "helper evidence" in client.stderr_output
+
+
+def test_persistent_uia_preserves_helper_stderr_after_exit():
+    helper = "import sys; print('startup failed', file=sys.stderr)"
+    client = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        client.proc.wait(timeout=5)
+    finally:
+        client.close()
+    assert "startup failed" in client.stderr_output
+
+
+def test_persistent_uia_waits_for_helper_ready_before_sending_command():
+    class Responses:
+        def __init__(self):
+            self.messages = iter(
+                [
+                    '{"event":"ready","metrics":{"init_ms":12}}',
+                    '{"ok":true,"output":"1","error":"","metrics":{"wait_ms":3}}',
+                ]
+            )
+            self.timeouts = []
+
+        def get(self, timeout):
+            self.timeouts.append(timeout)
+            return next(self.messages)
+
+    client = object.__new__(windows_app.WindowsUIAProcess)
+    client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    client.responses = Responses()
+    client.broken = False
+    client.ready = False
+    client.started = windows_app.time.monotonic()
+    assert client.request("wait", "ControlType.Text", "Ready", "30") == "1"
+    assert client.responses.timeouts == [60, 35]
+    assert client.last_metrics["init_ms"] == 12
+    assert client.last_metrics["wait_ms"] == 3
+
+
+def test_persistent_uia_timeout_cannot_reuse_a_stale_response():
+    class Responses:
+        def get(self, timeout):
+            raise windows_app.queue.Empty
+
+    client = object.__new__(windows_app.WindowsUIAProcess)
+    client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    client.responses = Responses()
+    client.stderr = io.StringIO("uia phase=find-descendants\n")
+    client.broken = False
+    client.ready = True
+    client.init_metrics = {}
+    with pytest.raises(AssertionError, match="did not respond") as error:
+        client.request("tree")
+    assert isinstance(error.value, subprocess.TimeoutExpired)
+    assert error.value.stderr == "uia phase=find-descendants\n"
+    with pytest.raises(AssertionError, match="unavailable"):
+        client.request("tree")
+
+
+def test_persistent_uia_wait_keeps_the_original_timeout():
+    class Responses:
+        timeout = 0
+
+        def get(self, timeout):
+            self.timeout = timeout
+            return '{"ok":true,"output":"1","error":""}'
+
+    client = object.__new__(windows_app.WindowsUIAProcess)
+    client.proc = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    client.responses = Responses()
+    client.broken = False
+    client.ready = True
+    client.init_metrics = {}
+    assert client.request("wait", "ControlType.Text", "answer", "240") == "1"
+    assert client.responses.timeout >= 240
+
+
+def test_windows_click_uses_single_native_condition_wait():
+    app = object.__new__(windows_app.WindowsApp)
+    actions = []
+    app.uia = lambda *args: actions.append(args)
+    app.click("ControlType.Button", "Continue", timeout=17)
+    assert actions == [("click", "ControlType.Button", "Continue", "17")]
+
+
+def test_windows_failed_native_click_records_accessibility_tree():
+    app = object.__new__(windows_app.WindowsApp)
+    app.name = "chatgpt"
+    evidence = {}
+    app.session = SimpleNamespace(record=lambda name, value: evidence.update({name: value}))
+    app.read_tree = lambda: [["ControlType.Text", "stuck", ""]]
+
+    def fail(*args):
+        raise AssertionError("target unavailable")
+
+    app.uia = fail
+    with pytest.raises(AssertionError, match="target unavailable"):
+        app.click("ControlType.Button", "Continue")
+    assert evidence["chatgpt-tree.json"]["tree"] == [["ControlType.Text", "stuck", ""]]
+
+
+def test_windows_uia_uses_persistent_client_for_each_action():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " r=json.loads(line)\n"
+        " print(json.dumps({'ok':True, 'output':r['command'], 'error':''}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        assert app.uia("tree") == "tree"
+        assert app.uia("type", "hello", "enter") == "type"
+    finally:
+        app.uia_process.close()
+    assert [row["action"] for row in app.timings] == ["tree", "type"]
+
+
+def test_windows_uia_records_native_click_poll_count():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " print(json.dumps({'ok':True, 'output':'3', 'error':'', "
+        "'metrics':{'init_ms':11, 'wait_ms':22, 'click_ms':3, 'secret':'private'}}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        app.click("ControlType.Button", "Continue")
+    finally:
+        app.uia_process.close()
+    assert app.timings[0]["polls"] == 3
+    assert app.timings[0]["init_ms"] == 11
+    assert app.timings[0]["wait_ms"] == 22
+    assert app.timings[0]["click_ms"] == 3
+    start = datetime.fromisoformat(app.timings[0]["started_at"])
+    end = datetime.fromisoformat(app.timings[0]["ended_at"])
+    assert start.utcoffset().total_seconds() == end.utcoffset().total_seconds() == 0
+    assert start <= end
+    assert "Continue" not in repr(app.timings) and "private" not in repr(app.timings)
+
+
+def test_restart_experiment_requires_post_setup_start_connected_and_model_list():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [
+        {"event": "start_process"},
+        {"event": "connected"},
+        {"event": "model/list"},
+        {"event": "setupStart", "error_code": "null"},
+        {"event": "start_process"},
+        {"event": "connected"},
+        {"event": "model/list"},
+    ]
+    app.timings = []
+    app.wait_for_setup_restart(3, time.monotonic() + 1)
+    assert app.timings[-1]["phase"] == "restart-experiment-gate-open"
+
+
+def test_restart_experiment_rejects_stale_or_out_of_order_responses():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [
+        {"event": "setupStart", "error_code": "null"},
+        {"event": "connected"},
+        {"event": "model/list"},
+        {"event": "start_process"},
+        {"event": "connected"},
+        {"event": "stop_process"},
+        {"event": "model/list"},
+    ]
+    app.timings = []
+    with pytest.raises(AssertionError, match="post-setup restart"):
+        app.wait_for_setup_restart(0, time.monotonic())
+
+
+def test_restart_experiment_reports_identity_errors_relative_to_first_interaction():
+    timings = [
+        {"phase": "restart-experiment-gate-open", "started_at": "2026-11-25T00:00:01+00:00"},
+        {"phase": "first-interaction-start", "started_at": "2026-11-25T00:00:02+00:00"},
+    ]
+    events = [
+        {"event": "identity-not-ready", "observed_at": "2026-11-25T00:00:00+00:00"},
+        {"event": "identity-not-ready", "observed_at": "2026-11-25T00:00:02.250+00:00"},
+    ]
+    result = windows_app._restart_experiment_summary(timings, events)
+    assert result["identity_not_ready_after_gate"] == [
+        {"observed_at": "2026-11-25T00:00:02.250+00:00", "relative_to_first_interaction_ms": 250}
+    ]
+    assert result["gate_opened"] is True
+
+
+def test_windows_setup_banner_wait_has_a_utc_boundary():
+    app = object.__new__(windows_app.WindowsApp)
+    app.timings = []
+    app.mark_setup_phase("banner-wait-start")
+    entry = app.timings[0]
+    assert entry["action"] == "setup-phase" and entry["phase"] == "banner-wait-start"
+    assert datetime.fromisoformat(entry["started_at"]).utcoffset().total_seconds() == 0
+
+
+def test_windows_picker_trace_is_forwarded_to_the_helper():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " request=json.loads(line)\n"
+        " print(json.dumps({'ok':True,'output':'1','error':'','metrics':{},"
+        "'diagnostics':{'picker':request['args'][-1]}}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        app.click("ControlType.Button", "picker", trace_picker=True)
+    finally:
+        app.uia_process.close()
+    assert app.timings[0]["diagnostics"] == {"picker": "picker"}
+
+
+def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):
+    monkeypatch.setenv("UG_UIA_BASELINE_SAMPLE", "1")
+    monkeypatch.setattr(windows_app.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        windows_app.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0),
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(pid=123)
+    app.powershell = "powershell"
+    app.uia = lambda command: "ControlType.Text\tReady\t"
+    app.baseline_sampled = False
+    app.timings = []
+    assert app.read_tree() == [["ControlType.Text", "Ready", ""]]
+    assert app.read_tree() == [["ControlType.Text", "Ready", ""]]
+    assert len(calls) == 1
+    assert app.timings[0]["action"] == "legacy_tree_sample"
+    assert app.timings[0]["returncode"] == 0
+
+
+def test_windows_sandbox_diagnostic_records_only_selection_and_availability(tmp_path):
+    directory = tmp_path / ".codex" / ".sandbox"
+    directory.mkdir(parents=True)
+    log = directory / "sandbox.2026-11-25.log"
+    selected = "[2026-11-25 12:34:56.789 codex.exe] Windows sandbox selection: unelevated"
+    available = "[2026-11-25 12:34:56.790 codex.exe] MXC availability: false"
+    log.write_text(
+        "\n".join(
+            [
+                selected,
+                "[2026-11-25 12:34:56.789 codex.exe] token=secret",
+                selected + " token=secret",
+                available,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    evidence = {}
+    session = SimpleNamespace(
+        home=tmp_path, record=lambda name, value: evidence.update({name: value})
+    )
+    windows_app.record_windows_sandbox_selection(session)
+    assert evidence["windows-sandbox-selection.json"] == {"lines": [selected, available]}
+    assert "secret" not in repr(evidence)
+
+
+def test_windows_provisioning_snapshot_excludes_credentials(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    (codex / ".sandbox").mkdir(parents=True)
+    (codex / ".sandbox-secrets").mkdir()
+    (codex / "config.toml").write_text(
+        '[windows]\nsandbox = "unelevated"\n[features]\nexperimental_windows_sandbox = true\n'
+        'elevated_windows_sandbox = false\n[other]\ntoken = "private-token"\n'
+    )
+    (codex / ".sandbox/setup_marker.json").write_text(
+        json.dumps({"version": 5, "offline_username": "private-name"})
+    )
+    (codex / ".sandbox-secrets/sandbox_users.json").write_text(
+        json.dumps({"version": 5, "offline": {"password": "private-password"}})
+    )
+    monkeypatch.setattr(
+        windows_app,
+        "_windows_machine_provisioning",
+        lambda home: {"offline": {"exists": True, "disabled": False}},
+        raising=False,
+    )
+    snapshot = windows_app.windows_sandbox_provisioning_snapshot(home)
+    assert snapshot["config"]["mode"] == "unelevated"
+    assert snapshot["config"]["features"] == {
+        "experimental_windows_sandbox": True,
+        "elevated_windows_sandbox": False,
+    }
+    assert snapshot["marker"]["version"] == snapshot["users_file"]["version"] == 5
+    assert snapshot["machine"]["offline"]["exists"] is True
+    assert datetime.fromisoformat(snapshot["observed_at"]).utcoffset().total_seconds() == 0
+    assert "private" not in repr(snapshot)
+
+
+def test_windows_registered_receipt_reports_only_provisioning_booleans(tmp_path):
+    receipt = {
+        "user_sid": "private-sid",
+        "codex_home": str(tmp_path / ".codex"),
+        "runtime": {
+            "ready_package": "private-package",
+            "retiring": None,
+            "accounts": [
+                {
+                    "account": "offline",
+                    "alias_path": "private-path",
+                    "cleanup_logon_pending": False,
+                },
+                {"account": "online", "alias_path": "private-path", "cleanup_logon_pending": True},
+            ],
+        },
+    }
+    result = windows_app._sandbox_receipt_state(json.dumps(receipt), tmp_path)
+    assert result == {
+        "exists": True,
+        "home_matches": True,
+        "ready_package_present": True,
+        "retiring": False,
+        "accounts": {
+            "offline": {"alias_present": True, "cleanup_pending": False},
+            "online": {"alias_present": True, "cleanup_pending": True},
+        },
+    }
+    assert "private" not in repr(result)
+
+
+def test_windows_machine_provisioning_reports_platform_state(tmp_path):
+    state = windows_app._windows_machine_provisioning(tmp_path)
+    if sys.platform == "win32":
+        assert "accounts" in state and "registration" in state
+    else:
+        assert state == {"status": "unsupported"}
+
+
+def test_windows_sandbox_account_state_reports_missing_account():
+    api = SimpleNamespace(NetUserGetInfo=lambda server, account, level, buffer: 2221)
+    assert windows_app._windows_sandbox_account(api, "CodexSandboxOffline") == {"exists": False}
+
+
+def test_windows_sandbox_account_reports_disabled_without_password():
+    import ctypes
+    from ctypes import wintypes
+
+    class UserInfo(ctypes.Structure):
+        _fields_ = [
+            ("name", wintypes.LPWSTR),
+            ("password", wintypes.LPWSTR),
+            ("password_age", wintypes.DWORD),
+            ("privilege", wintypes.DWORD),
+            ("home_dir", wintypes.LPWSTR),
+            ("comment", wintypes.LPWSTR),
+            ("flags", wintypes.DWORD),
+            ("script_path", wintypes.LPWSTR),
+        ]
+
+    info = UserInfo()
+    info.password = "private-password"
+    info.flags = 0x0002
+    freed = []
+
+    def get_info(server, account, level, output):
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(info)
+        return 0
+
+    api = SimpleNamespace(
+        NetUserGetInfo=get_info, NetApiBufferFree=lambda ptr: freed.append(ptr.value)
+    )
+    result = windows_app._windows_sandbox_account(api, "CodexSandboxOffline")
+    assert result == {"exists": True, "disabled": True}
+    assert freed == [ctypes.addressof(info)]
+    assert "private" not in repr(result)
+
+
+def test_windows_sandbox_account_empty_success_is_not_reported_as_ready():
+    api = SimpleNamespace(NetUserGetInfo=lambda server, account, level, buffer: 0)
+    assert windows_app._windows_sandbox_account(api, "CodexSandboxOffline") == {
+        "exists": None,
+        "error": "empty-response",
+    }
+
+
+def test_windows_sandbox_account_query_error_is_not_reported_as_absent():
+    api = SimpleNamespace(NetUserGetInfo=lambda server, account, level, buffer: 5)
+    assert windows_app._windows_sandbox_account(api, "CodexSandboxOffline") == {
+        "exists": None,
+        "error_code": 5,
+    }
+
+
+def test_windows_proxy_diagnostics_allowlist_traceback_without_credentials(tmp_path):
+    log = tmp_path / ".ucode/mcp-proxy/private-key/backend.log"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "C:/Users/private/site-packages/httpx2/_transports/default.py", line 115, in map_httpcore_exceptions\n'
+        '  File "C:/Users/private/site-packages/ucode/mcp_proxy.py", line 27, in run\n'
+        "httpx2.ConnectTimeout: private-token\n"
+        "ug mcp-proxy: upstream returned HTTP 429 private-token\n"
+        "ug mcp-proxy: backend exited with code 2 private-token\n"
+        "Authorization: Bearer private-token\n",
+        encoding="utf-8",
+    )
+    evidence = {}
+    session = SimpleNamespace(
+        home=tmp_path, record=lambda name, value: evidence.update({name: value})
+    )
+    windows_app.record_windows_proxy_diagnostics(session)
+    assert evidence["windows-mcp-proxy-diagnostics.json"] == {
+        "log_count": 1,
+        "events": [
+            {"kind": "traceback"},
+            {"kind": "frame", "package": "httpx2", "file": "default.py", "line": 115},
+            {"kind": "frame", "package": "ucode", "file": "mcp_proxy.py", "line": 27},
+            {"kind": "exception", "type": "httpx2.ConnectTimeout"},
+            {"kind": "http_status", "status": 429},
+            {"kind": "exit_code", "code": 2},
+        ],
+    }
+    assert "private" not in repr(evidence)
+
+
+def test_windows_app_records_provisioning_before_launch(tmp_path, monkeypatch):
+    evidence = {}
+    app = object.__new__(windows_app.WindowsApp)
+    app.session = SimpleNamespace(
+        home=tmp_path,
+        env={},
+        record=lambda name, value: evidence.update({name: value}),
+    )
+    app.name = "chatgpt"
+    app.version = "pinned"
+    app.executable = "app"
+    monkeypatch.setattr(
+        windows_app.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("no launch")),
+    )
+    with pytest.raises(OSError, match="no launch"):
+        app.__enter__()
+    assert evidence["windows-sandbox-prelaunch.json"]["config"]["exists"] is False
+
+
+def test_windows_app_log_preserves_and_timestamps_every_line(tmp_path):
+    log = tmp_path / "app.log"
+    windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log, [], threading.Condition())
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ first", lines[0])
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ second", lines[1])
+
+
+def test_app_log_records_sandbox_and_app_server_process_timestamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        windows_app,
+        "_windows_process_start",
+        lambda pid: "2026-11-25T00:00:00+00:00",
+        raising=False,
+    )
+    lines = (
+        "[StdioConnection] stdio_transport_spawned pid=42\n"
+        "[AppServerConnection] response_routed method=windowsSandbox/readiness errorCode=null\n"
+        "[AppServerConnection] response_routed method=windowsSandbox/setupStart errorCode=null\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=start_process hostId=remote\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=stop_process hostId=local\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=start_process hostId=local\n"
+        "[AppServerConnection] app_server_connection.state_changed hostId=local initialized=trueX next=connected\n"
+        "[AppServerConnection] app_server_connection.state_changed hostId=local initialized=true next=connectedX\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=post_initialize_connection_state hostId=remote initialized=true next=connected\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=post_initialize_connection_state hostId=local initialized=true next=connected\n"
+        "[AppServerConnection] response_routed method=model/list errorCode=BAD_REQUEST\n"
+        "[AppServerConnection] response_routed method=model/listExtra errorCode=null\n"
+        "[AppServerConnection] response_routed method=model/list errorCode=nullish\n"
+        "[AppServerConnection] response_routed method=model/list errorCode=null\n"
+        "Failed to load Windows sandbox readiness: Hosted AppServerManager identity is not ready\n"
+    )
+    events = []
+    windows_app._capture_app_log(
+        io.StringIO(lines), tmp_path / "app.log", events, threading.Condition()
+    )
+    assert [event["event"] for event in events] == [
+        "stdio-transport-spawn",
+        "readiness",
+        "setupStart",
+        "stop_process",
+        "start_process",
+        "connected",
+        "model/list",
+        "identity-not-ready",
+    ]
+    assert events[0]["pid"] == 42
+    assert events[0]["process_started_at"] == "2026-11-25T00:00:00+00:00"
+    assert all(
+        datetime.fromisoformat(event["observed_at"]).utcoffset().total_seconds() == 0
+        for event in events
+    )
+
+
+def test_windows_app_log_redacts_service_principal_secret(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "private-client-secret")
+    session = SimpleNamespace(redact=lambda text: text)
+    result = windows_app._redact_app_log(session, "error private-client-secret")
+    assert result == "error <redacted>"
+
+
+def test_windows_uia_timing_excludes_input_and_records_failed_actions():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " print(json.dumps({'ok':False, 'output':'', 'error':'failed'}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.name = "chatgpt"
+    app.timings = []
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        with pytest.raises(AssertionError, match="UI Automation type failed"):
+            app.uia("type", "private-prompt", "enter")
+    finally:
+        app.uia_process.close()
+    assert len(app.timings) == 1
+    assert app.timings[0]["action"] == "type"
+    assert app.timings[0]["seconds"] >= 0
+    assert "private-prompt" not in repr(app.timings)
+
+
+def test_windows_wait_uses_native_condition_and_returns_tree():
+    app = object.__new__(windows_app.WindowsApp)
+    app.name = "chatgpt"
+    actions = []
+    app.uia = lambda *args: actions.append(args) or "2"
+    app.read_tree = lambda: [["ControlType.Text", "Ready", ""]]
+    assert app.wait_for("ControlType.Text", "Ready", timeout=17) == [
+        ["ControlType.Text", "Ready", ""]
+    ]
+    assert actions == [("wait", "ControlType.Text", "Ready", "17")]
+
+
+def test_windows_wait_requires_the_returned_tree_to_contain_the_target():
+    app = object.__new__(windows_app.WindowsApp)
+    app.name = "chatgpt"
+    app.uia = lambda *args: "1"
+    app.read_tree = lambda: []
+    app.session = SimpleNamespace(record=lambda *args: None)
+    with pytest.raises(AssertionError, match="disappeared"):
+        app.wait_for("ControlType.Text", "Ready")
+
+
+def test_windows_wait_records_poll_count_without_control_text():
+    helper = (
+        "import json,sys\n"
+        "print(json.dumps({'event':'ready','metrics':{'init_ms':0}}),flush=True)\n"
+        "for line in sys.stdin:\n"
+        " print(json.dumps({'ok':True, 'output':'2', 'error':''}),flush=True)\n"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.proc = SimpleNamespace(poll=lambda: None, pid=123)
+    app.timings = []
+    app.name = "chatgpt"
+    app.read_tree = lambda: [["ControlType.Text", "private-label", ""]]
+    app.uia_process = windows_app.WindowsUIAProcess([sys.executable, "-u", "-c", helper])
+    try:
+        app.wait_for("ControlType.Text", "private-label")
+    finally:
+        app.uia_process.close()
+    assert app.timings[0]["action"] == "wait"
+    assert app.timings[0]["polls"] == 2
+    assert app.timings[0]["seconds"] >= 0
+    assert "private-label" not in repr(app.timings)
 
 
 @pytest.mark.parametrize("failure", [None, "configure", "identity"])
@@ -80,9 +712,12 @@ def test_windows_readiness_recheck_is_visible_and_bounded(state):
     assert clicks == ([] if state == "ready" else [("ControlType.Button", "Try again")])
 
 
-@pytest.mark.parametrize("state", ["banner", "recovers", "repeats", "stuck"])
-def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch):
+@pytest.mark.parametrize("state", ["banner", "recovers", "repeats", "stuck", "elevated"])
+def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch, tmp_path):
     monkeypatch.setattr(codex_desktop.time, "sleep", lambda seconds: None)
+    if state == "elevated":
+        (tmp_path / ".codex").mkdir()
+        (tmp_path / ".codex/config.toml").write_text('[windows]\nsandbox = "elevated"\n')
     banner = "Finish Windows setup to continue"
     error = [["ControlType.Text", "Couldn’t check Windows setup", ""]]
     ready = [["ControlType.Text", banner, ""]]
@@ -92,6 +727,8 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         "recovers": ([error, []], ready),
         "repeats": ([error, []], error),
         "stuck": ([], []),
+        # The app can finish setup after the recheck without ever showing the banner.
+        "elevated": ([error, []], []),
     }[state]
     trees = iter(first)
     clicks = []
@@ -100,7 +737,9 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         name="chatgpt",
         read_tree=lambda: next(trees, rest),
         click=lambda role, label: clicks.append((role, label)),
-        session=SimpleNamespace(record=lambda name, value: evidence.update({name: value})),
+        session=SimpleNamespace(
+            home=tmp_path, record=lambda name, value: evidence.update({name: value})
+        ),
     )
     if state in ("repeats", "stuck"):
         with pytest.raises(AssertionError, match="never showed"):
@@ -108,7 +747,7 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         assert evidence["chatgpt-tree.json"]["waiting_for"] == ["ControlType.Text", banner]
         assert evidence["chatgpt-tree.json"]["tree"] == rest
     else:
-        codex_desktop.wait_for_windows_setup(app, timeout=0.05)
+        assert codex_desktop.wait_for_windows_setup(app, timeout=0.05) == (state != "elevated")
     assert clicks == ([("ControlType.Button", "Try again")] if first else [])
 
 
