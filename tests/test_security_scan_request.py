@@ -14,6 +14,13 @@ BASE = "b" * 40
 RUN_ID = 123
 
 
+def test_scan_concurrency_isolates_each_ci_request():
+    workflow = WORKFLOW.read_text()
+    concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+    assert "group: security-scan-${{ github.event.workflow_run.id }}" in concurrency
+    assert "cancel-in-progress: true" in concurrency
+
+
 def _resolve(
     tmp_path,
     monkeypatch,

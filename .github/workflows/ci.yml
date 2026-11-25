@@ -141,6 +141,39 @@ jobs:
             --started "$BUDGET_JOB_STARTED" --run-started "${BUDGET_RUN_STARTED:-$BUDGET_JOB_STARTED}" \
             --ended "$(date +%s)" --changed-files "$changed"
 
+  managed-quota-probe:
+    name: Managed quota probe (advisory)
+    needs: [security-gate, integration]
+    if: ${{ always() && !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Managed quota probe (advisory)
+      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+      - *budget-setup-done
+      - name: Inspect limits and run the bounded probe
+        shell: bash
+        run: uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py | tee "$RUNNER_TEMP/managed-quota-probe.jsonl"
+      - name: Upload quota probe evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: managed-quota-probe
+          path: ${{ runner.temp }}/managed-quota-probe.jsonl
+      - *budget-check
+
   # Each shard runs its time-balanced files and chunks of the slow files (tests/shard.py), so the
   # shards together run every unit test once. Main uploads JUnit reports and coverage counts
   # so `Unit test times` can record fresh timings and prove nothing was missed.
@@ -186,6 +219,7 @@ jobs:
             "$VENV_BIN/python" -m pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
       - &unit-report
         name: Upload this shard's timings
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: unit-shard-${{ runner.os }}-${{ matrix.shard }}
@@ -265,8 +299,8 @@ jobs:
     env:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: Unit test times
-    if: ${{ !cancelled() }}
-    needs: [unit-linux, unit-windows]
+    if: ${{ !cancelled() && needs.security-gate.result == 'success' }}
+    needs: [security-gate, unit-linux, unit-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -318,8 +352,8 @@ jobs:
     env:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: VS Code extension
-    runs-on: ubuntu-latest
     needs: security-gate
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
@@ -458,8 +492,8 @@ jobs:
     env:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: All agent tests
-    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
-    needs: e2e-shards
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && needs.security-gate.result == 'success' }}
+    needs: [security-gate, e2e-shards]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -504,7 +538,7 @@ jobs:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: test
     if: ${{ !cancelled() }}
-    needs: [checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
+    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -518,6 +552,7 @@ jobs:
       - *budget-setup-done
       - name: Require checks, every unit shard, the coverage proof and the VS Code extension tests
         env:
+          GATE_RESULT: ${{ needs.security-gate.result }}
           COVERAGE_RESULT: ${{ needs.unit-test-times.result }}
           LINT_RESULT: ${{ needs.checks.result }}
           RESULT: ${{ needs.unit-linux.result }}
@@ -525,7 +560,7 @@ jobs:
           PROVISIONING_RESULT: ${{ needs.windows-provisioning.result }}
           VSCODE_EXTENSION_RESULT: ${{ needs.vscode-extension.result }}
         run: |
-          test "$LINT_RESULT" = success && test "$RESULT" = success &&
+          test "$GATE_RESULT" = success && test "$LINT_RESULT" = success && test "$RESULT" = success &&
             test "$WINDOWS_RESULT" = success && test "$PROVISIONING_RESULT" = success &&
             test "$VSCODE_EXTENSION_RESULT" = success && test "$COVERAGE_RESULT" = success
       - *budget-check
@@ -536,7 +571,7 @@ jobs:
       BUDGET_WORKFLOW: ci
       BUDGET_JOB_NAME: e2e
     if: ${{ always() && (github.event_name == 'pull_request' || !cancelled()) }}
-    needs: [e2e, integration]
+    needs: [security-gate, e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -551,7 +586,8 @@ jobs:
       - name: Require all agent and integration tests to pass
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GATE_RESULT: ${{ needs.security-gate.result }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }
+        run: test "$GATE_RESULT" = success && { test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }; }
       - *budget-check

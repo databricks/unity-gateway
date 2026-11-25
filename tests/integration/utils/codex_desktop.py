@@ -60,17 +60,12 @@ def finish_windows_readiness_check(app, timeout: float = 60) -> bool:
         time.sleep(2)
 
 
-def _windows_sandbox_mode(home: Path) -> tuple[str | None, str]:
-    path = home / ".codex/config.toml"
+def _windows_sandbox_mode(home: Path) -> str | None:
     try:
-        windows = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {})
-    except FileNotFoundError:
-        return None, "missing"
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-        return None, "unreadable"
-    if not isinstance(windows, dict):
-        return None, "invalid"
-    return windows.get("sandbox"), "readable"
+        text = (home / ".codex/config.toml").read_text(encoding="utf-8")
+        return tomllib.loads(text).get("windows", {}).get("sandbox")
+    except (FileNotFoundError, tomllib.TOMLDecodeError):
+        return None
 
 
 def wait_for_windows_setup(app, timeout: float = 60) -> bool:
@@ -89,8 +84,7 @@ def wait_for_windows_setup(app, timeout: float = 60) -> bool:
         tree = app.read_tree()
         if any(row[0] == "ControlType.Text" and banner in row[1:] for row in tree):
             return True
-        mode, _ = _windows_sandbox_mode(app.session.home)
-        if mode == "elevated":
+        if _windows_sandbox_mode(app.session.home) == "elevated":
             return False
         if time.monotonic() >= deadline:
             app.session.record(
@@ -104,7 +98,7 @@ def wait_for_windows_sandbox(app, timeout: float = 180) -> None:
     """The app saves this mode after successful setup; its success banner is transient."""
     deadline = time.monotonic() + timeout
     while True:
-        mode, _ = _windows_sandbox_mode(app.session.home)
+        mode = _windows_sandbox_mode(app.session.home)
         if mode == "elevated":
             app.session.record("windows-sandbox.json", {"mode": mode})
             return
