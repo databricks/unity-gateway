@@ -46,7 +46,8 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
     is skipped through its visible controls with UI Automation and the prompt is typed with real
     keystrokes followed by Send; nothing is seeded. Windows sandbox setup completes through
-    its visible controls before Send. A failed readiness check is finished through its visible
+    its visible controls before Send, or the setup wait accepts it already saved as elevated.
+    A failed readiness check is finished through its visible
     Try again at the setup screen and after setup's app-server restart; prompts are never
     resubmitted. Each screen gets 60 seconds, sandbox setup gets
     180 seconds, and the answer four minutes. GUI rendering of other screens, MCP, tracing
@@ -63,12 +64,13 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.RadioButton", "Engineering")
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
+        # After a readiness recheck the app can run setup without its banner; count from here.
+        checkpoint = app.setup_event_checkpoint()
         app.click("ControlType.Button", "Go to ChatGPT")
         app.mark_setup_phase("banner-wait-start")
-        wait_for_windows_setup(app)
-        app.mark_setup_phase("setup-click-start")
-        checkpoint = app.setup_event_checkpoint()
-        app.click("ControlType.Button", "Continue")
+        if wait_for_windows_setup(app):
+            app.mark_setup_phase("setup-click-start")
+            app.click("ControlType.Button", "Continue")
         deadline = time.monotonic() + 180
         wait_for_windows_sandbox(app, timeout=max(0, deadline - time.monotonic()))
         app.mark_setup_phase("sandbox-mode-observed")
@@ -151,13 +153,14 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
         app.click("ControlType.RadioButton", "Engineering")
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
+        # After a readiness recheck the app can run setup without its banner; count from here.
+        checkpoint = app.setup_event_checkpoint()
         app.click("ControlType.Button", "Go to ChatGPT")
         try:
             app.mark_setup_phase("banner-wait-start")
-            wait_for_windows_setup(app)
-            app.mark_setup_phase("setup-click-start")
-            checkpoint = app.setup_event_checkpoint()
-            app.click("ControlType.Button", "Continue")
+            if wait_for_windows_setup(app):
+                app.mark_setup_phase("setup-click-start")
+                app.click("ControlType.Button", "Continue")
             deadline = time.monotonic() + 180
             wait_for_windows_sandbox(app, timeout=max(0, deadline - time.monotonic()))
             app.mark_setup_phase("sandbox-mode-observed")
