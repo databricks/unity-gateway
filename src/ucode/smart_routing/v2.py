@@ -1037,7 +1037,6 @@ def launch_claude(
                 **_claude_mod_launch_options(launch_source, config_version=selected_version()),
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
-                "validateCommand": routing_hook_argv(routing_state, ROUTE_VALIDATION_MOD_EVENT),
             }
             # The managed recipe mod, which alone writes the extra body, reads its recipe here:
             # pluginConfigs are the user tier's options and need not reach a policy-tier mod.

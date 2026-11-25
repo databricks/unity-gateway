@@ -1183,10 +1183,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
+    @pytest.mark.parametrize("omnigent", [False, True])
     @pytest.mark.parametrize("auto_picker", [False, True])
     def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, auto_picker
+        self, tmp_path, monkeypatch, auto_picker, omnigent
     ):
+        if omnigent:
+            monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1281,16 +1284,23 @@ class TestV2Launch:
             "--model",
             "system.ai.claude-opus-4-8",
         ]
+        validate_command = (
+            {}
+            if omnigent
+            else {
+                "validateCommand": [
+                    *route_argv[:2],
+                    claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                    *route_argv[3:],
+                ]
+            }
+        )
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": route_argv,
-                "validateCommand": [
-                    *route_argv[:2],
-                    claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
-                    *route_argv[3:],
-                ],
+                **validate_command,
             }
         }
         env = settings["env"]
