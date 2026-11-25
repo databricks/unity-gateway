@@ -9,6 +9,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
@@ -30,6 +31,18 @@ from ucode.mcp_proxy_runtime import (
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.ug_headers import scoped_ug_headers
 from ucode.workspace import pin
+
+
+def _log_diagnostic(session_id: str, event: str, fields: dict) -> None:
+    payload = {
+        "timestamp_ms": int(time.time() * 1000),
+        "session_id": session_id,
+        "event": event,
+        **fields,
+    }
+    with suppress(OSError, ValueError):
+        sys.stderr.write("mcp-diagnostic " + json.dumps(payload, separators=(",", ":")) + "\n")
+        sys.stderr.flush()
 
 
 def session_token_provider(workspace: str, profile: str | None, use_pat: bool) -> Callable[[], str]:
@@ -116,6 +129,12 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
         nonlocal active, last_disconnect, selection
         active += 1
         io = _SessionIO(reader, writer)
+        session_id = secrets.token_hex(8)
+        started = False
+
+        def diagnostic(event: str, fields: dict) -> None:
+            _log_diagnostic(session_id, event, fields)
+
         try:
             async with asyncio.timeout(5):
                 hello = json.loads(await reader.readline())
@@ -147,6 +166,8 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
                         pin(workspace, workspace_id)
                 elif requested_selection != selection:
                     raise ValueError("MCP session uses a different workspace selection")
+            diagnostic("session_start", {})
+            started = True
             with scoped_ug_headers(headers):
                 token_provider = session_token_provider(workspace, profile, use_pat)
                 await to_thread.run_sync(token_provider)
@@ -161,11 +182,14 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
                         stdout=cast(anyio.AsyncFile[str], io),
                         token_provider=token_provider,
                         login_output=login_output,
+                        diagnostic=diagnostic,
                     )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             error = _unwrap_proxy_error(exc)
+            if started:
+                diagnostic("session_error", {"error_type": type(error or exc).__name__})
             detail = str(error or exc)
             if error is None and not isinstance(exc, (RuntimeError, ValueError, ConnectionError)):
                 traceback.print_exception(exc, file=sys.stderr)
@@ -173,6 +197,8 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
             with suppress(ConnectionError, OSError):
                 await io.send({"error": detail})
         finally:
+            if started:
+                diagnostic("session_end", {})
             writer.close()
             with suppress(ConnectionError, OSError):
                 await writer.wait_closed()

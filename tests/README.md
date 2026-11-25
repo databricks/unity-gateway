@@ -2020,7 +2020,9 @@ settings, accept explicit overrides, and report a missing workspace on stderr.
 HTTP MCP peer. It covers concurrent startup, colliding request IDs, independent
 sessions and headers, credential separation, one agent closing while another keeps
 working, backend crash/restart, EOF/reset reconnect diagnostics, local authentication,
-idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
+idle shutdown, and live login diagnostics with native line endings. Timestamped transport diagnostics
+use generated proxy-connection and request IDs and record only phases, status and error type, never
+credentials or request contents. Multi-workspace selectors use separate backends, and session headers
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
 check. On Windows, an observer uses the native console and window APIs to verify

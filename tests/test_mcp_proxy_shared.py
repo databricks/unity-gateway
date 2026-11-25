@@ -318,6 +318,49 @@ print(bearer)
     return helper, observations
 
 
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_backend_diagnostics_do_not_break_when_stderr_is_unavailable(monkeypatch, error):
+    class Unavailable:
+        def write(self, _value):
+            raise error("diagnostic output unavailable")
+
+        def flush(self):
+            raise error("diagnostic output unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp_proxy_daemon.sys, "stderr", Unavailable())
+        mcp_proxy_daemon._log_diagnostic("synthetic-session", "session_start", {})
+
+
+def test_backend_logs_session_scoped_transport_events_without_secrets(clients, peer, tmp_path):
+    good = clients(peer[0] + "/mcp")
+    good.initialize()
+    assert good.call("sensitive-query")["value"] == "sensitive-query"
+    bad = clients("http://127.0.0.1:1/unreachable")
+    bad.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert bad.process.wait(timeout=8) == 2
+
+    (path,) = list((tmp_path / ".ucode" / "mcp-proxy").glob("*/backend.log"))
+    text = path.read_text(encoding="utf-8")
+    events = [
+        json.loads(line.removeprefix("mcp-diagnostic "))
+        for line in text.splitlines()
+        if line.startswith("mcp-diagnostic ")
+    ]
+    assert all(isinstance(event["timestamp_ms"], int) for event in events)
+    starts = [event for event in events if event["event"] == "session_start"]
+    assert len(starts) == 2 and len({event["session_id"] for event in starts}) == 2
+    assert any(event.get("phase", "").endswith("connect_tcp.failed") for event in events)
+    assert any(event["event"] == "session_error" for event in events)
+    assert any(event["event"] == "session_end" for event in events)
+    assert any(
+        event.get("phase", "").endswith("receive_response_headers.complete")
+        and event.get("status") == 200
+        for event in events
+    )
+    assert "component-bearer" not in text and "sensitive-query" not in text
+
+
 def test_backend_fetches_external_bearer_for_each_request(clients, peer, bearer_helper):
     helper, observations = bearer_helper
     argv = [sys.executable, str(helper), str(observations)]
@@ -441,6 +484,20 @@ def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, t
         ("/second", "β", "second"),
     ]
     assert all(r["authorization"] == "Bearer component-bearer" for r in responses)
+    (backend_log,) = list((tmp_path / ".ucode" / "mcp-proxy").glob("*/backend.log"))
+    events = [
+        json.loads(line.removeprefix("mcp-diagnostic "))
+        for line in backend_log.read_text(encoding="utf-8").splitlines()
+        if line.startswith("mcp-diagnostic ")
+    ]
+    session_ids = {event["session_id"] for event in events if event["event"] == "session_start"}
+    assert len(session_ids) == 2
+    for session_id in session_ids:
+        assert any(
+            event["session_id"] == session_id and event["event"] == "request_start"
+            for event in events
+        )
+    assert all(event["session_id"] in session_ids for event in events)
     for response, name in zip(responses, ["first-agent", "second-agent"], strict=True):
         assert len(sessions.user_agents[response["session"]]) == 2
         assert all(
