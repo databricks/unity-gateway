@@ -1278,15 +1278,20 @@ jobs:
   # per-case timings so tests/live_test_times.json can rebalance the shards when they drift.
   live-shard-times:
     name: Live shard coverage
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Live shard coverage
     if: ${{ !cancelled() && needs.full.result == 'success' && needs.anthropic-mps.result == 'success' && needs.dedicated-cuj.result == 'success' }}
     needs: [full, anthropic-mps, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: integration-full-claude-windows-latest-shard*
@@ -1299,12 +1304,14 @@ jobs:
         with:
           pattern: e2e-cujs-*shard*
           path: ${{ runner.temp }}/shards
+      - *budget-setup-done
       - name: Prove the shards ran every case once and record fresh times
         run: python3 scripts/live_shard_times.py "$RUNNER_TEMP/shards" "$RUNNER_TEMP/live_test_times.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: live-test-times
           path: ${{ runner.temp }}/live_test_times.json
+      - *budget-check
 
   cujs:
     name: All integration tests

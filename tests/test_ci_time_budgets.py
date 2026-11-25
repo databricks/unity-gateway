@@ -351,28 +351,31 @@ def test_every_integration_matrix_variant_has_a_budget():
     def os_name(value):
         return "Windows" if value == "windows-latest" else "Linux"
 
-    expected = {}
-    for job in ("smoke", "full"):
-        label = "Smoke" if job == "smoke" else "Full"
-        expected[job] = {
-            f"{label} journeys · {agent.capitalize()} · {os_name(os)}"
-            for agent in values(job, "agent")
-            for os in values(job, "os")
+    expected = {
+        "smoke": {
+            f"Smoke journeys · {agent.capitalize()} · {os_name(os)}"
+            for agent in values("smoke", "agent")
+            for os in values("smoke", "os")
         }
-        if job == "full":
-            extra = re.findall(
-                r"(?m)^          - os: (.+)\n            agent: (.+)\n            smart_routing: true$",
-                jobs[job],
-            )
-            expected[job].update(
-                f"Full journeys · {agent.capitalize()} · {os_name(os)} · Smart routing"
-                for os, agent in extra
-            )
+    }
+    full_matrix = jobs["full"].split("      matrix:\n", 1)[1].split("\n    env:", 1)[0]
+    full_entries = []
+    for block in re.split(r"(?m)^          - ", full_matrix)[1:]:
+        fields = dict(line.strip().split(":", 1) for line in block.splitlines() if ":" in line)
+        full_entries.append({key: value.strip().strip('"') for key, value in fields.items()})
+    expected["full"] = {
+        f"Full journeys · {entry['agent'].capitalize()} · {os_name(entry['os'])}"
+        + (" · Smart routing" if entry.get("smart_routing") == "true" else "")
+        for entry in full_entries
+    }
+    matrix_line = re.search(r"(?m)^        include: (.+)$", jobs["anthropic-mps"]).group(1)
+    choices = re.findall(r"'(\[[^']+\])'", matrix_line)
+    assert choices, matrix_line
+    anthropic_entries = [entry for choice in choices for entry in json.loads(choice)]
     expected["anthropic-mps"] = {
-        f"Anthropic MPS - Staging workspace · {agent.capitalize()} · {os_name(os)}"
-        + (" (non-blocking)" if agent == "copilot" else "")
-        for agent in values("anthropic-mps", "agent")
-        for os in values("anthropic-mps", "os")
+        f"Anthropic MPS - Staging workspace · {entry['agent'].capitalize()} · {os_name(entry['os'])}"
+        + (" (non-blocking)" if entry["agent"] == "copilot" else "")
+        for entry in anthropic_entries
     }
     expected["soft-fail"] = {
         f"Soft-fail journeys · {agent} · {os_name(os)} (non-blocking)"
