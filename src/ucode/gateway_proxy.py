@@ -280,6 +280,13 @@ def is_uc_model_service(model: str | None) -> bool:
     return model.count(".") >= 2
 
 
+def _uses_openai_provider_model(model: str | None) -> bool:
+    """A missing model uses the provider default. Native OpenAI IDs may contain a version dot."""
+    return not model or not (
+        is_uc_model_service(model) or model.startswith(("system.", "databricks-"))
+    )
+
+
 def _request_model(body: bytes | None) -> str | None:
     """The ``model`` field of a JSON request body, or None when absent/unparseable."""
     if not body:
@@ -677,10 +684,7 @@ class _CodexModelServiceProxyHandler(_RelayProxyHandler):
             or self.headers.get(MODEL_PROVIDER_SERVICE_HEADER) != self.default_provider
         ):
             return False
-        # Native OpenAI model IDs can contain a version dot, e.g. gpt-5.2.
-        return not (
-            model and (is_uc_model_service(model) or model.startswith(("system.", "databricks-")))
-        )
+        return _uses_openai_provider_model(model)
 
 
 # Gateway model routes a gateway-auth proxy session may reach. Everything else

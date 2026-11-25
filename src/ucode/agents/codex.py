@@ -1893,8 +1893,9 @@ def _launch_codex_with_otel_proxy(
     tool_args: list[str],
     workspace: str,
     *,
-    otel_tracing: bool = True,
-    relay: tuple | None = None,
+    otel_tracing: bool,
+    relay: tuple | None,
+    child_env: dict[str, str] | None,
 ) -> None:
     """Run the loopback proxies for the session (OTLP refresh and/or the started ChatGPT
     ``relay``), with Codex as a child.
@@ -1916,7 +1917,7 @@ def _launch_codex_with_otel_proxy(
             endpoint = f"http://{LOOPBACK_HOST}:{otel[0].server_address[1]}/v1/traces"
             otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
         metrics.agent_handoff()
-        proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
+        proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args], env=child_env)
         try:
             returncode = proc.wait()
         except KeyboardInterrupt:
@@ -2110,7 +2111,8 @@ def _run_codex(
     *,
     otel_tracing: bool,
     workspace: str | None,
-    relay: tuple | None = None,
+    relay: tuple | None,
+    child_env: dict[str, str] | None,
 ) -> None:
     """Launch Codex — via loopback proxies when OTLP tracing or a relay is on, else exec-replace."""
     if tool_args[:1] == ["update"]:
@@ -2118,7 +2120,13 @@ def _run_codex(
         detach_app_model_catalog()
     if (otel_tracing or relay) and workspace:
         _launch_codex_with_otel_proxy(
-            state, base_argv, tool_args, workspace, otel_tracing=otel_tracing, relay=relay
+            state,
+            base_argv,
+            tool_args,
+            workspace,
+            otel_tracing=otel_tracing,
+            relay=relay,
+            child_env=child_env,
         )
     else:
         exec_or_spawn([*base_argv, *tool_args])
@@ -2195,6 +2203,8 @@ def launch(
             tool_args,
             otel_tracing=otel_tracing,
             workspace=workspace,
+            relay=None,
+            child_env=None,
         )
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
@@ -2271,6 +2281,7 @@ def launch(
         )
         return
     relay = None
+    child_env = None
     if relayed and workspace and not updating:
         if not state.get("_codex_launch_login_checked"):
             _ensure_chatgpt_login(binary)
@@ -2283,7 +2294,7 @@ def launch(
             relay = gateway_proxy.start_relay_proxy(workspace, token_provider, 0, agent=AGENT_CODEX)
         else:
             secret = secrets.token_urlsafe(32)
-            os.environ["UG_CODEX_SESSION_SECRET"] = secret
+            child_env = {**os.environ, "UG_CODEX_SESSION_SECRET": secret}
             provider_config.setdefault("env_http_headers", {})[
                 gateway_proxy.CODEX_SESSION_HEADER
             ] = "UG_CODEX_SESSION_SECRET"
@@ -2300,6 +2311,7 @@ def launch(
         otel_tracing=otel_tracing,
         workspace=workspace,
         relay=relay,
+        child_env=child_env,
     )
 
 

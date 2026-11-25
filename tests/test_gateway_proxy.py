@@ -1014,6 +1014,8 @@ class TestCodexRelayProxy:
             ("cat.s.seat", True, pinned),
             ("cat.s.foundry", pinned, pinned),
             ("system.ai.gpt-5.2", pinned, pinned),
+            ("databricks-gpt", pinned, pinned),
+            (None, pinned or saved, pinned or saved),
             ("gpt-5.2", pinned or saved, pinned or saved),
         ]
         client = _FakeClient([_FakeResp(200, b"ok") for _ in requests])

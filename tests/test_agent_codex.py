@@ -1879,12 +1879,10 @@ class TestCodexLaunch:
             ).relayed
             is signed_in
         )
-        assert (
-            codex.use_model_service_relay(
-                state, selection, configuring=False, selected_only=False
-            ).relayed
-            is signed_in
+        cached = codex.use_model_service_relay(
+            state, selection, configuring=False, selected_only=False
         )
+        assert cached.relayed is signed_in
         detect.assert_called_once_with(
             WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True, use_cache=True
         )
@@ -2024,7 +2022,8 @@ class TestCodexLaunch:
         if provider and not saved:
             assert start.call_args.kwargs == {"agent": "codex"}
         else:
-            secret = os.environ["UG_CODEX_SESSION_SECRET"]
+            assert "UG_CODEX_SESSION_SECRET" not in os.environ
+            secret = popen.call_args.kwargs["env"]["UG_CODEX_SESSION_SECRET"]
             assert start.call_args.kwargs == {
                 "session_secret": secret,
                 "default_provider": provider,
