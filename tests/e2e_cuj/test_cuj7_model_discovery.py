@@ -474,7 +474,7 @@ def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provide
         options = route.payload["route_options"]
         assert 1 <= len(options) <= 128
         response = recorder.response_for(route)
-        assert response.status_code == 200, response.payload
+        assert response.status_code == 200, {"request": route.payload, "response": response.payload}
         selections = response.payload["route_selection"]
         assert len(selections) == 1, selections
         selected = selections[0]["route_option"]

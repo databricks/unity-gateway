@@ -36,24 +36,48 @@ def configure_databricks_token_profile(session, workspace: str) -> str:
     return profile
 
 
-def finish_windows_readiness_check(app, timeout: float = 60) -> None:
-    """Setup restarts the app-server; finish a failed readiness check before sending any task."""
+def finish_windows_readiness_check(app, timeout: float = 60) -> bool:
+    """Setup restarts the app-server; finish a failed readiness check before sending any task.
+
+    Returns whether it pressed Try again.
+    """
     error = "Couldn’t check Windows setup"
     tree = app.read_tree()
     if not any(row[0] == "ControlType.Text" and error in row[1:] for row in tree):
-        return
+        return False
     app.session.record("windows-readiness-recheck.json", {"tree": tree})
     app.click("ControlType.Button", "Try again")
     deadline = time.monotonic() + timeout
     while True:
         tree = app.read_tree()
         if not any(row[0] == "ControlType.Text" and error in row[1:] for row in tree):
-            return
+            return True
         if time.monotonic() >= deadline:
             app.session.record(
                 "chatgpt-tree.json", {"waiting_for": "Sandbox readiness", "tree": tree}
             )
             raise AssertionError("Windows sandbox readiness still failed after its visible recheck")
+        time.sleep(2)
+
+
+def wait_for_windows_setup(app, timeout: float = 60) -> None:
+    """The setup banner follows a readiness check that can transiently fail; finish one retry."""
+    banner = "Finish Windows setup to continue"
+    deadline = time.monotonic() + timeout
+    rechecked = False
+    while True:
+        # One Try again per screen: an error that returns must fail, not be clicked away.
+        rechecked = rechecked or finish_windows_readiness_check(
+            app, max(0, deadline - time.monotonic())
+        )
+        tree = app.read_tree()
+        if any(row[0] == "ControlType.Text" and banner in row[1:] for row in tree):
+            return
+        if time.monotonic() >= deadline:
+            app.session.record(
+                f"{app.name}-tree.json", {"waiting_for": ["ControlType.Text", banner], "tree": tree}
+            )
+            raise AssertionError(f"{app.name} never showed ControlType.Text {banner!r}")
         time.sleep(2)
 
 

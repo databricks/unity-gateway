@@ -1,5 +1,6 @@
 """CUJ: configure Codex through ug, then complete a turn in the real ChatGPT desktop app on macOS."""
 
+import os
 import time
 from pathlib import Path
 
@@ -20,15 +21,51 @@ from utils.evidence import (
     completed_task_models,
     fresh_id,
 )
-from utils.macos_app import MacApp
+from utils.macos_app import OSASCRIPT, MacApp
 from utils.managed import use_managed_config_fixture
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.macos_desktop, pytest.mark.codex]
 
-# The CI job installs this app at a pinned version.
+# The CI job installs this app at a pinned version and the harness launches it with its updater
+# off, so every launch must run exactly that build. Harness-latest installs the newest appcast
+# build instead and leaves this unset.
 CHATGPT_APP = Path("/Applications/ChatGPT.app")
+PINNED_APP_VERSION = os.environ.get("CHATGPT_APP_VERSION") or None
 # The managed_workspace_default fixture's Codex default model.
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
+
+
+def dismiss_skip_setup_dialog(app: MacApp) -> None:
+    """Dismiss the Skip setup? dialog and verify the app left that screen.
+
+    One native command activates the app, waits for the button and clicks it, so the wait and
+    the click can no longer race on two traversals. The app can drop that click, so it is
+    repeated while the dialog stays. A dialog that survives fails with the stuck AX tree
+    recorded."""
+    app.click_until_gone("AXButton", "Go to ChatGPT", 120)
+
+
+def type_prompt(app: MacApp, prompt: str) -> None:
+    deadline = time.monotonic() + 180
+    while True:
+        assert time.monotonic() < deadline, "ChatGPT never accepted the prompt"
+        app.click("AXTextArea", None, timeout=120)
+        app.session.run(
+            "-e",
+            'on run argv\ntell application "System Events"\n'
+            "set frontmost of (first process whose unix id is (item 1 of argv as integer)) to true\n"
+            'keystroke "a" using command down\nkey code 51\nend tell\nend run',
+            str(app.proc.pid),
+            binary=OSASCRIPT,
+            timeout=60,
+        )
+        app.type_line(prompt, submit=False)
+        try:
+            app.wait_for("AXTextArea", prompt, 10)
+            return
+        except AssertionError as error:
+            if str(error) != f"{app.name} never showed AXTextArea {prompt!r}":
+                raise
 
 
 def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace):
@@ -36,7 +73,8 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
 
     Expected: the app shows the answer, and its own Codex Desktop rollout, using ug's Databricks
     provider, records exactly that answer in a completed turn whose model is the managed system.ai
-    GPT default. Onboarding is skipped through its visible buttons with mouse clicks and the prompt
+    GPT default. Onboarding is skipped through its visible buttons with one native click at each
+    button's current frame, repeated on the Skip setup? confirmation while it stays, and the prompt
     is typed with real keystrokes, then submitted with Send; nothing is seeded. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered. A subsequent click on an absent label fails
     with the native accessibility tree before the fatal error, captured in command evidence.
@@ -49,15 +87,13 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
     )
 
     with MacApp(session, CHATGPT_APP, "chatgpt") as app:
+        assert not PINNED_APP_VERSION or app.version == PINNED_APP_VERSION, app.version
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
-        # Click the composer so the keystrokes cannot land in another control.
-        app.click("AXTextArea", None, timeout=120)
+        dismiss_skip_setup_dialog(app)
         prompt = f"Reply with exactly {marker} and nothing else."
-        app.type_line(prompt, submit=False)
-        app.wait_for("AXTextArea", prompt, 60)
+        type_prompt(app, prompt)
         app.click("AXButton", "Send")
         try:
             wait_for_submitted_prompt(session, prompt)
@@ -87,6 +123,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
             str(app.proc.pid),
             "AXButton",
             "__ug_missing_target__",
+            "1",
             binary=app.client,
             ok=False,
             timeout=60,
@@ -103,7 +140,11 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
             None,
         )
         assert fatal_index is not None, lines
-        tree_rows = [line for line in lines[1:fatal_index] if line]
+        # Traversal failures surface between the tree and the fatal error, prefixed to stay
+        # separable from the four-column tree rows.
+        tree_rows = [
+            line for line in lines[1:fatal_index] if line and not line.startswith("AX error: ")
+        ]
         assert tree_rows, lines
         assert all(len(row.split("\t")) == 4 for row in tree_rows), tree_rows
         assert any(row.split("\t")[0].startswith("AX") for row in tree_rows), tree_rows
@@ -141,15 +182,14 @@ def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
     session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
 
     with MacApp(session, CHATGPT_APP, "chatgpt") as app:
+        assert not PINNED_APP_VERSION or app.version == PINNED_APP_VERSION, app.version
         app.click("AXRadioButton", "Engineering", timeout=180)
         app.click("AXButton", "Continue")
         app.click("AXButton", "Skip")
-        app.click("AXButton", "Go to ChatGPT")
+        dismiss_skip_setup_dialog(app)
         try:
-            app.click("AXTextArea", None, timeout=120)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
-            app.type_line(prompt, submit=False)
-            app.wait_for("AXTextArea", prompt, 60)
+            type_prompt(app, prompt)
             app.click("AXButton", "Send")
             wait_for_submitted_prompt(session, prompt)
             wait_for_skill_answer(app, query, marker, "AXStaticText", "AXButton", 300)

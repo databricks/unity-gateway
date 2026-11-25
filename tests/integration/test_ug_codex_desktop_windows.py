@@ -12,6 +12,7 @@ from utils.codex_desktop import (
     wait_for_skill_answer,
     wait_for_submitted_prompt,
     wait_for_windows_sandbox,
+    wait_for_windows_setup,
     write_search_skill,
 )
 from utils.evidence import (
@@ -45,8 +46,9 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
     is skipped through its visible controls with UI Automation and the prompt is typed with real
     keystrokes followed by Send; nothing is seeded. Windows sandbox setup completes through
-    its visible controls before Send. The sole retry is one visible post-restart readiness
-    recheck; prompts are never resubmitted. Each screen gets 60 seconds, sandbox setup gets
+    its visible controls before Send. A failed readiness check is finished through its visible
+    Try again at the setup screen and after setup's app-server restart; prompts are never
+    resubmitted. Each screen gets 60 seconds, sandbox setup gets
     180 seconds, and the answer four minutes. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered.
     """
@@ -62,7 +64,7 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
-        app.wait_for("ControlType.Text", "Finish Windows setup to continue")
+        wait_for_windows_setup(app)
         app.click("ControlType.Button", "Continue")
         wait_for_windows_sandbox(app)
         # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
@@ -113,8 +115,9 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
     The app displays that token and its Databricks-backed completed turn records successful
     native MCP web_search receipts with the exact query on the managed model. User onboarding,
     Windows sandbox setup and Send use visible controls; the rollout must record the prompt
-    before the answer wait. Setup must save elevated sandbox mode; a readiness error after its
-    app-server restart gets one visible recheck before Send. The expected search is
+    before the answer wait. Setup must save elevated sandbox mode; readiness errors get their
+    visible recheck at the setup screen and after the app-server restart, before Send. The
+    expected search is
     approved with Allow once; no approval/config
     state is seeded. UC skill downloads, connector
     browser sign-in and built-in web search are outside this journey.
@@ -143,7 +146,7 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
         try:
-            app.wait_for("ControlType.Text", "Finish Windows setup to continue")
+            wait_for_windows_setup(app)
             app.click("ControlType.Button", "Continue")
             wait_for_windows_sandbox(app)
             app.click("ControlType.Edit", None)

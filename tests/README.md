@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_ci_live_contract.py` checks draft and ready scheduling, conversion cancellation,
+unchanged fork and merge-group conditions, security-gate dependencies, and the required
+`e2e` rollup's response to passing, failed, skipped, and cancelled results. These are
+workflow-contract tests; they do not verify GitHub event delivery or live suites.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
@@ -195,14 +200,23 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
-Native routing components check the streamed parent reply: parallel Agent calls are routed
-once, before they are recorded, and only their `description` becomes
-`<animal> · <model> · <task>` while other arguments, chunk order and non-Agent calls are
-unchanged. Spawn receipts are compared with that heading; cards, lone rows, the agent list
-and completed-task notices show the launched model and flag a mismatch, a missing launch model
-is not persisted, and saved receipts are restored per child on resume. The agent-list
-assertions run only where Claude has that row (2.1.328 and later). Native auto-mode cases
-retain their approval/denial and zero fallback-classification assertions.
+Native routing components check the streamed parent reply on both sides of the fallback
+gate: with Claude's local auto-mode fallback check on, parallel Agent calls are routed once
+and only their `description` becomes `<animal> · <model> · <task>` while other arguments,
+chunk order and non-Agent calls are unchanged, and `tool.call` does not route again; with
+the fallback off (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` or
+`DO_NOT_TRACK` set, or `CLAUDE_CODE_AUTO_MODE_SERVER=1`), the reply streams untouched and
+`tool.call` does the routing. Forwarded spawns carry the routed label on either side of the
+gate, set after the permission decision so the reviewed call stays byte-identical; resumed
+spawns keep their recorded description. Cards quote the neutral task title, a lone row shows
+the label through rendering, and the completed-task notice's heading quotes the routed label
+— matching either the written description or the spawn label — while its summary stays as
+written. Spawn receipts are compared with the selection; cards, lone rows,
+the agent list and completed-task notices show the launched model and flag a mismatch, a
+missing launch model is not persisted, and saved receipts are restored per child on resume.
+The agent-list assertions run only where Claude has that row (2.1.328 and later). Native
+auto-mode cases retain their approval/denial and zero fallback-classification assertions
+and keep the reviewed call's own description in the transcript.
 The native status command checks old animal-only mappings, model labels with unchanged
 live progress and counters, and identical activity labels without duplication.
 
@@ -1604,7 +1618,7 @@ than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the arch
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
-journeys for both agents, in two parallel jobs. After smoke finishes, the full
+journeys for both agents, in two parallel jobs. In parallel with smoke, the full
 suite runs the remaining live cases in separate agent and OS jobs, with cases
 serial inside each VM. Codex smoke and general full/managed coverage retain
 0.156.0. Separate required full and managed matrix rows use 0.171.0 only for
@@ -1652,14 +1666,16 @@ in the rollout before waiting for an answer. Windows first completes its visible
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;
 the tests only read that native setting. Missing or partial TOML is polled until the setup
 deadline; component checks cover recovery and deadline failure. Windows artifacts retain early MCP/setup diagnostics.
-If the app's setup restart leaves a sandbox-readiness error, the journey uses the visible
-Try again control once before sending the prompt; a persistent error fails. No task is resubmitted.
+If a sandbox-readiness error replaces the setup screen or follows the app's setup restart,
+the journey presses its visible Try again control once per screen within that screen's
+deadline; a persistent or repeated error fails. No task is resubmitted.
 Offline submission checks reject assistant echoes, unrelated prompts and non-message events.
 The native MCP approval is answered with Allow once only when the dialog names web_search on
 the expected server with the exact hidden query. Offline checks reject other tools, servers,
 queries and ambiguous approval controls.
-The `All integration tests` check requires every selected integration job to pass, including
-both managed-config lanes for full/live runs; full coverage does not depend on a label or
+The `All integration tests` check requires every blocking integration job to pass, including
+all managed-config lanes. Advisory lanes run separately after the blocking integration call;
+the required `e2e` check does not wait for them. Full coverage does not depend on a label or
 a manual request.
 
 CUJ8's one journey (`tests/e2e_cuj/test_cuj8_second_managed_settings_writer.py`, shard
@@ -1696,9 +1712,21 @@ locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).
-Unit tests run as 24 Linux and 64 Windows shards (`Unit tests · <OS> · <n>/<total>`). `tests/shard.py` assigns each test slower than 2 s on its own, plus every file's remaining tests in interleaved 4-second chunks, slowest first to the least-loaded shard using `tests/unit_test_times.json` (measured per OS on hosted runners); each shard receives only its files, so it imports and collects only what it runs. Outside pull requests, `Unit test times` fails unless, for each OS, every unit ran exactly once and every collected test ran, and `test` requires it there, so the merge queue proves shard coverage before main; main's run also records fresh per-file timings as an artifact to commit when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main, and run its tools directly; uv is installed only when that cache misses. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
+Unit tests run as 24 Linux and 64 Windows shards (`Unit tests · <OS> · <n>/<total>`). `tests/shard.py` assigns each test slower than 2 s on its own, plus every file's remaining tests in interleaved 4-second chunks, slowest first to the least-loaded shard using `tests/unit_test_times.json` (measured per OS on hosted runners); each shard receives only its files, so it imports and collects only what it runs. `Unit test times` runs wherever the shards do, pull requests included, and fails unless, for each OS, every unit ran exactly once, every test ran exactly once and both OSes' shards are present; `test` requires it, so every run proves shard coverage before merge. Main's run also records fresh per-file timings as an artifact to commit when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main, and run its tools directly; uv is installed only when that cache misses. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
 `tests/e2e_cuj/test_cuj<N>_*.py` file, because CUJs share machine-wide `/etc` agent
-settings. All matrices use `fail-fast: false` so one failure does not cancel other coverage.
+settings — except a file recorded with several shards in `tests/live_test_times.json`
+(`CUJ 4` runs three), which runs that many runners, each keeping only its cases.
+The slowest blocking live lanes shard the same way, balanced by `tests/live_shard.py`
+from per-case times in `tests/live_test_times.json` (measured on hosted runners, like
+the unit shards): `Full journeys · Claude · Windows` runs four shards and
+`Anthropic MPS ... · Claude · Windows` three (its Cowork Desktop steps stay on the
+first shard). `scripts/run_integration.py --test-shard i/n --shard-lane <lane>` splits
+the lane; the suite's conftest keeps only the shard's cases, pytest stays serial inside
+each VM (configure and revert touch machine-wide settings), and every shard uploads
+its JUnit XML and shard report. `Live shard coverage` fails unless the shards together
+ran every case exactly once and records fresh timings as an artifact to commit when
+shards drift; `All integration tests` requires it. All matrices use
+`fail-fast: false` so one failure does not cancel other coverage.
 
 The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
