@@ -63,6 +63,19 @@ try {
         Set-Content -LiteralPath $vmLog -Value ('[VM:start] Startup complete' + ('x' * 200)) -Encoding utf8
         if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A longer replacement must still show readiness' }
     } finally { Remove-Item -LiteralPath $vmLog -Force }
+    $script:classReads = 0
+    $controls = @(
+        [pscustomobject]@{ Name = 'Project'; AutomationId = ''; NativeWindowHandle = $null; ControlType = [pscustomobject]@{ ProgrammaticName = 'ControlType.Pane' }; IsEnabled = $true; IsOffscreen = $false; HasKeyboardFocus = $false },
+        [pscustomobject]@{ Name = 'Empty'; AutomationId = '1152'; NativeWindowHandle = $null; ControlType = [pscustomobject]@{ ProgrammaticName = 'ControlType.Pane' }; IsEnabled = $true; IsOffscreen = $false; HasKeyboardFocus = $false },
+        [pscustomobject]@{ Name = 'Folder'; AutomationId = '1152'; NativeWindowHandle = 66102; ControlType = [pscustomobject]@{ ProgrammaticName = 'ControlType.Pane' }; IsEnabled = $true; IsOffscreen = $false; HasKeyboardFocus = $true }
+    )
+    $rows = @($controls | ForEach-Object {
+        Convert-CoworkUiControl -Current $_ -Value '' -GetClass { param($Handle) $script:classReads++; 'Edit' }
+    })
+    if ($rows.Count -ne 3 -or $rows[0].ContainsKey('nativeHandle') -or $rows[1].ContainsKey('nativeHandle') -or
+        $rows[2].nativeHandle -ne 66102 -or $rows[2].handleClass -cne 'Edit' -or $script:classReads -ne 1) {
+        throw 'UI snapshots must tolerate null handles and classify only a real folder field'
+    }
     $script:pickerReads = 0
     $script:fieldWrites = 0
     $picker = {
@@ -97,7 +110,7 @@ try {
     if ($script:fieldWrites -ne 0) { throw 'A non-Edit handle must never receive the path' }
     $selected = $false
     try {
-        Set-CoworkFolderInput -ReadEdit { @{ id = '1152'; type = 'ControlType.Pane'; enabled = $false; handle = 0; class = '' } } `
+        Set-CoworkFolderInput -ReadEdit { @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = $null; class = '' } } `
             -WriteAndRead $writeAndRead -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow) | Out-Null
         $selected = $true
     } catch {

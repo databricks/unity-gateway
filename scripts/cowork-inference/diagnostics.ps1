@@ -39,11 +39,33 @@ function Test-CoworkVmReady {
     } finally { $stream.Dispose() }
 }
 
+function Convert-CoworkUiControl {
+    param($Current, $Value, [scriptblock]$GetClass)
+    $id = [string]$Current.AutomationId
+    $row = @{
+        name = Protect-DiagnosticText ([string]$Current.Name)
+        type = $Current.ControlType.ProgrammaticName
+        id = Protect-DiagnosticText $id
+        enabled = $Current.IsEnabled
+        offscreen = $Current.IsOffscreen
+        focused = $Current.HasKeyboardFocus
+        value = if ($null -ne $Value) { Protect-DiagnosticText ([string]$Value) } else { $null }
+    }
+    if ($id -eq '1152' -and $null -ne $Current.NativeWindowHandle) {
+        $handle = [IntPtr]$Current.NativeWindowHandle
+        if ($handle -ne [IntPtr]::Zero) {
+            $row.nativeHandle = $handle.ToInt64()
+            $row.handleClass = & $GetClass $handle
+        }
+    }
+    return $row
+}
+
 function Set-CoworkFolderInput {
     param([scriptblock]$ReadEdit, [scriptblock]$WriteAndRead, [string]$Folder, [DateTime]$Deadline)
     do {
         $state = & $ReadEdit
-        if ($state -and $state.enabled -and [IntPtr]$state.handle -ne [IntPtr]::Zero -and [DateTime]::UtcNow -lt $Deadline) {
+        if ($state -and $state.enabled -and $null -ne $state.handle -and [IntPtr]$state.handle -ne [IntPtr]::Zero -and [DateTime]::UtcNow -lt $Deadline) {
             if ($state.class -cne 'Edit') { throw "Folder field 1152 has class $($state.class), not Edit" }
             $actual = & $WriteAndRead $state $Folder $Deadline
             if ($actual -cne $Folder) {

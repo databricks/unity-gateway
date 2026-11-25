@@ -112,18 +112,9 @@ function Save-UI {
                 elseif ($_.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
                     Protect-DiagnosticText ([string]$valuePattern.Current.Value)
                 } else { $null }
-            $id = [string]$_.Current.AutomationId
-            $handle = [IntPtr]$_.Current.NativeWindowHandle
-            @{
-                name = Protect-DiagnosticText ([string]$_.Current.Name)
-                type = $_.Current.ControlType.ProgrammaticName
-                id = Protect-DiagnosticText $id
-                enabled = $_.Current.IsEnabled
-                offscreen = $_.Current.IsOffscreen
-                focused = $_.Current.HasKeyboardFocus
-                value = $value
-                nativeHandle = if ($id -eq '1152') { $handle.ToInt64() } else { $null }
-                handleClass = if ($id -eq '1152' -and $handle -ne [IntPtr]::Zero) { [CapabilityWindow]::WindowClass($handle) } else { $null }
+            Convert-CoworkUiControl -Current $_.Current -Value $value -GetClass {
+                param($Handle)
+                [CapabilityWindow]::WindowClass($Handle)
             }
         } catch [Windows.Automation.ElementNotAvailableException] { }
     })
@@ -157,7 +148,8 @@ function Select-Folder {
             $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, '1152')
             $edit = $dialog.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
             if ($edit) {
-                $handle = [IntPtr]$edit.Current.NativeWindowHandle
+                $nativeHandle = $edit.Current.NativeWindowHandle
+                $handle = if ($null -ne $nativeHandle) { [IntPtr]$nativeHandle } else { [IntPtr]::Zero }
                 @{
                     id = $edit.Current.AutomationId
                     type = $edit.Current.ControlType.ProgrammaticName
