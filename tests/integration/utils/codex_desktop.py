@@ -76,8 +76,10 @@ def wait_for_windows_setup(app, timeout: float = 60) -> None:
         if time.monotonic() >= deadline:
             path = app.session.home / ".codex/config.toml"
             try:
-                mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get(
-                    "sandbox"
+                mode = (
+                    tomllib.loads(path.read_text(encoding="utf-8"))
+                    .get("windows", {})
+                    .get("sandbox")
                 )
                 config_state = "readable"
             except FileNotFoundError:
