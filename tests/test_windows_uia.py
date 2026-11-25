@@ -80,7 +80,8 @@ namespace Stub {
         public string Name; public ControlType ControlType; public Rect BoundingRectangle = new Rect();
     }
     public static class State {
-        public static string Value = "";
+        public static string Value = Environment.GetEnvironmentVariable("UIA_TEST_INITIAL_VALUE") ?? "";
+        public static string EditName = Environment.GetEnvironmentVariable("UIA_TEST_EDIT_NAME") ?? "";
         public static int FocusChecks = 0;
         public static bool Opened = false;
         public static void Event(string text) { File.AppendAllText(Environment.GetEnvironmentVariable("UIA_TEST_EVENTS"), text + "\n"); }
@@ -95,7 +96,7 @@ namespace Stub {
         public static AutomationElement FocusedElement = new AutomationElement(ControlType.Edit, "");
         public CurrentInfo Current;
         public AutomationElement(ControlType type, string name) { Current = new CurrentInfo { ControlType = type, Name = name }; }
-        private AutomationElement[] Children() { return new[] { new AutomationElement(ControlType.Button, "Press"), new AutomationElement(ControlType.Edit, ""), new AutomationElement(ControlType.Text, "Ready") }; }
+        private AutomationElement[] Children() { return new[] { new AutomationElement(ControlType.Button, "Press"), new AutomationElement(ControlType.Edit, State.EditName), new AutomationElement(ControlType.Text, "Ready") }; }
         public AutomationElement[] FindAll(TreeScope scope, Condition condition) {
             if (scope != TreeScope.Children) return Children().Where(condition.Match).ToArray();
             var first = new AutomationElement(ControlType.Window, "window");
@@ -239,6 +240,27 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
         check=True,
     )
     assert "ControlType.Button\tPress" in legacy.stdout
+
+
+@pytest.mark.parametrize(
+    ("edit_name", "edit_value"),
+    [("Alpha\tBeta\nGamma\rDelta", ""), ("", "Alpha\tBeta\nGamma\rDelta")],
+)
+def test_native_wait_matches_legacy_normalized_name_or_value(
+    tmp_path, monkeypatch, edit_name, edit_value
+):
+    monkeypatch.setenv("UIA_TEST_EDIT_NAME", edit_name)
+    monkeypatch.setenv("UIA_TEST_INITIAL_VALUE", edit_value)
+    pwsh, script, _ = _stub_uia_script(tmp_path, monkeypatch)
+    helper = WindowsUIAProcess(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script), "session", "123"]
+    )
+    try:
+        assert helper.request("wait", "ControlType.Edit", "Alpha Beta Gamma Delta", "0") == "1"
+        with pytest.raises(AssertionError, match="No enabled ControlType.Edit"):
+            helper.request("wait", "ControlType.Edit", "alpha Beta Gamma Delta", "0")
+    finally:
+        helper.close()
 
 
 def test_optional_composer_probe_failure_does_not_block_typing(tmp_path, monkeypatch):

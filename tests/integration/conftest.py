@@ -190,7 +190,28 @@ def session(request, installed_binary):
                     user.env[key] = value
             user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         try:
-            yield user
+            try:
+                yield user
+            finally:
+                if os.environ.get("UG_MODEL_LEDGER"):
+                    from utils.traffic_ledger import record_case_usage
+
+                    workspace_label = (
+                        None
+                        if request.node.get_closest_marker("workspace_switch")
+                        else "managed-primary"
+                    )
+                    try:
+                        record_case_usage(user, workspace=workspace_label)
+                    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                        user.record(
+                            "model-ledger.json",
+                            {
+                                "coverage": "unmapped",
+                                "responses": [],
+                                "error": type(error).__name__,
+                            },
+                        )
         finally:
             try:
                 # Restore machine-level settings through the same public CLI that

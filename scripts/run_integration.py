@@ -843,6 +843,7 @@ def isolated_base_environment(environment: Mapping[str, str]) -> dict[str, str]:
         "NO_PROXY",
         "UG_UIA_BASELINE_SAMPLE",
         "UG_UIA_PROBE_ASSEMBLY",
+        "UG_MODEL_LEDGER",
     )
     return {key: environment[key] for key in keep if key in environment}
 

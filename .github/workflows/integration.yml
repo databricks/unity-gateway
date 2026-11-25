@@ -1085,28 +1085,25 @@ jobs:
   # settings on Windows too. Dedicated CUJs require POSIX PTYs.
 
   managed:
-    name: ${{ inputs.mode == 'advisory' && 'Managed config (runs in Integration)' || format('Managed config · {0}{1}', matrix.agent == 'claude' && 'Claude' || 'Codex', matrix.smart_routing && ' · Smart routing' || '') }}
+    name: ${{ inputs.mode == 'advisory' && 'Managed config (runs in Integration)' || format('Managed config · {0}', matrix.agent == 'claude' && 'Claude' || 'Codex') }}
     if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # One lane at a time: the Codex lanes on this service principal share one model quota.
       max-parallel: 1
       matrix:
         agent: [claude, codex]
-        smart_routing: [false]
-        include:
-          - agent: codex
-            smart_routing: true
     env:
       BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
+      BUDGET_JOB_NAME: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || inputs.codex_version || '0.156.0' }}
-      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}${{ matrix.smart_routing && '-smart-routing' || '' }}
-    steps:
+      CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}
+      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}
+      UG_MODEL_LEDGER: basic
+      TEST_MARKER: (managed_fixture or workspace_switch) and ${{ matrix.agent }} and not soft_fail and not anthropic_mps and not codex_smart_routing
+    steps: &managed-steps
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -1144,7 +1141,12 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT and not soft_fail and not anthropic_mps and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}"
+            "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Build and validate observed model ledger
+        if: ${{ !cancelled() }}
+        run: |
+          uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+            "$RUNNER_TEMP/ug-integration" --lane "$UG_MODEL_LEDGER"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -1159,6 +1161,21 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
       - *budget-check
+
+  managed-smart:
+    name: ${{ inputs.mode == 'advisory' && 'Managed config · Codex · Smart routing (runs in Integration)' || 'Managed config · Codex · Smart routing' }}
+    needs: managed
+    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: codex
+      CODEX_VERSION: '0.171.0'
+      ARTIFACT_NAME: integration-managed-codex-smart-routing
+      UG_MODEL_LEDGER: smart
+      TEST_MARKER: (managed_fixture or workspace_switch) and codex and not soft_fail and not anthropic_mps and codex_smart_routing
+    steps: *managed-steps
 
   dedicated-cuj-plan:
     name: ${{ inputs.mode == 'advisory' && 'Plan E2E CUJs (runs in Integration)' || 'Plan E2E CUJs' }}
@@ -1346,7 +1363,7 @@ jobs:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: All integration tests
     if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, managed-smart, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1380,7 +1397,7 @@ jobs:
 
   codex-desktop-macos:
     name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · macOS (runs in Integration)' || 'Codex desktop inference · macOS' }}
-    # Codex lanes on the managed service principal share one model quota; see the Windows lane.
+    # Basic managed cases include the desktop model; smart routing uses a separate guarded set.
     needs: managed
     if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
@@ -1395,6 +1412,7 @@ jobs:
       CHATGPT_APP_VERSION: 26.1103.31037
       CHATGPT_APP_SHA256: 7bad147d40446192757dbfdd71e26529146823ade2bcc52b3d6e6525de816613
       TEST_MARKER: managed_fixture and macos_desktop and codex
+      UG_MODEL_LEDGER: desktop
     steps:
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -1441,6 +1459,11 @@ jobs:
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             --desktop-app "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Build and validate observed desktop model ledger
+        if: ${{ !cancelled() }}
+        run: |
+          uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+            "$RUNNER_TEMP/ug-integration" --lane desktop
       - name: Upload macOS desktop evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -1461,9 +1484,7 @@ jobs:
 
   codex-desktop-windows:
     name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · Windows (runs in Integration)' || 'Codex desktop inference · Windows' }}
-    # After the macOS desktop lane, so each run has one Codex caller on the managed service
-    # principal at a time: five merge-queue entries stay under the ~10 concurrent callers at which
-    # that quota returned 429s.
+    # Both desktop lanes use the same model and workspace, so keep them serialized.
     needs: [managed, codex-desktop-macos]
     if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
@@ -1475,6 +1496,7 @@ jobs:
       CHATGPT_APP_VERSION: 26.1103.7773.0
       CHATGPT_APP_SHA256: c043c8032b7a1e6ab383252a910176405265ac3edbc909218d875fb284dea672
       TEST_MARKER: managed_fixture and windows_desktop and codex
+      UG_MODEL_LEDGER: desktop
     steps:
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -1543,6 +1565,12 @@ jobs:
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             --desktop-app "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Build and validate observed desktop model ledger
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+            "$RUNNER_TEMP/ug-integration" --lane desktop
       - name: Upload Windows desktop evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

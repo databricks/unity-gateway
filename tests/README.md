@@ -1752,6 +1752,12 @@ three concurrent, single-attempt minimal requests per configured probe model, se
 model. Its artifact records status, latency and selected rate-limit headers without credentials.
 A successful small burst does not establish quota independence or capacity at higher concurrency.
 
+After the basic managed matrix, the managed Codex smart-routing job runs alongside the serialized
+macOS → Windows desktop chain. Each lane uploads a redacted native-response model ledger; smart
+routing and desktop jobs fail if an observed model crosses the other lane's fixture model set, or
+if their model/workspace evidence is unmapped. Native-session evidence is partial: it does not
+prove that every background or failed request was captured or that other shared limits do not exist.
+
 One shared `Security Scan` runs from the default branch on `workflow_run: requested` for
 PR CI. A new request cancels an older scan for the same event, source repository and branch.
 Its protected resolver validates the PR, source repository, branch and commit against GitHub;

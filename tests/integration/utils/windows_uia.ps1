@@ -113,6 +113,17 @@ function Find-Target($windows, $role, $name, $matchValue) {
         [Windows.Automation.PropertyCondition]::new($automation::IsEnabledProperty, $true)
         [Windows.Automation.PropertyCondition]::new($automation::IsOffscreenProperty, $false)
     )
+    if ($name -and $name.Contains(' ')) {
+        $condition = [Windows.Automation.AndCondition]::new([Windows.Automation.Condition[]]$conditions)
+        foreach ($window in $windows) {
+            foreach ($candidate in @($window.FindAll([Windows.Automation.TreeScope]::Subtree, $condition))) {
+                $candidateName = "$($candidate.Current.Name)" -replace '[\t\r\n]', ' '
+                $candidateValue = if ($matchValue) { "$(Get-Value $candidate)" -replace '[\t\r\n]', ' ' } else { '' }
+                if ($candidateName -ceq $name -or ($matchValue -and $candidateValue -ceq $name)) { return $candidate }
+            }
+        }
+        return $null
+    }
     if ($name) {
         $byName = [Windows.Automation.PropertyCondition]::new($automation::NameProperty, $name)
         if ($matchValue) {

@@ -17,6 +17,7 @@ def test_isolated_runner_forwards_only_explicit_uia_diagnostic_settings():
         "PATH": "/bin",
         "UG_UIA_BASELINE_SAMPLE": "1",
         "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
+        "UG_MODEL_LEDGER": "smart",
         "DATABRICKS_BEARER": "secret",
         "UNRELATED_SETTING": "private",
     }
@@ -24,6 +25,7 @@ def test_isolated_runner_forwards_only_explicit_uia_diagnostic_settings():
         "PATH": "/bin",
         "UG_UIA_BASELINE_SAMPLE": "1",
         "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
+        "UG_MODEL_LEDGER": "smart",
     }
 
 

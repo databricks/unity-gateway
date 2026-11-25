@@ -37,6 +37,13 @@ def _markers(nodes):
     }
 
 
+def test_integration_model_ledger_captures_before_session_cleanup():
+    source = (Path(__file__).parent / "integration/conftest.py").read_text()
+    assert 'os.environ.get("UG_MODEL_LEDGER")' in source
+    assert source.index("record_case_usage(user") < source.index('"cleanup-revert"')
+    assert 'request.node.get_closest_marker("workspace_switch")' in source
+
+
 def test_windows_desktop_experiment_keeps_visible_setup_before_the_restart_gate():
     source = Path(__file__).parent / "integration/test_ug_codex_desktop_windows.py"
     cases = source.read_text().split("    with WindowsApp(")[1:]
@@ -371,21 +378,46 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
         assert tuple(map(int, version.groups())) >= SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
 
+def test_model_ledger_case_directories_do_not_collide():
+    jobs = _integration_jobs()
+    for job_name in ("managed-smart", "codex-desktop-macos", "codex-desktop-windows"):
+        cases = _collect_integration_cases(_ci_marker_expression(jobs[job_name], "codex"))
+        names = [re.sub(r"[^a-zA-Z0-9_.-]", "_", case.split("::")[-1]) for case in cases]
+        assert len(names) == len(set(names)), job_name
+
+
+def test_managed_smart_overlap_keeps_model_guard_and_required_rollup():
+    jobs = _integration_jobs()
+    assert "needs: managed" in jobs["managed-smart"]
+    assert "if: ${{ !cancelled() && " in jobs["managed-smart"]
+    assert "needs: managed" in jobs["codex-desktop-macos"]
+    assert "managed-smart" not in re.search(
+        r"(?m)^    needs: (.*)$", jobs["codex-desktop-macos"]
+    ).group(1)
+    assert "managed-smart" in re.search(r"(?m)^    needs: (.*)$", jobs["cujs"]).group(1)
+    assert "UG_MODEL_LEDGER: smart" in jobs["managed-smart"]
+    assert "steps: *managed-steps" in jobs["managed-smart"]
+    assert "Managed config · Codex · Smart routing'" in jobs["managed-smart"]
+    assert "format('Managed config · {0}'" in jobs["managed"]
+    for lane in ("codex-desktop-macos", "codex-desktop-windows"):
+        assert "UG_MODEL_LEDGER: desktop" in jobs[lane]
+        assert "--lane desktop" in jobs[lane]
+    assert '--lane "$UG_MODEL_LEDGER"' in jobs["managed"]
+
+
 def test_managed_integration_ci_is_blocking():
-    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
-    managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
-    assert "continue-on-error:" not in managed
+    jobs = _integration_jobs()
+    managed, smart, gate = jobs["managed"], jobs["managed-smart"], jobs["cujs"]
+    assert "continue-on-error:" not in managed and "continue-on-error:" not in smart
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
     assert needs is not None
-    assert "managed" in {job.strip() for job in needs.group(1).split(",")}
+    assert {"managed", "managed-smart"} <= {job.strip() for job in needs.group(1).split(",")}
     assert (
         "if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     ) in gate
     baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
-    routing = _collect_integration_cases(
-        _ci_marker_expression(managed, "codex", smart_routing=True)
-    )
+    routing = _collect_integration_cases(_ci_marker_expression(smart, "codex"))
     assert not baseline & routing
     assert baseline | routing == _collect_integration_cases(
         "(managed_fixture or workspace_switch) and codex and not soft_fail"
@@ -577,7 +609,7 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             _ci_marker_expression(jobs["full"], agent, smart_routing=True)
         )
         managed_routing = _collect_integration_cases(
-            _ci_marker_expression(jobs["managed"], agent, smart_routing=True)
+            _ci_marker_expression(jobs["managed-smart"], agent)
         )
         assert not (smoke | full) & routing
         equals_model_case = (
@@ -592,20 +624,19 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
                 f"[{model_option}]" in routing
             )
         assert any("::test_smart_routing_codex_route_subagent_hook[" in case for case in full)
-        for name in ("full", "managed"):
-            if name == "managed":
-                assert "smart_routing: [false]" in jobs[name]
-            assert (
-                "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
-                "inputs.codex_version || '0.156.0' }}"
-            ) in jobs[name]
-            assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
+        assert (
+            "CODEX_VERSION: ${{ matrix.smart_routing && '0.171.0' || "
+            "inputs.codex_version || '0.156.0' }}"
+        ) in jobs["full"]
+        assert "matrix.smart_routing && '-smart-routing' || ''" in jobs["full"]
+        assert "CODEX_VERSION: '0.171.0'" in jobs["managed-smart"]
+        assert "CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}" in jobs["managed"]
         for platform in ("ubuntu-22.04", "windows-latest"):
             assert (
                 f"- os: {platform}\n            agent: codex\n            smart_routing: true"
                 in jobs["full"]
             )
-        assert "- agent: codex\n            smart_routing: true" in jobs["managed"]
+        assert "AGENT: codex" in jobs["managed-smart"]
         full |= routing
         relay = _collect_integration_cases(_ci_marker_expression(jobs["codex-relay"], agent))
         assert relay == {
@@ -744,7 +775,12 @@ def test_full_claude_lane_includes_both_desktop_journeys():
         ("full", "codex", True, "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
         ("managed", "claude", False, "test_ug_configure_managed_claude"),
         ("managed", "codex", False, "test_ug_configure_managed_codex"),
-        ("managed", "codex", True, "test_smart_router_skill_turns_codex_subagent_routing_back_on"),
+        (
+            "managed-smart",
+            "codex",
+            True,
+            "test_smart_router_skill_turns_codex_subagent_routing_back_on",
+        ),
         ("soft-fail", "claude", False, None),
     ],
 )
@@ -1003,6 +1039,7 @@ SKIPPED_ON_FORK_PRS = {
     "antigravity",
     "vscode",
     "managed",
+    "managed-smart",
     "managed-opencode",
     "codex-desktop-macos",
     "codex-desktop-windows",
@@ -3069,8 +3106,7 @@ def test_required_tests_requires_unit_shard_coverage(coverage):
     ],
 )
 def test_codex_lanes_on_the_managed_identity_run_one_at_a_time(job_name, needs):
-    # These lanes share one model quota; 429s appeared only when ten or more overlapped across
-    # runs, and the merge queue builds up to five entries at once.
+    # Basic managed and the two desktop lanes can use the same model in one workspace.
     jobs = _integration_jobs()
     assert f"\n    needs: {needs}\n" in jobs[job_name]
     assert "    if: ${{ !cancelled() && " in jobs[job_name]
@@ -3127,7 +3163,7 @@ def test_integration_mode_union_covers_the_unsplit_workflow():
     assert executed["required"] | executed["advisory"] == (
         SKIPPED_ON_FORK_PRS | {"installation", "installation-windows"}
     )
-    assert {"full", "managed", "live-shard-times", "cujs"} <= executed["required"]
+    assert {"full", "managed", "managed-smart", "live-shard-times", "cujs"} <= executed["required"]
     assert {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"} <= executed[
         "advisory"
     ]
@@ -3157,6 +3193,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "codex-relay",
         "antigravity",
         "managed",
+        "managed-smart",
         "dedicated-cuj-plan",
         "dedicated-cuj",
         "cujs",
@@ -3186,6 +3223,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "anthropic-mps",
         "antigravity",
         "managed",
+        "managed-smart",
         "codex-desktop-macos",
         "codex-desktop-windows",
         "dedicated-cuj-plan",
