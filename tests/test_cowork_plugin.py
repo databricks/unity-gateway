@@ -410,20 +410,24 @@ def test_cowork_mcp_config_shortens_uc_names_and_preserves_routing(tmp_path, mon
 
 
 @pytest.mark.parametrize(
-    ("name", "url"),
+    ("name", "url", "expected"),
     [
         (
             "system-ai-web_search",
             "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search",
+            "ug_web_search",
         ),
         (
             "main-tools-web_search",
             "https://workspace.example/ai-gateway/mcp-services/main.tools.web_search",
+            "ug_web_search",
         ),
-        ("web_search", "https://external.example/mcp"),
+        ("web_search", "https://external.example/mcp", "web_search"),
     ],
 )
-def test_cowork_mcp_config_avoids_native_web_search_name(tmp_path, monkeypatch, name, url):
+def test_cowork_mcp_config_avoids_native_web_search_name(
+    tmp_path, monkeypatch, name, url, expected
+):
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
     config = cowork._cowork_mcp_config(
         [
@@ -437,7 +441,32 @@ def test_cowork_mcp_config_avoids_native_web_search_name(tmp_path, monkeypatch, 
         "chosen",
     )
 
-    assert list(config["mcpServers"]) == ["ug_web_search"]
+    assert list(config["mcpServers"]) == [expected]
+
+
+def test_cowork_mcp_config_disambiguates_web_search_without_renaming_custom_names(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    servers = [
+        {
+            "name": "system-ai-web_search",
+            "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search",
+            "clients": ["claude"],
+        },
+        {
+            "name": "main-tools-web_search",
+            "url": "https://workspace.example/ai-gateway/mcp-services/main.tools.web_search",
+            "clients": ["claude"],
+        },
+        {"name": "web_search", "url": "https://custom.example/mcp", "clients": ["claude"]},
+        {"name": "ug_web_search", "url": "https://other.example/mcp", "clients": ["claude"]},
+    ]
+    expected = {"web_search-system-ai", "web_search-main-tools", "web_search", "ug_web_search"}
+
+    for ordered in [servers, list(reversed(servers))]:
+        config = cowork._cowork_mcp_config(ordered, "https://workspace.example", "chosen")
+        assert set(config["mcpServers"]) == expected
 
 
 @pytest.mark.parametrize(
