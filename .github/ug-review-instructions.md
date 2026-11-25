@@ -93,7 +93,7 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    necessary rollout/admin instructions in the repository rather than only in a PR description.
    When a check reads a shallow PR merge checkout, use commits actually present in that checkout
    or fetch the required base before diffing; the event's base SHA can move independently.
-   Security gates must still inspect jobs that could print credentials after test changes.
+   Security gates must not skip jobs that could print credentials just because a PR changes only tests.
 
 ## Voice and tone
 

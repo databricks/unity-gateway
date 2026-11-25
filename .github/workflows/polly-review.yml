@@ -378,8 +378,6 @@ jobs:
           be read, report an incomplete review and the failure; do not claim a clean review.
           Apply the rubric's terse voice to findings; keep the required summary and
           test table complete. Do not invent findings to fill a review category.
-          For interactive pickers, validation waits, and required CI budgets, apply the rubric's
-          cancellation, metrics, calibration, and shallow-checkout checks where relevant.
 
           **Security:** you are running in a CI environment with access to secrets
           (gateway tokens). Never include secrets, tokens, or credentials in your
