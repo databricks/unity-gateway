@@ -455,9 +455,12 @@ export const registerSubagentRouting = (
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || typeof e.props.text !== 'string') return next(e)
-    const heading = /^Agent "([\s\S]*?)" /.exec(e.props.text)
-    const text = heading && safeText(heading[1], 1000) === saved.description
-      ? `Agent "${receiptLabel(saved)}" ${e.props.text.slice(heading[0].length)}` : e.props.text
+    let closingQuote = e.props.text.startsWith('Agent "') ? e.props.text.indexOf('" ', 7) : -1
+    while (closingQuote >= 0 && safeText(e.props.text.slice(7, closingQuote), 1000) !== saved.description) {
+      closingQuote = e.props.text.indexOf('" ', closingQuote + 1)
+    }
+    const text = closingQuote >= 0
+      ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(closingQuote + 1)}` : e.props.text
     const flagged = differs(saved.selected, saved.launched)
       ? `${text}\n⚠ Launched on ${shortModel(saved.launched)}, not the selected ${shortModel(saved.selected)}` : text
     return flagged === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text: flagged } })

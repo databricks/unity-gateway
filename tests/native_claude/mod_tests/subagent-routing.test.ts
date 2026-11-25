@@ -888,7 +888,7 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   });
   const calls = ['Sonnet', 'Haiku', 'Opus'].map((model, index) => ({
     tool: 'Agent' as const, tool_use_id: `joke-${index}`, ...originalInput,
-    description: index === 0 ? 'Joke from\nSonnet' : `Joke from ${model}`, name: `address-${model}`, run_in_background: true,
+    description: index === 0 ? 'Joke from "Sonnet" now\nplease' : `Joke from ${model}`, name: `address-${model}`, run_in_background: true,
   }));
   const pending = calls.map(call => $.tool.call(call));
   await started;
@@ -928,7 +928,7 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   expect(spawned.map(s => s.description)).toEqual(calls.map(call => call.description));
   // The completed notice quotes the routed label, not the model-written description.
   const notice = { ...panel, component: 'UserMessage' as const, requestId: 'notice-child-joke-0',
-    props: { text: `Agent "Joke from\nSonnet" finished\nSummary: Joke from Sonnet`, origin: { kind: 'task-notification' as const },
+    props: { text: `Agent "Joke from "Sonnet" now\nplease" finished\nSummary: Joke from Sonnet`, origin: { kind: 'task-notification' as const },
       task: { id: 'child-joke-0', status: 'completed', toolUseId: 'joke-0', durationMs: 1 }, isExpanded: false } };
   const reported = await $.ui.mount(notice);
   expect(displayed.get('notice-child-joke-0').text)
