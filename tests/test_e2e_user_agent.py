@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -246,44 +245,66 @@ def test_capture_stops_agent_after_the_matching_request(capture_server):
 
 
 def test_capture_does_not_wait_for_a_detached_child_holding_output(tmp_path, capture_server):
-    child_pid = tmp_path / "child.pid"
-    script = (
-        "import os, pathlib, subprocess, sys, time, urllib.error, urllib.request\n"
-        "options = {'start_new_session': True} if os.name == 'posix' else {'creationflags': 8}\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], **options)\n"
-        f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid))\n"
-        f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
-        "except urllib.error.HTTPError: pass\n"
-        "time.sleep(60)\n"
-    )
+    release = threading.Event()
+    child_ready = tmp_path / "child-ready"
+
+    class HoldChild(BaseHTTPRequestHandler):
+        def do_GET(self):
+            release.wait(10)
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
     completed = threading.Event()
     result = []
+    with ThreadingHTTPServer(("127.0.0.1", 0), HoldChild) as hold_server:
+        hold_thread = threading.Thread(target=hold_server.serve_forever, daemon=True)
+        hold_thread.start()
+        child = (
+            "import pathlib, socket; "
+            f"s = socket.create_connection(('127.0.0.1', {hold_server.server_port}), timeout=2); "
+            "s.settimeout(None); s.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n'); "
+            f"pathlib.Path({str(child_ready)!r}).touch(); "
+            "s.recv(1)"
+        )
+        script = (
+            "import os, pathlib, subprocess, sys, time, urllib.error, urllib.request\n"
+            "options = {'start_new_session': True} if os.name == 'posix' else {'creationflags': 8}\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}], **options)\n"
+            f"while not pathlib.Path({str(child_ready)!r}).exists(): time.sleep(0.01)\n"
+            f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
+            "except urllib.error.HTTPError: pass\n"
+            "time.sleep(60)\n"
+        )
 
-    def run():
-        try:
-            result.append(
-                _run_until_first_request(
-                    [sys.executable, "-c", script],
-                    os.environ.copy(),
-                    capture_server,
-                    "/wanted",
-                    timeout=2,
+        def run():
+            try:
+                result.append(
+                    _run_until_first_request(
+                        [sys.executable, "-c", script],
+                        os.environ.copy(),
+                        capture_server,
+                        "/wanted",
+                        timeout=2,
+                    )
                 )
-            )
-        finally:
-            completed.set()
+            finally:
+                completed.set()
 
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    finished_without_child = completed.wait(3)
-    try:
-        if child_pid.exists():
-            os.kill(int(child_pid.read_text()), signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    worker.join(timeout=5)
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        try:
+            finished_without_child = completed.wait(3)
+        finally:
+            release.set()
+            worker.join(timeout=5)
+            hold_server.shutdown()
+            hold_thread.join(timeout=2)
     assert finished_without_child, "capture waited for detached child output handles"
     assert result and result[0] is not None
+    assert capture_server.first_request_with_path_prefix("/wanted") is not None
 
 
 def _no_request_msg(server: _CaptureServer, result: subprocess.CompletedProcess | None) -> str:
