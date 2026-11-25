@@ -761,6 +761,9 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     path.read_text() for path in (root / "config/projects").glob("*/*.jsonl")
                 )
                 assert false_claim in saved
+                # The reviewed call keeps the description the model wrote, whatever
+                # CLAUDE_CODE_AUTO_MODE_SERVER or nonessential traffic say.
+                assert original["description"] in saved
                 for state in ("Running", "Finished"):
                     status = f" · {selected_model} · {state}"
                     assert not any(status in answer for answer in parent_answers), parent_answers

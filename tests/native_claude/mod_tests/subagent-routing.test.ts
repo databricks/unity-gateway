@@ -256,8 +256,9 @@ test('routing changes the matching spawn model while preserving the task and its
       parentAgentId: 'parent', cwd: '/workspace',
     };
     const result = await $.agent.spawn(spawn);
+    // A routed spawn carries the label the task will show; an unrouted one is untouched.
     expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
-      : { ...spawn, model: routedModel });
+      : { ...spawn, model: routedModel, description: `${shown.get(id)} · gpt-5-6-sol · inspect the parser` });
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
@@ -527,10 +528,14 @@ test('the router hears which subagent made the call, and nothing for the main lo
   });
   await $.agent.spawn(spawn('call-main', 'main'));
   await $.agent.spawn(spawn('call-nested', 'agent-parent'));
-  expect(spawns).toEqual(
-    [spawn('call-main', 'main'), spawn('call-nested', 'agent-parent')]
-      .map(original => ({ ...original, model: 'system.ai.claude-sonnet-5' })),
-  );
+  // The reviewed call is untouched; the spawn carries the model and the task's label.
+  const [{ description: _mainLabel, ...mainRest }, { description: _nestedLabel, ...nestedRest }] = spawns;
+  const { description: _mainWritten, ...mainExpected } = spawn('call-main', 'main');
+  const { description: _nestedWritten, ...nestedExpected } = spawn('call-nested', 'agent-parent');
+  expect(mainRest).toEqual({ ...mainExpected, model: 'system.ai.claude-sonnet-5' });
+  expect(nestedRest).toEqual({ ...nestedExpected, model: 'system.ai.claude-sonnet-5' });
+  for (const spawnEvent of spawns) expect(spawnEvent.description)
+    .toMatch(/^[A-Z][a-z]+(?: 2)? · claude-sonnet-5 · inspect the parser$/);
 });
 
 for (const [name, result, warningCount] of [
@@ -797,9 +802,11 @@ test('routed children leave native parent synthesis and stream errors unchanged'
     const child = await $.agent.spawn(spawn);
     expect(child).toEqual({ agentId: 'child-' + input.tool_use_id, model: launched[input.tool_use_id] });
     const { description, ...forwarded } = forwardedSpawns[forwardedSpawns.length - 1];
-    const { description: originalDescription, ...original } = spawn;
+    const { description: _originalDescription, ...original } = spawn;
     expect(forwarded).toEqual({ ...original, model: selected[input.tool_use_id] });
-    expect(description).toBe(originalDescription);
+    // The spawn description becomes the routed label, after the permission decision.
+    expect(description).toMatch(new RegExp(
+      `^[A-Z][a-z]+(?: 2)? · ${selected[input.tool_use_id]} · Inspect ${input.tool_use_id}$`));
     await $.turn.complete({
       agentId: child.agentId, turnId: 'child-turn-' + input.tool_use_id,
       answer: 'Answer from ' + input.tool_use_id, reason: 'answer',
@@ -919,13 +926,17 @@ test('routed joke titles use the selected model without rewriting reviewed argum
     expect(displayed.get(call.tool_use_id).input).toEqual({ ...call,
       description: `${displayed.get(call.tool_use_id).tool} · routed-model · inspect the parser` });
     const label = `${displayed.get(call.tool_use_id).tool} — routed-model`;
+    const { description: _spawned, ...spawnRest } = spawn;
     expect(spawned[spawned.length - 1]).toEqual({
-      ...spawn, model: 'catalog.schema.routed-model',
+      ...spawnRest, model: 'catalog.schema.routed-model',
+      description: `${displayed.get(call.tool_use_id).tool} · routed-model · inspect the parser`,
     });
     expect(await cards.find({ type: 'Text', text: label })).toBeDefined();
     await ui.unmount();
   }
-  expect(spawned.map(s => s.description)).toEqual(calls.map(call => call.description));
+  // Every forwarded spawn carries the routed label; the reviewed call input stays as written.
+  for (const spawn of spawned) expect(spawn.description)
+    .toMatch(/^[A-Z][a-z]+(?: 2)? · routed-model · inspect the parser$/);
   // The completed notice quotes the routed label in its heading, never the description;
   // the summary after it stays as written.
   const notice = { ...panel, component: 'UserMessage' as const, requestId: 'notice-child-joke-0',
@@ -1036,7 +1047,11 @@ test('completed notification labels restore per child and render without storage
     name: 'native-address', permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
   };
   await $.agent.spawn(spawn);
-  expect(forwarded).toEqual([{ ...spawn, model: 'catalog.schema.selected-model' }]);
+  // The spawn carries the routed label; the reviewed call keeps its written description.
+  const { description: spawnLabel, ...forwardedSpawn } = forwarded[0];
+  const { description: _written, ...spawnRest } = spawn;
+  expect(forwardedSpawn).toEqual({ ...spawnRest, model: 'catalog.schema.selected-model' });
+  expect(spawnLabel).toMatch(/^[A-Z][a-z]+(?: 2)? · selected-model · inspect the parser$/);
   const key = `${directory}/agent-child-1.json`;
   const saved = JSON.parse(files.get(key)!);
   expect(writes.length).toBe(2);
@@ -1079,6 +1094,14 @@ test('completed notification labels restore per child and render without storage
     text: 'Agent "other task" finished\nSummary: "Joke from Sonnet"' } });
   expect(renders[renders.length - 1].props.text).toBe('Agent "other task" finished\nSummary: "Joke from Sonnet"\n⚠ Launched on launched-model, not the selected selected-model');
   await unmatched.unmount();
+  // A notice quoting the spawn-time heading matches through the routed label, not the
+  // written description, and is rewritten to the receipt's label with one warning.
+  const animal = spawnLabel.split(' · ')[0];
+  const headed = await $.ui.mount({ ...notice, props: { ...notice.props,
+    text: `Agent "${animal} · selected-model · inspect the parser" finished` } });
+  expect(renders[renders.length - 1].props.text)
+    .toBe(`Agent "${animal} · launched-model · inspect the parser ⚠ selected selected-model" finished`);
+  await headed.unmount();
   for (const isExpanded of [false, true]) {
     const ui = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded,
       text: 'Original task summary\nFull child output stays visible.' } });
@@ -1115,7 +1138,9 @@ test('completed notification labels restore per child and render without storage
     await $.agent.spawn({ ...spawn, tool_use_id: id, description });
     const actual = JSON.parse(files.get(`${directory}/agent-${id}.json`)!);
     expect(actual.description).toMatch(/ · selected-model · inspect the parser$/);
-    expect(forwarded[forwarded.length - 1].description).toBe(description);
+    // The spawn carries the routed label even when the written description was empty.
+    expect(forwarded[forwarded.length - 1].description)
+      .toMatch(/^[A-Z][a-z]+(?: 2)? · selected-model · inspect the parser$/);
   }
   for (const props of [
     { ...notice.props, origin: { kind: 'composer' as const }, task: undefined },
@@ -1242,6 +1267,12 @@ for (const [show, envName, envValue, rewrites] of [
       });
     }
     expect(spawned.map(event => event.model)).toEqual(['system.ai.glm-5-3-flash', 'system.ai.model-b']);
+    // The task label is set at spawn on either side of the gate, whatever the stream did;
+    // a hidden model display leaves the recorded description in place.
+    if (show === '1') for (const event of spawned) expect(event.description).toMatch(new RegExp(
+      `^[A-Z][a-z]+(?: 2)? · ${event.tool_use_id === 'head-1' ? 'model-b' : 'glm-5-3-flash'} · Tell me a short joke$`));
+    else for (const event of spawned) expect(event.description).toBe(
+      calls[Number(event.tool_use_id === 'head-1')].description);
     // Claude before 2.1.328 has no agent-list row to render.
     const agentRow = async (id: string) => {
       try {

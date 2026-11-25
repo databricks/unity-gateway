@@ -54,11 +54,16 @@ set, with Claude's own read: any non-empty value for the first two, 1/true/yes/o
 `DO_NOT_TRACK` — or `CLAUDE_CODE_AUTO_MODE_SERVER=1` keeps the server's verdict, the stream
 passes through untouched and routing happens at `tool.call` instead, never changing an input
 auto mode has reviewed. The selected model is applied at `agent.spawn` on both paths, and
-parallel calls route as the host dispatches them.
+parallel calls route as the host dispatches them. The spawn sets the task's description to
+the routed label — spawn runs after the permission decision, so the reviewed call is never
+mutated — which is what tasks, `/tasks` and completion notices show as, in every mode
+including when nonessential traffic is off. Only the collapsed parallel-agent header and the
+parent transcript show the model's own description when the stream rewrite is skipped.
 A model-written description can name the model the parent asked for even though routing
 overrode it, so no other mod surface prints it: routing cards and rows quote the neutral
 title, a lone tool row displays the label through `ui.render`, and the completed-task
-notice's heading quotes the routed label at render time while its summary stays as written.
+notice's heading quotes the routed label at render time — matching either the written
+description or the spawn label — while its summary stays as written.
 The task title comes from the first sentence of the prompt.
 The selected model is a prediction until the child starts. Routing cards, the agent list and
 completed-task notices use the spawn receipt and flag a mismatch with `⚠ selected <model>`.

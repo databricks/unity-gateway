@@ -498,7 +498,11 @@ export const registerSubagentRouting = (
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const result = await next(route ? { ...e, model: route.model } : e)
+    // The task shows the spawn description, so the routed label is set here — after the
+    // permission decision, never on the reviewed call. On the rewrite path the recorded
+    // description is already this heading; this is what labels the task in every other mode.
+    const label = route && showModel ? heading(route) : undefined
+    const result = await next(route ? { ...e, model: route.model, ...(label ? { description: label } : {}) } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
@@ -529,14 +533,17 @@ export const registerSubagentRouting = (
     return result
   })
 
-  // The native notice quotes the recorded description, which can name the model the parent
-  // asked for; the receipt's label replaces it at render time, and a differing launch is flagged.
+  // The native notice quotes whichever description the task carries — the one the model
+  // wrote, or the spawn-time routed label — which can name the model the parent asked for;
+  // the receipt's label replaces it at render time, and a differing launch is flagged.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
     if (!showModel || e.props.origin?.kind !== 'task-notification' || !task?.id) return next(e)
     const saved = routedDisplays.records.get(task.id)
     if (!saved || typeof e.props.text !== 'string') return next(e)
-    const closingQuote = quotedDescriptionEnd(e.props.text, saved.description)
+    const spawnedLabel = `${saved.animal} · ${shortModel(saved.selected)} · ${saved.title}`
+    const closingQuote = Math.max(quotedDescriptionEnd(e.props.text, saved.description),
+      quotedDescriptionEnd(e.props.text, spawnedLabel))
     const text = closingQuote >= 0
       ? `Agent "${receiptLabel(saved)}"${e.props.text.slice(closingQuote + 1)}` : e.props.text
     const flagged = differs(saved.selected, saved.launched) && text === e.props.text
