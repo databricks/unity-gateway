@@ -3201,6 +3201,22 @@ class TestCodexManagedConfig:
         assert cli["model_providers"]["Databricks"]["requires_openai_auth"]
         assert state["codex_relayed"]
 
+    def test_providerless_relay_retries_listener_cleanup_after_config_write(
+        self, tmp_path, monkeypatch
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "_service_port", lambda _flag: 43198)
+        cleanup = Mock(side_effect=[OSError("busy"), None])
+        monkeypatch.setattr(codex, "_remove_otel_service", cleanup)
+        state = {"workspace": WS}
+        codex._sync_desktop_relay(state, WS, None, tracing=False, model_service_relay=True)
+        assert read_toml_safe(codex._legacy_config_path())["model_provider"] == "DatabricksRelay"
+        write = Mock()
+        monkeypatch.setattr(codex, "write_toml_file", write)
+        codex._sync_desktop_relay(state, WS, None, tracing=False, model_service_relay=True)
+        assert cleanup.call_count == 2
+        write.assert_not_called()
+
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
     def test_desktop_relay_lifecycle(self, tmp_path, monkeypatch):
         managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)

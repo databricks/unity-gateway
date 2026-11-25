@@ -1003,7 +1003,7 @@ def start_relay_proxy(
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``).
 
-    ``routes_to_subscription_relay(model, databricks_token)`` tells Claude’s proxy which UC model
+    ``routes_to_subscription_relay(model, databricks_token)`` tells Claude's proxy which UC model
     services keep the relay credentials."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
     handler_attrs = (

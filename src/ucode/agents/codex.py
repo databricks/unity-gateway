@@ -1159,19 +1159,21 @@ def _sync_desktop_relay(
                 port = _allocate_otel_port()
             _ensure_otel_service(workspace, port, relay_port)
             block["base_url"] = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
-        if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME and current == block:
-            return False
-        doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
-        doc.setdefault("model_providers", {})[CODEX_APP_RELAY_PROVIDER_NAME] = block
-        write_toml_file(_legacy_config_path(), doc)
-        if provider:
-            print_warning_err("Restart the Codex app and sign in with ChatGPT to use the relay.")
-        elif relay_port:
+        changed = doc.get("model_provider") != CODEX_APP_RELAY_PROVIDER_NAME or current != block
+        if changed:
+            doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
+            doc.setdefault("model_providers", {})[CODEX_APP_RELAY_PROVIDER_NAME] = block
+            write_toml_file(_legacy_config_path(), doc)
+            if provider:
+                print_warning_err(
+                    "Restart the Codex app and sign in with ChatGPT to use the relay."
+                )
+        if not provider and relay_port:
             if tracing:
                 _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port())
             else:
                 _remove_otel_service()
-        return True
+        return changed
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning_err(f"Could not update the Codex app ChatGPT relay: {exc}")
         return False
