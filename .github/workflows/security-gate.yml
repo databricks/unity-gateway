@@ -35,6 +35,9 @@ jobs:
       ) }}
     timeout-minutes: 25
     steps:
+      - name: Start the gate budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_GATE_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - name: Wait for the shared Security Scan
         # Queue runs rely on PR admission checks and invalidation after head updates.
         # Live verification blocks rollout; see tests/README.md#security-scan-rollout.
@@ -124,3 +127,12 @@ jobs:
           sys.exit("::error::Security Scan did not complete within 20 minutes. "
                    "Check its run, then re-run failed CI jobs.")
           PY
+      - name: Check the gate time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        run: |
+          elapsed=$(( $(date +%s) - BUDGET_GATE_STARTED ))
+          echo "Security Gate setup: 0s / 10s, run: ${elapsed}s / 1060s, total: ${elapsed}s / 1060s"
+          if [ "$elapsed" -gt 1060 ]; then
+            echo "::error::Security Gate exceeded its 1060s budget."
+            exit 1
+          fi
