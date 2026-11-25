@@ -46,7 +46,7 @@ UNREACHABLE_FAILURE_REASON = "Smart Router couldn't be reached"
 UNEXPECTED_RESPONSE_FAILURE_REASON = "Smart Router returned an unexpected response"
 
 
-def enabled(source: Mapping[str, str]) -> bool:
+def is_route_validation_enabled(source: Mapping[str, str]) -> bool:
     """Omnigent launches skip route validation until Omnigent shows its result."""
     return (
         source.get(UG_ROUTE_VALIDATION_ENV_VAR, "").strip().lower() in TRUE_ENV_VALUES

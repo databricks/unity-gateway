@@ -425,7 +425,7 @@ def _claude_mod_launch_options(
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
-        "startupValidation": "1" if route_validation.enabled(source) else "",
+        "startupValidation": "1" if route_validation.is_route_validation_enabled(source) else "",
     }
 
 
@@ -1019,7 +1019,7 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-            if route_validation.enabled(os.environ):
+            if route_validation.is_route_validation_enabled(os.environ):
                 route_validation.start(
                     workspace,
                     token,
@@ -1043,7 +1043,7 @@ def launch_claude(
             env[routing.ROUTER_NAME_ENV_VAR] = (
                 launch_source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME
             )
-            if route_validation.enabled(os.environ):
+            if route_validation.is_route_validation_enabled(os.environ):
                 mod_options["validateCommand"] = routing_hook_argv(
                     routing_state, ROUTE_VALIDATION_MOD_EVENT
                 )
@@ -1275,7 +1275,7 @@ def launch_codex(
             f"Could not enable plaintext Codex task routing: {exc} "
             "Encrypted subagent assignments will keep their requested model."
         )
-    if route_validation.enabled(os.environ):
+    if route_validation.is_route_validation_enabled(os.environ):
         # The footer shows a pending state until the check publishes its result.
         with suppress(OSError):
             config_io.atomic_write_json(validation_result_path(session_env_path), {"pending": True})
@@ -1341,7 +1341,7 @@ def launch_codex(
                         provider=state.get("_codex_launch_provider"),
                     )
                 )
-                if route_validation.enabled(os.environ)
+                if route_validation.is_route_validation_enabled(os.environ)
                 else None
             ),
             **(

@@ -419,4 +419,4 @@ def test_validate_disables_routing_with_the_unsupported_details(monkeypatch):
     ],
 )
 def test_enabled_needs_the_opt_in_and_skips_omnigent(source, expected):
-    assert validation.enabled(source) is expected
+    assert validation.is_route_validation_enabled(source) is expected
