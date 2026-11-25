@@ -113,7 +113,8 @@ def test_pr_rollup_evaluates_even_when_upstream_work_is_cancelled():
 @pytest.mark.parametrize("shards", ["success", "failure", "skipped", "cancelled"])
 def test_agent_rollup_requires_every_shard(shards):
     agent = _job("e2e")
-    assert "needs: e2e-shards" in agent
+    assert "needs: [security-gate, e2e-shards]" in agent
+    assert "needs.security-gate.result == 'success'" in agent
     result = subprocess.run(
         ["/bin/bash", "-c", agent.split("        run: ", 1)[1].split("\n      - ", 1)[0].strip()],
         env={**os.environ, "RESULT": shards},
@@ -130,7 +131,7 @@ def test_agent_rollup_requires_every_shard(shards):
 @pytest.mark.parametrize("event", ["pull_request", "merge_group"])
 def test_required_rollup_fails_closed(event, agent, integration):
     required = _job("required-e2e")
-    assert "needs: [e2e, integration]" in required
+    assert "needs: [security-gate, e2e, integration]" in required
     assert (
         "if: ${{ always() && (github.event_name == 'pull_request' || !cancelled()) }}" in required
     )

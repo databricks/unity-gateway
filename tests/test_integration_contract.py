@@ -977,7 +977,7 @@ def test_pr_jobs_with_credentials_require_a_successful_security_gate():
         needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
         assert needs and "security-gate" in needs[1].split(", "), name
     for name in ("unit-test-times", "e2e"):
-        assert "needs.security-gate.result == 'success'" in jobs[name], name
+        assert _requires_gate_success(jobs[name]), name
     for name in (
         "checks",
         "unit-linux",
@@ -1010,6 +1010,20 @@ def test_credential_contract_rejects_a_new_ungated_job(monkeypatch, prerequisite
         globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
     )
     with pytest.raises(AssertionError, match="accidental-secret"):
+        test_pr_jobs_with_credentials_require_a_successful_security_gate()
+
+
+def test_gate_contract_rejects_an_audit_condition_that_bypasses_the_gate(monkeypatch):
+    workflow = _workflow
+    ci = workflow("ci.yml").replace(
+        "if: ${{ !cancelled() && needs.security-gate.result == 'success' }}",
+        "if: ${{ !cancelled() && needs.security-gate.result == 'success' || true }}",
+        1,
+    )
+    monkeypatch.setitem(
+        globals(), "_workflow", lambda name: ci if name == "ci.yml" else workflow(name)
+    )
+    with pytest.raises(AssertionError, match="unit-test-times"):
         test_pr_jobs_with_credentials_require_a_successful_security_gate()
 
 
@@ -1315,12 +1329,16 @@ def test_security_gate_waits_through_rate_limits(monkeypatch, status, failure_ca
     assert observed["sleeps"] == [wait]
 
 
-def test_security_gate_waits_through_a_secondary_limit_without_retry_headers(monkeypatch):
+@pytest.mark.parametrize("reset", [None, "1794605000"])
+def test_security_gate_waits_through_a_secondary_limit_without_retry_headers(monkeypatch, reset):
+    headers = {"X-RateLimit-Remaining": "42"}
+    if reset:
+        headers["X-RateLimit-Reset"] = reset
     error = urllib.error.HTTPError(
         "https://api.github.com",
         403,
         "forbidden",
-        {"X-RateLimit-Remaining": "42"},
+        headers,
         io.BytesIO(b'{"message":"You have exceeded a secondary rate limit."}'),
     )
     observed = {}
@@ -1347,7 +1365,7 @@ def test_security_gate_honors_retry_after_without_a_reset_header(
 
 @pytest.mark.parametrize("status", [403, 429])
 @pytest.mark.parametrize(
-    ("reset", "retry_after", "wait"), [(1794602003, 45, 45), (1794602050, 3, 50)]
+    ("reset", "retry_after", "wait"), [(1794602003, 45, 45), (1794602050, 3, 10)]
 )
 def test_security_gate_waits_for_both_rate_limit_headers(
     monkeypatch, status, reset, retry_after, wait
@@ -1379,13 +1397,39 @@ def test_security_gate_waits_at_least_one_minute_without_rate_limit_headers(monk
     assert observed["sleeps"] == [60]
 
 
+def test_security_gate_ignores_primary_reset_when_secondary_retry_after_is_present(monkeypatch):
+    error = urllib.error.HTTPError(
+        "https://api.github.com",
+        403,
+        "forbidden",
+        {"X-RateLimit-Remaining": "42", "X-RateLimit-Reset": "1794605000", "Retry-After": "60"},
+        io.BytesIO(b'{"message":"You have exceeded a secondary rate limit."}'),
+    )
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_errors={1: error}, observed=observed)
+    assert code == 0
+    assert observed["sleeps"] == [60]
+
+
+def test_security_gate_backs_off_repeated_secondary_limits_within_budget(monkeypatch):
+    errors = {
+        call: urllib.error.HTTPError("https://api.github.com", 429, "rate limited", {}, None)
+        for call in range(1, 6)
+    }
+    observed = {}
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_errors=errors, observed=observed)
+    assert "did not complete within 20 minutes" in code
+    assert observed["sleeps"] == [60, 120, 240, 480, 300]
+    assert len(observed["fetches"]) == 5
+
+
 def test_security_gate_reserves_its_final_poll_after_repeated_rate_limits(monkeypatch):
     errors = {
         call: urllib.error.HTTPError(
             "https://api.github.com",
             429,
             "rate limited",
-            {"X-RateLimit-Reset": str(1794602000 + call)},
+            {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(1794602000 + call)},
             None,
         )
         for call in range(1, 27)

@@ -64,7 +64,9 @@ jobs:
           ))
           if not re.fullmatch(r"[1-9][0-9]*", pr) or not re.fullmatch(r"[0-9a-f]{40}", sha):
               sys.exit("::error::Security Gate requires a PR number and an authorized commit SHA.")
+          secondary_backoff = 60
           def workflow_runs(endpoint):
+              global secondary_backoff
               token = os.environ.get("GH_TOKEN")
               headers = {"Authorization": f"Bearer {token}"} if token else {}
               pages = []
@@ -81,14 +83,16 @@ jobs:
                           or headers.get("Retry-After")
                           or b"secondary rate limit" in error.read(4096).lower()
                       )):
+                          # https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately
                           reset = headers.get("X-RateLimit-Reset", "")
                           retry_after = headers.get("Retry-After", "")
-                          limits = []
-                          if reset.isdecimal():
-                              limits.append(int(reset))
                           if retry_after.isdecimal():
-                              limits.append(time.time() + int(retry_after))
-                          reset_at = max(limits) if limits else time.time() + 60
+                              reset_at = time.time() + int(retry_after)
+                          elif headers.get("X-RateLimit-Remaining") == "0" and reset.isdecimal():
+                              reset_at = int(reset)
+                          else:
+                              reset_at = time.time() + secondary_backoff
+                              secondary_backoff = min(secondary_backoff * 2, 1200)
                           print("GitHub API rate limited; the Security Scan remains pending.", flush=True)
                           return None, reset_at
                       sys.exit(f"::error::GitHub API returned HTTP {error.code}; tests remain blocked. "
@@ -98,6 +102,7 @@ jobs:
                                "Check connectivity and GitHub status, then re-run failed CI jobs.")
                   if len(pages[-1]["workflow_runs"]) < 100:
                       break
+              secondary_backoff = 60
               return [run for page in pages for run in page["workflow_runs"]], None
 
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
