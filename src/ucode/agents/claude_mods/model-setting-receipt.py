@@ -3,6 +3,7 @@
 import json
 import socket
 import sys
+import time
 
 
 def main() -> None:
@@ -10,6 +11,8 @@ def main() -> None:
     if not isinstance(request, dict):
         raise ValueError("Expected a model-setting receipt")
     request["method"] = "model_setting"
+    # A request can expire while waiting behind another connection in the socket backlog.
+    request["deadline"] = time.monotonic() + 4.0
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(5.0)
         client.connect(sys.argv[1])

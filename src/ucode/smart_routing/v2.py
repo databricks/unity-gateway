@@ -998,8 +998,7 @@ class _ClaudeModelSettingGuard:
                     ):
                         # A deferred session can persist after releasing ownership.
                         before = recovery["before"]
-                    elif before != recovery["before"]:
-                        recovery["pending"].clear()  # Preserve a later manual choice.
+                    # An external save advances the baseline, but a live peer can still write.
                 recovery["before"] = before
                 # A dead owner may already have persisted its temporary model.
                 # Recover its baseline before discarding its pending entry.
@@ -1057,8 +1056,8 @@ class _ClaudeModelSettingGuard:
         self._manual_saved_default = None
         self._manual_registered = False
         self._manual_started_at = time.time_ns()
-        # Windows wall-clock ticks can cover more than one manual input.
-        self._manual_started_monotonic_ns = time.monotonic_ns()
+        # perf_counter is monotonic across processes and finer than Windows 3.12's clock.
+        self._manual_started_monotonic_ns = time.perf_counter_ns()
         return self._try_abandon()
 
     def _try_abandon(self) -> bool:

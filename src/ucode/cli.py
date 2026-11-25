@@ -3680,10 +3680,14 @@ def claude_router_hook_cmd(
     import sys
 
     environment = effective_environment(agent=AGENT_CLAUDE)
-    # The toggle validates while the session controls still keep routing off.
-    if event != ROUTE_VALIDATION_MOD_EVENT and not smart_routing_v2.smart_routing_enabled(
+    routing_enabled = smart_routing_v2.smart_routing_enabled(
         environment, default=False, agent=AGENT_CLAUDE
-    ):
+    )
+    # A launched PTY still needs prompt/clear receipts after routing is turned off.
+    recovery_notification = event == ROUTE_FIRST_PROMPT_EVENT and os.environ.get(
+        FIRST_PROMPT_SOCKET_ENV
+    )
+    if not routing_enabled and event != ROUTE_VALIDATION_MOD_EVENT and not recovery_notification:
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -3713,6 +3717,7 @@ def claude_router_hook_cmd(
             Path(socket_path),
             payload,
             timeout=smart_routing_v2.CLAUDE_ROUTE_SELECTION_TIMEOUT_S + 5.0,
+            route_enabled=routing_enabled,
         )
         output = first_prompt_hook_output(response)
         if output is not None:

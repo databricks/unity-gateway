@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import pty
 import re
@@ -24,6 +25,7 @@ import threading
 import time
 import tty
 from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -39,6 +41,8 @@ MAX_PROMPT_RECOVERY_FILES = 10
 CONFIRM_TIMEOUT_S = 3.0
 SWITCH_TIMEOUT_S = 6.0
 MODEL_PERSIST_TIMEOUT_S = 2.0
+# Leave the receipt helper time to receive a refusal before its five-second socket timeout.
+MODEL_SETTING_RECEIPT_TIMEOUT_S = 4.0
 MODEL_RESTORE_INTERVAL_S = 0.2
 MODEL_RESTORE_MAX_INTERVAL_S = 2.0
 READY_QUIET_S = 0.75
@@ -399,30 +403,40 @@ def prompt_recovery_note(prompt: str) -> str:
                         f"{APP_DIR}. Delete copies you have already resent. "
                         f"Your prompt as a JSON string: {json.dumps(prompt)}"
                     )
-                with NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    newline="",
-                    prefix="claude-prompt-",
-                    suffix=".txt",
-                    dir=APP_DIR,
-                    delete=False,
-                ) as saved:
-                    saved.write(prompt)
-                    saved.flush()
-                    os.fsync(saved.fileno())
+                new_copy: Path | None = None
+                try:
+                    with NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        newline="",
+                        prefix="claude-prompt-",
+                        suffix=".txt",
+                        dir=APP_DIR,
+                        delete=False,
+                    ) as saved:
+                        new_copy = Path(saved.name)
+                        saved.write(prompt)
+                        saved.flush()
+                        os.fsync(saved.fileno())
+                except OSError:
+                    if new_copy is not None:
+                        with contextlib.suppress(OSError):
+                            new_copy.unlink()
+                    raise
             finally:
                 release_file_lock(lock)
         return (
-            f"Your prompt is saved in {saved.name}. Open it to resend when Claude is ready, "
-            "then delete the recovery file."
+            f"Your prompt is saved in {saved.name} until you delete it. "
+            "Open it to resend when Claude is ready, then delete the recovery file."
         )
     except OSError:
         # Escaping control bytes keeps the recovery copy from acting on the terminal.
         return f"Could not save a recovery file. Your prompt as a JSON string: {json.dumps(prompt)}"
 
 
-def request_first_prompt_route(path: Path, payload: dict, *, timeout: float = 5.0) -> dict | None:
+def request_first_prompt_route(
+    path: Path, payload: dict, *, timeout: float = 5.0, route_enabled: bool = True
+) -> dict | None:
     """Forward a first-prompt or clear hook to the owning PTY wrapper."""
     if payload.get("hook_event_name") == "SessionStart":
         if payload.get("source") != "clear":
@@ -433,7 +447,7 @@ def request_first_prompt_route(path: Path, payload: dict, *, timeout: float = 5.
         if not isinstance(prompt, str) or not prompt.strip():
             return None
         request = {
-            "method": "route_first_prompt",
+            "method": "route_first_prompt" if route_enabled else "prompt_submitted",
             "prompt": prompt,
             "session_id": payload.get("session_id"),
         }
@@ -518,6 +532,10 @@ def serve_first_prompt_socket(
                             isinstance(request, dict)
                             and request.get("method") == "route_first_prompt"
                         )
+                        is_submission = (
+                            isinstance(request, dict)
+                            and request.get("method") == "prompt_submitted"
+                        )
                         is_command = isinstance(prompt, str) and prompt.lstrip().startswith("/")
                         if isinstance(request, dict) and request.get("method") == "model_setting":
                             response = on_model_setting(request)
@@ -546,8 +564,7 @@ def serve_first_prompt_socket(
                                 response["display_model"] = display_model
                                 blocked = (prompt, model)
                         elif (
-                            is_route
-                            and claimed
+                            (is_route and claimed or is_submission)
                             and not is_command
                             and isinstance(prompt, str)
                             and prompt.strip()
@@ -636,7 +653,7 @@ def run_claude_pty(
     submitted_event = threading.Event()
     submitted_count = 0
     cleared_count = 0
-    model_setting_requests: list[tuple[dict, dict, threading.Event]] = []
+    model_setting_requests: list[tuple[dict, Future[dict], float]] = []
 
     def on_blocked_prompt(prompt: str, model: str) -> None:
         with pending_lock:
@@ -655,13 +672,24 @@ def run_claude_pty(
             cleared_count += 1
 
     def on_model_setting(request: dict) -> dict:
-        response: dict = {}
-        completed = threading.Event()
+        now = time.monotonic()
+        deadline = request.get("deadline", now + MODEL_SETTING_RECEIPT_TIMEOUT_S)
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            return {"acknowledged": False}
+        deadline = min(deadline, now + MODEL_SETTING_RECEIPT_TIMEOUT_S)
+        if deadline <= now:
+            return {"acknowledged": False}
+        completed: Future[dict] = Future()
         with pending_lock:
-            model_setting_requests.append((request, response, completed))
-        if not completed.wait(5.0):
-            log("[WARN] native model-setting receipt was not processed")
-        return response
+            model_setting_requests.append((request, completed, deadline))
+        try:
+            return completed.result(timeout=max(0.0, deadline - time.monotonic()))
+        except (TimeoutError, CancelledError):
+            # Cancellation prevents queued work from applying after its caller gives up.
+            # An operation already changing recovery must finish its write.
+            completed.cancel()
+            log("[WARN] native model-setting receipt was not processed before its deadline")
+            return {"acknowledged": False}
 
     server_thread = serve_first_prompt_socket(
         socket_path,
@@ -819,7 +847,12 @@ def run_claude_pty(
                 with pending_lock:
                     requests = model_setting_requests[:]
                     model_setting_requests.clear()
-                for request, response, completed in requests:
+                for request, completed, deadline in requests:
+                    if time.monotonic() >= deadline:
+                        completed.cancel()
+                    if not completed.set_running_or_notify_cancel():
+                        continue
+                    response: dict = {}
                     try:
                         event = request.get("event")
                         receipt_id = request.get("id")
@@ -868,7 +901,7 @@ def run_claude_pty(
                         model_pending = deferred_restore = True
                         log(f"[WARN] native model-setting recovery deferred: {exc}")
                     finally:
-                        completed.set()
+                        completed.set_result(response)
 
             def clear_keys() -> bytes:
                 # The box can still hold the blocked prompt and an unrun /model command.

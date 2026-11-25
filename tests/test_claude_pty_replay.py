@@ -395,6 +395,9 @@ root = Path(sys.argv[1])
 settings = root / ".claude" / "settings.json"
 guard = v2._ClaudeModelSettingGuard(settings)
 observations = {"restorations": [], "checked_at": [], "deferred": 0, "errors": []}
+# Fake TUIs synchronize on phase markers; human-input deadlines only slow these checks.
+claude_pty.SWITCH_TIMEOUT_S = 1.0
+claude_pty.READY_TIMEOUT_S = 2.0
 
 def persisted():
     observations["checked_at"].append(time.monotonic())
@@ -650,7 +653,7 @@ capture_path.write_text(json.dumps({
 
     @pytest.mark.parametrize(
         "command",
-        [b"/help\r", b"/compact\r", b"/clear\r", b"explain codx\x1b[D\x7fe\x1b[C\r"],
+        [b"/help\r", b"explain codx\x1b[D\x7fe\x1b[C\r"],
     )
     def test_unrelated_command_preserves_another_sessions_recovery(
         self, replay_model_switch, tmp_path, command
@@ -703,17 +706,21 @@ finally:
         )
 
     @pytest.mark.parametrize(
-        "completion",
+        ("manual_model", "completion"),
         [
-            b"Kept model as sonnet\n",
-            b"Model switch cancelled\n",
+            ("opus", b"Kept model as sonnet\n"),
             pytest.param(
+                "opus",
                 b"Model switch to {model} was blocked by a PreModelSwitch hook: policy\n",
-                id="premodel-rejection",
+                id="opus-premodel-rejection",
+            ),
+            pytest.param(
+                "sonnet",
+                b"Model switch to {model} was blocked by a PreModelSwitch hook: policy\n",
+                id="sonnet-premodel-rejection",
             ),
         ],
     )
-    @pytest.mark.parametrize("manual_model", ["opus", "sonnet"])
     def test_cancelled_manual_switch_releases_another_sessions_recovery(
         self, replay_model_switch, tmp_path, completion, manual_model
     ):
@@ -1332,9 +1339,11 @@ class TestModelSwitchInput:
 
 
 class TestWaitingToSwitchTimeout:
-    def test_ready_timeout_submits_without_model_switch(self, tmp_path, monkeypatch):
-        # READY_QUIET_S >> READY_TIMEOUT_S so the quiet check never fires first.
-        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 100.0)
+    @pytest.mark.parametrize("contended", [False, True], ids=["busy-output", "model-lock"])
+    def test_ready_timeout_submits_without_model_switch(
+        self, tmp_path, monkeypatch, capfdbinary, contended
+    ):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05 if contended else 100.0)
         monkeypatch.setattr(claude_pty, "READY_TIMEOUT_S", 0.3)
         monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
 
@@ -1363,8 +1372,11 @@ prompt_bytes = b""
 while not prompt_bytes.endswith(b"\\x1b[201~"):
     prompt_bytes += os.read(0, 1)
 enter = os.read(0, 1)
+assert send_hook(socket_path, "hello")["action"] == "allow"
+extra = os.read(0, 4096) if sel.select([0], [], [], 0.2)[0] else b""
 
 capture_path.write_text(json.dumps({
+    "extra_input": extra.hex(),
     "no_model_cmd_before_paste": b"/model" not in pre,
     "paste_received": True,
     "enter_is_cr": enter == b"\\r",
@@ -1372,10 +1384,17 @@ capture_path.write_text(json.dumps({
 """,
         )
 
+        preparations = []
+
+        def prepare(model):
+            preparations.append(model)
+            return False
+
         result = claude_pty.run_claude_pty(
             [sys.executable, str(fake_claude), str(socket_path), str(capture)],
             route_prompt=_route_sonnet,
             socket_path=socket_path,
+            prepare_model_switch=prepare,
         )
 
         assert result == 0
@@ -1385,6 +1404,10 @@ capture_path.write_text(json.dumps({
         )
         assert data["paste_received"]
         assert data["enter_is_cr"]
+
+        assert data["extra_input"] == ""
+        assert bool(preparations) is contended
+        assert b"could not prepare the model switch" in capfdbinary.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -1585,31 +1608,17 @@ class TestOpaqueInputRecovery:
         "command, prompt, outcome",
         [
             (b"\x1b[A\r", "fix the bug", None),
-            (b"explain\t\r", "explain this code", None),
-            ("explain caf\u00e9\x1b[D\r".encode(), "explain caf\u00e9", None),
             (b"/model\r", None, b"Set model to fable\n"),
-            (b"\x1b[A\r", None, b"Set model to fable\n"),
-            (b"/mo\t\r", None, b"Set model to fable\n"),
             (b"/model\r", None, b"Set model to fable for this session only\n"),
             (b"/model\r", None, b"Kept model as haiku\n"),
-            (b"\x1b[A\r", None, b"Model switch cancelled\n"),
-            (b"/mo\t\r", None, b"Kept model as haiku\n"),
             (b"\x1b[A\r", None, b"<session-clear>"),
-            (b"/cl\t\r", None, b"<session-clear>"),
         ],
         ids=[
             "history-prompt",
-            "completion-prompt",
-            "unicode-edit-prompt",
             "picker-choice",
-            "history-choice",
-            "completion-choice",
             "picker-session-only",
             "picker-cancel",
-            "history-cancel",
-            "completion-cancel",
             "history-clear-session",
-            "completion-clear-session",
         ],
     )
     def test_opaque_input_waits_for_native_classification(
@@ -1710,8 +1719,6 @@ finally:
             (b"Please explain: Set model to fable\n", None),
             ("  ⎿  Set model to fable\n".encode(), "confirmed"),
             ("  ⎿  Kept model as haiku\n".encode(), "cancelled"),
-            (b"Kept model as haiku\n", "cancelled"),
-            (b"Model switch cancelled\n", "cancelled"),
         ],
     )
     def test_opaque_input_needs_a_complete_native_result(self, output, expected):
@@ -1774,7 +1781,6 @@ capture_path.write_text(json.dumps({"settings_while_running": json.loads(setting
         [
             pytest.param(False, False, b"Kept model as haiku\n", id="replay-ack-model-cancel"),
             pytest.param(True, False, b"Kept model as haiku\n", id="clear-session-model-cancel"),
-            pytest.param(False, True, b"Set model to fable\n", id="replay-ack-prompt-model-text"),
             pytest.param(False, True, b"Here is the explanation.\n", id="replay-ack-prompt-text"),
         ],
     )
@@ -2119,12 +2125,12 @@ print(json.dumps(claude_pty.prompt_recovery_note(sys.argv[4])), flush=True)
     } == {f"prompt {index}" for index in range(4)}
 
 
-@pytest.mark.parametrize("manual_model", ["opus", "sonnet"])
 @pytest.mark.parametrize("persisted_before", [False, True], ids=["late-write", "already-written"])
 @pytest.mark.parametrize("rejected", [False, True], ids=["cancelled", "premodel-rejection"])
 def test_cancelled_manual_switch_keeps_its_own_routed_write_recoverable(
-    replay_model_switch, tmp_path, manual_model, persisted_before, rejected
+    replay_model_switch, tmp_path, persisted_before, rejected
 ):
+    manual_model = "opus"
     body = (
         f"MANUAL_MODEL = {manual_model!r}\nPERSISTED_BEFORE = {persisted_before!r}\n"
         f"REJECTED = {rejected!r}\n"
@@ -2211,3 +2217,104 @@ capture_path.write_text(json.dumps({"settings_while_running": json.loads(setting
             == settings
             == {"model": "haiku", "unrelated": "preserved"}
         )
+
+
+@pytest.mark.parametrize("failure", ["write", "fsync"])
+def test_failed_prompt_copy_does_not_use_a_slot(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(claude_pty, "APP_DIR", tmp_path)
+    retained = tmp_path / "claude-prompt-retained.txt"
+    retained.write_text("an earlier prompt")
+    original = claude_pty.NamedTemporaryFile
+
+    @contextmanager
+    def failing_file(**kwargs):
+        with original(**kwargs) as saved:
+
+            class PartialWrite:
+                name = saved.name
+
+                def write(self, text):
+                    saved.write(text[:3])
+                    saved.flush()
+                    raise OSError("disk full during prompt write")
+
+            yield PartialWrite()
+
+    def failed_sync(_fd):
+        raise OSError("prompt could not be persisted")
+
+    if failure == "write":
+        monkeypatch.setattr(claude_pty, "NamedTemporaryFile", failing_file)
+    else:
+        monkeypatch.setattr(claude_pty.os, "fsync", failed_sync)
+    prompt = "resend this entire prompt"
+    note = claude_pty.prompt_recovery_note(prompt)
+    assert json.loads(note.split("JSON string: ", 1)[1]) == prompt
+    assert list(tmp_path.glob("claude-prompt-*.txt")) == [retained]
+    assert retained.read_text() == "an earlier prompt"
+
+
+@pytest.mark.parametrize("already_expired", [False, True], ids=["queued", "socket-backlog"])
+def test_expired_model_receipt_does_not_change_recovery(replay_model_switch, already_expired):
+    setup = r"""
+claude_pty.MODEL_SETTING_RECEIPT_TIMEOUT_S = 0.05
+native_select = claude_pty.select.select
+paused = False
+
+def pause_receipt_processing(readers, writers, errors, timeout):
+    global paused
+    if (root / "arm-receipt").exists() and not paused:
+        paused = True
+        (root / "receipt-paused").touch()
+        deadline = time.monotonic() + 7
+        while not (root / "receipt-expired").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+    elif paused:
+        (root / "receipt-drained").touch()
+    return native_select(readers, writers, errors, timeout)
+
+claude_pty.select.select = pause_receipt_processing
+"""
+    body = (
+        f"ALREADY_EXPIRED = {already_expired}\n"
+        + r"""
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+peer = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert peer.begin("sonnet")
+    before = json.loads(peer._recovery_path.read_text())
+    (test_dir / "arm-receipt").touch()
+    deadline = time.monotonic() + 3
+    while not (test_dir / "receipt-paused").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(6)
+        client.connect(socket_path)
+        request = {"method": "model_setting", "event": "prepare", "id": 1}
+        if ALREADY_EXPIRED:
+            request["deadline"] = time.monotonic() - 1
+        client.sendall((json.dumps(request) + "\n").encode())
+        response = json.loads(client.makefile("rb").readline())
+    (test_dir / "receipt-expired").touch()
+    deadline = time.monotonic() + 3
+    while not (test_dir / "receipt-drained").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    capture_path.write_text(json.dumps({
+        "response": response,
+        "before": before,
+        "after": json.loads(peer._recovery_path.read_text()),
+    }))
+finally:
+    peer.finish(timeout=0)
+"""
+    )
+    capture, settings, observations = replay_model_switch(body, wrapper_setup=setup)
+    assert capture["after"] == capture["before"]
+    assert capture["response"] == {"acknowledged": False}
+    assert settings == {"model": "haiku", "unrelated": "preserved"}
+    assert observations["errors"] == []

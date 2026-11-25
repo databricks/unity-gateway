@@ -1300,19 +1300,29 @@ settles tentative recovery through the clear-session hook without acknowledging 
 its routing claim. Prior replay acknowledgements and clear hooks leave a newer opaque choice pending
 until its own cancellation or ordinary-prompt hook. Model-like reply text cannot turn that ordinary
 prompt into a model change. A late automatic model result also leaves a history prompt pending.
-Saved-default changes carry the raw selector through the native config receipt, and live routed
-writers keep their recovery entries after a manual choice. Session-only choices keep the prior
-default. `claude_model_setting_recovery.test.mjs` exercises the production hook handlers with a
-fake process boundary, including delayed replies and rejected saves. These use fake TUIs and
-native hook payloads; current-source native ordering, delayed
-native persistence and concurrent picker acceptance remain unverified.
-Model-recovery component cases force equal wall-clock timestamps and verify manual-choice
-order through both registration-lock contention paths. They also cover old journals without
-a monotonic timestamp, stale ordering records left by older writers, and newer wall-clock
-input after the monotonic counter resets.
-Prompt-copy checks cover private files, a ten-file creation limit, concurrent writers,
-and escaped inline fallback while preserving existing copies. `test_config_io.py` rejects an external
-copier that exits successfully after replacing the staged inode, preserving the original file.
+Saved-default changes carry the raw selector through the native config receipt. Live routed
+writers keep their recovery entries after a manual choice or an uninstrumented external save,
+including a removed model key. Session-only choices keep the prior default. CLI/socket checks
+settle tentative recovery after routing is disabled, through either an ordinary prompt or `/clear`,
+without selecting a route. Queued receipts expire before they can change recovery, including
+requests delayed in the socket backlog; an operation already writing recovery finishes its write.
+`claude_model_setting_recovery.test.mjs` exercises the production registration and hook handlers
+with a fake process boundary. It checks command lifetime, captured save identity, non-model command
+forwarding, rejected saves, and failed receipt delivery with one warning and unchanged native outcomes.
+Current-source native ordering, delayed native persistence and concurrent picker acceptance remain
+unverified.
+Model-recovery component cases force equal wall-clock and coarse monotonic timestamps and verify
+manual-choice order through registration-lock contention. They cover old journals without a
+tie-breaker, stale ordering records left by older writers, and newer wall-clock input after the
+monotonic counter resets. A high-resolution monotonic counter breaks ties within a wall-clock tick.
+Prompt-copy checks cover private files retained until deletion, a ten-file creation limit,
+concurrent writers, failed partial-copy cleanup and escaped inline fallback while preserving earlier
+copies. `test_config_io.py` rejects an external copier that replaces the staged inode, preserving the
+original file, and covers missing copiers in both filtered and absolute search paths.
+The fake-TUI wrapper uses shorter switch and ready deadlines. Persistence, ownership and retry
+backoff retain their production timing and final-state assertions. Input-origin matrices live in
+the parser tests; PTY cases retain each native settlement path, exact input forwarding and recovery
+outcome. Contended preparation sends one prompt on the default model with an actionable notice.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail

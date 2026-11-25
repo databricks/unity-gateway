@@ -1386,15 +1386,9 @@ by component tests in `../test_claude_smart_routing_v2.py`, not by a live regist
 
 Exact candidate-model and router-name preservation in decision logs has component
 coverage in `../test_claude_smart_routing_v2.py`; this suite does not assert those fields.
-Offline PTY cases cover native PreModelSwitch rejection and history/completion-derived `/clear`
-with pending own or peer model writes. They exercise clear-session hook payloads and retain the
-first-prompt claim without acknowledging replay. A shared parameterized scenario covers old replay
-acknowledgements and clear hooks, then cancellation or an ordinary prompt with normal or model-like
-reply text. These cases do not establish native ordering or concurrent picker acceptance at the
-current source revision. Native saved-default receipt handling has offline component coverage;
-its current-source native acceptance and delayed persistence remain unverified. Model-recovery component tests
-also cover equal wall-clock input times, delayed registration, and persisted journals from
-older versions or before a monotonic-counter reset; those checks do not run a native picker.
+The [main test guide](../README.md) describes offline Claude prompt and saved-default recovery
+coverage. Current-source native receipt acceptance, ordering, delayed persistence and concurrent
+picker acceptance remain unverified by those component tests.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different

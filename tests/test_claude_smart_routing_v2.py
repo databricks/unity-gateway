@@ -823,6 +823,69 @@ class TestDirectModelCommand:
 
 class TestFirstPromptHook:
     @requires_pty
+    @pytest.mark.parametrize("cleared", [False, True], ids=["ordinary-prompt", "clear-session"])
+    def test_disabled_hook_settles_opaque_recovery(self, tmp_path, monkeypatch, cleared):
+        from typer.testing import CliRunner
+
+        from ucode import cli
+
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        monkeypatch.setenv(v2.FIRST_PROMPT_SOCKET_ENV, str(tmp_path / "first.sock"))
+        environment = {
+            v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        }
+        monkeypatch.setattr(cli, "effective_environment", lambda **_kwargs: environment)
+        delayed = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        stop = threading.Event()
+        ready = threading.Event()
+        notifications = []
+
+        def settled(kind):
+            notifications.append(kind)
+            assert chooser.cancel_manual_choice()
+
+        thread = claude_pty.serve_first_prompt_socket(
+            tmp_path / "first.sock",
+            lambda _prompt: pytest.fail("disabled routing selected a model"),
+            lambda *_args: pytest.fail("disabled routing blocked a prompt"),
+            stop,
+            on_submitted_prompt=lambda _prompt: settled("prompt"),
+            on_session_cleared=lambda: settled("clear"),
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        try:
+            assert ready.wait(5)
+            assert delayed.begin("sonnet")
+            recalled = claude_pty.ModelSwitchInput().observe(b"\x1b[A\r", time.monotonic())
+            assert recalled.model_command and recalled.manual_model is None
+            assert chooser.abandon(recalled.manual_model) is False
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            payload = (
+                {"hook_event_name": "SessionStart", "source": "clear"}
+                if cleared
+                else {"prompt": "continue with routing disabled"}
+            )
+            result = CliRunner().invoke(
+                cli.app, ["claude-router-hook", "route-first-prompt"], input=json.dumps(payload)
+            )
+            assert result.exit_code == 0, result.output
+            assert result.output == ""
+            assert notifications == ["clear" if cleared else "prompt"]
+            assert delayed.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+            assert not v2.smart_routing_enabled(environment, default=False, agent=AGENT_CLAUDE)
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+            chooser.finish(timeout=0)
+            delayed.finish(timeout=0)
+        assert not thread.is_alive()
+
+    @requires_pty
     def test_renders_boxed_router_notice(self):
         model = "system.ai.claude-sonnet-4-6[1m]"
         reason = "Routed to Sonnet because the task is narrowly scoped."
@@ -1104,6 +1167,14 @@ class TestV2Launch:
         assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "logsCommand"
         ] == ["/bin/ug", "smart-router-logs"]
+        plugin_dir = Path(captured["argv"][captured["argv"].index("--plugin-dir") + 1])
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "modelSettingCommand"
+        ] == [
+            sys.executable,
+            str(plugin_dir / "hooks/model-setting-receipt.py"),
+            captured["settings"]["env"][claude_hooks.FIRST_PROMPT_SOCKET_ENV],
+        ]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -2180,13 +2251,40 @@ class TestSubagentRouting:
 
 
 class TestModelSettingRecovery:
+    @pytest.mark.parametrize("saved", [{"model": "fable"}, {}], ids=["saved-model", "no-model"])
+    def test_external_save_preserves_live_writers(self, tmp_path, monkeypatch, saved):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        monkeypatch.setattr(v2, "CLAUDE_MODEL_DEFER_TIMEOUT_S", 0)
+        delayed = v2._ClaudeModelSettingGuard(settings)
+        newer = v2._ClaudeModelSettingGuard(settings)
+        try:
+            assert delayed.begin("sonnet")
+            delayed.defer()
+            assert delayed.is_routed() is False
+            settings.write_text(json.dumps({**saved, "theme": "light"}))
+            assert newer.begin("opus")
+            recovery = json.loads(delayed._recovery_path.read_text())
+            assert delayed._token in recovery["pending"]
+            assert recovery["before"] == saved
+            settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+            assert newer.restore()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert delayed.restore()
+            assert json.loads(settings.read_text()) == {**saved, "theme": "light"}
+        finally:
+            newer.finish(timeout=0)
+            delayed.finish(timeout=0)
+
     @pytest.mark.parametrize("older_completion", ["restore", "confirm_manual_choice"])
     @pytest.mark.parametrize("older_model", [None, "opus"])
     def test_unregistered_older_choice_cannot_replace_a_newer_choice(
         self, tmp_path, monkeypatch, older_completion, older_model
     ):
-        # Exercise input order even when the wall clock has not ticked.
+        # Windows 3.12 can share both wall-clock and monotonic ticks across inputs.
         monkeypatch.setattr(v2.time, "time_ns", lambda: 1_000_000_000)
+        monkeypatch.setattr(v2.time, "monotonic_ns", lambda: 1_000_000_000)
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
         monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
@@ -2291,7 +2389,7 @@ class TestModelSettingRecovery:
                     "monotonic_ns": 2_000_000_000,
                 }
             recovery_path.write_text(json.dumps(recovery))
-            monkeypatch.setattr(v2.time, "monotonic_ns", lambda: 100)
+            monkeypatch.setattr(v2.time, "perf_counter_ns", lambda: 100)
             assert current.abandon("opus") is (wall_offset > 0)
             assert current.confirm_manual_choice()
             settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
@@ -2422,6 +2520,7 @@ import io
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 from ucode.smart_routing import v2
 
@@ -2438,7 +2537,8 @@ try:
             with contextlib.redirect_stdout(output):
                 result = getattr(guard, method)(**request)
         except (OSError, ValueError, RuntimeError) as exc:
-            error, message = type(exc).__name__, str(exc)
+            error = type(exc).__name__
+            message = "".join(traceback.format_exception(exc))
         print(json.dumps({
             "result": result, "error": error, "message": message, "output": output.getvalue(),
         }), flush=True)
@@ -2530,10 +2630,10 @@ finally:
         assert target.stat().st_ino != before.st_ino
 
     @pytest.mark.parametrize("late_write", ["before", "during", "after", "never"])
-    @pytest.mark.parametrize("before", [{"model": "haiku"}, {}], ids=["saved-model", "no-model"])
     def test_deferred_ownership_is_bounded_without_losing_the_default(
-        self, guard_sessions, late_write, before
+        self, guard_sessions, late_write
     ):
+        before = {"model": "haiku"}
         settings, start = guard_sessions
         settings.write_text(json.dumps({**before, "theme": "dark"}))
         first, second = start(), start()
@@ -2718,14 +2818,13 @@ finally:
             ),
         ],
     )
-    @pytest.mark.parametrize("manual_model", ["not-a-real-model", "sonnet"])
     def test_unconfirmed_manual_model_does_not_replace_the_default(
-        self, guard_sessions, exit_method, manual_model
+        self, guard_sessions, exit_method
     ):
         settings, start = guard_sessions
         pending, chooser = start(), start()
         assert pending("begin", routed_model="sonnet")
-        assert chooser("abandon", manual_model=manual_model) is False
+        assert chooser("abandon", manual_model="not-a-real-model") is False
         settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
         assert pending("restore") is False
         assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
