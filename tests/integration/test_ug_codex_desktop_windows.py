@@ -68,7 +68,7 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.Button", "Continue")
         wait_for_windows_sandbox(app)
         # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
-        app.click("ControlType.Button", MODEL_PICKER)
+        app.focus("ControlType.Button", MODEL_PICKER)
         app.type_line("")
         app.click("ControlType.MenuItem", "Select model")
         tree = app.wait_for("ControlType.RadioButton", MANAGED_CODEX_MODEL_LABEL)

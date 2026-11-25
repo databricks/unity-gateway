@@ -12,6 +12,19 @@ def windows_live_environment():
     return {"DATABRICKS_BEARER": "bearer"}
 
 
+def test_isolated_runner_forwards_only_the_explicit_uia_comparison_flag():
+    environment = {
+        "PATH": "/bin",
+        "UG_UIA_BASELINE_SAMPLE": "1",
+        "DATABRICKS_BEARER": "secret",
+        "UNRELATED_SETTING": "private",
+    }
+    assert runner.isolated_base_environment(environment) == {
+        "PATH": "/bin",
+        "UG_UIA_BASELINE_SAMPLE": "1",
+    }
+
+
 def test_secrets_are_redacted_from_build_output():
     output = "failed for bearer-a with token-b and token-c"
 

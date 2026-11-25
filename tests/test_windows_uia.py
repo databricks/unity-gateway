@@ -73,7 +73,7 @@ namespace Stub {
         public static readonly AutomationProperty IsOffscreenProperty = new AutomationProperty("offscreen");
         public static readonly AutomationProperty NameProperty = new AutomationProperty("name");
         public static readonly AutomationElement RootElement = new AutomationElement(ControlType.Window, "root");
-        public static readonly AutomationElement FocusedElement = new AutomationElement(ControlType.Edit, "");
+        public static AutomationElement FocusedElement = new AutomationElement(ControlType.Edit, "");
         public CurrentInfo Current;
         public AutomationElement(ControlType type, string name) { Current = new CurrentInfo { ControlType = type, Name = name }; }
         private AutomationElement[] Children() { return new[] { new AutomationElement(ControlType.Button, "Press"), new AutomationElement(ControlType.Edit, ""), new AutomationElement(ControlType.Text, "Ready") }; }
@@ -86,8 +86,9 @@ namespace Stub {
             if (pattern.Key == "invoke" && Current.ControlType == ControlType.Button) { value = new InvokePattern(); return true; }
             value = null; return false;
         }
-        public void SetFocus() { State.Event("focus"); }
+        public void SetFocus() { FocusedElement = this; State.Event("focus"); }
     }
+    public static class Automation { public static bool Compare(AutomationElement left, AutomationElement right) { return Object.ReferenceEquals(left, right); } }
     public class ValuePattern {
         public static readonly AutomationProperty ValueProperty = new AutomationProperty("value");
         public static readonly AutomationPattern Pattern = new AutomationPattern("value");
@@ -146,12 +147,14 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
             "wait_ms",
         ):
             assert helper.last_metrics[key] >= 0
+        assert helper.request("focus", "ControlType.Button", "Press", "5") == "1"
         assert helper.request("click", "ControlType.Button", "Press", "5") == "1"
         assert helper.last_metrics["click_ms"] >= 0
         assert helper.last_metrics["wait_ms"] >= 0
         record_property("stub_uia_startup", json.dumps(helper.last_metrics, sort_keys=True))
         helper.request("invoke", "ControlType.Button", "Press")
         helper.request("click", "ControlType.Edit", "", "5")
+        helper.request("focus", "ControlType.Edit", "", "5")
         helper.request("type", "hello", "")
         assert helper.request("wait", "ControlType.Edit", "hello", "5") == "1"
         image = tmp_path / "screenshot.png"
@@ -159,7 +162,14 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
         assert image.read_text() == "image"
     finally:
         helper.close()
-    assert events.read_text().splitlines() == ["invoke", "invoke", "focus", "type"]
+    assert events.read_text().splitlines() == [
+        "focus",
+        "invoke",
+        "invoke",
+        "focus",
+        "focus",
+        "type",
+    ]
     legacy = subprocess.run(
         [pwsh, "-NoProfile", "-File", str(script), "tree", "123"],
         capture_output=True,
@@ -230,7 +240,7 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
                 time.sleep(0.05)
             assert marker.read_text() == "clicked"
             helper.request("invoke", "ControlType.Button", "Press")
-            helper.request("click", "ControlType.Edit", "", "30")
+            helper.request("focus", "ControlType.Edit", "", "30")
             helper.request("type", "hello", "")
             assert int(helper.request("wait", "ControlType.Edit", "hello", "30")) >= 1
             image = tmp_path / "screenshot.png"

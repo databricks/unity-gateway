@@ -824,6 +824,28 @@ def arguments(
     return args
 
 
+def isolated_base_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """Carry only platform settings and the explicit UIA comparison flag into the runner."""
+    keep = (
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "UG_UIA_BASELINE_SAMPLE",
+    )
+    return {key: environment[key] for key in keep if key in environment}
+
+
 def main() -> int:
     args = arguments()
     if os.name not in {"nt", "posix"}:
@@ -862,23 +884,7 @@ def main() -> int:
     build_log = output / "install.log"
     # Do not inherit project environments, resolver constraints, pytest options,
     # Python optimization, agent credentials, or npm settings from the caller.
-    keep = (
-        "PATH",
-        "SYSTEMROOT",
-        "WINDIR",
-        "COMSPEC",
-        "PATHEXT",
-        "LANG",
-        "LC_ALL",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "REQUESTS_CA_BUNDLE",
-        "NODE_EXTRA_CA_CERTS",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "NO_PROXY",
-    )
-    base_env = {key: os.environ[key] for key in keep if key in os.environ}
+    base_env = isolated_base_environment(os.environ)
     build_home = output / "build-home"
     build_home.mkdir()
     if os.name == "nt":
