@@ -15,7 +15,7 @@ import ssl
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from threading import Lock
@@ -52,6 +52,22 @@ _DNS_CODE = socket.getaddrinfo.__code__
 _TLS_CODE = ssl.SSLSocket.do_handshake.__code__
 _TLS_READ_CODE = ssl.SSLSocket.recv.__code__
 _RESPONSE_CODE = http.client.HTTPResponse.begin.__code__
+_REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-databricks-request-id")
+
+
+def safe_request_id(headers: Iterable[tuple[str | bytes, str | bytes]]) -> str | None:
+    values: dict[str, str] = {}
+    for key, value in headers:
+        try:
+            name = key.decode("ascii") if isinstance(key, bytes) else key
+            request_id = value.decode("ascii") if isinstance(value, bytes) else value
+        except UnicodeDecodeError:
+            continue
+        if name.lower() in _REQUEST_ID_HEADERS and re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,128}", request_id
+        ):
+            values.setdefault(name.lower(), request_id)
+    return next((values[name] for name in _REQUEST_ID_HEADERS if name in values), None)
 
 
 class _NetworkTimings:
@@ -112,16 +128,10 @@ class _NetworkTimings:
         if event.endswith("receive_response_headers.complete"):
             response = info.get("return_value")
             headers = response[3] if isinstance(response, tuple) and len(response) > 3 else []
-        for key, value in headers:
-            name = key.decode("ascii", "ignore") if isinstance(key, bytes) else key
-            request_id = value.decode("ascii", "ignore") if isinstance(value, bytes) else value
-            if name.lower() in {
-                "x-request-id",
-                "request-id",
-                "x-databricks-request-id",
-            } and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
-                with self.lock:
-                    self.request_id = request_id
+        request_id = safe_request_id(headers)
+        if request_id:
+            with self.lock:
+                self.request_id = request_id
 
     def summary(self) -> str:
         now = time.monotonic()

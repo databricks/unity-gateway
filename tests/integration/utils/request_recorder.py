@@ -65,6 +65,27 @@ _STOP_REASONS = {
 _OVERLOAD_STATUSES = {429, 503}
 
 
+def safe_request_id(headers: list[tuple[bytes, bytes]]) -> str | None:
+    values: dict[str, str] = {}
+    for key, value in headers:
+        try:
+            name, request_id = key.decode("ascii").lower(), value.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        if name in ("x-request-id", "request-id", "x-databricks-request-id") and re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,128}", request_id
+        ):
+            values.setdefault(name, request_id)
+    return next(
+        (
+            values[name]
+            for name in ("x-request-id", "request-id", "x-databricks-request-id")
+            if name in values
+        ),
+        None,
+    )
+
+
 @dataclass(frozen=True)
 class RecordedRequest:
     sequence: int
@@ -291,15 +312,7 @@ class TuiRequestRecorder:
                 extensions={"trace": trace} if request.path == ROUTE_VALIDATION_PATH else None,
             ) as response:
                 if request.path == ROUTE_VALIDATION_PATH:
-                    request_id = next(
-                        (
-                            value
-                            for name in ("x-request-id", "request-id", "x-databricks-request-id")
-                            if (value := response.headers.get(name))
-                            and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value)
-                        ),
-                        None,
-                    )
+                    request_id = safe_request_id(response.headers.raw)
                     with self._condition:
                         self._validation_timings[request.sequence].update(
                             status_code=response.status_code, request_id=request_id

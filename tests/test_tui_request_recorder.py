@@ -18,6 +18,7 @@ from tests.e2e_cuj.helpers.tui_request_recorder import (
 )
 from tests.integration.utils import request_recorder
 from tests.integration.utils.harness import UserSession
+from ucode.smart_routing import route_validation
 
 _MESSAGES_PATH = "/ai-gateway/anthropic/v1/messages"
 _PRIVATE = "PRIVATE-prompt-tool-name-argument-model-header-error"
@@ -36,6 +37,7 @@ def recorder():
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("x-request-id", "test-request-id")
+            self.send_header("request-id", "secondary-request-id")
             self.end_headers()
             self.wfile.write(body)
 
@@ -80,6 +82,9 @@ def test_validation_forwarding_records_safe_upstream_timings(recorder):
     [row] = recorder.validation_timings()
     assert row["status_code"] == 200
     assert row["request_id"] == "test-request-id"
+    timings = route_validation._NetworkTimings()
+    timings.trace("response.headers", {"headers": response.headers.raw})
+    assert f"request_id={row['request_id']}" in timings.summary()
     names = {event["name"] for event in row["events"]}
     assert {
         "connection.connect_tcp.started",
@@ -89,6 +94,21 @@ def test_validation_forwarding_records_safe_upstream_timings(recorder):
     assert all(isinstance(event["elapsed_ms"], int) for event in row["events"])
     assert "private-prompt" not in json.dumps(row)
     assert "synthetic-secret" not in json.dumps(row)
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ([(b"request-id", b"secondary"), (b"x-request-id", b"primary")], "primary"),
+        ([(b"x-request-id", b"\xffsecret"), (b"request-id", b"safe")], "safe"),
+        ([(b"x-request-id", b"Bearer secret")], None),
+        ([(b"x-request-id", b"a"), (b"x-request-id", b"b")], "a"),
+        ([(b"x-databricks-request-id", b"databricks-id")], "databricks-id"),
+    ],
+)
+def test_request_id_selectors_agree_across_process_boundary(headers, expected):
+    assert route_validation.safe_request_id(headers) == expected
+    assert request_recorder.safe_request_id(headers) == expected
 
 
 def test_rejected_inference_reports_tool_setup_without_conversation():

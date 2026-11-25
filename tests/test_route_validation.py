@@ -377,6 +377,24 @@ def test_network_trace_records_request_id_and_connection_reuse():
     assert "Bearer secret" not in timings.summary()
 
 
+def test_network_trace_prefers_same_safe_request_id_as_forwarder():
+    timings = validation._NetworkTimings()
+    timings.trace(
+        "response.headers",
+        {"headers": [(b"x-request-id", b"preferred-id"), (b"request-id", b"secondary-id")]},
+    )
+    assert "request_id=preferred-id" in timings.summary()
+    invalid = validation._NetworkTimings()
+    invalid.trace("response.headers", {"headers": [(b"x-request-id", b"\xffsecret")]})
+    assert "request_id=unavailable" in invalid.summary()
+    invalid.trace(
+        "response.headers",
+        {"headers": [(b"x-request-id", b"\xffsecret"), (b"request-id", b"safe-id")]},
+    )
+    assert "request_id=safe-id" in invalid.summary()
+    assert "secret" not in invalid.summary()
+
+
 class _SynchronousThread:
     def __init__(self, *, target, args=(), daemon):
         self._target, self._args = target, args
