@@ -1174,20 +1174,21 @@ test('completed notification labels restore per child and render without storage
   await retained.unmount();
 });
 
-// The streamed reply is never rewritten, in any mode: routing happens at tool.call with the
-// input passed through byte-identical, and the task label is set at agent.spawn. The
-// environment variants pin that no traffic or server-review setting can change it.
-for (const [show, envName, envValue] of [
-  ['1', undefined, undefined],
-  ['0', undefined, undefined],
-  ['1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1'],
-  ['1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '0'],
-  ['1', 'DISABLE_TELEMETRY', '1'],
-  ['1', 'DO_NOT_TRACK', '1'],
-  ['1', 'DO_NOT_TRACK', '0'],
-  ['1', 'CLAUDE_CODE_AUTO_MODE_SERVER', '1'],
+// The stream rewrite needs Claude's local auto-mode fallback check: when it is off (any of
+// these set, mirroring the host's own read — any non-empty value for the first two, and
+// 1/true/yes/on for DO_NOT_TRACK), the reply passes through untouched and the call routes at
+// tool.call instead. A server-side verdict and a hidden model display skip it too.
+for (const [show, envName, envValue, rewrites] of [
+  ['1', undefined, undefined, true],
+  ['0', undefined, undefined, false],
+  ['1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1', false],
+  ['1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '0', false],
+  ['1', 'DISABLE_TELEMETRY', '1', false],
+  ['1', 'DO_NOT_TRACK', '1', false],
+  ['1', 'DO_NOT_TRACK', '0', true],
+  ['1', 'CLAUDE_CODE_AUTO_MODE_SERVER', '1', false],
 ] as const) {
-  test(`parallel streamed calls stay untouched with model display ${show} (${envName ? `${envName}=${envValue}` : 'fallback on'})`, {
+  test(`parallel streamed calls with model display ${show} (${envName ? `${envName}=${envValue}` : 'local fallback on'})`, {
     options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: show },
   }, async ($, on) => {
     const routerCalls: any[] = [];
@@ -1235,16 +1236,28 @@ for (const [show, envName, envValue] of [
     const streamedCalls = [1, 3].map(index => JSON.parse(turn.chunks
       .filter(chunk => chunk.kind === 'input' && chunk.index === index).map(chunk => chunk.json).join('')));
     expect(JSON.parse(turn.chunks.find(chunk => chunk.index === 2 && chunk.kind === 'input').json)).toEqual(read);
-    // The reply streams untouched, byte-identical, and tool.call does the routing.
-    expect(turn.chunks.map(chunk => chunk.kind)).toEqual(
-      ['text', 'tool', 'input', 'tool', 'input', 'input', 'tool', 'input', 'stop']);
-    expect(streamedCalls).toEqual(calls);
-    expect(turn.chunks.filter(chunk => chunk.kind === 'input' && chunk.index === 1).map(chunk => chunk.json))
-      .toEqual([JSON.stringify(calls[0]).slice(0, 20), JSON.stringify(calls[0]).slice(20)]);
-    expect(routerCalls).toHaveLength(0);
+    if (rewrites) {
+      // The reply is held until both calls are routed, then only each description becomes the
+      // routed heading; the split input chunk of the first call is coalesced into one.
+      expect(turn.chunks.map(chunk => chunk.kind)).toEqual(
+        ['text', 'tool', 'input', 'tool', 'input', 'tool', 'input', 'stop']);
+      expect(streamedCalls[0].description).toMatch(/^[A-Z][a-z]+(?: 2)? · glm-5-3-flash · Tell me a short joke$/);
+      expect(streamedCalls[1].description).toMatch(/^[A-Z][a-z]+(?: 2)? · model-b · Tell me a short joke$/);
+      for (const [index, call] of streamedCalls.entries())
+        expect(call).toEqual({ ...calls[index], description: call.description });
+      expect(routerCalls.map(call => call.tool_input)).toEqual(calls);
+    } else {
+      // The reply streams untouched, byte-identical, and tool.call does the routing.
+      expect(turn.chunks.map(chunk => chunk.kind)).toEqual(
+        ['text', 'tool', 'input', 'tool', 'input', 'input', 'tool', 'input', 'stop']);
+      expect(streamedCalls).toEqual(calls);
+      expect(turn.chunks.filter(chunk => chunk.kind === 'input' && chunk.index === 1).map(chunk => chunk.json))
+        .toEqual([JSON.stringify(calls[0]).slice(0, 20), JSON.stringify(calls[0]).slice(20)]);
+      expect(routerCalls).toHaveLength(0);
+    }
     await Promise.all(streamedCalls.map((call, index) =>
       $.tool.call({ tool: 'Agent', tool_use_id: `head-${index}`, ...call })));
-    // Exactly one routing decision per call.
+    // Exactly one routing decision per call, whichever path made it.
     expect(routerCalls.map(call => call.tool_input)).toEqual(calls);
     for (const [index, call] of streamedCalls.entries()) {
       await $.agent.spawn({
@@ -1254,8 +1267,8 @@ for (const [show, envName, envValue] of [
       });
     }
     expect(spawned.map(event => event.model)).toEqual(['system.ai.glm-5-3-flash', 'system.ai.model-b']);
-    // The task label is set at spawn in every mode; a hidden model display leaves the
-    // recorded description in place.
+    // The task label is set at spawn on either side of the gate, whatever the stream did;
+    // a hidden model display leaves the recorded description in place.
     if (show === '1') for (const event of spawned) expect(event.description).toMatch(new RegExp(
       `^[A-Z][a-z]+(?: 2)? · ${event.tool_use_id === 'head-1' ? 'model-b' : 'glm-5-3-flash'} · Tell me a short joke$`));
     else for (const event of spawned) expect(event.description).toBe(
@@ -1310,7 +1323,7 @@ test('a failed routing attempt is not repeated for the same tool call', async ($
   });
   const turn = await collectParentTurn($, 'retry', 0);
   expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
-  // The stream never routes; only tool.call asks, and a failed answer is not asked again.
+  // No env.get handler, so the fallback gate cannot even be read: the reply streams untouched.
   expect(routerCalls).toHaveLength(0);
   await $.tool.call({ tool: 'Agent', tool_use_id: 'retry-0', ...call });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'retry-0', ...call });

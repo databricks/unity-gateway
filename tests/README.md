@@ -200,14 +200,15 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
-Native routing components check the streamed parent reply in every mode: parallel Agent
-calls stream byte-identical — all arguments, chunk order and non-Agent calls unchanged —
-whether the local fallback is on, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`,
-`DISABLE_TELEMETRY` or `DO_NOT_TRACK` is set, or `CLAUDE_CODE_AUTO_MODE_SERVER=1`, and
-`tool.call` routes each call exactly once. Forwarded spawns carry the routed label,
-set after the permission decision so the reviewed call stays untouched; resumed spawns keep
-their recorded description, and a hidden model display leaves the recorded description on
-the spawn. Cards quote the neutral task title, a lone row shows
+Native routing components check the streamed parent reply on both sides of the fallback
+gate: with Claude's local auto-mode fallback check on, parallel Agent calls are routed once
+and only their `description` becomes `<animal> · <model> · <task>` while other arguments,
+chunk order and non-Agent calls are unchanged, and `tool.call` does not route again; with
+the fallback off (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` or
+`DO_NOT_TRACK` set, or `CLAUDE_CODE_AUTO_MODE_SERVER=1`), the reply streams untouched and
+`tool.call` does the routing. Forwarded spawns carry the routed label on either side of the
+gate, set after the permission decision so the reviewed call stays byte-identical; resumed
+spawns keep their recorded description. Cards quote the neutral task title, a lone row shows
 the label through rendering, and the completed-task notice's heading quotes the routed label
 — matching either the written description or the spawn label — while its summary stays as
 written. Spawn receipts are compared with the selection; cards, lone rows,
