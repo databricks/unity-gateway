@@ -16,6 +16,7 @@ from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    claude_telemetry_debug_summary,
     tool_outputs,
 )
 from tests.integration.utils.harness import UserSession
@@ -25,6 +26,24 @@ from tests.integration.utils.terminal import (
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+def test_claude_telemetry_debug_summary_records_only_bounded_signals(tmp_path):
+    debug_file = tmp_path / "debug.log"
+    debug_file.write_text(
+        "prompt secret-session-bearer\n"
+        "[DEBUG] OpenTelemetry trace export failed HTTP status 503 token=secret-session-bearer\n"
+        "[DEBUG] OTel exporter sent spans HTTP 200\n"
+    )
+
+    assert claude_telemetry_debug_summary(debug_file) == {
+        "debug_file_present": True,
+        "debug_bytes": debug_file.stat().st_size,
+        "tail_truncated": False,
+        "telemetry_lines": 2,
+        "telemetry_failure_lines": 1,
+        "telemetry_http_statuses": {"503": 1, "200": 1},
+    }
 
 
 def test_antigravity_native_log_evidence_is_bounded_and_redacted(tmp_path):
