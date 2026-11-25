@@ -153,6 +153,84 @@ class TestUsageSavings:
             write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, usage)]), price_cache
         ) == saved("$0.18", "60%")
 
+    @pytest.mark.parametrize(
+        ("served", "split"),
+        [
+            ("anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra", None),
+            ("anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[1m]", {}),
+            (
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+            ),
+        ],
+    )
+    def test_translated_gpt_cache_writes_use_base_rates(self, tmp_path, price_cache, served, split):
+        rates = ModelPrice(input=Decimal("1"), output=Decimal("5"), cache_write_5m=Decimal("1.25"))
+        pricing.write_price_cache(price_cache, {served: rates})
+        counts = {
+            "input_tokens": 1_000,
+            "cache_creation_input_tokens": 20_000,
+            "output_tokens": 4_000,
+        }
+        if split is not None:
+            counts["cache_creation"] = split
+        path = write_usage(tmp_path, [entry("a1", OPUS_ID, served, counts)])
+
+        # The same base-write token class costs $0.125 on Opus and $0.025 on GPT.
+        assert savings.usage_savings(path, price_cache=price_cache, baseline_session_start=False)[
+            :2
+        ] == (Decimal("0.184"), Decimal("0.23"))
+
+    def test_translated_gpt_cache_writes_keep_splits_and_require_used_rates(
+        self, tmp_path, price_cache
+    ):
+        served = "anthropic-aigw-bf79c578-system.ai.gpt-6-1-terra[1m]"
+        counts = {
+            "cache_creation_input_tokens": 20_000,
+            "cache_creation": {
+                "ephemeral_1h_input_tokens": 5_000,
+                "ephemeral_5m_input_tokens": 10_000,
+            },
+        }
+        path = write_usage(tmp_path, [entry("a1", OPUS_ID, served, counts)])
+        rates = ModelPrice(input=Decimal("1"), cache_write_5m=Decimal("1.25"))
+        pricing.write_price_cache(price_cache, {served: rates})
+        assert priced(path, price_cache) is None  # The explicit 1h tokens remain unpriced.
+
+        rates = ModelPrice(
+            input=Decimal("1"), cache_write_5m=Decimal("1.25"), cache_write_1h=Decimal("2")
+        )
+        pricing.write_price_cache(price_cache, {served: rates})
+        assert savings.usage_savings(path, price_cache=price_cache, baseline_session_start=False)[
+            :2
+        ] == (Decimal("0.115"), Decimal("0.14375"))
+        pricing.write_price_cache(
+            price_cache, {served: ModelPrice(input=Decimal("1"), cache_write_1h=Decimal("2"))}
+        )
+        assert (
+            priced(path, price_cache) is None
+        )  # Neither input nor 1h rates replace missing base rates.
+
+    @pytest.mark.parametrize(
+        "served",
+        [
+            "system.ai.gpt-6-1-terra",
+            "anthropic-aigw-00000000-system.ai.gpt-6-1-terra",
+            "anthropic-aigw-77df06ea-system.ai.glm-5-3-flash",
+            "anthropic-aigw-01234567-custom-gpt-model",
+        ],
+    )
+    def test_unrecognized_cache_write_models_keep_conservative_pricing(
+        self, tmp_path, price_cache, served
+    ):
+        pricing.write_price_cache(
+            price_cache, {served: ModelPrice(input=Decimal("1"), cache_write_5m=Decimal("1.25"))}
+        )
+        path = write_usage(
+            tmp_path, [entry("a1", OPUS_ID, served, {"cache_creation_input_tokens": 20_000})]
+        )
+        assert priced(path, price_cache) is None
+
     def test_honors_an_explicit_cache_write_split(self, tmp_path, price_cache):
         usage = {
             "input_tokens": 1_000,

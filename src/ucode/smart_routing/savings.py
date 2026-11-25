@@ -74,6 +74,26 @@ def _valid_token_usage(usage: object) -> bool:
     )
 
 
+def _uses_base_cache_writes(model: str) -> bool:
+    """Recognize hosted GPT Responses aliases whose cache_control is not forwarded."""
+    prefix = "anthropic-aigw-"
+    if not model.startswith(prefix):
+        return False
+    checksum, _, original = model.removesuffix("[1m]")[len(prefix) :].partition("-")
+    if original not in {
+        "system.ai.gpt-5-6-luna",
+        "system.ai.gpt-5-6-sol",
+        "system.ai.gpt-5-6-terra",
+        "system.ai.gpt-6-astra",
+        "system.ai.gpt-6-luna",
+        "system.ai.gpt-6-sol",
+        "system.ai.gpt-6-1-sol",
+        "system.ai.gpt-6-1-terra",
+    }:
+        return False
+    return checksum == hashlib.sha256(original.encode("utf-8")).hexdigest()[:8]
+
+
 def pricer_argv(*, python: str, price_cache: Path, baseline_session_start: bool) -> list[str]:
     """The command the Claude mod runs (plus ``--usage PATH``) to price its token sums."""
     # -P keeps the launch directory off sys.path, so a project file can't shadow a stdlib module.
@@ -142,8 +162,11 @@ def usage_savings(
             return None
         if not _valid_token_usage(usage) or not isinstance(served, str) or not served:
             return None
-        # Unsplit cache writes use the one-hour TTL configured for UG's Claude launches.
-        tokens = TokenUsage.from_message_usage(usage, uncovered_writes_1h=True)
+        # Hosted GPT translations drop Claude's 1h cache_control and bill base cache writes.
+        # Keep unknown models conservative, and preserve every explicit TTL split.
+        tokens = TokenUsage.from_message_usage(
+            usage, uncovered_writes_1h=not _uses_base_cache_writes(served)
+        )
         if not any(tokens):
             continue
         routed = entry.get("routed")
