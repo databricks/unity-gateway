@@ -76,7 +76,8 @@ env:
 jobs:
   manual-advisory:
     name: Manual advisory integration
-    if: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}
+    needs: [full, managed]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}
     uses: ./.github/workflows/integration-advisory.yml
     with:
       ug_version: ${{ inputs.ug_version }}
@@ -243,7 +244,7 @@ jobs:
       - *budget-check
 
   cowork-inference-windows:
-    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · Windows (runs in Integration)' || format('Cowork desktop tasks · Windows · {0}', matrix.source.name) }}
+    name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 60
@@ -382,7 +383,7 @@ jobs:
       - *budget-check
 
   cowork-inference-macos:
-    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · macOS (runs in Integration)' || format('Cowork desktop tasks · macOS · {0}', matrix.source.name) }}
+    name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 80
@@ -594,6 +595,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: claude
       TEST_MARKER: anthropic_mps and claude
+      UG_MODEL_LEDGER: staging
       ARTIFACT_NAME: integration-anthropic-mps-claude-${{ matrix.os }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
       # Desktop jobs skip merge-group runs, like the other Cowork lanes.
       UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.shard_index == 1 }}
@@ -601,6 +603,7 @@ jobs:
       UG_COWORK_MODEL: claude-haiku-4-5-20251001
       UG_COWORK_RELAY: false
       UG_COWORK_MCP: true
+      UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' }}
       LIVE_SHARD: ${{ matrix.shard || '' }}
       LIVE_SHARD_LANE: anthropic-mps-claude
     steps:
@@ -923,10 +926,9 @@ jobs:
           ref: ${{ inputs.ref }}
       - *budget-check
 
-  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the cujs
-  # `needs`. On Linux the tests drive the VS Code window on a private Xvfb display.
+  # The managed lane is Linux-only; anthropic-mps covers Claude MPS on Windows.
   managed:
-    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
+    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -1021,8 +1023,8 @@ jobs:
       - *budget-check
 
   managed-smart:
-    name: ${{ inputs.mode == 'advisory' && 'Managed config · Codex · Smart routing (runs in Integration)' || 'Managed config · Codex · Smart routing' }}
-    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    name: Managed config · Codex · Smart routing
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -1037,7 +1039,7 @@ jobs:
     steps: *managed-steps
 
   dedicated-cuj-plan:
-    name: ${{ inputs.mode == 'advisory' && 'Plan E2E CUJs (runs in Integration)' || 'Plan E2E CUJs' }}
+    name: Plan E2E CUJs
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Plan E2E CUJs
@@ -1152,7 +1154,7 @@ jobs:
   # Checks the live lanes' shards together ran every case exactly once, and records fresh
   # per-case timings so tests/live_test_times.json can rebalance the shards when they drift.
   live-shard-times:
-    name: ${{ inputs.mode == 'advisory' && 'Live shard coverage (runs in Integration)' || 'Live shard coverage' }}
+    name: Live shard coverage
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Live shard coverage
@@ -1216,12 +1218,12 @@ jobs:
       - *budget-check
 
   cujs:
-    name: ${{ inputs.mode == 'advisory' && 'All integration tests (runs in Integration)' || 'All integration tests' }}
+    name: All integration tests
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, managed-smart, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1255,8 +1257,7 @@ jobs:
 
   codex-desktop-macos:
     name: Codex desktop inference · macOS
-    # Codex lanes on the managed service principal share one model quota; see the Windows lane.
-    needs: managed
+    # Model ledgers reject observed overlap with managed lanes.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
     timeout-minutes: 30
@@ -1342,10 +1343,8 @@ jobs:
 
   codex-desktop-windows:
     name: Codex desktop inference · Windows
-    # After the macOS desktop lane, so each run has one Codex caller on the managed service
-    # principal at a time: five merge-queue entries stay under the ~10 concurrent callers at which
-    # that quota returned 429s.
-    needs: [managed, codex-desktop-macos]
+    # Both desktop lanes use the same model and workspace, so keep them serialized.
+    needs: codex-desktop-macos
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 30

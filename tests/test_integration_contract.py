@@ -502,8 +502,11 @@ def test_managed_smart_overlap_keeps_model_guard_and_required_rollup():
     assert "managed-smart" in re.search(r"(?m)^    needs: (.*)$", jobs["cujs"]).group(1)
     assert "UG_MODEL_LEDGER: smart" in jobs["managed-smart"]
     assert "steps: *managed-steps" in jobs["managed-smart"]
-    assert "Managed config · Codex · Smart routing'" in jobs["managed-smart"]
-    assert "format('Managed config · {0}'" in jobs["managed"]
+    assert "name: Managed config · Codex · Smart routing" in jobs["managed-smart"]
+    assert (
+        "name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}"
+        in jobs["managed"]
+    )
     for lane in ("codex-desktop-macos", "codex-desktop-windows"):
         assert "UG_MODEL_LEDGER: desktop" in jobs[lane]
         assert "--lane desktop" in jobs[lane]
@@ -837,7 +840,9 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
         assert "UG_COWORK_MCP: true" in lane
     # The blocking lane: sharded Claude legs on both OSes, no continue-on-error, and
     # the Cowork Desktop steps it alone opts into.
-    assert "continue-on-error:" not in job
+    assert not re.search(r"(?m)^    continue-on-error:", job)
+    assert job.count("continue-on-error:") == 1
+    assert "name: Record staging Desktop model usage" in job
     assert (
         "UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == "
         "'windows-latest' && matrix.shard_index == 1 }}"
@@ -875,16 +880,18 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
 def test_staging_usage_and_provider_quota_are_collected_without_inference():
     jobs = _integration_jobs()
     staging = jobs["anthropic-mps"]
-    assert "UG_MODEL_LEDGER: ${{ matrix.agent == 'claude' && 'staging' || '' }}" in staging
-    steps = jobs["smoke"]
+    assert "UG_MODEL_LEDGER: staging" in staging
+    assert LIVE_STEPS_USE in staging
+    assert "UG_MODEL_LEDGER:" not in _advisory_jobs()["anthropic-mps"]
+    steps = LIVE_STEPS.read_text()
     assert "name: Record staging model usage" in steps
     assert "--lane staging" in steps
     assert "name: Inspect staging provider rate limits" in steps
     assert "scripts/managed_quota_diagnostics.py --provider-only" in steps
-    assert "name: Record staging Desktop model usage" in steps
-    assert "--lane staging-desktop" in steps
-    assert "configuration.json" in steps
-    assert steps.index("name: Record staging Desktop model usage") < steps.index(
+    assert "name: Record staging Desktop model usage" in staging
+    assert "--lane staging-desktop" in staging
+    assert "configuration.json" in staging
+    assert staging.index("name: Record staging Desktop model usage") < staging.index(
         "name: Upload Cowork evidence"
     )
 
@@ -893,10 +900,11 @@ def test_staging_windows_node_toolcache_is_restored_before_setup():
     jobs = _integration_jobs()
     staging = jobs["anthropic-mps"]
     assert (
-        "UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' "
-        "&& matrix.agent == 'claude' }}" in staging
+        "UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' }}" in staging
     )
-    live_steps = jobs["smoke"]
+    assert "UG_CACHE_PINNED_NODE:" not in _advisory_jobs()["anthropic-mps"]
+    assert LIVE_STEPS_USE in staging
+    live_steps = LIVE_STEPS.read_text()
     restore = live_steps.index("name: Restore pinned Node toolcache")
     setup = live_steps.index("uses: actions/setup-node@", restore)
     save = live_steps.index("name: Save pinned Node toolcache", setup)
@@ -1015,7 +1023,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     job = _workflow_job("dedicated-cuj", "cujs")
 
     assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
-    assert "format('E2E CUJs · {0}', matrix.name)" in job
+    assert "name: E2E CUJs · ${{ matrix.name }}" in job
     assert "fail-fast: false" in job
     assert "include: ${{ fromJSON(needs.dedicated-cuj-plan.outputs.cujs) }}" in job
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
@@ -3512,8 +3520,9 @@ def test_live_composite_action_is_checked_out_after_budget_clock_starts():
 def test_manual_integration_dispatch_keeps_both_suites_and_inputs():
     workflow = WORKFLOW.read_text()
     job = _integration_jobs()["manual-advisory"]
+    assert "needs: [full, managed]" in job
     assert (
-        "if: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}"
+        "if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}"
         in job
     )
     assert "uses: ./.github/workflows/integration-advisory.yml" in job

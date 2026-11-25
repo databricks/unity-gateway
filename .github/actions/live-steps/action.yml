@@ -16,9 +16,22 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Restore pinned Node toolcache
+      id: node-toolcache
+      if: ${{ env.UG_CACHE_PINNED_NODE == 'true' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/node/22.19.0
+        key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       with:
         node-version: 22.19.0
+    - name: Save pinned Node toolcache
+      if: ${{ env.UG_CACHE_PINNED_NODE == 'true' && steps.node-toolcache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/node/22.19.0
+        key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
     - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       with:
         version: 0.13.5
@@ -95,6 +108,21 @@ runs:
           --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
           --npm-registry "$NPM_REGISTRY" \
           "${args[@]}" -- -m "$TEST_MARKER"
+    - name: Record staging model usage
+      if: ${{ !cancelled() && env.UG_MODEL_LEDGER == 'staging' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/ug-integration"
+        uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+          "$RUNNER_TEMP/ug-integration" --lane staging
+    - name: Inspect staging provider rate limits
+      if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py --provider-only \
+          > "$RUNNER_TEMP/ug-integration/staging-provider-quota.json"
     - name: Upload live test evidence
       if: ${{ !cancelled() }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
