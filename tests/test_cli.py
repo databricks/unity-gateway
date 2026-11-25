@@ -2407,7 +2407,8 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
     assert result.exit_code == 0, result.output
     assert calls["configure"].call_args.kwargs["relayed"] is relay
     assert calls["configure"].call_args.kwargs["provider"] is None
-    assert bool(calls["launch"].call_args.args[1].get("_codex_launch_login_checked")) is relay
+    checked = calls["launch"].call_args.args[1].get("_codex_launch_login_checked")
+    assert bool(checked) == (relay and "--model" not in args and "-m" not in args)
     if args == ["--enable-smart-routing"]:
         lookup.assert_not_called()
     if "--model" in args:

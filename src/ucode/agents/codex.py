@@ -2007,12 +2007,10 @@ def use_model_service_relay(
     if not relay_backed:
         return False
     selected_relay = selected_model in relay_backed and not configuring
-    if not (os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])):
-        if selected_relay:
-            raise RuntimeError(
-                f"Model service {selected_model} needs your ChatGPT subscription. "
-                "Run `codex login`, then retry this command."
-            )
+    # An explicitly selected seat uses the same browser login at launch as a direct relay provider.
+    if not selected_relay and not (
+        os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])
+    ):
         print_note("Sign in with `codex login` to use the ChatGPT subscription model service.")
         return False
     path = codex_managed_config_path()

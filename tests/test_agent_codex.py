@@ -1878,7 +1878,9 @@ class TestCodexLaunch:
         )
 
     @pytest.mark.parametrize("configuring", [False, True])
-    def test_selected_relay_requires_chatgpt_login(self, tmp_path, monkeypatch, configuring):
+    def test_signed_out_explicit_relay_selects_browser_login_at_launch(
+        self, tmp_path, monkeypatch, configuring
+    ):
         self._patch(tmp_path, monkeypatch)
         monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
         monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: False)
@@ -1888,13 +1890,10 @@ class TestCodexLaunch:
             lambda *args, **kwargs: databricks.RelayLookup.RELAYED,
         )
 
-        if configuring:
-            assert not codex.use_model_service_relay(
-                {"workspace": WS}, "cat.s.seat", configuring=True
-            )
-        else:
-            with pytest.raises(RuntimeError, match="codex login"):
-                codex.use_model_service_relay({"workspace": WS}, "cat.s.seat")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        assert codex.use_model_service_relay(
+            {"workspace": WS}, "cat.s.seat", configuring=configuring
+        ) is (not configuring)
 
     @pytest.mark.parametrize("selected", [False, True])
     def test_model_service_relay_when_managed_update_fails(self, tmp_path, monkeypatch, selected):
@@ -1965,7 +1964,9 @@ class TestCodexLaunch:
         )
         monkeypatch.delenv("UG_CODEX_SESSION_SECRET", raising=False)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
-        login_status = Mock(return_value=True)
+        login_status = Mock(return_value=bool(provider))
+        login = Mock()
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", login)
         monkeypatch.setattr(codex, "_has_chatgpt_login", login_status)
         monkeypatch.setattr(
             codex, "_fetch_codex_model_catalog", Mock(side_effect=AssertionError("no catalog"))
@@ -1990,6 +1991,10 @@ class TestCodexLaunch:
             )
 
         assert login_status.call_count == (0 if checked else 1)
+        if not checked and not provider:
+            assert login.call_args.args[0][1:] == ["login"]
+        else:
+            login.assert_not_called()
         assert start.call_args.args[0] == WS
         assert start.call_args.args[1](False) == "tok"
         assert "OAUTH_TOKEN" not in os.environ
