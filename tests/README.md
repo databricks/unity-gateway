@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_ci_live_contract.py` checks draft and ready scheduling, conversion cancellation,
+unchanged fork and merge-group conditions, security-gate dependencies, and the required
+`e2e` rollup's response to passing, failed, skipped, and cancelled results. These are
+workflow-contract tests; they do not verify GitHub event delivery or live suites.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
@@ -1613,7 +1618,7 @@ than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the arch
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
-journeys for both agents, in two parallel jobs. After smoke finishes, the full
+journeys for both agents, in two parallel jobs. In parallel with smoke, the full
 suite runs the remaining live cases in separate agent and OS jobs, with cases
 serial inside each VM. Codex smoke and general full/managed coverage retain
 0.156.0. Separate required full and managed matrix rows use 0.171.0 only for
@@ -1667,8 +1672,9 @@ Offline submission checks reject assistant echoes, unrelated prompts and non-mes
 The native MCP approval is answered with Allow once only when the dialog names web_search on
 the expected server with the exact hidden query. Offline checks reject other tools, servers,
 queries and ambiguous approval controls.
-The `All integration tests` check requires every selected integration job to pass, including
-both managed-config lanes for full/live runs; full coverage does not depend on a label or
+The `All integration tests` check requires every blocking integration job to pass, including
+all managed-config lanes. Advisory lanes run separately after the blocking integration call;
+the required `e2e` check does not wait for them. Full coverage does not depend on a label or
 a manual request.
 
 CUJ8's one journey (`tests/e2e_cuj/test_cuj8_second_managed_settings_writer.py`, shard
@@ -1705,9 +1711,21 @@ locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).
-Unit tests run as 24 Linux and 64 Windows shards (`Unit tests · <OS> · <n>/<total>`). `tests/shard.py` assigns each test slower than 2 s on its own, plus every file's remaining tests in interleaved 4-second chunks, slowest first to the least-loaded shard using `tests/unit_test_times.json` (measured per OS on hosted runners); each shard receives only its files, so it imports and collects only what it runs. Outside pull requests, `Unit test times` fails unless, for each OS, every unit ran exactly once and every collected test ran, and `test` requires it there, so the merge queue proves shard coverage before main; main's run also records fresh per-file timings as an artifact to commit when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main, and run its tools directly; uv is installed only when that cache misses. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
+Unit tests run as 24 Linux and 64 Windows shards (`Unit tests · <OS> · <n>/<total>`). `tests/shard.py` assigns each test slower than 2 s on its own, plus every file's remaining tests in interleaved 4-second chunks, slowest first to the least-loaded shard using `tests/unit_test_times.json` (measured per OS on hosted runners); each shard receives only its files, so it imports and collects only what it runs. `Unit test times` runs wherever the shards do, pull requests included, and fails unless, for each OS, every unit ran exactly once, every test ran exactly once and both OSes' shards are present; `test` requires it, so every run proves shard coverage before merge. Main's run also records fresh per-file timings as an artifact to commit when shards drift. `Checks` runs ruff check, ruff format and ty and lists every failing one. All of them restore one Python environment keyed on `uv.lock` and `pyproject.toml`, saved by main, and run its tools directly; uv is installed only when that cache misses. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
 `tests/e2e_cuj/test_cuj<N>_*.py` file, because CUJs share machine-wide `/etc` agent
-settings. All matrices use `fail-fast: false` so one failure does not cancel other coverage.
+settings — except a file recorded with several shards in `tests/live_test_times.json`
+(`CUJ 4` runs three), which runs that many runners, each keeping only its cases.
+The slowest blocking live lanes shard the same way, balanced by `tests/live_shard.py`
+from per-case times in `tests/live_test_times.json` (measured on hosted runners, like
+the unit shards): `Full journeys · Claude · Windows` runs four shards and
+`Anthropic MPS ... · Claude · Windows` three (its Cowork Desktop steps stay on the
+first shard). `scripts/run_integration.py --test-shard i/n --shard-lane <lane>` splits
+the lane; the suite's conftest keeps only the shard's cases, pytest stays serial inside
+each VM (configure and revert touch machine-wide settings), and every shard uploads
+its JUnit XML and shard report. `Live shard coverage` fails unless the shards together
+ran every case exactly once and records fresh timings as an artifact to commit when
+shards drift; `All integration tests` requires it. All matrices use
+`fail-fast: false` so one failure does not cancel other coverage.
 
 The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
