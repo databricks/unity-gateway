@@ -16,7 +16,7 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import claude_hooks, route_validation, routing, session_log, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -1146,7 +1146,7 @@ class TestV2Launch:
         self, tmp_path, monkeypatch, auto_picker, validation
     ):
         if validation:
-            monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+            monkeypatch.setenv(route_validation.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1692,7 +1692,7 @@ class TestV2ModelPickerDiscovery:
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
         monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
-        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        monkeypatch.setenv(route_validation.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
@@ -1706,9 +1706,12 @@ class TestV2ModelPickerDiscovery:
             provider=provider,
         )
 
-    def test_startup_validation_is_off_by_default(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("env", [{}, {"UG_ROUTE_VALIDATION": "1", "ISAAC_LAUNCH_MODE": "omni"}])
+    def test_startup_validation_is_skipped(self, tmp_path, monkeypatch, env):
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
         catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0

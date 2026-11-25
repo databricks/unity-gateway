@@ -13,7 +13,7 @@ import pytest
 
 from ucode import agents, codex_config, custom_oauth, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
-from ucode.smart_routing import codex_interposer, codex_routing, v2
+from ucode.smart_routing import codex_interposer, codex_routing, route_validation, v2
 
 WS = "https://example.databricks.com"
 
@@ -454,7 +454,7 @@ class TestLaunchCodex:
             return {"is_supported": True}, None
 
         monkeypatch.setattr(v2.route_validation, "_http_post_json", validate)
-        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        monkeypatch.setenv(route_validation.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
