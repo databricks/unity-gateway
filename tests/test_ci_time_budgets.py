@@ -338,9 +338,15 @@ def test_every_integration_matrix_variant_has_a_budget():
     jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", source))
 
     def values(job, field):
-        match = re.search(rf"(?m)^        {field}: \[([^\]]+)\]", jobs[job])
+        match = re.search(rf"(?m)^        {field}: (.+)$", jobs[job])
         assert match, (job, field)
-        return [value.strip().strip("'\"") for value in match.group(1).split(",")]
+        expression = match.group(1)
+        if expression.startswith("["):
+            return [value.strip().strip("'\"") for value in expression[1:-1].split(",")]
+        assert "fromJSON(" in expression, (job, field, expression)
+        choices = re.findall(r"'(\[[^']+\])'", expression)
+        assert choices, (job, field, expression)
+        return sorted({value for choice in choices for value in json.loads(choice)})
 
     def os_name(value):
         return "Windows" if value == "windows-latest" else "Linux"

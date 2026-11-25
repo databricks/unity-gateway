@@ -644,7 +644,7 @@
       },
       "Cowork desktop tasks · macOS · Anthropic relay MPS": {
         "setup": 605,
-        "run": 600,
+        "run": 670,
         "total": 1190
       },
       "Cowork desktop tasks · macOS · Databricks Hosted": {
@@ -965,10 +965,14 @@
       "45507834921",
       "45518362609",
       "45518822977",
-      "45520268463"
+      "45519243546",
+      "45520268463",
+      "45522786732",
+      "45524382155",
+      "45525228816"
     ],
     "linux": {
-      "samples": 1032,
+      "samples": 1128,
       "p99": {
         "setup": 7.0,
         "run": 29.0,
@@ -981,9 +985,9 @@
       }
     },
     "windows": {
-      "samples": 2752,
+      "samples": 3008,
       "p99": {
-        "setup": 23.0,
+        "setup": 22.0,
         "run": 29.0,
         "total": 45.0
       },
@@ -997,8 +1001,8 @@
   "_job_calibration": {
     "jobs": {
       "ci/checks/Checks": {
-        "samples": 45,
-        "distinct_runs": 42,
+        "samples": 49,
+        "distinct_runs": 46,
         "source_set": "C1",
         "p99": {
           "setup": 7.0,
@@ -1014,8 +1018,8 @@
         "total_only": 0
       },
       "ci/claude-mod/Claude mod · 2.1.290": {
-        "samples": 87,
-        "distinct_runs": 85,
+        "samples": 91,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 13.0,
@@ -1031,8 +1035,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Claude · Linux": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 18.0,
@@ -1048,8 +1052,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Claude · Windows": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 65.0,
@@ -1065,8 +1069,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Codex · Linux": {
-        "samples": 87,
-        "distinct_runs": 84,
+        "samples": 91,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 32.0,
@@ -1082,8 +1086,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Codex · Windows": {
-        "samples": 84,
-        "distinct_runs": 81,
+        "samples": 88,
+        "distinct_runs": 85,
         "source_set": "C4",
         "p99": {
           "setup": 81.0,
@@ -1099,8 +1103,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Copilot · Linux": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 32.0,
@@ -1116,8 +1120,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Copilot · Windows": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 80.0,
@@ -1133,8 +1137,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Gemini · Linux": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 25.0,
@@ -1150,8 +1154,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Gemini · Windows": {
-        "samples": 87,
-        "distinct_runs": 84,
+        "samples": 91,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 136.0,
@@ -1167,8 +1171,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · OpenCode · Linux": {
-        "samples": 87,
-        "distinct_runs": 84,
+        "samples": 91,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 29.0,
@@ -1184,8 +1188,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · OpenCode · Windows": {
-        "samples": 78,
-        "distinct_runs": 76,
+        "samples": 82,
+        "distinct_runs": 80,
         "source_set": "C5",
         "p99": {
           "setup": 93.0,
@@ -1201,8 +1205,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Pi · Linux": {
-        "samples": 87,
-        "distinct_runs": 84,
+        "samples": 91,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 26.0,
@@ -1218,8 +1222,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Agent launch tests · Pi · Windows": {
-        "samples": 81,
-        "distinct_runs": 79,
+        "samples": 85,
+        "distinct_runs": 83,
         "source_set": "C6",
         "p99": {
           "setup": 213.0,
@@ -1235,16 +1239,16 @@
         "total_only": 0
       },
       "ci/e2e-shards/Gateway API tests · Linux": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
-          "setup": 12.0,
+          "setup": 13.0,
           "run": 47.0,
           "total": 55.0
         },
         "observed_max": {
-          "setup": 12.0,
+          "setup": 13.0,
           "run": 47.0,
           "total": 55.0
         },
@@ -1252,8 +1256,8 @@
         "total_only": 0
       },
       "ci/e2e-shards/Gateway API tests · Windows": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 43.0,
@@ -1269,8 +1273,8 @@
         "total_only": 0
       },
       "ci/e2e/All agent tests": {
-        "samples": 88,
-        "distinct_runs": 83,
+        "samples": 92,
+        "distinct_runs": 87,
         "source_set": "C7",
         "p99": {
           "setup": 7.0,
@@ -1286,8 +1290,8 @@
         "total_only": 0
       },
       "ci/required-e2e/e2e": {
-        "samples": 63,
-        "distinct_runs": 61,
+        "samples": 64,
+        "distinct_runs": 62,
         "source_set": "C8",
         "p99": {
           "setup": 2.0,
@@ -1303,8 +1307,8 @@
         "total_only": 0
       },
       "ci/required-tests/test": {
-        "samples": 94,
-        "distinct_runs": 87,
+        "samples": 98,
+        "distinct_runs": 91,
         "source_set": "C9",
         "p99": {
           "setup": 3.0,
@@ -1320,8 +1324,8 @@
         "total_only": 0
       },
       "ci/unit-test-times/Unit test times": {
-        "samples": 49,
-        "distinct_runs": 42,
+        "samples": 53,
+        "distinct_runs": 46,
         "source_set": "C1",
         "p99": {
           "setup": 132.0,
@@ -1337,8 +1341,8 @@
         "total_only": 0
       },
       "ci/vscode-extension/VS Code extension": {
-        "samples": 92,
-        "distinct_runs": 90,
+        "samples": 96,
+        "distinct_runs": 94,
         "source_set": "C10",
         "p99": {
           "setup": 11.0,
@@ -1354,8 +1358,8 @@
         "total_only": 0
       },
       "ci/windows-provisioning/Windows provisioning helpers": {
-        "samples": 44,
-        "distinct_runs": 42,
+        "samples": 48,
+        "distinct_runs": 46,
         "source_set": "C1",
         "p99": {
           "setup": 35.0,
@@ -1371,8 +1375,8 @@
         "total_only": 0
       },
       "integration/anthropic-mps/Anthropic MPS - Staging workspace · Claude · Linux": {
-        "samples": 85,
-        "distinct_runs": 82,
+        "samples": 89,
+        "distinct_runs": 86,
         "source_set": "C11",
         "p99": {
           "setup": 34.0,
@@ -1388,8 +1392,8 @@
         "total_only": 0
       },
       "integration/anthropic-mps/Anthropic MPS - Staging workspace · Claude · Windows": {
-        "samples": 68,
-        "distinct_runs": 66,
+        "samples": 70,
+        "distinct_runs": 68,
         "source_set": "C12",
         "p99": {
           "setup": 122.0,
@@ -1405,9 +1409,9 @@
         "total_only": 0
       },
       "integration/anthropic-mps/Anthropic MPS - Staging workspace · Copilot · Linux (non-blocking)": {
-        "samples": 85,
-        "distinct_runs": 82,
-        "source_set": "C11",
+        "samples": 88,
+        "distinct_runs": 85,
+        "source_set": "C13",
         "p99": {
           "setup": 24.0,
           "run": 60.0,
@@ -1422,9 +1426,9 @@
         "total_only": 0
       },
       "integration/anthropic-mps/Anthropic MPS - Staging workspace · Copilot · Windows (non-blocking)": {
-        "samples": 86,
-        "distinct_runs": 83,
-        "source_set": "C13",
+        "samples": 89,
+        "distinct_runs": 86,
+        "source_set": "C14",
         "p99": {
           "setup": 130.0,
           "run": 145.0,
@@ -1439,8 +1443,8 @@
         "total_only": 0
       },
       "integration/antigravity/Full journeys · Antigravity · Linux": {
-        "samples": 87,
-        "distinct_runs": 84,
+        "samples": 91,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 18.0,
@@ -1456,9 +1460,9 @@
         "total_only": 0
       },
       "integration/codex-desktop-macos/Codex desktop inference · macOS": {
-        "samples": 72,
-        "distinct_runs": 70,
-        "source_set": "C14",
+        "samples": 74,
+        "distinct_runs": 72,
+        "source_set": "C15",
         "p99": {
           "setup": 49.0,
           "run": 546.0,
@@ -1473,9 +1477,9 @@
         "total_only": 0
       },
       "integration/codex-desktop-windows/Codex desktop inference · Windows": {
-        "samples": 58,
-        "distinct_runs": 57,
-        "source_set": "C15",
+        "samples": 59,
+        "distinct_runs": 58,
+        "source_set": "C16",
         "p99": {
           "setup": 91.0,
           "run": 1493.0,
@@ -1490,8 +1494,8 @@
         "total_only": 0
       },
       "integration/codex-relay/Codex relay login and inference": {
-        "samples": 84,
-        "distinct_runs": 82,
+        "samples": 88,
+        "distinct_runs": 86,
         "source_set": "C11",
         "p99": {
           "setup": 25.0,
@@ -1507,9 +1511,9 @@
         "total_only": 0
       },
       "integration/copilot/Full journeys · Copilot · Linux (non-blocking)": {
-        "samples": 80,
-        "distinct_runs": 77,
-        "source_set": "C16",
+        "samples": 83,
+        "distinct_runs": 80,
+        "source_set": "C17",
         "p99": {
           "setup": 17.0,
           "run": 519.0,
@@ -1524,9 +1528,9 @@
         "total_only": 0
       },
       "integration/copilot/Full journeys · Copilot · Windows (non-blocking)": {
-        "samples": 77,
-        "distinct_runs": 74,
-        "source_set": "C17",
+        "samples": 80,
+        "distinct_runs": 77,
+        "source_set": "C18",
         "p99": {
           "setup": 39.0,
           "run": 678.0,
@@ -1541,9 +1545,9 @@
         "total_only": 0
       },
       "integration/cowork-inference-macos/Cowork desktop tasks · macOS · Anthropic MPS": {
-        "samples": 76,
-        "distinct_runs": 74,
-        "source_set": "C18",
+        "samples": 80,
+        "distinct_runs": 78,
+        "source_set": "C19",
         "p99": {
           "setup": 469.0,
           "run": 379.0,
@@ -1558,26 +1562,26 @@
         "total_only": 2
       },
       "integration/cowork-inference-macos/Cowork desktop tasks · macOS · Anthropic relay MPS": {
-        "samples": 77,
-        "distinct_runs": 75,
-        "source_set": "C19",
+        "samples": 81,
+        "distinct_runs": 79,
+        "source_set": "C20",
         "p99": {
           "setup": 483.0,
-          "run": 480.0,
+          "run": 534.0,
           "total": 952.0
         },
         "observed_max": {
           "setup": 483.0,
-          "run": 480.0,
+          "run": 534.0,
           "total": 952.0
         },
         "limited_sample": false,
         "total_only": 0
       },
       "integration/cowork-inference-macos/Cowork desktop tasks · macOS · Databricks Hosted": {
-        "samples": 76,
-        "distinct_runs": 74,
-        "source_set": "C20",
+        "samples": 80,
+        "distinct_runs": 78,
+        "source_set": "C21",
         "p99": {
           "setup": 426.0,
           "run": 346.0,
@@ -1592,9 +1596,9 @@
         "total_only": 1
       },
       "integration/cowork-inference-windows/Cowork desktop tasks · Windows · Anthropic relay MPS": {
-        "samples": 83,
-        "distinct_runs": 80,
-        "source_set": "C21",
+        "samples": 87,
+        "distinct_runs": 84,
+        "source_set": "C22",
         "p99": {
           "setup": 124.0,
           "run": 332.0,
@@ -1609,8 +1613,8 @@
         "total_only": 0
       },
       "integration/cowork-inference-windows/Cowork desktop tasks · Windows · Databricks Hosted": {
-        "samples": 82,
-        "distinct_runs": 79,
+        "samples": 86,
+        "distinct_runs": 83,
         "source_set": "C6",
         "p99": {
           "setup": 134.0,
@@ -1626,9 +1630,9 @@
         "total_only": 0
       },
       "integration/cujs/All integration tests": {
-        "samples": 83,
-        "distinct_runs": 81,
-        "source_set": "C22",
+        "samples": 85,
+        "distinct_runs": 83,
+        "source_set": "C23",
         "p99": {
           "setup": 2.0,
           "run": 1.0,
@@ -1643,8 +1647,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj-plan/Plan E2E CUJs": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 3.0,
@@ -1660,9 +1664,9 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 1 · Explicit models, tracing, headers": {
-        "samples": 82,
-        "distinct_runs": 80,
-        "source_set": "C21",
+        "samples": 86,
+        "distinct_runs": 84,
+        "source_set": "C22",
         "p99": {
           "setup": 27.0,
           "run": 227.0,
@@ -1677,8 +1681,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 2 · MPS and named MCP": {
-        "samples": 84,
-        "distinct_runs": 81,
+        "samples": 88,
+        "distinct_runs": 85,
         "source_set": "C4",
         "p99": {
           "setup": 28.0,
@@ -1694,8 +1698,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 2 · Named skills": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 35.0,
@@ -1711,8 +1715,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 3 · UC MCP discovery": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 29.0,
@@ -1728,8 +1732,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 3 · UC model discovery": {
-        "samples": 82,
-        "distinct_runs": 79,
+        "samples": 86,
+        "distinct_runs": 83,
         "source_set": "C6",
         "p99": {
           "setup": 27.0,
@@ -1745,8 +1749,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 3 · UC skill discovery": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 28.0,
@@ -1762,9 +1766,9 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 4 · Smart routing": {
-        "samples": 70,
-        "distinct_runs": 68,
-        "source_set": "C23",
+        "samples": 73,
+        "distinct_runs": 71,
+        "source_set": "C24",
         "p99": {
           "setup": 26.0,
           "run": 984.0,
@@ -1779,8 +1783,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 5 · Budget-driven defaults": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 27.0,
@@ -1796,9 +1800,9 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 6 · Repeated config and removal": {
-        "samples": 76,
-        "distinct_runs": 74,
-        "source_set": "C17",
+        "samples": 80,
+        "distinct_runs": 78,
+        "source_set": "C25",
         "p99": {
           "setup": 30.0,
           "run": 551.0,
@@ -1813,9 +1817,9 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 7 · Unmanaged model discovery": {
-        "samples": 81,
-        "distinct_runs": 79,
-        "source_set": "C24",
+        "samples": 85,
+        "distinct_runs": 83,
+        "source_set": "C26",
         "p99": {
           "setup": 133.0,
           "run": 259.0,
@@ -1830,8 +1834,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 8 · Second managed-settings writer": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 27.0,
@@ -1847,8 +1851,8 @@
         "total_only": 0
       },
       "integration/dedicated-cuj/E2E CUJs · CUJ 9 · Model sources": {
-        "samples": 81,
-        "distinct_runs": 79,
+        "samples": 85,
+        "distinct_runs": 83,
         "source_set": "C6",
         "p99": {
           "setup": 26.0,
@@ -1864,9 +1868,9 @@
         "total_only": 0
       },
       "integration/full/Full journeys · Claude · Linux": {
-        "samples": 72,
-        "distinct_runs": 70,
-        "source_set": "C25",
+        "samples": 76,
+        "distinct_runs": 74,
+        "source_set": "C27",
         "p99": {
           "setup": 33.0,
           "run": 605.0,
@@ -1881,9 +1885,9 @@
         "total_only": 0
       },
       "integration/full/Full journeys · Claude · Windows": {
-        "samples": 63,
-        "distinct_runs": 61,
-        "source_set": "C26",
+        "samples": 64,
+        "distinct_runs": 62,
+        "source_set": "C28",
         "p99": {
           "setup": 56.0,
           "run": 1102.0,
@@ -1898,9 +1902,9 @@
         "total_only": 0
       },
       "integration/full/Full journeys · Codex · Linux": {
-        "samples": 75,
-        "distinct_runs": 73,
-        "source_set": "C27",
+        "samples": 79,
+        "distinct_runs": 77,
+        "source_set": "C29",
         "p99": {
           "setup": 22.0,
           "run": 507.0,
@@ -1915,9 +1919,9 @@
         "total_only": 0
       },
       "integration/full/Full journeys · Codex · Linux · Smart routing": {
-        "samples": 64,
-        "distinct_runs": 62,
-        "source_set": "C28",
+        "samples": 67,
+        "distinct_runs": 65,
+        "source_set": "C30",
         "p99": {
           "setup": 21.0,
           "run": 827.0,
@@ -1932,9 +1936,9 @@
         "total_only": 0
       },
       "integration/full/Full journeys · Codex · Windows": {
-        "samples": 71,
-        "distinct_runs": 69,
-        "source_set": "C29",
+        "samples": 74,
+        "distinct_runs": 72,
+        "source_set": "C31",
         "p99": {
           "setup": 43.0,
           "run": 700.0,
@@ -1949,9 +1953,9 @@
         "total_only": 0
       },
       "integration/full/Full journeys · Codex · Windows · Smart routing": {
-        "samples": 66,
-        "distinct_runs": 64,
-        "source_set": "C30",
+        "samples": 69,
+        "distinct_runs": 67,
+        "source_set": "C32",
         "p99": {
           "setup": 39.0,
           "run": 390.0,
@@ -1966,8 +1970,8 @@
         "total_only": 0
       },
       "integration/headless-windows/Windows headless journey · Claude": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 49.0,
@@ -1983,8 +1987,8 @@
         "total_only": 0
       },
       "integration/installation-windows/Windows installation tests": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 32.0,
@@ -2000,8 +2004,8 @@
         "total_only": 0
       },
       "integration/installation/Installation tests": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 17.0,
@@ -2017,9 +2021,9 @@
         "total_only": 0
       },
       "integration/managed-opencode/Managed OpenCode self-managed (non-blocking)": {
-        "samples": 88,
-        "distinct_runs": 85,
-        "source_set": "C2",
+        "samples": 91,
+        "distinct_runs": 88,
+        "source_set": "C33",
         "p99": {
           "setup": 24.0,
           "run": 61.0,
@@ -2034,8 +2038,8 @@
         "total_only": 0
       },
       "integration/managed/Managed config · Claude": {
-        "samples": 86,
-        "distinct_runs": 84,
+        "samples": 90,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 22.0,
@@ -2051,9 +2055,9 @@
         "total_only": 0
       },
       "integration/managed/Managed config · Codex": {
-        "samples": 85,
-        "distinct_runs": 82,
-        "source_set": "C31",
+        "samples": 89,
+        "distinct_runs": 86,
+        "source_set": "C34",
         "p99": {
           "setup": 19.0,
           "run": 118.0,
@@ -2068,9 +2072,9 @@
         "total_only": 0
       },
       "integration/managed/Managed config · Codex · Smart routing": {
-        "samples": 70,
-        "distinct_runs": 68,
-        "source_set": "C32",
+        "samples": 73,
+        "distinct_runs": 71,
+        "source_set": "C35",
         "p99": {
           "setup": 21.0,
           "run": 684.0,
@@ -2085,9 +2089,9 @@
         "total_only": 0
       },
       "integration/opencode/Full journeys · OpenCode · Linux (non-blocking)": {
-        "samples": 87,
-        "distinct_runs": 85,
-        "source_set": "C2",
+        "samples": 90,
+        "distinct_runs": 88,
+        "source_set": "C33",
         "p99": {
           "setup": 20.0,
           "run": 44.0,
@@ -2102,9 +2106,9 @@
         "total_only": 0
       },
       "integration/opencode/Full journeys · OpenCode · Windows (non-blocking)": {
-        "samples": 87,
-        "distinct_runs": 84,
-        "source_set": "C3",
+        "samples": 90,
+        "distinct_runs": 87,
+        "source_set": "C36",
         "p99": {
           "setup": 34.0,
           "run": 68.0,
@@ -2119,8 +2123,8 @@
         "total_only": 0
       },
       "integration/smoke/Smoke journeys · Claude · Linux": {
-        "samples": 88,
-        "distinct_runs": 85,
+        "samples": 92,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 19.0,
@@ -2136,9 +2140,9 @@
         "total_only": 0
       },
       "integration/smoke/Smoke journeys · Claude · Windows": {
-        "samples": 85,
-        "distinct_runs": 83,
-        "source_set": "C33",
+        "samples": 89,
+        "distinct_runs": 87,
+        "source_set": "C37",
         "p99": {
           "setup": 71.0,
           "run": 125.0,
@@ -2153,8 +2157,8 @@
         "total_only": 0
       },
       "integration/smoke/Smoke journeys · Codex · Linux": {
-        "samples": 87,
-        "distinct_runs": 85,
+        "samples": 91,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 17.0,
@@ -2170,8 +2174,8 @@
         "total_only": 0
       },
       "integration/smoke/Smoke journeys · Codex · Windows": {
-        "samples": 87,
-        "distinct_runs": 84,
+        "samples": 91,
+        "distinct_runs": 88,
         "source_set": "C3",
         "p99": {
           "setup": 43.0,
@@ -2187,9 +2191,9 @@
         "total_only": 0
       },
       "integration/soft-fail/Soft-fail journeys · claude · Linux (non-blocking)": {
-        "samples": 57,
-        "distinct_runs": 57,
-        "source_set": "C34",
+        "samples": 58,
+        "distinct_runs": 58,
+        "source_set": "C38",
         "p99": {
           "setup": 18.0,
           "run": 816.0,
@@ -2204,9 +2208,9 @@
         "total_only": 0
       },
       "integration/soft-fail/Soft-fail journeys · claude · Windows (non-blocking)": {
-        "samples": 51,
-        "distinct_runs": 51,
-        "source_set": "C35",
+        "samples": 52,
+        "distinct_runs": 52,
+        "source_set": "C39",
         "p99": {
           "setup": 37.0,
           "run": 1328.0,
@@ -2221,9 +2225,9 @@
         "total_only": 0
       },
       "integration/vscode/Full journeys · VS Code Copilot Chat · Linux (non-blocking)": {
-        "samples": 84,
-        "distinct_runs": 82,
-        "source_set": "C36",
+        "samples": 87,
+        "distinct_runs": 85,
+        "source_set": "C40",
         "p99": {
           "setup": 33.0,
           "run": 205.0,
@@ -2238,9 +2242,9 @@
         "total_only": 0
       },
       "integration/vscode/Full journeys · VS Code Copilot Chat · Windows (non-blocking)": {
-        "samples": 85,
-        "distinct_runs": 82,
-        "source_set": "C36",
+        "samples": 88,
+        "distinct_runs": 85,
+        "source_set": "C40",
         "p99": {
           "setup": 40.0,
           "run": 226.0,
@@ -2255,8 +2259,8 @@
         "total_only": 0
       },
       "integration/workspace/Workspace validation": {
-        "samples": 89,
-        "distinct_runs": 85,
+        "samples": 93,
+        "distinct_runs": 89,
         "source_set": "C2",
         "p99": {
           "setup": 3.0,
@@ -2274,7 +2278,7 @@
       "publish-skills-test/smoke/Publisher composite action": {
         "samples": 16,
         "distinct_runs": 16,
-        "source_set": "C37",
+        "source_set": "C41",
         "p99": {
           "setup": 13.0,
           "run": 16.0,
@@ -2291,7 +2295,7 @@
       "publish-skills-test/tests/Publisher tests (Python 3.12)": {
         "samples": 16,
         "distinct_runs": 16,
-        "source_set": "C37",
+        "source_set": "C41",
         "p99": {
           "setup": 41.0,
           "run": 32.0,
@@ -2308,7 +2312,7 @@
       "publish-skills-test/tests/Publisher tests (Python 3.13)": {
         "samples": 16,
         "distinct_runs": 16,
-        "source_set": "C37",
+        "source_set": "C41",
         "p99": {
           "setup": 24.0,
           "run": 29.0,
@@ -2325,7 +2329,7 @@
       "user-journey-test-required/require-user-journey-test/User Journey Test Required": {
         "samples": 37,
         "distinct_runs": 37,
-        "source_set": "C38",
+        "source_set": "C42",
         "p99": {
           "setup": 18.0,
           "run": 18.0,
@@ -2342,7 +2346,7 @@
       "zizmor/zizmor/zizmor": {
         "samples": 30,
         "distinct_runs": 30,
-        "source_set": "C39",
+        "source_set": "C43",
         "p99": {
           "setup": 2.0,
           "run": 39.0,
@@ -2360,7 +2364,7 @@
     "gate": {
       "samples": 50,
       "distinct_runs": 48,
-      "source_set": "C40",
+      "source_set": "C44",
       "p99": 846.0,
       "observed_max": 846.0
     }
