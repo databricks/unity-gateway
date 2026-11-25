@@ -60,6 +60,17 @@ def finish_windows_readiness_check(app, timeout: float = 60) -> bool:
         time.sleep(2)
 
 
+def _windows_sandbox_mode(home: Path) -> tuple[str | None, str]:
+    path = home / ".codex/config.toml"
+    try:
+        mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get("sandbox")
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
+        return None, "unreadable"
+    return mode, "readable"
+
+
 def wait_for_windows_setup(app, timeout: float = 60) -> None:
     """The setup banner follows a readiness check that can transiently fail; finish one retry."""
     banner = "Finish Windows setup to continue"
@@ -74,23 +85,18 @@ def wait_for_windows_setup(app, timeout: float = 60) -> None:
         if any(row[0] == "ControlType.Text" and banner in row[1:] for row in tree):
             return
         if time.monotonic() >= deadline:
-            path = app.session.home / ".codex/config.toml"
-            try:
-                mode = (
-                    tomllib.loads(path.read_text(encoding="utf-8"))
-                    .get("windows", {})
-                    .get("sandbox")
-                )
-                config_state = "readable"
-            except FileNotFoundError:
-                mode, config_state = None, "missing"
-            except (OSError, tomllib.TOMLDecodeError, AttributeError):
-                mode, config_state = None, "unreadable"
+            mode, config_state = _windows_sandbox_mode(app.session.home)
             app.session.record(
                 "windows-setup-state.json",
                 {
                     "config_state": config_state,
-                    "sandbox_mode": mode if mode in ("elevated", "unelevated") else "other",
+                    "sandbox_mode": (
+                        "unset"
+                        if mode is None
+                        else mode
+                        if mode in ("elevated", "unelevated")
+                        else "other"
+                    ),
                 },
             )
             app.session.record(
@@ -103,12 +109,8 @@ def wait_for_windows_setup(app, timeout: float = 60) -> None:
 def wait_for_windows_sandbox(app, timeout: float = 180) -> None:
     """The app saves this mode after successful setup; its success banner is transient."""
     deadline = time.monotonic() + timeout
-    path = app.session.home / ".codex/config.toml"
     while True:
-        try:
-            mode = tomllib.loads(path.read_text(encoding="utf-8")).get("windows", {}).get("sandbox")
-        except (FileNotFoundError, tomllib.TOMLDecodeError):
-            mode = None
+        mode, _ = _windows_sandbox_mode(app.session.home)
         if mode == "elevated":
             app.session.record("windows-sandbox.json", {"mode": mode})
             return

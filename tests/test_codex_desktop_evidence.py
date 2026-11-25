@@ -115,11 +115,35 @@ def test_windows_setup_finishes_one_transient_readiness_error(state, monkeypatch
         assert evidence["chatgpt-tree.json"]["tree"] == rest
         assert evidence["windows-setup-state.json"] == {
             "config_state": "readable" if state == "stuck" else "missing",
-            "sandbox_mode": "elevated" if state == "stuck" else "other",
+            "sandbox_mode": "elevated" if state == "stuck" else "unset",
         }
     else:
         codex_desktop.wait_for_windows_setup(app, timeout=0.05)
     assert clicks == ([("ControlType.Button", "Try again")] if first else [])
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [(b"[windows]\n", ("readable", "unset")), (b"\xff", ("unreadable", "unset"))],
+)
+def test_windows_setup_failure_records_config_state(tmp_path, config, expected):
+    path = tmp_path / ".codex/config.toml"
+    path.parent.mkdir()
+    path.write_bytes(config)
+    evidence = {}
+    app = SimpleNamespace(
+        name="chatgpt",
+        read_tree=lambda: [],
+        session=SimpleNamespace(
+            home=tmp_path, record=lambda name, value: evidence.update({name: value})
+        ),
+    )
+    with pytest.raises(AssertionError, match="never showed"):
+        codex_desktop.wait_for_windows_setup(app, timeout=0)
+    assert evidence["windows-setup-state.json"] == {
+        "config_state": expected[0],
+        "sandbox_mode": expected[1],
+    }
 
 
 @pytest.mark.parametrize("mode", [None, "unelevated", "elevated"])
