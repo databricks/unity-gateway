@@ -431,8 +431,9 @@ activation from the same traversal that found the element (the app's web control
 without acting on it, and a dialog still animating in reports a moving frame);
 traversal failures surface as `AX error:` lines instead of an empty tree, and
 a dismissal wait treats a traversal that failed partway as not settled, so a busy app can no
-longer look like a left dialog. Onboarding dismissals wait for the dialog to leave, recording
-the stuck tree on failure. It
+longer look like a left dialog. Onboarding dismissals wait for the dialog to leave, clicking
+its button again every 10 seconds while it stays (the app can drop a reported click) and
+recording the stuck tree on failure at 120 seconds. It
 then clicks an absent label in the same app and requires a nonzero helper exit with the native
 four-column accessibility tree captured before the fatal error in command evidence.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI

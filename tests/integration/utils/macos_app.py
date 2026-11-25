@@ -145,6 +145,30 @@ class MacApp:
                 raise AssertionError(f"{self.name} never dismissed {role} {label!r}")
             time.sleep(2)
 
+    def click_until_gone(self, role: str, label: str | None, timeout: float) -> None:
+        """Click a ``role`` element labelled ``label``, again while it stays on screen.
+
+        The app can drop a click the native command reported: run 45532827343 clicked
+        Go to ChatGPT once and the Skip setup? dialog was still up 120 seconds later. The click
+        is repeated every 10 seconds until the element leaves; one that is still there at
+        ``timeout`` fails with the stuck AX tree recorded."""
+        deadline = time.monotonic() + timeout
+        self.click(role, label)
+        while True:
+            try:
+                self.wait_gone(role, label, 10)
+                return
+            except AssertionError as error:
+                stuck = str(error) == f"{self.name} never dismissed {role} {label!r}"
+                if not stuck or time.monotonic() > deadline:
+                    raise
+            try:
+                self.click(role, label, timeout=2)
+            except AssertionError as error:
+                # The element can leave between the last traversal and this click.
+                if f"Fatal error: No {role} labelled {label or ''}" not in str(error):
+                    raise
+
     def type_line(self, text: str, *, submit: bool = True) -> None:
         """Type with real keystrokes, optionally pressing Return."""
         enter = "key code 36\n" if submit else ""
