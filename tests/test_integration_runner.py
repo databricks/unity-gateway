@@ -1,8 +1,10 @@
 import base64
 import io
+import json
 import os
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,6 +67,66 @@ def test_old_codex_selection_is_confined_to_one_session(tmp_path, monkeypatch):
         integration_fixtures.version_aware_codex_session.__wrapped__(other).which("codex").resolve()
         == (new_dir / executable).resolve()
     )
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_windows_desktop_session_records_sandbox_selection_on_teardown(
+    tmp_path, monkeypatch, outcome
+):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "integration"))
+    from tests.integration import conftest as integration_fixtures
+
+    monkeypatch.setenv("UG_INTEGRATION_RUN_DIR", str(tmp_path))
+    monkeypatch.delenv("UG_MODEL_LEDGER", raising=False)
+    node = SimpleNamespace(
+        name="desktop", get_closest_marker=lambda marker: marker == "windows_desktop"
+    )
+    fixture = integration_fixtures.session.__wrapped__(SimpleNamespace(node=node), tmp_path / "ug")
+    session = next(fixture)
+    log = session.home / ".codex" / ".sandbox" / "sandbox.2026-11-25.log"
+    log.parent.mkdir(parents=True)
+    line = "[2026-11-25 12:34:56.789 codex.exe] Windows sandbox selection: disabled"
+    log.write_text(line + "\n", encoding="utf-8")
+    if outcome == "failure":
+        with pytest.raises(RuntimeError, match="case failed"):
+            fixture.throw(RuntimeError("case failed"))
+    else:
+        with pytest.raises(StopIteration):
+            next(fixture)
+    evidence = json.loads((session.artifacts / "windows-sandbox-selection.json").read_text())
+    assert evidence == {"lines": [line]}
+
+
+def test_staging_session_ledger_uses_staging_workspace(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "integration"))
+    from tests.integration import conftest as integration_fixtures
+
+    monkeypatch.setenv("UG_INTEGRATION_RUN_DIR", str(tmp_path))
+    monkeypatch.setenv("UG_MODEL_LEDGER", "staging")
+    monkeypatch.setenv("UG_INTEGRATION_CLAUDE_PROVIDER_MODEL", "claude-haiku-4-5-20251001")
+    node = SimpleNamespace(name="case", get_closest_marker=lambda marker: False)
+    fixture = integration_fixtures.session.__wrapped__(SimpleNamespace(node=node), tmp_path / "ug")
+    session = next(fixture)
+    path = session.home / ".claude/projects/session.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-11-25T00:00:01Z",
+                "message": {
+                    "id": "response",
+                    "model": "claude-haiku-4-5-20251001",
+                    "usage": {"input_tokens": 3, "output_tokens": 1},
+                },
+            }
+        )
+        + "\n"
+    )
+    with pytest.raises(StopIteration):
+        next(fixture)
+    result = json.loads((session.artifacts / "model-ledger.json").read_text())
+    assert result["responses"][0]["workspace"] == "staging"
 
 
 def test_secrets_are_redacted_from_build_output():

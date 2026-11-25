@@ -293,6 +293,32 @@ def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):
     assert app.timings[0]["returncode"] == 0
 
 
+def test_windows_sandbox_diagnostic_records_only_selection_and_availability(tmp_path):
+    directory = tmp_path / ".codex" / ".sandbox"
+    directory.mkdir(parents=True)
+    log = directory / "sandbox.2026-11-25.log"
+    selected = "[2026-11-25 12:34:56.789 codex.exe] Windows sandbox selection: unelevated"
+    available = "[2026-11-25 12:34:56.790 codex.exe] MXC availability: false"
+    log.write_text(
+        "\n".join(
+            [
+                selected,
+                "[2026-11-25 12:34:56.789 codex.exe] token=secret",
+                selected + " token=secret",
+                available,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    evidence = {}
+    session = SimpleNamespace(
+        home=tmp_path, record=lambda name, value: evidence.update({name: value})
+    )
+    windows_app.record_windows_sandbox_selection(session)
+    assert evidence["windows-sandbox-selection.json"] == {"lines": [selected, available]}
+    assert "secret" not in repr(evidence)
+
+
 def test_windows_app_log_preserves_and_timestamps_every_line(tmp_path):
     log = tmp_path / "app.log"
     windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log, [], threading.Condition())

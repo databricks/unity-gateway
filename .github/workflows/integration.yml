@@ -616,6 +616,21 @@ jobs:
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             --npm-registry "$NPM_REGISTRY" \
             "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Record staging model usage
+        if: ${{ !cancelled() && env.UG_MODEL_LEDGER == 'staging' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/ug-integration"
+          uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+            "$RUNNER_TEMP/ug-integration" --lane staging
+      - name: Inspect staging provider rate limits
+        if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py --provider-only \
+            > "$RUNNER_TEMP/ug-integration/staging-provider-quota.json"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -692,6 +707,15 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
             -Capability mcp -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/mcp"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record staging Desktop model usage
+        if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' && steps.desktop-install.outcome != 'skipped' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+            "$RUNNER_TEMP/cowork-inference" --lane staging-desktop \
+            --sessions-root "$LOCALAPPDATA/Claude-3p/local-agent-mode-sessions" \
+            --since-file "$RUNNER_TEMP/cowork-inference/configuration.json" --model "$UG_COWORK_MODEL"
       - name: Revoke the Desktop PAT
         if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}
         shell: pwsh
@@ -745,6 +769,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: anthropic_mps and ${{ matrix.agent }}
+      UG_MODEL_LEDGER: ${{ matrix.agent == 'claude' && 'staging' || '' }}
       ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
       # Desktop jobs skip merge-group runs, like the other Cowork lanes.
       UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}

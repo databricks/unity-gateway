@@ -193,12 +193,18 @@ def session(request, installed_binary):
             try:
                 yield user
             finally:
+                if request.node.get_closest_marker("windows_desktop"):
+                    from utils.windows_app import record_windows_sandbox_selection
+
+                    record_windows_sandbox_selection(user)
                 if os.environ.get("UG_MODEL_LEDGER"):
                     from utils.traffic_ledger import record_case_usage
 
                     workspace_label = (
                         None
                         if request.node.get_closest_marker("workspace_switch")
+                        else "staging"
+                        if os.environ.get("UG_MODEL_LEDGER") == "staging"
                         else "managed-primary"
                     )
                     try:

@@ -102,6 +102,73 @@ def test_quota_diagnostics_emit_only_rate_and_caller_permission_fields():
     assert "caller-id" not in repr(summary)
 
 
+def test_staging_provider_quota_reports_only_safe_rate_fields(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    diagnostics = runpy.run_path(str(script))
+    calls = []
+
+    def read(host, token, path):
+        calls.append(path)
+        return 200, {
+            "config": {
+                "rate_limits": [
+                    {"key": "SERVICE_PRINCIPAL", "principal": "caller-id-secret", "tokens": 1000}
+                ],
+                "secret": "private-secret",
+            }
+        }
+
+    monkeypatch.setitem(diagnostics["provider_limits"].__globals__, "read_api", read)
+    result = diagnostics["provider_limits"](
+        "https://workspace", "token", "catalog.schema.service", "caller-id-secret"
+    )
+    assert calls == ["/api/2.1/unity-catalog/model-provider-services/catalog.schema.service"]
+    assert result == {
+        "status": 200,
+        "rate_limits_present": True,
+        "rate_limits": [{"key": "SERVICE_PRINCIPAL", "tokens": 1000, "applies_to_caller": True}],
+    }
+    assert "private" not in repr(result) and "caller-id-secret" not in repr(result)
+
+
+def test_staging_provider_quota_does_not_treat_denial_as_no_limit(monkeypatch):
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    provider_limits = runpy.run_path(str(script))["provider_limits"]
+    monkeypatch.setitem(provider_limits.__globals__, "read_api", lambda *args: (403, None))
+    assert provider_limits("https://workspace", "token", "catalog.schema.service", "caller") == {
+        "status": 403,
+        "rate_limits_present": None,
+        "rate_limits": [],
+    }
+
+
+def test_staging_provider_quota_uses_existing_m2m_and_no_inference(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
+    provider_main = runpy.run_path(str(script))["main"]
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://private.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "private-client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "private-secret")
+    monkeypatch.setenv("UG_COWORK_PROVIDER", "catalog.schema.service")
+    monkeypatch.setitem(
+        sys.modules,
+        "run_integration",
+        SimpleNamespace(mint_m2m_token=lambda *args: "private-token"),
+    )
+    calls = []
+    monkeypatch.setitem(
+        provider_main.__globals__,
+        "provider_limits",
+        lambda host, token, provider, caller: (
+            calls.append((host, token, provider, caller)) or {"status": 200}
+        ),
+    )
+    provider_main(provider_only=True)
+    assert len(calls) == 1
+    assert json.loads(capsys.readouterr().out) == {"status": 200}
+
+
 def test_quota_diagnostics_report_malformed_json_without_failing(monkeypatch):
     script = Path(__file__).parent.parent / "scripts/managed_quota_diagnostics.py"
     diagnostics = runpy.run_path(str(script))
@@ -566,8 +633,16 @@ def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
     assert "soft-fail" not in {name.strip() for name in needs.group(1).split(",")}
+    diagnostic_steps = {
+        "Record staging model usage",
+        "Inspect staging provider rate limits",
+        "Record staging Desktop model usage",
+    }
     for name in ("smoke", "full", "managed"):
-        assert "continue-on-error:" not in jobs[name]
+        assert not re.search(r"(?m)^    continue-on-error:", jobs[name])
+        for step in re.split(r"(?m)^      - ", jobs[name])[1:]:
+            if "continue-on-error:" in step:
+                assert step.splitlines()[0].removeprefix("name: ") in diagnostic_steps
         assert "and not soft_fail" in jobs[name]
 
 
@@ -735,6 +810,23 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert needs is not None
     required = {name.strip() for name in needs.group(1).split(",")}
     assert "anthropic-mps" in required
+
+
+def test_staging_usage_and_provider_quota_are_collected_without_inference():
+    jobs = _integration_jobs()
+    staging = jobs["anthropic-mps"]
+    assert "UG_MODEL_LEDGER: ${{ matrix.agent == 'claude' && 'staging' || '' }}" in staging
+    steps = jobs["smoke"]
+    assert "name: Record staging model usage" in steps
+    assert "--lane staging" in steps
+    assert "name: Inspect staging provider rate limits" in steps
+    assert "scripts/managed_quota_diagnostics.py --provider-only" in steps
+    assert "name: Record staging Desktop model usage" in steps
+    assert "--lane staging-desktop" in steps
+    assert "configuration.json" in steps
+    assert steps.index("name: Record staging Desktop model usage") < steps.index(
+        "name: Upload Cowork evidence"
+    )
 
 
 def test_staging_windows_node_toolcache_is_restored_before_setup():

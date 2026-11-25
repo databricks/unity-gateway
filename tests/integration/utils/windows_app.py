@@ -49,6 +49,28 @@ def _installed_package(package: str) -> tuple[str, str]:
     return full_name.split("_")[1], location
 
 
+def record_windows_sandbox_selection(session) -> None:
+    pattern = re.compile(
+        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} codex\.exe\] "
+        r"(?:Windows sandbox selection: (?:disabled|unelevated|elevated|mxc)|"
+        r"MXC availability: (?:true|false))"
+    )
+    lines = []
+    try:
+        for path in sorted((session.home / ".codex" / ".sandbox").glob("sandbox.*.log")):
+            lines.extend(
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if pattern.fullmatch(line)
+            )
+    except (OSError, UnicodeError) as error:
+        session.record(
+            "windows-sandbox-selection.json", {"lines": lines, "error": type(error).__name__}
+        )
+        return
+    session.record("windows-sandbox-selection.json", {"lines": lines})
+
+
 def _redact_app_log(session, text: str) -> str:
     secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
     if secret:

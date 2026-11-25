@@ -3,6 +3,7 @@
 import http.client
 import json
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -56,6 +57,19 @@ def read_api(host, token, path):
         return "invalid-json", None
     except http.client.IncompleteRead:
         return "incomplete-read", None
+
+
+def provider_limits(host, token, provider, caller):
+    path = "/api/2.1/unity-catalog/model-provider-services/" + urllib.parse.quote(
+        provider, safe="."
+    )
+    status, payload = read_api(host, token, path)
+    config = (payload or {}).get("config") or {}
+    return {
+        "status": status,
+        "rate_limits_present": "rate_limits" in config if payload is not None else None,
+        "rate_limits": summarize_service(payload or {}, caller),
+    }
 
 
 def probe_model(host, token, model, agent):
@@ -129,7 +143,7 @@ def probe_model(host, token, model, agent):
         return list(executor.map(send, range(1, 4)))
 
 
-def main():
+def main(*, provider_only=False):
     host = os.environ["UCODE_TEST_WORKSPACE"]
     caller = os.environ["DATABRICKS_CLIENT_ID"]
     from run_integration import mint_m2m_token
@@ -138,6 +152,9 @@ def main():
         token = mint_m2m_token(host, caller, os.environ["DATABRICKS_CLIENT_SECRET"])
     except (RuntimeError, urllib.error.URLError):
         print(json.dumps({"quota_diagnostics": "authentication-unavailable"}))
+        return
+    if provider_only:
+        print(json.dumps(provider_limits(host, token, os.environ["UG_COWORK_PROVIDER"], caller)))
         return
     models = [(model, "codex") for model in CODEX_MODELS] + [
         (model, "claude") for model in CLAUDE_MODELS
@@ -182,4 +199,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--provider-only"]:
+        main(provider_only=True)
+    elif not sys.argv[1:]:
+        main()
+    else:
+        raise SystemExit("Use --provider-only or no arguments")

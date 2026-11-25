@@ -2,8 +2,9 @@
 
 import argparse
 import json
+import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 TOKEN_FIELDS = {
@@ -77,7 +78,7 @@ def _usage(value):
 
 
 def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
-    if workspace not in (None, "managed-primary"):
+    if workspace not in (None, "managed-primary", "staging"):
         raise ValueError("Unknown traffic-ledger workspace label")
     responses = []
     seen = {}
@@ -139,6 +140,7 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
                     "usage": usage,
                 }
             )
+    claude_responses = {}
     for path, records in claude_sessions.items():
         for record in records:
             if not isinstance(record, dict) or record.get("type") != "assistant":
@@ -154,27 +156,36 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
             key = ("claude", record.get("sessionId") or path, identifier)
             raw = reported_model(message.get("model"))
             model = canonical_model(raw, known_models)
-            if key in seen:
-                if seen[key] != (model or raw):
-                    unmapped = model_unmapped = True
-                continue
-            seen[key] = model or raw
-            model_unmapped |= raw is None
             timestamp = _timestamp(record.get("timestamp"))
             usage, complete_usage = _usage(message.get("usage"))
             unmapped |= (
                 model is None or timestamp is None or not complete_usage or workspace is None
             )
-            responses.append(
-                {
-                    "source": "claude-native",
-                    "timestamp": timestamp,
-                    "model": model,
-                    "reported_model": raw,
-                    "workspace": workspace,
-                    "usage": usage,
-                }
-            )
+            model_unmapped |= raw is None
+            if key in seen:
+                if seen[key] != (model or raw):
+                    unmapped = model_unmapped = True
+                previous = claude_responses[key]
+                for field, value in usage.items():
+                    previous["usage"][field] = max(previous["usage"].get(field, 0), value)
+                if timestamp and (
+                    previous["timestamp"] is None
+                    or datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    > datetime.fromisoformat(previous["timestamp"].replace("Z", "+00:00"))
+                ):
+                    previous["timestamp"] = timestamp
+                continue
+            seen[key] = model or raw
+            response = {
+                "source": "claude-native",
+                "timestamp": timestamp,
+                "model": model,
+                "reported_model": raw,
+                "workspace": workspace,
+                "usage": usage,
+            }
+            claude_responses[key] = response
+            responses.append(response)
     responses.sort(key=lambda response: response["timestamp"] or "")
     return {
         "coverage": "unmapped" if unmapped else "partial",
@@ -184,12 +195,47 @@ def native_usage(codex_sessions, claude_sessions, *, workspace, known_models):
     }
 
 
+def staging_desktop_usage(sessions_root, *, since, model):
+    started = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    sessions = {}
+    incomplete = not sessions_root.is_dir()
+    for path in sessions_root.glob("**/projects/session/*.jsonl"):
+        try:
+            if path.stat().st_mtime < started.timestamp():
+                continue
+            records = []
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    incomplete = True
+                    continue
+                timestamp = _timestamp(row.get("timestamp")) if isinstance(row, dict) else None
+                if (
+                    timestamp is None
+                    or datetime.fromisoformat(timestamp.replace("Z", "+00:00")) >= started
+                ):
+                    records.append(row)
+            sessions[str(path)] = records
+        except (OSError, UnicodeError):
+            incomplete = True
+    result = native_usage({}, sessions, workspace="staging", known_models={model})
+    result["lane"] = "staging-desktop"
+    if incomplete or not result["responses"]:
+        result["coverage"] = result["model_coverage"] = "unmapped"
+    return result
+
+
 def record_case_usage(session, *, workspace):
     from .evidence import agent_sessions
 
     fixtures = Path(__file__).resolve().parents[2] / "fixtures/managed_config"
     desktop_models, smart_models = model_sets(fixtures)
     known_models = desktop_models | smart_models
+    if model := os.environ.get("UG_INTEGRATION_CLAUDE_PROVIDER_MODEL"):
+        known_models.add(model)
     for path in fixtures.glob("*.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -241,7 +287,7 @@ def check_model_separation(responses, *, lane, desktop_models, smart_models):
 
 
 def finish_lane(output, *, lane):
-    if lane not in ("basic-claude", "basic-codex", "smart", "desktop"):
+    if lane not in ("basic-claude", "basic-codex", "smart", "desktop", "staging"):
         raise ValueError("Unknown model-ledger lane")
     files = sorted((output / "artifacts").glob("*/model-ledger.json"))
     responses = []
@@ -269,6 +315,8 @@ def finish_lane(output, *, lane):
         "responses": responses,
     }
     (output / "model-ledger.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    if lane == "staging":
+        return result
     if model_unmapped or (lane in ("smart", "desktop") and unmapped):
         raise ValueError("Model ledger contains unmapped case evidence")
     fixtures = Path(__file__).resolve().parents[2] / "fixtures/managed_config"
@@ -283,10 +331,36 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument(
-        "--lane", required=True, choices=("basic-claude", "basic-codex", "smart", "desktop")
+        "--lane",
+        required=True,
+        choices=("basic-claude", "basic-codex", "smart", "desktop", "staging", "staging-desktop"),
     )
+    parser.add_argument("--sessions-root", type=Path)
+    parser.add_argument("--since-file", type=Path)
+    parser.add_argument("--model")
     args = parser.parse_args()
-    try:
-        finish_lane(args.output, lane=args.lane)
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
+    if args.lane == "staging-desktop":
+        if not (args.sessions_root and args.since_file and args.model):
+            parser.error("staging-desktop requires --sessions-root, --since-file and --model")
+        try:
+            since = datetime.fromtimestamp(args.since_file.stat().st_mtime, UTC).isoformat()
+        except OSError as error:
+            result = {
+                "lane": "staging-desktop",
+                "coverage": "unmapped",
+                "model_coverage": "unmapped",
+                "timestamp_semantics": "native-response-recorded",
+                "responses": [],
+                "error": type(error).__name__,
+            }
+        else:
+            result = staging_desktop_usage(args.sessions_root, since=since, model=args.model)
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "model-ledger.json").write_text(
+            json.dumps(result, indent=2) + "\n", encoding="utf-8"
+        )
+    else:
+        try:
+            finish_lane(args.output, lane=args.lane)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error

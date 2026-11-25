@@ -60,6 +60,174 @@ def test_native_ledger_deduplicates_usage_and_does_not_copy_content():
     assert "private" not in repr(result) and "session-1" not in repr(result)
 
 
+def test_duplicate_claude_response_keeps_latest_usage_counts():
+    model = "claude-haiku-4-5-20251001"
+    records = [
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "sessionId": "session",
+            "message": {"id": "response", "model": model, "usage": usage},
+        }
+        for timestamp, usage in (
+            ("2026-11-25T00:00:01Z", {"input_tokens": 4, "output_tokens": 1}),
+            ("2026-11-25T00:00:02Z", {"input_tokens": 4, "output_tokens": 9}),
+        )
+    ]
+    result = ledger.native_usage(
+        {}, {"session": records}, workspace="staging", known_models={model}
+    )
+    assert len(result["responses"]) == 1
+    assert result["responses"][0]["usage"]["output_tokens"] == 9
+    assert result["responses"][0]["timestamp"] == "2026-11-25T00:00:02Z"
+
+
+def test_staging_claude_native_usage_records_model_tokens_and_timestamp():
+    model = "claude-haiku-4-5-20251001"
+    record = {
+        "type": "assistant",
+        "timestamp": "2026-11-25T00:00:01Z",
+        "sessionId": "private-session",
+        "message": {
+            "id": "private-response",
+            "model": model,
+            "usage": {"input_tokens": 11, "cache_read_input_tokens": 9, "output_tokens": 2},
+            "content": "private-prompt",
+        },
+    }
+    result = ledger.native_usage(
+        {}, {"private-path": [record]}, workspace="staging", known_models={model}
+    )
+    assert result["coverage"] == "partial"
+    assert result["responses"] == [
+        {
+            "source": "claude-native",
+            "timestamp": "2026-11-25T00:00:01Z",
+            "model": model,
+            "reported_model": model,
+            "workspace": "staging",
+            "usage": {"input_tokens": 11, "cache_read_input_tokens": 9, "output_tokens": 2},
+        }
+    ]
+    assert "private" not in repr(result)
+
+
+def test_staging_lane_preserves_partial_unmapped_evidence(tmp_path):
+    case = tmp_path / "artifacts/case"
+    case.mkdir(parents=True)
+    case.joinpath("model-ledger.json").write_text(
+        json.dumps({"coverage": "unmapped", "model_coverage": "unmapped", "responses": []})
+    )
+    result = ledger.finish_lane(tmp_path, lane="staging")
+    assert result["coverage"] == "unmapped"
+    assert result["responses"] == []
+    assert json.loads((tmp_path / "model-ledger.json").read_text()) == result
+
+
+def test_staging_desktop_ledger_records_only_recent_native_usage(tmp_path):
+    sessions = tmp_path / "sessions"
+    new = sessions / "new/projects/session/new.jsonl"
+    new.parent.mkdir(parents=True)
+    rows = [
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "sessionId": "private-session",
+            "message": {
+                "id": identifier,
+                "model": "claude-haiku-4-5-20251001",
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+                "content": "private-content",
+            },
+        }
+        for identifier, timestamp in (
+            ("old", "2026-11-25T00:00:00Z"),
+            ("new", "2026-11-25T00:00:02Z"),
+        )
+    ]
+    new.write_text("\n".join(json.dumps(row) for row in rows) + "\n\n", encoding="utf-8")
+    result = ledger.staging_desktop_usage(
+        sessions, since="2026-11-25T00:00:01Z", model="claude-haiku-4-5-20251001"
+    )
+    assert result["coverage"] == "partial"
+    assert len(result["responses"]) == 1
+    assert result["responses"][0]["timestamp"] == "2026-11-25T00:00:02Z"
+    assert "private" not in repr(result)
+
+
+def test_staging_desktop_cli_writes_unmapped_evidence_when_configuration_missing(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    script = Path(ledger.__file__)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(output),
+            "--lane",
+            "staging-desktop",
+            "--sessions-root",
+            str(tmp_path / "sessions"),
+            "--since-file",
+            str(tmp_path / "missing-configuration.json"),
+            "--model",
+            "claude-haiku-4-5-20251001",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    evidence = json.loads((output / "model-ledger.json").read_text())
+    assert evidence["coverage"] == "unmapped"
+    assert evidence["responses"] == []
+
+
+def test_staging_desktop_missing_sessions_are_not_reported_as_zero_usage(tmp_path):
+    result = ledger.staging_desktop_usage(
+        tmp_path / "missing", since="2026-11-25T00:00:01Z", model="claude-haiku-4-5-20251001"
+    )
+    assert result["coverage"] == result["model_coverage"] == "unmapped"
+    assert result["responses"] == []
+
+
+def test_staging_desktop_no_response_is_unmapped(tmp_path):
+    session = tmp_path / "one/projects/session/data.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text(json.dumps({"type": "user", "timestamp": "2026-11-25T00:00:02Z"}) + "\n")
+    result = ledger.staging_desktop_usage(
+        tmp_path, since="2026-11-25T00:00:01Z", model="claude-haiku-4-5-20251001"
+    )
+    assert result["coverage"] == "unmapped"
+
+
+def test_staging_case_ledger_uses_requested_provider_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("UG_INTEGRATION_CLAUDE_PROVIDER_MODEL", "claude-haiku-4-5-20251001")
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(tmp_path / "root", project, tmp_path / "ug", tmp_path / "artifacts")
+    path = session.home / ".claude/projects/session.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-11-25T00:00:01Z",
+                "sessionId": "private-session",
+                "message": {
+                    "id": "private-response",
+                    "model": "claude-haiku-4-5-20251001",
+                    "usage": {"input_tokens": 11, "output_tokens": 2},
+                },
+            }
+        )
+        + "\n"
+    )
+    ledger.record_case_usage(session, workspace="staging")
+    result = json.loads((session.artifacts / "model-ledger.json").read_text())
+    assert result["coverage"] == "partial"
+    assert result["responses"][0]["model"] == "claude-haiku-4-5-20251001"
+
+
 def test_case_ledger_reads_real_native_rollout_without_copying_prompts(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
