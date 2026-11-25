@@ -44,7 +44,7 @@ runs:
     - name: Expose the Databricks CLI on Windows
       if: ${{ runner.os == 'Windows' }}
       shell: bash
-      run: |
+      run: | # zizmor: ignore[github-env] runner-owned temporary path, not PR input
         test -f "$RUNNER_TEMP/.bin/databricks.exe"
         cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
     - name: Install a virtual display for VS Code
@@ -72,7 +72,7 @@ runs:
         UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
         DATABRICKS_BEARER_COMMAND: ''
         UG_COWORK_PAT: ''
-      run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV" # zizmor: ignore[github-env] numeric runner clock, not PR input
     - name: Run the selected live cases against the e2e workspace
       shell: bash
       run: |

@@ -88,7 +88,7 @@ jobs:
       vscode_version: ${{ inputs.vscode_version }}
       dependency: ${{ inputs.dependency }}
       default_index: ${{ inputs.default_index }}
-    secrets: inherit
+    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
   installation:
     name: Installation tests
