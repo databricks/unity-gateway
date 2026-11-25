@@ -20,9 +20,7 @@ def test_uia_timeout_records_phase_and_still_fails(monkeypatch):
     )
 
     def time_out(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(
-            "powershell.exe", 60, stderr=b"uia phase=find-descendants\n"
-        )
+        raise subprocess.TimeoutExpired("powershell.exe", 60, stderr="uia phase=find-descendants\n")
 
     monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
     monkeypatch.setattr(subprocess, "run", time_out)
@@ -31,5 +29,8 @@ def test_uia_timeout_records_phase_and_still_fails(monkeypatch):
         app.uia("tree")
 
     assert evidence == [
-        ("chatgpt-uia-timeout.json", {"command": "tree", "phase": "uia phase=find-descendants\n"})
+        (
+            "chatgpt-uia-tree-timeout.json",
+            {"command": "tree", "phase": "uia phase=find-descendants\n"},
+        )
     ]

@@ -105,7 +105,7 @@ class WindowsApp:
             if isinstance(diagnostic, bytes):
                 diagnostic = diagnostic.decode("utf-8", errors="replace")
             self.session.record(
-                f"{self.name}-uia-timeout.json",
+                f"{self.name}-uia-{command}-timeout.json",
                 {"command": command, "phase": self.session.redact(diagnostic[-2000:])},
             )
             raise
