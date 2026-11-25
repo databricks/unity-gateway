@@ -216,6 +216,7 @@ from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     MOD_EVENTS,
     ROUTE_FIRST_PROMPT_EVENT,
+    ROUTE_SUBAGENT_MOD_EVENT,
     ROUTE_VALIDATION_MOD_EVENT,
 )
 from ucode.smart_routing.session_env import (

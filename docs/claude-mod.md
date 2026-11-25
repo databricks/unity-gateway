@@ -131,18 +131,13 @@ Without a version selector, an unset flag preserves the visible routing details.
 The same flag suppresses Codex's routed-subagent model card and post-launch model
 verification message, without changing the model injected into the spawn request.
 
-A confirmed native background-task 429 excludes that model and equivalent aliases from
-new router requests for 60 seconds. The router chooses from the remaining candidates;
-failed selection or no available candidate denies the new spawn while cooldown is active.
-Cooldowns and known background-child launch receipts survive `/clear`, including when a
-completed child later resumes without another spawn event. A native timer releases
-each exclusion after 60 seconds independently of wall-clock reads. A new confirmed failure
-restarts that model's minute; if the timer cannot run, the exclusion remains. The failed
-child is not retried. Resumes and explicitly disabled routing keep their native behavior.
-An explicit session disable takes effect at tool execution and agent spawn, including
-a decision cached while the reply streamed. It does not erase an active cooldown.
-Outside cooldown, command failures and invalid responses preserve the original call
-and log a diagnostic when the call executes.
+A confirmed native background-task 429 excludes that model and its aliases from new
+router requests for 60 seconds. The router can select another candidate; if it cannot
+confirm an available model, the new spawn is denied. A new failure restarts the cooldown,
+which survives `/clear`. If expiry cannot be confirmed, the exclusion remains.
+The failed child is not retried. Resumes and explicitly disabled routing keep native
+behavior; re-enabling routing restores active exclusions. Outside cooldown, routing
+failures preserve the original call and log a diagnostic when it executes.
 
 ### Routing explanations
 

@@ -931,6 +931,541 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
   expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
 });
 
+test('a confirmed 429 excludes the model from routing until its cooldown expires', async ($, on) => {
+  const blocked = 'system.ai.glm-5-3-flash[1m]';
+  const parent = 'system.ai.claude-opus-4-8';
+  const alternative = 'system.ai.claude-haiku-5-5';
+  const choice = (model: string) => ({ model, rationale: 'Selected for the task' });
+  let response: object | undefined = choice(blocked);
+  let exitCode = 0;
+  let routingOff = false;
+  const clock = mock.clock(on);
+  let duringRouting: (() => Promise<void>) | undefined;
+  const forwarded: any[] = [];
+  const requests: any[] = [];
+  const spawns: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', (_, e) => ({ value: routingOff
+    && ['ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY'].includes(e.name) ? '0' : undefined }));
+  on('fs.write', () => ({ value: undefined }));
+  on('process.run', async ($, e) => {
+    requests.push(JSON.parse(e.init.stdin));
+    await duringRouting?.();
+    return { value: { exitCode, stderr: '', stdout: response ? JSON.stringify(response) : '' } };
+  });
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['Native row'] }));
+  on('agent.spawn', ($, e) => {
+    spawns.push(e);
+    return { model: e.model === 'opus' ? parent : e.model!, agentId: `child-${e.tool_use_id}` };
+  });
+  on('tool.call', async (_, e) => {
+    if (e.resume || e.subagent_type === 'fork') return { result: e };
+    const spawned = await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: 'general-purpose', model: 'opus', parentModel: parent,
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    });
+    return spawned.deny ? { deny: spawned.deny } : {
+      result: { agentId: spawned.agentId, resolvedModel: spawned.model },
+      text: 'Native launch result', context: ['Existing context'],
+    };
+  });
+  on('prompt.submit', ($, e) => { forwarded.push(e); return { text: e.text }; });
+  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput, model: 'opus' });
+  const first = await launch('first');
+  expect(first.result.resolvedModel).toBe(blocked);
+  expect(first.text).toBe('Native launch result');
+  expect(first.context?.[0]).toBe('Existing context');
+  expect(first.context?.[1]).toContain(`"launched_model":"${blocked}"`);
+  const notice = rateLimitNotice('child-first', 'system.ai.glm-5-3-flash', 'first');
+  for (const [index, event] of [
+    { ...notice, origin: { kind: 'composer' as const } },
+    { ...notice, text: notice.text.replace('child-first', 'unknown-child') },
+    { ...notice, text: notice.text.replace('rate_limit, HTTP 429', 'authentication_failed, HTTP 401') },
+    { ...notice, text: notice.text.replace('system.ai.glm-5-3-flash', parent) },
+  ].entries()) {
+    await $.prompt.submit(event);
+    expect((await launch(`unaffected-${index}`)).result.resolvedModel).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+  }
+  routingOff = true;
+  response = { disabled: true };
+  await $.prompt.submit(notice);
+  expect(forwarded.at(-1)).toEqual(notice);
+  const off = await launch('notice-while-off');
+  expect(off.result.resolvedModel).toBe(parent);
+  expect(off.context).toEqual(['Existing context']);
+  routingOff = false;
+  response = choice(alternative);
+  expect((await launch('enabled-after-notice')).result.resolvedModel).toBe(alternative);
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  const beforeRace = spawns.length;
+  duringRouting = async () => { await $.prompt.submit(notice); };
+  response = undefined;
+  for (const code of [0, 1]) {
+    await clock.advance(60_000);
+    exitCode = code;
+    expect((await launch(`notice-during-routing-${code}`)).deny).toContain('could not select an available model');
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+    expect(spawns.length).toBe(beforeRace);
+  }
+  duringRouting = undefined;
+  exitCode = 0;
+  await clock.advance(60_000);
+  await $.prompt.submit(notice);
+  expect(forwarded.at(-1)).toEqual(notice);
+  response = choice(alternative);
+  const retry = await launch('retry');
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  expect(retry.result.resolvedModel).toBe(alternative);
+  expect(retry.context?.[0]).toBe('Existing context');
+  expect(retry.context?.[1]).toContain(`"launched_model":"${alternative}"`);
+  expect((await $.agent.spawn({ ...spawns[0], resume: { agentId: 'child-first' } })).model).toBe(blocked);
+  expect((await $.agent.spawn({ ...spawns[0], fork: true })).model).toBe(blocked);
+  const beforeContinuations = requests.length;
+  for (const continuation of [{ resume: 'child-first' }, { subagent_type: 'fork' }]) {
+    const call = { tool: 'Agent', tool_use_id: 'continuation', ...originalInput, ...continuation };
+    expect((await $.tool.call(call)).result).toEqual(call);
+  }
+  expect(requests).toHaveLength(beforeContinuations);
+  const spawnCount = spawns.length;
+  response = choice(blocked);
+  expect((await launch('stale-selection')).deny).toContain('selected model is now rate-limited');
+  const deniedRow = await $.ui.mount(row('stale-selection'));
+  expect(await deniedRow.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
+  await deniedRow.unmount();
+  expect(spawns.length).toBe(spawnCount);
+  response = { disabled: true };
+  routingOff = true;
+  expect((await launch('routing-off')).context).toEqual(['Existing context']);
+  routingOff = false;
+  response = choice(alternative);
+  await clock.advance(59_999);
+  expect((await launch('before-expiry')).result.resolvedModel).toBe(alternative);
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  await clock.advance(1);
+  response = choice(blocked);
+  expect((await launch('after-expiry')).result.resolvedModel).toBe(blocked);
+  expect(requests.at(-1).excluded_models).toBeUndefined();
+  await $.prompt.submit({ ...notice, text: notice.text.replace('HTTP 429,', 'HTTP 429, request id synthetic-request,') });
+  response = choice(alternative);
+  expect((await launch('request-id')).result.resolvedModel).toBe(alternative);
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  await $.prompt.submit({ ...notice, text: notice.text
+    .replace('child-first', 'child-request-id').replace('system.ai.glm-5-3-flash', 'databricks-claude-haiku-5-5') });
+  response = { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true };
+  expect((await launch('both-limited')).deny).toBe('All routing candidates are rate-limited.');
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash', 'claude-haiku-5-5']);
+  await clock.advance(60_000);
+  response = choice('team.models.claude-opus-4-8[1m]');
+  await launch('custom-model');
+  await $.prompt.submit({ ...notice, text: notice.text
+    .replace('child-first', 'child-custom-model').replace('system.ai.glm-5-3-flash', 'team.models.claude-opus-4-8') });
+  response = choice(parent);
+  expect((await launch('custom-model-excluded')).result.resolvedModel).toBe(parent);
+  expect(requests.at(-1).excluded_models).toEqual(['team.models.claude-opus-4-8']);
+});
+
+for (const [label, response, exitCode] of [
+  ['empty response', undefined, 0],
+  ['command failure', undefined, 1],
+  ['invalid response', 'not JSON', 0],
+  ['all candidates excluded', { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true }, 0],
+  ['other denial', { deny: 'Policy disallows this task.' }, 0],
+] as const) {
+  for (const [timing, delay] of [
+    ['before expiry', 9_999],
+    ['at expiry', 10_000],
+  ] as const) {
+    if (label === 'other denial' && timing !== 'at expiry') continue;
+    test('cooldown is checked after routing: ' + label + ', ' + timing, async ($, on) => {
+      const clock = mock.clock(on);
+      const blocked = 'system.ai.glm-5-3-flash';
+      const parent = 'system.ai.claude-sonnet-5-5';
+      let waiting = false;
+      const requests: any[] = [];
+      const spawns: any[] = [];
+      on('session.id', () => ({ value: 'session-1' }));
+      on('fs.write', () => ({ value: undefined }));
+      on('process.run', async ($, e) => {
+        requests.push(JSON.parse(e.init.stdin));
+        if (!waiting) return { value: { exitCode: 0, stderr: '',
+          stdout: JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
+        await clock.advance(delay);
+        return { value: { exitCode, stderr: '',
+          stdout: typeof response === 'string' ? response : response ? JSON.stringify(response) : '' } };
+      });
+      on('agent.spawn', ($, e) => {
+        spawns.push(e);
+        return { model: e.model!, agentId: 'child-' + e.tool_use_id };
+      });
+      on('tool.call', async (_, e) => {
+        expect(e.model).toBe(originalInput.model);
+        const child = await $.agent.spawn({
+          tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+          subagentType: 'general-purpose', model: parent, parentModel: parent,
+          provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+        });
+        return child.deny ? { deny: child.deny } : { result: { resolvedModel: child.model } };
+      });
+      on('prompt.submit', ($, e) => ({ text: e.text }));
+      const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+      expect((await launch('initial')).result.resolvedModel).toBe(blocked);
+      await $.prompt.submit(rateLimitNotice('child-initial', blocked));
+      await clock.advance(50_000);
+      waiting = true;
+      const answer = await launch('waiting');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].excluded_models).toEqual(['glm-5-3-flash']);
+      if (label === 'other denial' || timing === 'before expiry') {
+        expect(typeof answer.deny).toBe('string');
+        expect(spawns).toHaveLength(1);
+        if (label === 'other denial') expect(answer.deny).toBe('Policy disallows this task.');
+      } else {
+        expect(answer.deny).toBeUndefined();
+        expect(answer.result.resolvedModel).toBe(parent);
+        expect(spawns).toHaveLength(2);
+        expect(spawns[1].model).toBe(parent);
+      }
+    });
+  }
+}
+
+for (const [label, selected] of [
+  ['seven-character hex', 'anthropic-aigw-c442a48-system.ai.glm-5-3-flash[1m]'],
+  ['eight-character hex', 'anthropic-aigw-77df06ea-system.ai.glm-5-3-flash[1m]'],
+] as const) {
+  test(`${label} gateway aliases match unwrapped 429 notices`, async ($, on) => {
+    const model = 'system.ai.glm-5-3-flash';
+    const alternative = 'system.ai.claude-haiku-5-5';
+    const requests: any[] = [];
+    mock.clock(on);
+    on('session.id', () => ({ value: 'session-1' }));
+    on('fs.write', () => ({ value: undefined }));
+    on('process.run', (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: requests.length === 1 ? selected : alternative, rationale: '',
+      }) } };
+    });
+    on('agent.spawn', (_, e) => ({
+      model: e.model === selected ? model : e.model!, agentId: `child-${e.tool_use_id}`,
+    }));
+    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    }) }));
+    on('prompt.submit', (_, e) => ({ text: e.text }));
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, agentId: 'parent-alias', ...originalInput });
+    expect((await launch('first')).result.model).toBe(model);
+    expect(requests[0].agent_id).toBe('parent-alias');
+    expect(requests[0].excluded_models).toBeUndefined();
+    await $.prompt.submit(rateLimitNotice('child-first', model));
+    expect((await launch('replacement')).result.model).toBe(alternative);
+    expect(requests.at(-1).agent_id).toBe('parent-alias');
+    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  });
+}
+
+
+for (const recovers of [false, true]) {
+  test(`a native timer preserves a full cooldown when clock.now ${recovers ? 'recovers and jumps' : 'stays unavailable'}`, async ($, on) => {
+    const clock = timerClock(on);
+    const blocked = 'system.ai.glm-5-3-flash';
+    const alternative = 'system.ai.claude-haiku-5-5';
+    let selected = blocked;
+    let timestamp: number | undefined;
+    let clockFailures = 0;
+    const requests: any[] = [];
+    const spawns: any[] = [];
+    const forwarded: any[] = [];
+    on('clock.now', () => {
+      if (timestamp === undefined) { clockFailures++; throw new Error('Clock unavailable'); }
+      return { value: timestamp };
+    });
+    on('session.id', () => ({ value: 'session-1' }));
+    on('fs.write', () => ({ value: undefined }));
+    on('process.run', (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: selected, rationale: '' }) } };
+    });
+    on('agent.spawn', (_, e) => {
+      spawns.push(e);
+      return { model: e.model!, agentId: 'child-' + e.tool_use_id };
+    });
+    on('tool.call', async (_, e) => {
+      const child = await $.agent.spawn({
+        tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+        subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
+        provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+      });
+      return child.deny ? { deny: child.deny } : { result: { model: child.model } };
+    });
+    on('prompt.submit', (_, e) => { forwarded.push(e); return { text: e.text }; });
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    expect((await launch('initial')).result.model).toBe(blocked);
+    const notice = rateLimitNotice('child-initial', blocked);
+    await $.prompt.submit(notice);
+    expect(forwarded.at(-1)).toEqual(notice);
+    expect(clockFailures > 0).toBe(true);
+    for (const id of ['first-attempt', 'second-attempt']) {
+      expect((await launch(id)).deny).toContain('selected model is now rate-limited');
+      expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+    }
+    if (recovers) {
+      selected = alternative;
+      expect((await launch('available-without-clock')).result.model).toBe(alternative);
+      expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+      await clock.advance(30_000);
+      timestamp = 100_000;
+      expect((await launch('clock-restored')).result.model).toBe(alternative);
+      expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+      timestamp = 1;
+      selected = blocked;
+    }
+    await clock.advance(recovers ? 29_999 : 59_999);
+    expect((await launch('before-expiry')).deny).toContain('selected model is now rate-limited');
+    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+    expect(spawns).toHaveLength(recovers ? 3 : 1);
+    await clock.advance(1);
+    const expired = await launch('at-expiry');
+    expect(expired.deny).toBeUndefined();
+    expect(expired.result.model).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+    timestamp = undefined;
+    expect((await launch('after-expiry')).result.model).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+    expect(spawns).toHaveLength(recovers ? 5 : 3);
+  });
+}
+
+test('a new failure gets a full native cooldown after a refused first timer', async ($, on) => {
+  const blocked = 'system.ai.glm-5-3-flash';
+  let refuse = true;
+  const timers: number[] = [];
+  const requests: any[] = [];
+  const spawns: any[] = [];
+  const forwarded: any[] = [];
+  const clock = mock.clock((event, handler) => {
+    if (event !== 'clock.after') { on(event, handler); return; }
+    on('clock.after', ($, e, next) => {
+      timers.push(e.ms);
+      if (refuse) throw new Error('Timer unavailable');
+      return handler($, e, next);
+    });
+  });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('fs.write', () => ({ value: undefined }));
+  on('process.run', (_, e) => {
+    requests.push(JSON.parse(e.init.stdin));
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: blocked, rationale: '' }) } };
+  });
+  on('agent.spawn', (_, e) => {
+    spawns.push(e);
+    return { model: e.model!, agentId: 'child-' + e.tool_use_id };
+  });
+  on('tool.call', async (_, e) => {
+    const child = await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+      subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    });
+    return child.deny ? { deny: child.deny } : { result: { model: child.model } };
+  });
+  on('prompt.submit', (_, e) => { forwarded.push(e); return { text: e.text }; });
+  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+  expect((await launch('initial')).result.model).toBe(blocked);
+  const notice = rateLimitNotice('child-initial', blocked);
+  await $.prompt.submit(notice);
+  expect(forwarded.at(-1)).toEqual(notice);
+  await clock.advance(60_000);
+  expect((await launch('before-new-failure')).deny).toContain('selected model is now rate-limited');
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  refuse = false;
+  await $.prompt.submit(notice);
+  expect(forwarded.at(-1)).toEqual(notice);
+  expect(timers).toEqual([60_000, 60_000]);
+  await clock.advance(59_999);
+  expect((await launch('before-expiry')).deny).toContain('selected model is now rate-limited');
+  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  expect(spawns).toHaveLength(1);
+  await clock.advance(1);
+  expect((await launch('at-expiry')).result.model).toBe(blocked);
+  expect(requests.at(-1).excluded_models).toBeUndefined();
+  expect(spawns).toHaveLength(2);
+});
+
+test('a failed timer cancellation cannot expire a newer cooldown', () => {
+  const model = 'system.ai.timer-cancellation-test';
+  const agentId = 'timer-cancellation-child';
+  const timers: { delay: number; expire: () => void }[] = [];
+  const cancelled: number[] = [];
+  routedModels.started({ name: 'Otter', task: 'Inspect parser', title: 'Inspect parser',
+    model, rationale: '', spawned: { agentId, model, background: true } });
+  const fail = () => recordSubagentRateLimit(rateLimitNotice(agentId, model).text, (delay, expire) => {
+    const index = timers.length;
+    timers.push({ delay, expire });
+    return { cancel: () => { cancelled.push(index); throw new Error('Cancellation unavailable'); } };
+  });
+  try {
+    fail();
+    fail();
+    expect(cancelled).toEqual([0]);
+    timers[0].expire();
+    fail();
+    expect(cancelled).toEqual([0, 1]);
+    timers[1].expire();
+    fail();
+    expect(cancelled).toEqual([0, 1, 2]);
+    timers[3].expire();
+    fail();
+    expect(cancelled).toEqual([0, 1, 2]);
+    expect(timers.map(timer => timer.delay)).toEqual([60_000, 60_000, 60_000, 60_000, 60_000]);
+  } finally {
+    for (const timer of timers) timer.expire();
+    routedModels.reset();
+  }
+});
+
+for (const phase of ['before spawn', 'after an in-flight notice'] as const) {
+  test(`known cooldown survives clock loss ${phase}`, async ($, on) => {
+    const blocked = 'system.ai.glm-5-3-flash';
+    const clock = timerClock(on);
+    let clockAvailable = true;
+    let waiting = false;
+    const requests: any[] = [];
+    const spawns: any[] = [];
+    const notice = rateLimitNotice('child-initial', blocked);
+    on('clock.now', () => {
+      if (!clockAvailable) throw new Error('Clock unavailable');
+      return { value: 10_000 };
+    });
+    on('session.id', () => ({ value: 'session-1' }));
+    on('fs.write', () => ({ value: undefined }));
+    on('prompt.submit', (_, e) => ({ text: e.text }));
+    on('process.run', async (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      if (waiting && phase === 'after an in-flight notice') await $.prompt.submit(notice);
+      if (waiting) clockAvailable = false;
+      return { value: { exitCode: 0, stderr: '',
+        stdout: waiting && phase === 'after an in-flight notice' ? ''
+          : JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
+    });
+    on('agent.spawn', (_, e) => {
+      spawns.push(e);
+      return { model: e.model!, agentId: 'child-' + e.tool_use_id };
+    });
+    on('tool.call', async (_, e) => {
+      const child = await $.agent.spawn({
+        tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+        subagentType: 'general-purpose', model: blocked, parentModel: blocked,
+        provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+      });
+      return child.deny ? { deny: child.deny } : { result: { model: child.model } };
+    });
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    expect((await launch('initial')).result.model).toBe(blocked);
+    if (phase !== 'after an in-flight notice') await $.prompt.submit(notice);
+    waiting = true;
+    const denied = await launch('clock-lost');
+    expect(typeof denied.deny).toBe('string');
+    expect(spawns).toHaveLength(1);
+    expect(requests[1].excluded_models).toEqual(
+      phase === 'after an in-flight notice' ? undefined : ['glm-5-3-flash']);
+
+    waiting = false;
+    await clock.advance(60_000);
+    expect((await launch('expired')).result.model).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+    clockAvailable = false;
+    expect((await launch('expired-clock-lost')).result.model).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+  });
+}
+
+for (const scenario of ['completed then failed', 'unknown then failed', 'unknown failure', 'two failures'] as const) {
+  test(`batched native notifications correlate each failure: ${scenario}`, async ($, on) => {
+    const blocked = 'system.ai.glm-5-3-flash';
+    const alternative = 'system.ai.claude-haiku-5-5';
+    const requests: any[] = [];
+    let selected = scenario === 'unknown failure' ? blocked : alternative;
+    mock.clock(on);
+    on('session.id', () => ({ value: 'session-1' }));
+    on('fs.write', () => ({ value: undefined }));
+    on('prompt.submit', (_, e) => ({ text: e.text }));
+    on('process.run', (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: selected, rationale: '' }) } };
+    });
+    on('agent.spawn', (_, e) => ({ model: e.model!, agentId: 'child-' + e.tool_use_id }));
+    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+      subagentType: 'general-purpose', model: selected, parentModel: alternative,
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    }) }));
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    expect((await launch('first')).result.model).toBe(selected);
+    selected = blocked;
+    expect((await launch('second')).result.model).toBe(blocked);
+    const notice = (id: string, model?: string) => model ? rateLimitNotice(id, model).text
+      : `<task-notification>
+<task-id>${id}</task-id>
+<status>completed</status>
+<summary>Inspection completed.</summary>
+</task-notification>`;
+    const first = notice(scenario === 'unknown then failed' ? 'unknown-child' : 'child-first',
+      scenario === 'two failures' ? alternative : undefined);
+    const second = notice(scenario === 'unknown failure' ? 'unknown-child' : 'child-second', blocked);
+    await $.prompt.submit({ text: first + '\n' + second, wait: false, origin: { kind: 'task-notification' } });
+    selected = 'system.ai.claude-sonnet-5-5';
+    expect((await launch('replacement')).result.model).toBe(selected);
+    expect(requests.at(-1).excluded_models).toEqual(scenario === 'unknown failure' ? undefined
+      : scenario === 'two failures' ? ['claude-haiku-5-5', 'glm-5-3-flash'] : ['glm-5-3-flash']);
+  });
+}
+
+for (const noticeTime of ['before clear', 'after clear'] as const) {
+  test(`conversation clear preserves background failure tracking: ${noticeTime}`, async ($, on) => {
+    const blocked = 'system.ai.glm-5-3-flash';
+    const alternative = 'system.ai.claude-haiku-5-5';
+    const clock = mock.clock(on);
+    let selected = blocked;
+    let sessionId = 'session-1';
+    const requests: any[] = [];
+    on('session.id', () => ({ value: sessionId }));
+    on('session.end', () => { sessionId = 'session-2'; return { sessionId }; });
+    on('fs.write', () => ({ value: undefined }));
+    on('prompt.submit', (_, e) => ({ text: e.text }));
+    on('process.run', (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      return { value: { exitCode: 0, stderr: '',
+        stdout: JSON.stringify({ model: selected, rationale: 'Selected for the task' }) } };
+    });
+    on('agent.spawn', (_, e) => ({ model: e.model!, agentId: 'child-' + e.tool_use_id }));
+    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
+      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+      subagentType: 'general-purpose', model: blocked, parentModel: blocked,
+      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+    }) }));
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    expect((await launch('initial')).result.model).toBe(blocked);
+    const notice = rateLimitNotice('child-initial', blocked);
+    if (noticeTime === 'before clear') await $.prompt.submit(notice);
+    await $.session.end({ reason: 'clear' });
+    await clock.advance(30_000);
+    if (noticeTime === 'after clear') await $.prompt.submit(notice);
+    selected = alternative;
+    expect((await launch('after-clear')).result.model).toBe(alternative);
+    expect(requests.at(-1).session_id).toBe('session-2');
+    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+    await clock.advance(noticeTime === 'before clear' ? 30_000 : 60_000);
+    selected = blocked;
+    expect((await launch('after-expiry')).result.model).toBe(blocked);
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+  });
+}
+
 test('routed joke titles use the selected model without rewriting reviewed arguments', async ($, on) => {
   const forwarded: any[] = [];
   const spawned: any[] = [];
@@ -1393,916 +1928,6 @@ test('a failed routing attempt is not repeated for the same tool call', async ($
   expect(routerCalls).toHaveLength(1);
 });
 
-test('a routing error keeps the reply, and a denied spawn that names an agent saves no label', async ($, on) => {
-  const writes: any[] = [];
-  const logs: string[] = [];
-  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
-  on('session.id', () => { throw new Error('session unavailable'); });
-  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'r' }) } }));
-  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
-  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-  on('tool.call', () => ({ result: 'launched' }));
-  on('turn.step', async function* ($, e) {
-    yield { kind: 'tool', index: 0, id: 'err-0', name: 'Agent' };
-    yield { kind: 'input', index: 0, json: JSON.stringify(call) };
-    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
-  });
-  const turn = await collectParentTurn($, 'route-error', 0);
-  expect(turn.chunks.map(chunk => chunk.kind)).toEqual(['tool', 'input', 'stop']);
-  expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'err-0', ...call });
-  expect(logs).toContain('Smart Router could not route this subagent; using its original settings.');
-  expect(writes).toHaveLength(0);
-});
-
-test('a denied spawn that still names an agent saves no display label', async ($, on) => {
-  const writes: any[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'r' }) } }));
-  on('tool.call', () => ({ result: 'launched' }));
-  on('agent.spawn', () => ({ deny: 'refused', agentId: 'child-denied' } as any));
-  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'denied-0', ...originalInput });
-  await $.agent.spawn({
-    tool_use_id: 'denied-0', prompt: originalInput.prompt, description: originalInput.description,
-    subagentType: originalInput.subagent_type, parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' as const },
-    background: true, fork: false, permissionMode: 'default', cwd: '/workspace',
-  });
-  expect(writes).toHaveLength(0);
-});
-
-test('session start without a display directory restores nothing and logs nothing', async ($, on) => {
-  const logs: string[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', () => ({ value: undefined }));
-  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-  on('session.start', ($, e) => ({ cwd: e.cwd }));
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
-  expect(logs).toEqual([]);
-});
-
-test('a consumer that stops reading closes the reply stream beneath', async ($, on) => {
-  let closed = false;
-  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: 'system.ai.model-b', rationale: 'r' }) } }));
-  on('turn.step', async function* ($, e) {
-    try {
-      yield { kind: 'tool', index: 0, id: 'close-0', name: 'Agent' };
-      yield { kind: 'input', index: 0, json: JSON.stringify(call) };
-      yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-    } finally {
-      closed = true;
-    }
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
-  });
-  const stream = $.turn.step({ turnId: 'close', index: 0, model: 'parent-model', messageCount: 3, agentId: undefined });
-  await stream.next();
-  await stream.return(undefined);
-  expect(closed).toBe(true);
-});
-
-test('a confirmed 429 excludes the model from routing until its cooldown expires', async ($, on) => {
-  const blocked = 'system.ai.glm-5-3-flash[1m]';
-  const parent = 'system.ai.claude-opus-4-8';
-  const alternative = 'system.ai.claude-haiku-5-5';
-  const choice = (model: string) => ({ model, rationale: 'Selected for the task' });
-  let response: object | undefined = choice(blocked);
-  let exitCode = 0;
-  let routingOff = false;
-  const clock = mock.clock(on);
-  let duringRouting: (() => Promise<void>) | undefined;
-  const forwarded: any[] = [];
-  const requests: any[] = [];
-  const spawns: any[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', (_, e) => ({ value: routingOff
-    && ['ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY'].includes(e.name) ? '0' : undefined }));
-  on('fs.write', () => ({ value: undefined }));
-  on('process.run', async ($, e) => {
-    requests.push(JSON.parse(e.init.stdin));
-    await duringRouting?.();
-    return { value: { exitCode, stderr: '', stdout: response ? JSON.stringify(response) : '' } };
-  });
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['Native row'] }));
-  on('agent.spawn', ($, e) => {
-    spawns.push(e);
-    return { model: e.model === 'opus' ? parent : e.model!, agentId: `child-${e.tool_use_id}` };
-  });
-  on('tool.call', async (_, e) => {
-    const spawned = await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
-      subagentType: 'general-purpose', model: 'opus', parentModel: parent,
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    });
-    return spawned.deny ? { deny: spawned.deny } : {
-      result: { agentId: spawned.agentId, resolvedModel: spawned.model },
-      text: 'Native launch result', context: ['Existing context'],
-    };
-  });
-  on('prompt.submit', ($, e) => { forwarded.push(e); return { text: e.text }; });
-  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput, model: 'opus' });
-  const first = await launch('first');
-  expect(first.result.resolvedModel).toBe(blocked);
-  expect(first.text).toBe('Native launch result');
-  expect(first.context?.[0]).toBe('Existing context');
-  expect(first.context?.[1]).toContain(`"launched_model":"${blocked}"`);
-  const notice = rateLimitNotice('child-first', 'system.ai.glm-5-3-flash', 'first');
-  for (const [index, event] of [
-    { ...notice, origin: { kind: 'composer' as const } },
-    { ...notice, text: notice.text.replace('child-first', 'unknown-child') },
-    { ...notice, text: notice.text.replace('rate_limit, HTTP 429', 'authentication_failed, HTTP 401') },
-    { ...notice, text: notice.text.replace('system.ai.glm-5-3-flash', parent) },
-  ].entries()) {
-    await $.prompt.submit(event);
-    expect((await launch(`unaffected-${index}`)).result.resolvedModel).toBe(blocked);
-    expect(requests.at(-1).excluded_models).toBeUndefined();
-  }
-  const beforeRace = spawns.length;
-  duringRouting = async () => { await $.prompt.submit(notice); };
-  response = undefined;
-  for (const code of [0, 1]) {
-    await clock.advance(60_000);
-    exitCode = code;
-    expect((await launch(`notice-during-routing-${code}`)).deny).toContain('could not select an available model');
-    expect(requests.at(-1).excluded_models).toBeUndefined();
-    expect(spawns.length).toBe(beforeRace);
-  }
-  duringRouting = undefined;
-  exitCode = 0;
-  await clock.advance(60_000);
-  await $.prompt.submit(notice);
-  expect(forwarded.at(-1)).toEqual(notice);
-  response = choice(alternative);
-  const retry = await launch('retry');
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  expect(retry.result.resolvedModel).toBe(alternative);
-  expect(retry.context?.[0]).toBe('Existing context');
-  expect(retry.context?.[1]).toContain(`"launched_model":"${alternative}"`);
-  expect((await $.agent.spawn({ ...spawns[0], resume: { agentId: 'child-first' } })).model).toBe(blocked);
-  expect((await $.agent.spawn({ ...spawns[0], fork: true })).model).toBe(blocked);
-  const spawnCount = spawns.length;
-  response = choice(blocked);
-  expect((await launch('stale-selection')).deny).toContain('selected model is now rate-limited');
-  const deniedRow = await $.ui.mount(row('stale-selection'));
-  expect(await deniedRow.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
-  await deniedRow.unmount();
-  expect(spawns.length).toBe(spawnCount);
-  response = { disabled: true };
-  routingOff = true;
-  expect((await launch('routing-off')).context).toEqual(['Existing context']);
-  routingOff = false;
-  response = choice(alternative);
-  await clock.advance(59_999);
-  expect((await launch('before-expiry')).result.resolvedModel).toBe(alternative);
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  await clock.advance(1);
-  response = choice(blocked);
-  expect((await launch('after-expiry')).result.resolvedModel).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-  await $.prompt.submit({ ...notice, text: notice.text.replace('HTTP 429,', 'HTTP 429, request id synthetic-request,') });
-  response = choice(alternative);
-  expect((await launch('request-id')).result.resolvedModel).toBe(alternative);
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  await $.prompt.submit({ ...notice, text: notice.text
-    .replace('child-first', 'child-request-id').replace('system.ai.glm-5-3-flash', 'databricks-claude-haiku-5-5') });
-  response = { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true };
-  expect((await launch('both-limited')).deny).toBe('All routing candidates are rate-limited.');
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash', 'claude-haiku-5-5']);
-  await clock.advance(60_000);
-  response = choice('team.models.claude-opus-4-8[1m]');
-  await launch('custom-model');
-  await $.prompt.submit({ ...notice, text: notice.text
-    .replace('child-first', 'child-custom-model').replace('system.ai.glm-5-3-flash', 'team.models.claude-opus-4-8') });
-  response = choice(parent);
-  expect((await launch('custom-model-excluded')).result.resolvedModel).toBe(parent);
-  expect(requests.at(-1).excluded_models).toEqual(['team.models.claude-opus-4-8']);
-});
-
-for (const [label, response, exitCode] of [
-  ['empty response', undefined, 0],
-  ['command failure', undefined, 1],
-  ['invalid response', 'not JSON', 0],
-  ['all candidates excluded', { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true }, 0],
-  ['route selection failed', { deny: 'No available model during cooldown.', rate_limit_cooldown: true }, 0],
-  ['other denial', { deny: 'Policy disallows this task.' }, 0],
-] as const) {
-  for (const [timing, delay] of [
-    ['before expiry', 9_999],
-    ['at expiry', 10_000],
-  ] as const) {
-    if (label === 'other denial' && timing !== 'at expiry') continue;
-    test('cooldown is checked after routing: ' + label + ', ' + timing, async ($, on) => {
-      const clock = mock.clock(on);
-      const blocked = 'system.ai.glm-5-3-flash';
-      const parent = 'system.ai.claude-sonnet-5-5';
-      let waiting = false;
-      const requests: any[] = [];
-      const spawns: any[] = [];
-      on('session.id', () => ({ value: 'session-1' }));
-      on('fs.write', () => ({ value: undefined }));
-      on('process.run', async ($, e) => {
-        requests.push(JSON.parse(e.init.stdin));
-        if (!waiting) return { value: { exitCode: 0, stderr: '',
-          stdout: JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
-        await clock.advance(delay);
-        return { value: { exitCode, stderr: '',
-          stdout: typeof response === 'string' ? response : response ? JSON.stringify(response) : '' } };
-      });
-      on('agent.spawn', ($, e) => {
-        spawns.push(e);
-        return { model: e.model!, agentId: 'child-' + e.tool_use_id };
-      });
-      on('tool.call', async (_, e) => {
-        expect(e.model).toBe(originalInput.model);
-        const child = await $.agent.spawn({
-          tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-          subagentType: 'general-purpose', model: parent, parentModel: parent,
-          provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-        });
-        return child.deny ? { deny: child.deny } : { result: { resolvedModel: child.model } };
-      });
-      on('prompt.submit', ($, e) => ({ text: e.text }));
-      const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-      expect((await launch('initial')).result.resolvedModel).toBe(blocked);
-      await $.prompt.submit(rateLimitNotice('child-initial', blocked));
-      await clock.advance(50_000);
-      waiting = true;
-      const answer = await launch('waiting');
-      expect(requests).toHaveLength(2);
-      expect(requests[1].excluded_models).toEqual(['glm-5-3-flash']);
-      if (label === 'other denial' || timing === 'before expiry') {
-        expect(typeof answer.deny).toBe('string');
-        expect(spawns).toHaveLength(1);
-        if (label === 'other denial') expect(answer.deny).toBe('Policy disallows this task.');
-      } else {
-        expect(answer.deny).toBeUndefined();
-        expect(answer.result.resolvedModel).toBe(parent);
-        expect(spawns).toHaveLength(2);
-        expect(spawns[1].model).toBe(parent);
-      }
-    });
-  }
-}
-
-for (const [label, selected] of [
-  ['seven-digit', 'anthropic-aigw-c442a48-system.ai.glm-5-3-flash[1m]'],
-  ['eight-digit', 'anthropic-aigw-77df06ea-system.ai.glm-5-3-flash[1m]'],
-] as const) {
-  test(`${label} gateway aliases match unwrapped 429 notices`, async ($, on) => {
-    const model = 'system.ai.glm-5-3-flash';
-    const alternative = 'system.ai.claude-haiku-5-5';
-    const requests: any[] = [];
-    mock.clock(on);
-    on('session.id', () => ({ value: 'session-1' }));
-    on('fs.write', () => ({ value: undefined }));
-    on('process.run', (_, e) => {
-      requests.push(JSON.parse(e.init.stdin));
-      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-        model: requests.length === 1 ? selected : alternative, rationale: '',
-      }) } };
-    });
-    on('agent.spawn', (_, e) => ({
-      model: e.model === selected ? model : e.model!, agentId: `child-${e.tool_use_id}`,
-    }));
-    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: originalInput.prompt, description: originalInput.description,
-      subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    }) }));
-    on('prompt.submit', (_, e) => ({ text: e.text }));
-    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, agentId: 'parent-alias', ...originalInput });
-    expect((await launch('first')).result.model).toBe(model);
-    expect(requests[0].agent_id).toBe('parent-alias');
-    expect(requests[0].excluded_models).toBeUndefined();
-    await $.prompt.submit(rateLimitNotice('child-first', model));
-    expect((await launch('replacement')).result.model).toBe(alternative);
-    expect(requests.at(-1).agent_id).toBe('parent-alias');
-    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  });
-}
-
-
-test('a native timer releases a full cooldown despite permanent clock.now failure', async ($, on) => {
-  const clock = timerClock(on);
-  const blocked = 'system.ai.glm-5-3-flash';
-  const requests: any[] = [];
-  const spawns: any[] = [];
-  const forwarded: any[] = [];
-  let clockFailures = 0;
-  on('clock.now', () => { clockFailures++; throw new Error('Clock unavailable'); });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('fs.write', () => ({ value: undefined }));
-  on('process.run', (_, e) => {
-    requests.push(JSON.parse(e.init.stdin));
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: blocked, rationale: '' }) } };
-  });
-  on('agent.spawn', (_, e) => {
-    spawns.push(e);
-    return { model: e.model!, agentId: 'child-' + e.tool_use_id };
-  });
-  on('tool.call', async (_, e) => {
-    const child = await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-      subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    });
-    return child.deny ? { deny: child.deny } : { result: { model: child.model } };
-  });
-  on('prompt.submit', (_, e) => { forwarded.push(e); return { text: e.text }; });
-  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-  expect((await launch('initial')).result.model).toBe(blocked);
-  const notice = rateLimitNotice('child-initial', blocked);
-  await $.prompt.submit(notice);
-  expect(forwarded.at(-1)).toEqual(notice);
-  expect(clockFailures > 0).toBe(true);
-  for (const id of ['first-attempt', 'second-attempt']) {
-    expect((await launch(id)).deny).toContain('selected model is now rate-limited');
-    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  }
-  await clock.advance(59_999);
-  expect((await launch('before-expiry')).deny).toContain('selected model is now rate-limited');
-  expect(spawns).toHaveLength(1);
-  await clock.advance(1);
-  const expired = await launch('at-expiry');
-  expect(expired.deny).toBeUndefined();
-  expect(expired.result.model).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-  expect((await launch('after-expiry')).result.model).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-  expect(spawns).toHaveLength(3);
-});
-
-
-test('a new failure gets a full native cooldown after a refused first timer', async ($, on) => {
-  const blocked = 'system.ai.glm-5-3-flash';
-  let refuse = true;
-  const timers: number[] = [];
-  const requests: any[] = [];
-  const spawns: any[] = [];
-  const forwarded: any[] = [];
-  const clock = mock.clock((event, handler) => {
-    if (event !== 'clock.after') { on(event, handler); return; }
-    on('clock.after', ($, e, next) => {
-      timers.push(e.ms);
-      if (refuse) throw new Error('Timer unavailable');
-      return handler($, e, next);
-    });
-  });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('fs.write', () => ({ value: undefined }));
-  on('process.run', (_, e) => {
-    requests.push(JSON.parse(e.init.stdin));
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: blocked, rationale: '' }) } };
-  });
-  on('agent.spawn', (_, e) => {
-    spawns.push(e);
-    return { model: e.model!, agentId: 'child-' + e.tool_use_id };
-  });
-  on('tool.call', async (_, e) => {
-    const child = await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-      subagentType: 'general-purpose', model: 'sonnet', parentModel: 'system.ai.claude-sonnet-5-5',
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    });
-    return child.deny ? { deny: child.deny } : { result: { model: child.model } };
-  });
-  on('prompt.submit', (_, e) => { forwarded.push(e); return { text: e.text }; });
-  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-  expect((await launch('initial')).result.model).toBe(blocked);
-  const notice = rateLimitNotice('child-initial', blocked);
-  await $.prompt.submit(notice);
-  expect(forwarded.at(-1)).toEqual(notice);
-  await clock.advance(60_000);
-  expect((await launch('before-new-failure')).deny).toContain('selected model is now rate-limited');
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  refuse = false;
-  await $.prompt.submit(notice);
-  expect(forwarded.at(-1)).toEqual(notice);
-  expect(timers).toEqual([60_000, 60_000]);
-  await clock.advance(59_999);
-  expect((await launch('before-expiry')).deny).toContain('selected model is now rate-limited');
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  expect(spawns).toHaveLength(1);
-  await clock.advance(1);
-  expect((await launch('at-expiry')).result.model).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-  expect(spawns).toHaveLength(2);
-});
-
-test('a failed timer cancellation cannot expire a newer cooldown', () => {
-  const model = 'system.ai.timer-cancellation-test';
-  const agentId = 'timer-cancellation-child';
-  const timers: { delay: number; expire: () => void }[] = [];
-  const cancelled: number[] = [];
-  routedModels.started({ name: 'Otter', task: 'Inspect parser', title: 'Inspect parser',
-    model, rationale: '', spawned: { agentId, model, background: true } });
-  const fail = () => recordSubagentRateLimit(rateLimitNotice(agentId, model).text, (delay, expire) => {
-    const index = timers.length;
-    timers.push({ delay, expire });
-    return { cancel: () => { cancelled.push(index); throw new Error('Cancellation unavailable'); } };
-  });
-  try {
-    fail();
-    fail();
-    expect(cancelled).toEqual([0]);
-    timers[0].expire();
-    fail();
-    expect(cancelled).toEqual([0, 1]);
-    timers[1].expire();
-    fail();
-    expect(cancelled).toEqual([0, 1, 2]);
-    timers[3].expire();
-    fail();
-    expect(cancelled).toEqual([0, 1, 2]);
-    expect(timers.map(timer => timer.delay)).toEqual([60_000, 60_000, 60_000, 60_000, 60_000]);
-  } finally {
-    for (const timer of timers) timer.expire();
-    routedModels.reset();
-  }
-});
-
-test('wall-clock recovery neither shortens nor restarts a background cooldown', async ($, on) => {
-  const clock = timerClock(on);
-  const blocked = 'system.ai.glm-5-3-flash';
-  const alternative = 'system.ai.claude-haiku-5-5';
-  let selected = blocked;
-  let timestamp = 10_000;
-  let clockAvailable = true;
-  const requests: any[] = [];
-  const spawns: any[] = [];
-  const forwarded: any[] = [];
-  on('clock.now', () => {
-    if (!clockAvailable) throw new Error('Clock unavailable');
-    return { value: timestamp };
-  });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('fs.write', () => ({ value: undefined }));
-  on('prompt.submit', (_, e) => { forwarded.push(e); return { text: e.text }; });
-  on('process.run', (_, e) => {
-    requests.push(JSON.parse(e.init.stdin));
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: selected, rationale: '' }) } };
-  });
-  on('agent.spawn', (_, e) => {
-    spawns.push(e);
-    return { model: e.model!, agentId: 'child-' + e.tool_use_id };
-  });
-  on('tool.call', async (_, e) => {
-    const child = await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-      subagentType: 'general-purpose', model: blocked, parentModel: blocked,
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    });
-    return child.deny ? { deny: child.deny } : { result: { model: child.model } };
-  });
-  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-  expect((await launch('initial')).result.model).toBe(blocked);
-  const notice = rateLimitNotice('child-initial', blocked);
-  clockAvailable = false;
-  await $.prompt.submit(notice);
-  expect(forwarded.at(-1)).toEqual(notice);
-  const stale = await launch('clock-lost');
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  expect(stale.deny).toContain('selected model is now rate-limited');
-  expect(spawns).toHaveLength(1);
-  selected = alternative;
-  expect((await launch('available-without-clock')).result.model).toBe(alternative);
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-
-  await clock.advance(30_000);
-  clockAvailable = true;
-  timestamp = 100_000;
-  expect((await launch('clock-restored')).result.model).toBe(alternative);
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  timestamp = 1;
-  await clock.advance(29_999);
-  expect((await launch('before-expiry')).result.model).toBe(alternative);
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  await clock.advance(1);
-  selected = blocked;
-  expect((await launch('expired')).result.model).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-  clockAvailable = false;
-  expect((await launch('expired-clock-lost')).result.model).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-});
-
-for (const phase of ['before spawn', 'after an in-flight notice'] as const) {
-  test(`known cooldown survives clock loss ${phase}`, async ($, on) => {
-    const blocked = 'system.ai.glm-5-3-flash';
-    const clock = timerClock(on);
-    let clockAvailable = true;
-    let waiting = false;
-    const requests: any[] = [];
-    const spawns: any[] = [];
-    const notice = rateLimitNotice('child-initial', blocked);
-    on('clock.now', () => {
-      if (!clockAvailable) throw new Error('Clock unavailable');
-      return { value: 10_000 };
-    });
-    on('session.id', () => ({ value: 'session-1' }));
-    on('fs.write', () => ({ value: undefined }));
-    on('prompt.submit', (_, e) => ({ text: e.text }));
-    on('process.run', async (_, e) => {
-      requests.push(JSON.parse(e.init.stdin));
-      if (waiting && phase === 'after an in-flight notice') await $.prompt.submit(notice);
-      if (waiting) clockAvailable = false;
-      return { value: { exitCode: 0, stderr: '',
-        stdout: waiting && phase === 'after an in-flight notice' ? ''
-          : JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
-    });
-    on('agent.spawn', (_, e) => {
-      spawns.push(e);
-      return { model: e.model!, agentId: 'child-' + e.tool_use_id };
-    });
-    on('tool.call', async (_, e) => {
-      const child = await $.agent.spawn({
-        tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-        subagentType: 'general-purpose', model: blocked, parentModel: blocked,
-        provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-      });
-      return child.deny ? { deny: child.deny } : { result: { model: child.model } };
-    });
-    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-    expect((await launch('initial')).result.model).toBe(blocked);
-    if (phase !== 'after an in-flight notice') await $.prompt.submit(notice);
-    waiting = true;
-    const denied = await launch('clock-lost');
-    expect(typeof denied.deny).toBe('string');
-    expect(spawns).toHaveLength(1);
-    expect(requests[1].excluded_models).toEqual(
-      phase === 'after an in-flight notice' ? undefined : ['glm-5-3-flash']);
-
-    waiting = false;
-    await clock.advance(60_000);
-    expect((await launch('expired')).result.model).toBe(blocked);
-    expect(requests.at(-1).excluded_models).toBeUndefined();
-    clockAvailable = false;
-    expect((await launch('expired-clock-lost')).result.model).toBe(blocked);
-    expect(requests.at(-1).excluded_models).toBeUndefined();
-  });
-}
-
-for (const scenario of ['completed then failed', 'unknown then failed', 'unknown failure', 'two failures'] as const) {
-  test(`batched native notifications correlate each failure: ${scenario}`, async ($, on) => {
-    const blocked = 'system.ai.glm-5-3-flash';
-    const alternative = 'system.ai.claude-haiku-5-5';
-    const requests: any[] = [];
-    let selected = scenario === 'unknown failure' ? blocked : alternative;
-    mock.clock(on);
-    on('session.id', () => ({ value: 'session-1' }));
-    on('fs.write', () => ({ value: undefined }));
-    on('prompt.submit', (_, e) => ({ text: e.text }));
-    on('process.run', (_, e) => {
-      requests.push(JSON.parse(e.init.stdin));
-      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: selected, rationale: '' }) } };
-    });
-    on('agent.spawn', (_, e) => ({ model: e.model!, agentId: 'child-' + e.tool_use_id }));
-    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-      subagentType: 'general-purpose', model: selected, parentModel: alternative,
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    }) }));
-    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-    expect((await launch('first')).result.model).toBe(selected);
-    selected = blocked;
-    expect((await launch('second')).result.model).toBe(blocked);
-    const notice = (id: string, model?: string) => model ? rateLimitNotice(id, model).text
-      : `<task-notification>
-<task-id>${id}</task-id>
-<status>completed</status>
-<summary>Inspection completed.</summary>
-</task-notification>`;
-    const first = notice(scenario === 'unknown then failed' ? 'unknown-child' : 'child-first',
-      scenario === 'two failures' ? alternative : undefined);
-    const second = notice(scenario === 'unknown failure' ? 'unknown-child' : 'child-second', blocked);
-    await $.prompt.submit({ text: first + '\n' + second, wait: false, origin: { kind: 'task-notification' } });
-    selected = 'system.ai.claude-sonnet-5-5';
-    expect((await launch('replacement')).result.model).toBe(selected);
-    expect(requests.at(-1).excluded_models).toEqual(scenario === 'unknown failure' ? undefined
-      : scenario === 'two failures' ? ['claude-haiku-5-5', 'glm-5-3-flash'] : ['glm-5-3-flash']);
-  });
-}
-
-for (const noticeTime of ['before clear', 'after clear'] as const) {
-  test(`conversation clear preserves background failure tracking: ${noticeTime}`, async ($, on) => {
-    const blocked = 'system.ai.glm-5-3-flash';
-    const alternative = 'system.ai.claude-haiku-5-5';
-    const clock = mock.clock(on);
-    let selected = blocked;
-    let sessionId = 'session-1';
-    const requests: any[] = [];
-    on('session.id', () => ({ value: sessionId }));
-    on('session.end', () => { sessionId = 'session-2'; return { sessionId }; });
-    on('fs.write', () => ({ value: undefined }));
-    on('prompt.submit', (_, e) => ({ text: e.text }));
-    on('process.run', (_, e) => {
-      requests.push(JSON.parse(e.init.stdin));
-      return { value: { exitCode: 0, stderr: '',
-        stdout: JSON.stringify({ model: selected, rationale: 'Selected for the task' }) } };
-    });
-    on('agent.spawn', (_, e) => ({ model: e.model!, agentId: 'child-' + e.tool_use_id }));
-    on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
-      tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-      subagentType: 'general-purpose', model: blocked, parentModel: blocked,
-      provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-    }) }));
-    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-    expect((await launch('initial')).result.model).toBe(blocked);
-    const notice = rateLimitNotice('child-initial', blocked);
-    if (noticeTime === 'before clear') await $.prompt.submit(notice);
-    await $.session.end({ reason: 'clear' });
-    await clock.advance(30_000);
-    if (noticeTime === 'after clear') await $.prompt.submit(notice);
-    selected = alternative;
-    expect((await launch('after-clear')).result.model).toBe(alternative);
-    expect(requests.at(-1).session_id).toBe('session-2');
-    expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-    await clock.advance(noticeTime === 'before clear' ? 30_000 : 60_000);
-    selected = blocked;
-    expect((await launch('after-expiry')).result.model).toBe(blocked);
-    expect(requests.at(-1).excluded_models).toBeUndefined();
-  });
-}
-
-test('routed joke titles use the selected model without rewriting reviewed arguments', async ($, on) => {
-  const forwarded: any[] = [];
-  const spawned: any[] = [];
-  const displayed = new Map<string, any>();
-  const gates: (() => void)[] = [];
-  let ready: () => void = () => {};
-  const started = new Promise<void>(resolve => { ready = resolve; });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', async () => {
-    await new Promise<void>(resolve => { gates.push(resolve); if (gates.length === 3) ready(); });
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: 'catalog.schema.routed-model', rationale: 'Selected for this task.',
-    }) } };
-  });
-  on('tool.call', ($, e) => { forwarded.push(e); return { result: 'launched' }; });
-  on('agent.spawn', ($, e) => {
-    spawned.push(e);
-    return { agentId: `child-${e.tool_use_id}`, model: e.model };
-  });
-  on('ui.render', ($, e) => {
-    displayed.set(e.requestId, e.props);
-    return { type: 'Text', props: {}, children: [
-      e.component === 'ToolUse' ? String(e.props.input?.description ?? 'native row') : 'parent answer',
-    ] };
-  });
-  const calls = ['Sonnet', 'Haiku', 'Opus'].map((model, index) => ({
-    tool: 'Agent' as const, tool_use_id: `joke-${index}`, ...originalInput,
-    description: `Joke from ${model}`, name: `address-${model}`, run_in_background: true,
-  }));
-  const pending = calls.map(call => $.tool.call(call));
-  await started;
-  for (const release of gates) release();
-  await Promise.all(pending);
-  expect(forwarded).toEqual(calls);
-  const cards = await $.ui.mount(reply('jokes'));
-  expect(await cards.findAll({ type: 'Text', text: '↳ Selected Model: ' })).toHaveLength(3);
-  expect(await cards.findAll({ type: 'Text', text: / — routed-model \(selected, launch pending\)$/ })).toHaveLength(3);
-  for (const call of calls) {
-    expect(await cards.find({ type: 'Text', text: `Task request: ${call.description}` })).toBeDefined();
-    const event = row(call.tool_use_id);
-    const pendingRow = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
-    expect(displayed.get(call.tool_use_id).input).toEqual(call);
-    await pendingRow.unmount();
-    const spawn = {
-      tool_use_id: call.tool_use_id, prompt: call.prompt, description: call.description,
-      subagentType: call.subagent_type, parentModel: 'parent-model',
-      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
-      name: call.name, permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
-    };
-    await $.agent.spawn(spawn);
-    const ui = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
-    // The launch matches the heading, so the native row keeps its own text.
-    expect(displayed.get(call.tool_use_id).input).toEqual(call);
-    const label = `${displayed.get(call.tool_use_id).tool} — routed-model`;
-    expect(spawned[spawned.length - 1]).toEqual({
-      ...spawn, model: 'catalog.schema.routed-model',
-    });
-    expect(await cards.find({ type: 'Text', text: label })).toBeDefined();
-    await ui.unmount();
-  }
-  expect(spawned.map(s => s.description)).toEqual(calls.map(call => call.description));
-  for (const input of [undefined, null, false, 42, 'native input', []]) {
-    const event = row(calls[0].tool_use_id);
-    const ui = await $.ui.mount({ ...event, props: { ...event.props, input } });
-    expect(displayed.get(calls[0].tool_use_id).input).toEqual(input);
-    await ui.unmount();
-  }
-  await cards.unmount();
-});
-
-test('hidden model display does not restore saved native labels', {
-  options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: '0' },
-}, async ($, on) => {
-  const writes: string[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
-  on('env.set', () => ({ value: undefined }));
-  on('session.start', ($, e) => ({ cwd: e.cwd }));
-  on('fs.exists', () => ({ value: true }));
-  on('fs.list', () => ({ value: [{ name: 'agent-child.json', kind: 'file', size: 100, mtimeMs: 0, isLink: false }] }));
-  on('fs.read', () => ({ value: JSON.stringify({
-    session_id: 'session-1', agent_id: 'child', name: 'Fox · model-b', description: 'Inspect parser',
-    animal: 'Fox', title: 'Inspect parser', selected: 'system.ai.model-b', launched: 'system.ai.model-b',
-  }) }));
-  on('fs.write', ($, e) => { writes.push(e.path); return { value: undefined }; });
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
-  expect(writes).toEqual([]);
-});
-
-test('completed notification labels restore per child and render without storage reads', async ($, on) => {
-  const files = new Map<string, string>();
-  const writes: any[] = [];
-  const renders: any[] = [];
-  const forwarded: any[] = [];
-  const warnings: string[] = [];
-  let idReads = 0, fileReads = 0, environmentReads = 0;
-  let sessionId = 'session-1';
-  const requests: any[] = [];
-  on('clock.now', () => ({ value: timestamp }));
-  on('session.id', () => ({ value: sessionId }));
-  on('session.end', () => { sessionId = 'session-2'; return { sessionId }; });
-  on('fs.write', () => ({ value: undefined }));
-  on('prompt.submit', (_, e) => ({ text: e.text }));
-  on('process.run', (_, e) => {
-    requests.push(JSON.parse(e.init.stdin));
-    return { value: { exitCode: 0, stderr: '',
-      stdout: JSON.stringify({ model: selected, rationale: 'Selected for the task' }) } };
-  });
-  on('agent.spawn', (_, e) => ({ model: e.model!, agentId: 'child-' + e.tool_use_id }));
-  on('tool.call', async (_, e) => ({ result: await $.agent.spawn({
-    tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
-    subagentType: 'general-purpose', model: blocked, parentModel: blocked,
-    provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
-  }) }));
-  const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-  expect((await launch('initial')).result.model).toBe(blocked);
-  await $.prompt.submit({
-    text: '<task-notification>\n<task-id>child-initial</task-id>\n<status>failed</status>\n'
-      + '<summary>Agent "Inspect parser" failed: Agent terminated early due to an API error '
-      + `(error type rate_limit, HTTP 429, model sent to the API: ${blocked})</summary>\n</task-notification>`,
-    wait: false, origin: { kind: 'task-notification' },
-  });
-  await $.session.end({ reason: 'clear' });
-  timestamp += 30_000;
-  selected = alternative;
-  expect((await launch('after-clear')).result.model).toBe(alternative);
-  expect(requests.at(-1).session_id).toBe('session-2');
-  expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
-  timestamp += 30_000;
-  selected = blocked;
-  expect((await launch('after-expiry')).result.model).toBe(blocked);
-  expect(requests.at(-1).excluded_models).toBeUndefined();
-});
-
-for (const show of ['0', '1']) {
-  test(`parallel streamed calls preserve routing with model display ${show}`, {
-    options: { ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: show },
-  }, async ($, on) => {
-    const routerCalls: any[] = [];
-    const spawned: any[] = [];
-    const rows = new Map<string, any>();
-    on('session.id', () => ({ value: 'session-1' }));
-    on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
-    on('fs.write', () => ({ value: undefined }));
-    on('process.run', ($, event) => {
-      const request = JSON.parse(event.init.stdin);
-      routerCalls.push(request);
-      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-        model: request.tool_use_id === 'head-1' ? 'system.ai.model-b' : 'system.ai.glm-5-3-flash', rationale: 'Selected.',
-      }) } };
-    });
-    on('tool.call', () => ({ result: 'launched' }));
-    on('agent.spawn', ($, e) => {
-      spawned.push(e);
-      // The second child launches elsewhere than its heading says.
-      return { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'head-1' ? 'system.ai.model-c' : e.model };
-    });
-    on('ui.render', ($, e) => {
-      rows.set(e.requestId, e.props);
-      return { type: 'Text', props: {}, children: [e.props.label ?? 'native row'] };
-    });
-    const calls = ['Sonnet', 'Haiku'].map((model, index) => ({
-      prompt: 'Tell me a short joke. Make it dry.', description: `Joke from ${model}`,
-      subagent_type: 'general-purpose', run_in_background: true, tag: index,
-    }));
-    const read = { file_path: 'README.md' };
-    on('turn.step', async function* ($, e) {
-      yield { kind: 'text', index: 0, text: 'Starting.' };
-      yield { kind: 'tool', index: 1, id: 'head-0', name: 'Agent' };
-      yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(0, 20) };
-      yield { kind: 'tool', index: 2, id: 'read-0', name: 'Read' };
-      yield { kind: 'input', index: 1, json: JSON.stringify(calls[0]).slice(20) };
-      yield { kind: 'input', index: 2, json: JSON.stringify(read) };
-      yield { kind: 'tool', index: 3, id: 'head-1', name: 'Agent' };
-      yield { kind: 'input', index: 3, json: JSON.stringify(calls[1]) };
-      yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-      return { turnId: e.turnId, index: e.index, answer: 'Starting.', toolUses: [], stopReason: 'tool_use', usage: null };
-    });
-    const turn = await collectParentTurn($, 'headed', 0);
-    expect(turn.chunks.map(chunk => chunk.kind)).toEqual(show === '1'
-      ? ['text', 'tool', 'input', 'tool', 'input', 'tool', 'input', 'stop']
-      : ['text', 'tool', 'input', 'tool', 'input', 'input', 'tool', 'input', 'stop']);
-    const headings = [1, 3].map(index => JSON.parse(turn.chunks
-      .filter(chunk => chunk.kind === 'input' && chunk.index === index).map(chunk => chunk.json).join('')));
-    if (show === '1') {
-      expect(headings[0].description).toMatch(/^[A-Z][a-z]+ · glm-5-3-flash · Tell me a short joke$/);
-      expect(headings[1].description).toMatch(/^[A-Z][a-z]+ · model-b · Tell me a short joke$/);
-    } else {
-      expect(headings).toEqual(calls);
-    }
-    for (const [index, heading] of headings.entries()) expect(heading).toEqual({ ...calls[index], description: heading.description });
-    expect(JSON.parse(turn.chunks.find(chunk => chunk.index === 2 && chunk.kind === 'input').json)).toEqual(read);
-    expect(routerCalls).toHaveLength(show === '1' ? 2 : 0);
-    for (const [index, heading] of headings.entries()) {
-      await $.tool.call({ tool: 'Agent', tool_use_id: `head-${index}`, ...heading });
-    }
-    expect(routerCalls.map(call => call.tool_input.description)).toEqual(['Joke from Sonnet', 'Joke from Haiku']);
-    for (const [index, heading] of headings.entries()) {
-      await $.agent.spawn({
-        tool_use_id: `head-${index}`, prompt: calls[index].prompt, description: heading.description,
-        subagentType: 'general-purpose', parentModel: 'parent', provider: { plugin: 'engine', tier: 'core' as const },
-        background: true, fork: false, permissionMode: 'default', cwd: '/workspace',
-      });
-    }
-    expect(spawned.map(event => event.model)).toEqual(['system.ai.glm-5-3-flash', 'system.ai.model-b']);
-    // Claude before 2.1.328 has no agent-list row to render.
-    const agentRow = async (id: string) => {
-      try {
-        return await $.ui.mount({ ...panel, component: 'AgentRow' as const, requestId: id, props: { id } });
-      } catch (error) {
-        if (String(error).includes('is not a component')) return undefined;
-        throw error;
-      }
-    };
-    const match = await agentRow('child-head-0');
-    if (match) {
-      expect(rows.get('child-head-0').label).toBe(show === '1' ? headings[0].description : undefined);
-      await match.unmount();
-      const mismatch = await agentRow('child-head-1');
-      if (show === '1') expect(rows.get('child-head-1').label).toMatch(/ · model-c · Tell me a short joke ⚠ heading said model-b$/);
-      else expect(rows.get('child-head-1').label).toBeUndefined();
-      await mismatch!.unmount();
-    }
-    // The notice for the child that launched elsewhere says so; the matching one is left alone.
-    const notice = (id: string) => ({
-      ...panel, component: 'UserMessage' as const, requestId: `notice-${id}`,
-      props: { text: 'Agent finished', origin: { kind: 'task-notification' as const },
-        task: { id, status: 'completed', toolUseId: id, durationMs: 1 }, isExpanded: false },
-    });
-    const flagged = await $.ui.mount(notice('child-head-1'));
-    expect(rows.get('notice-child-head-1').text).toBe(show === '1'
-      ? 'Agent finished\n⚠ Launched on model-c, not the model-b in the heading' : 'Agent finished');
-    await flagged.unmount();
-    const clean = await $.ui.mount(notice('child-head-0'));
-    expect(rows.get('notice-child-head-0').text).toBe('Agent finished');
-    await clean.unmount();
-  });
-
-}
-
-test('a server-side auto-mode review keeps the reply as the model wrote it', async ($, on) => {
-  const routerCalls: any[] = [];
-  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', ($, e) => ({ value: e.name === 'CLAUDE_CODE_AUTO_MODE_SERVER' ? '1' : undefined }));
-  on('process.run', ($, event) => { routerCalls.push(event); return { value: { exitCode: 0, stderr: '', stdout: '' } }; });
-  on('turn.step', async function* ($, e) {
-    yield { kind: 'tool', index: 0, id: 'server-0', name: 'Agent' };
-    yield { kind: 'input', index: 0, json: JSON.stringify(call) };
-    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
-  });
-  const turn = await collectParentTurn($, 'server-review', 0);
-  expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
-  expect(routerCalls).toHaveLength(0);
-});
-
-test('a routing failure while the reply streams is not retried at tool.call', async ($, on) => {
-  const routerCalls: any[] = [];
-  const call = { prompt: 'Tell me a short joke.', description: 'Joke from Sonnet', subagent_type: 'general-purpose' };
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', ($, event) => { routerCalls.push(event); return { value: { exitCode: 1, stderr: '', stdout: '' } }; });
-  on('tool.call', () => ({ result: 'launched' }));
-  on('turn.step', async function* ($, e) {
-    yield { kind: 'tool', index: 0, id: 'retry-0', name: 'Agent' };
-    yield { kind: 'input', index: 0, json: JSON.stringify(call) };
-    yield { kind: 'stop', stopReason: 'tool_use', usage: null };
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null };
-  });
-  const turn = await collectParentTurn($, 'retry', 0);
-  expect(JSON.parse(turn.chunks[1].json)).toEqual(call);
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'retry-0', ...call });
-  expect(routerCalls).toHaveLength(1);
-});
-
 test('a routing error keeps the reply and logs fallback only at execution', async ($, on) => {
   const writes: any[] = [];
   const logs: string[] = [];
@@ -2715,4 +2340,94 @@ test('a repeated background failure after clear keeps a full renewed cooldown', 
   f.state.selected = f.blocked;
   expect((await f.launch('at-expiry')).result.model).toBe(f.blocked);
   expect(f.requests.at(-1).excluded_models).toBeUndefined();
+});
+
+for (const boundary of ['tool execution', 'agent spawn'] as const) {
+  test(`manual Auto selection checks active cooldown at ${boundary}`, {
+    options: {
+      ENABLE_SMART_ROUTER_AUTO_MODE: '1',
+      ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+      autoPicker: JSON.stringify({
+        model: 'ug-auto-test', mainModel: 'system.ai.claude-sonnet-5',
+        models: [{ model: 'system.ai.claude-sonnet-5', label: 'Sonnet', autoModel: 'ug-auto-test' }],
+      }),
+    },
+  }, async ($, on) => {
+    const blocked = 'system.ai.glm-5-3-flash';
+    const clock = mock.clock(on);
+    let selected = 'ug-auto-test';
+    let controls: 'on' | 'off' | 'unreadable' = 'on';
+    let atSpawn: 'on' | 'off' | 'unreadable' | undefined;
+    const requests: any[] = [];
+    const spawns: any[] = [];
+    on('session.id', () => ({ value: 'session-manual-cooldown' }));
+    on('session.model', () => ({ value: selected }));
+    on('env.get', (_, e) => ({ value: e.name === 'UCODE_SESSION_ENV_FILE' ? '/session/controls.json'
+      : e.name === 'ENABLE_SMART_ROUTING_V2' ? '0'
+      : e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? (selected === 'ug-auto-test' ? '1' : '0') : undefined }));
+    on('fs.read', () => {
+      if (controls === 'unreadable') throw new Error('Controls unavailable');
+      return { value: JSON.stringify({ ENABLE_SMART_ROUTING_V2: '0',
+        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: controls === 'on' ? '1' : '0' }) };
+    });
+    on('fs.write', () => ({ value: undefined }));
+    on('ui.log', () => ({ value: undefined }));
+    on('prompt.submit', (_, e) => ({ text: e.text }));
+    on('process.run', (_, e) => {
+      requests.push(JSON.parse(e.init.stdin));
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: blocked, rationale: '' }) } };
+    });
+    on('agent.spawn', (_, e) => {
+      spawns.push(e);
+      return { agentId: 'child-' + e.tool_use_id, model: e.model! };
+    });
+    on('tool.call', async (_, e) => {
+      if (atSpawn) controls = atSpawn;
+      const child = await $.agent.spawn({
+        tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+        subagentType: 'general-purpose', model: blocked, parentModel: blocked,
+        provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+      });
+      return child.deny ? { deny: child.deny } : { result: child };
+    });
+    const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    expect((await launch('initial')).result.model).toBe(blocked);
+    await $.prompt.submit(rateLimitNotice('child-initial', blocked));
+    selected = blocked;
+    for (const current of ['on', 'unreadable'] as const) {
+      controls = boundary === 'agent spawn' ? 'off' : current;
+      atSpawn = boundary === 'agent spawn' ? current : undefined;
+      expect(typeof (await launch('manual-' + current)).deny).toBe('string');
+      expect(spawns).toHaveLength(1);
+      expect(requests).toHaveLength(1);
+    }
+    atSpawn = undefined;
+    controls = 'off';
+    expect((await launch('confirmed-off')).result.model).toBe(blocked);
+    controls = 'unreadable';
+    await clock.advance(59_999);
+    expect(typeof (await launch('before-expiry')).deny).toBe('string');
+    expect(spawns).toHaveLength(2);
+    await clock.advance(1);
+    expect((await launch('at-expiry')).result.model).toBe(blocked);
+    expect(spawns).toHaveLength(3);
+    expect(requests).toHaveLength(1);
+  });
+}
+
+test('failure tags in a completed result do not create a cooldown', async ($, on) => {
+  const f = backgroundLifecycleFixture($, on);
+  expect((await f.launch('initial')).result.model).toBe(f.blocked);
+  const failure = rateLimitNotice('child-initial', f.blocked).text;
+  const embedded = failure.slice(failure.indexOf('<status>'), failure.indexOf('</task-notification>'));
+  const completed = f.terminal();
+  completed.text = completed.text.replace('</task-notification>', `<result>${embedded}</result>\n</task-notification>`);
+  expect((await $.prompt.submit(completed)).text).toBe(completed.text);
+  expect((await f.launch('after-completed')).result.model).toBe(f.blocked);
+  expect(f.requests.at(-1).excluded_models).toBeUndefined();
+  await $.prompt.submit(rateLimitNotice('child-initial', f.blocked));
+  f.state.selected = 'system.ai.claude-haiku-5-5';
+  expect((await f.launch('replacement')).result.model).toBe(f.state.selected);
+  expect(f.requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
+  await f.clock.advance(60_000);
 });

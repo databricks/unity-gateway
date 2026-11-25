@@ -7,7 +7,6 @@ import json
 import os
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1999,41 +1998,27 @@ class TestSubagentRouting:
         ],
     )
     def test_missing_route_respects_exclusions(
-        self, excluded_models, expected_output, requested_models
+        self, monkeypatch, excluded_models, expected_output, requested_models
     ):
-        # An empty local response exercises the real router client's no-selection path.
+        # Control only the transport; the real router client handles the empty response.
         requests = []
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_args):
-                pass
+        def fake_urlopen(request, timeout):
+            body = json.loads(request.data)
+            requests.append([option["model"] for option in body["route_options"]])
+            return io.BytesIO(b"{}")
 
-            def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                requests.append([option["model"] for option in body["route_options"]])
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", "2")
-                self.end_headers()
-                self.wfile.write(b"{}")
-
-        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            try:
-                output = v2.route_claude_subagent(
-                    {
-                        "tool_name": "Agent",
-                        "tool_input": {"prompt": "Inspect the parser"},
-                        "excluded_models": excluded_models,
-                    },
-                    workspace=f"http://127.0.0.1:{server.server_port}",
-                    token="fixture-token",
-                    available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
-                )
-            finally:
-                server.shutdown()
-                thread.join(timeout=5)
+        monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"prompt": "Inspect the parser"},
+                "excluded_models": excluded_models,
+            },
+            workspace="https://example.com",
+            token="fixture-token",
+            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+        )
 
         assert output == expected_output
         assert requests == requested_models

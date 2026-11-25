@@ -4,8 +4,6 @@
     "tests/**/*.py",
     "**/test_*.py",
     "tests/native_claude/**/*.ts",
-    "docs/claude-mod.md",
-    "tests/README.md",
-    "tests/integration/README.md"
+    "docs/claude-mod.md"
   ]
 }

@@ -315,7 +315,7 @@ const pending = new Map<string, number | undefined>()
 const grouped = new Set<string>()
 const records = new Map<string, RoutingRecord>()
 type RoutingOutcome = {
-  routed: boolean; denial?: string; cooldownDenial?: boolean; disabled?: boolean; failed?: boolean
+  routed: boolean; denial?: string; cooldownDenial?: boolean; failed?: boolean
 }
 // Stream-time outcomes must reach tool.call without retrying the router or losing a denial.
 const attempted = new Map<string, RoutingOutcome>()
@@ -348,8 +348,9 @@ export function recordSubagentRateLimit(
 ): void {
   for (const [, notification] of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
     const task = notification.match(/^\s*<task-id>([^<\s]+)<\/task-id>\s*(?:<tool-use-id>([^<\s]+)<\/tool-use-id>)?/)
-    const failure = notification.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
-    if (!task || !failure) continue
+    if (!task) continue
+    const failure = notification.slice(task[0].length).match(/^\s*<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
+    if (!failure) continue
     const model = routedModels.model(task[1]) ?? recordedBackgroundModel(task[1], task[2])
     if (model && rateLimitKey(model) === rateLimitKey(failure[1])) {
       const key = rateLimitKey(model)
@@ -399,13 +400,12 @@ async function routingDisabled($: EngineInterface): Promise<boolean> {
   }
 }
 
-// Routes one Agent call once. The parent's reply is held until its calls are routed so the
-// heading Claude draws names the model; a call that bypassed that path routes here instead.
+// Route each call once without altering the input auto mode may have reviewed.
 async function routeCall($: any, e: any): Promise<RoutingOutcome | undefined> {
   const { options, autoModels } = routing
   const command = options!.routeCommand as readonly string[]
-  if (e.tool_use_id && (records.has(e.tool_use_id) || attempted.has(e.tool_use_id))) return
   if (!command.length || e.subagent_type === 'fork' || e.resume) return
+  if (e.tool_use_id && attempted.has(e.tool_use_id)) return attempted.get(e.tool_use_id)
   const selected = autoModels ? await $.session.model() : ''
   if (autoModels && (
     !autoModels.some(model => matchesAutoModel(model, selected)) || !await $.routingEnabled()
@@ -446,12 +446,18 @@ async function routeCall($: any, e: any): Promise<RoutingOutcome | undefined> {
   try {
     const session_id = await $.session.id()
     const result = await $.process.run(command, {
-      stdin: JSON.stringify({ session_id, agent_id: agentId, tool_use_id, tool_name: tool, tool_input: input }),
+      stdin: JSON.stringify({ session_id, agent_id: agentId, tool_use_id, tool_name: tool, tool_input: input,
+        ...(excluded_models.length ? { excluded_models } : {}) }),
       timeoutMs: 35000,
     })
     if (result.exitCode !== 0) throw new Error('Router command failed')
-    // An empty response means routing is disabled or no model could be selected.
-    route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+    const response = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+    if (typeof response?.deny === 'string' && response.deny) {
+      outcome.denial = response.deny
+      outcome.cooldownDenial = response.rate_limit_cooldown === true
+    } else if (response?.disabled !== true) {
+      route = response
+    }
     if (route !== undefined && (
         typeof route?.model !== 'string' || !route.model ||
         typeof route.rationale !== 'string')) {
@@ -459,7 +465,7 @@ async function routeCall($: any, e: any): Promise<RoutingOutcome | undefined> {
     }
   } catch {
     route = undefined
-    $.ui.log('Smart Router could not route this subagent; using its original settings.')
+    outcome.failed = true
   } finally {
     spinner?.cancel()
   }
@@ -571,18 +577,18 @@ export const registerSubagentRouting = (
       clock: { now: () => $.clock.now(), every: (ms: number, tick: () => void) => $.clock.every(ms, tick) },
       ui: { invalidate: (name: 'ui.render') => $.ui.invalidate(name), log: (text: string) => $.ui.log(text) },
     }, e)
-    if (outcome && await routingDisabled($)) return next(e)
+    if (e.resume || e.subagent_type === 'fork' || await routingDisabled($)) return next(e)
     const { tool_use_id } = e
     let denial = outcome?.denial
-    if (outcome && !outcome.routed && (!denial || outcome.cooldownDenial)) {
+    if (!outcome?.routed && (!denial || outcome?.cooldownDenial)) {
       // A streamed decision may wait before execution; recheck expiry and newly arrived notices.
       const coolingDown = activeRateLimits().length > 0
       if (coolingDown) {
         // Native model aliases cannot establish eligibility when routing fails.
-        denial ??= 'Smart Router could not select an available model; retry after cooldown.'
+        denial ??= COOLDOWN_FALLBACK_DENIAL
       } else {
         denial = undefined
-        if (outcome.failed) {
+        if (outcome?.failed) {
           $.ui.log('Smart Router could not route this subagent; using its original settings.')
         }
       }
@@ -604,17 +610,21 @@ export const registerSubagentRouting = (
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const route = e.resume || e.fork ? undefined : records.get(e.tool_use_id)
-    const outcome = e.resume || e.fork ? undefined : attempted.get(e.tool_use_id)
-    if ((route || outcome) && await routingDisabled($)) return next(e)
-    const excluded = route || outcome ? activeRateLimits() : []
+    if (e.resume || e.fork || await routingDisabled($)) return next(e)
+    const route = records.get(e.tool_use_id)
+    const outcome = attempted.get(e.tool_use_id)
+    const excluded = activeRateLimits()
     const excludedSelection = route && excluded.includes(rateLimitKey(route.model))
-    const unverifiedFallback = !route && outcome && excluded.length > 0
+    const unverifiedFallback = !route && excluded.length > 0
     if (excludedSelection || unverifiedFallback) {
       // A new failure can invalidate either a selected model or an unverified native fallback.
       records.delete(e.tool_use_id)
+      const denial = route
+        ? 'The selected model is now rate-limited. Retry to select another available model.'
+        : outcome?.denial ?? COOLDOWN_FALLBACK_DENIAL
+      if (outcome) Object.assign(outcome, { routed: false, denial, cooldownDenial: true })
       $.ui.invalidate('ui.render')
-      return { deny: 'The selected model is now rate-limited. Retry to select another available model.' }
+      return { deny: denial }
     }
     // The task shows the spawn description, so the routed label is set here — after the
     // permission decision, never on the reviewed call. On the rewrite path the recorded
