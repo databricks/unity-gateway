@@ -37,6 +37,21 @@ def _markers(nodes):
     }
 
 
+def test_windows_desktop_experiment_keeps_visible_setup_before_the_restart_gate():
+    source = Path(__file__).parent / "integration/test_ug_codex_desktop_windows.py"
+    cases = source.read_text().split("    with WindowsApp(")[1:]
+    assert len(cases) == 2
+    for case in cases:
+        setup = case.index("wait_for_windows_setup(app)")
+        assert setup < case.index('app.click("ControlType.Button", "Continue")', setup)
+        assert case.index("wait_for_windows_sandbox(app") < case.index(
+            "app.wait_for_setup_restart("
+        )
+        assert case.index("app.wait_for_setup_restart(") < case.index(
+            'app.mark_setup_phase("first-interaction-start")'
+        )
+
+
 def test_windows_uia_observer_is_compiled_before_desktop_launch():
     workflow = _workflow("integration.yml")
     windows_job = workflow.split("  codex-desktop-windows:\n", 1)[1]

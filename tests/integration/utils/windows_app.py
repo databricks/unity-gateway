@@ -92,12 +92,15 @@ def _windows_process_start(pid: int) -> str:
         kernel.CloseHandle(handle)
 
 
-def _capture_app_log(stream, path: Path, events: list[dict]) -> None:
+def _capture_app_log(
+    stream, path: Path, events: list[dict], condition: threading.Condition
+) -> None:
     with path.open("w", encoding="utf-8") as log:
         for line in stream:
             observed_at = datetime.now(UTC).isoformat(timespec="milliseconds")
             log.write(f"{observed_at} {line}")
             log.flush()
+            event = None
             if "stdio_transport_spawned" in line and (match := re.search(r"\bpid=(\d+)", line)):
                 pid = int(match.group(1))
                 event = {"event": "stdio-transport-spawn", "observed_at": observed_at, "pid": pid}
@@ -105,24 +108,67 @@ def _capture_app_log(stream, path: Path, events: list[dict]) -> None:
                     event["process_started_at"] = _windows_process_start(pid)
                 except OSError as error:
                     event["process_start_error"] = str(error)
-                events.append(event)
             elif match := re.search(
                 r"method=windowsSandbox/(readiness|setupStart|setupComplete)\b", line
             ):
                 error_code = re.search(r"\berrorCode=(null|-?\d+|[A-Z][A-Z0-9_]*)\b", line)
-                events.append(
+                event = {
+                    "event": match.group(1),
+                    "observed_at": observed_at,
+                    "error_code": error_code.group(1) if error_code else None,
+                }
+            elif "app_server_connection.state_changed" in line and re.search(
+                r"\bhostId=local(?:\s|$)", line
+            ):
+                if match := re.search(r"\bcause=(stop_process|start_process)\b", line):
+                    event = {"event": match.group(1), "observed_at": observed_at}
+                elif re.search(r"\binitialized=true(?:\s|$)", line) and re.search(
+                    r"\bnext=connected(?:\s|$)", line
+                ):
+                    event = {"event": "connected", "observed_at": observed_at}
+            elif (
+                "response_routed" in line
+                and re.search(r"\bmethod=model/list(?:\s|$)", line)
+                and re.search(r"\berrorCode=null(?:\s|$)", line)
+            ):
+                event = {"event": "model/list", "observed_at": observed_at}
+            elif "Hosted AppServerManager identity is not ready" in line:
+                event = {"event": "identity-not-ready", "observed_at": observed_at}
+            if event:
+                with condition:
+                    events.append(event)
+                    condition.notify_all()
+
+
+def _restart_experiment_summary(timings: list[dict], events: list[dict]) -> dict:
+    phases = {
+        entry.get("phase"): entry.get("started_at") for entry in timings if entry.get("phase")
+    }
+    gate = phases.get("restart-experiment-gate-open")
+    first = phases.get("first-interaction-start")
+    gate_time = datetime.fromisoformat(gate) if gate else None
+    first_time = datetime.fromisoformat(first) if first else None
+    errors = []
+    if gate_time:
+        for event in events:
+            if event.get("event") != "identity-not-ready":
+                continue
+            observed = datetime.fromisoformat(event["observed_at"])
+            if observed >= gate_time:
+                errors.append(
                     {
-                        "event": match.group(1),
-                        "observed_at": observed_at,
-                        "error_code": error_code.group(1) if error_code else None,
+                        "observed_at": event["observed_at"],
+                        "relative_to_first_interaction_ms": (
+                            (observed - first_time).total_seconds() * 1000 if first_time else None
+                        ),
                     }
                 )
-            elif "app_server_connection.state_changed" in line and (
-                match := re.search(r"\bcause=(stop_process|start_process)\b", line)
-            ):
-                events.append({"event": match.group(1), "observed_at": observed_at})
-            elif "Failed to load Windows sandbox readiness" in line and "identity" in line.lower():
-                events.append({"event": "identity-not-ready", "observed_at": observed_at})
+    return {
+        "gate_opened": gate_time is not None,
+        "gate_opened_at": gate,
+        "first_interaction_at": first,
+        "identity_not_ready_after_gate": errors,
+    }
 
 
 class WindowsUIAProcess:
@@ -245,6 +291,7 @@ class WindowsApp:
         self.powershell = Path(shutil.which("powershell.exe") or "powershell.exe")
         self.timings: list[dict] = []
         self.setup_events: list[dict] = []
+        self.setup_condition = threading.Condition()
         self.baseline_sampled = False
         self.version, location = _installed_package(package)
         self.executable = str(Path(location) / executable)
@@ -266,7 +313,7 @@ class WindowsApp:
         )
         self.reader = threading.Thread(
             target=_capture_app_log,
-            args=(self.proc.stdout, self.log, self.setup_events),
+            args=(self.proc.stdout, self.log, self.setup_events, self.setup_condition),
             daemon=True,
         )
         self.reader.start()
@@ -309,6 +356,10 @@ class WindowsApp:
             )
             self.session.record(f"{self.name}-uia-timings.json", self.timings)
             self.session.record(f"{self.name}-setup-events.json", self.setup_events)
+            self.session.record(
+                f"{self.name}-restart-experiment.json",
+                _restart_experiment_summary(self.timings, self.setup_events),
+            )
             log = _redact_app_log(self.session, self.log.read_text(errors="replace"))
             self.session.record(
                 f"{self.name}-log.json",
@@ -354,6 +405,35 @@ class WindowsApp:
                 "started_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
             }
         )
+
+    def setup_event_checkpoint(self) -> int:
+        with self.setup_condition:
+            return len(self.setup_events)
+
+    def wait_for_setup_restart(self, checkpoint: int, deadline: float) -> None:
+        phase = 0
+        with self.setup_condition:
+            while True:
+                for event in self.setup_events[checkpoint:]:
+                    kind = event.get("event")
+                    if kind == "setupStart" and event.get("error_code") == "null":
+                        phase = 1
+                    elif kind == "stop_process" and phase:
+                        phase = 1
+                    elif kind == "start_process" and phase:
+                        phase = 2
+                    elif kind == "connected" and phase == 2:
+                        phase = 3
+                    elif kind == "model/list" and phase == 3:
+                        self.mark_setup_phase("restart-experiment-gate-open")
+                        return
+                checkpoint = len(self.setup_events)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        "The post-setup restart did not reach connected model discovery"
+                    )
+                self.setup_condition.wait(remaining)
 
     def read_tree(self) -> list[list[str]]:
         """Each element's control type, name and value."""

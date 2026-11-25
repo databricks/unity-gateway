@@ -4,6 +4,8 @@ import copy
 import io
 import re
 import sys
+import threading
+import time
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -189,6 +191,56 @@ def test_windows_uia_records_native_click_poll_count():
     assert "Continue" not in repr(app.timings) and "private" not in repr(app.timings)
 
 
+def test_restart_experiment_requires_post_setup_start_connected_and_model_list():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [
+        {"event": "start_process"},
+        {"event": "connected"},
+        {"event": "model/list"},
+        {"event": "setupStart", "error_code": "null"},
+        {"event": "start_process"},
+        {"event": "connected"},
+        {"event": "model/list"},
+    ]
+    app.timings = []
+    app.wait_for_setup_restart(3, time.monotonic() + 1)
+    assert app.timings[-1]["phase"] == "restart-experiment-gate-open"
+
+
+def test_restart_experiment_rejects_stale_or_out_of_order_responses():
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [
+        {"event": "setupStart", "error_code": "null"},
+        {"event": "connected"},
+        {"event": "model/list"},
+        {"event": "start_process"},
+        {"event": "connected"},
+        {"event": "stop_process"},
+        {"event": "model/list"},
+    ]
+    app.timings = []
+    with pytest.raises(AssertionError, match="post-setup restart"):
+        app.wait_for_setup_restart(0, time.monotonic())
+
+
+def test_restart_experiment_reports_identity_errors_relative_to_first_interaction():
+    timings = [
+        {"phase": "restart-experiment-gate-open", "started_at": "2026-11-25T00:00:01+00:00"},
+        {"phase": "first-interaction-start", "started_at": "2026-11-25T00:00:02+00:00"},
+    ]
+    events = [
+        {"event": "identity-not-ready", "observed_at": "2026-11-25T00:00:00+00:00"},
+        {"event": "identity-not-ready", "observed_at": "2026-11-25T00:00:02.250+00:00"},
+    ]
+    result = windows_app._restart_experiment_summary(timings, events)
+    assert result["identity_not_ready_after_gate"] == [
+        {"observed_at": "2026-11-25T00:00:02.250+00:00", "relative_to_first_interaction_ms": 250}
+    ]
+    assert result["gate_opened"] is True
+
+
 def test_windows_setup_banner_wait_has_a_utc_boundary():
     app = object.__new__(windows_app.WindowsApp)
     app.timings = []
@@ -243,7 +295,7 @@ def test_windows_uia_samples_legacy_tree_only_once(monkeypatch):
 
 def test_windows_app_log_preserves_and_timestamps_every_line(tmp_path):
     log = tmp_path / "app.log"
-    windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log, [])
+    windows_app._capture_app_log(io.StringIO("first\nsecond\n"), log, [], threading.Condition())
     lines = log.read_text().splitlines()
     assert len(lines) == 2
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\S+ first", lines[0])
@@ -261,18 +313,31 @@ def test_app_log_records_sandbox_and_app_server_process_timestamps(tmp_path, mon
         "[StdioConnection] stdio_transport_spawned pid=42\n"
         "[AppServerConnection] response_routed method=windowsSandbox/readiness errorCode=null\n"
         "[AppServerConnection] response_routed method=windowsSandbox/setupStart errorCode=null\n"
-        "[AppServerConnection] app_server_connection.state_changed cause=stop_process\n"
-        "[AppServerConnection] app_server_connection.state_changed cause=start_process\n"
-        "Failed to load Windows sandbox readiness errorMessage=identity-not-ready\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=start_process hostId=remote\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=stop_process hostId=local\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=start_process hostId=local\n"
+        "[AppServerConnection] app_server_connection.state_changed hostId=local initialized=trueX next=connected\n"
+        "[AppServerConnection] app_server_connection.state_changed hostId=local initialized=true next=connectedX\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=post_initialize_connection_state hostId=remote initialized=true next=connected\n"
+        "[AppServerConnection] app_server_connection.state_changed cause=post_initialize_connection_state hostId=local initialized=true next=connected\n"
+        "[AppServerConnection] response_routed method=model/list errorCode=BAD_REQUEST\n"
+        "[AppServerConnection] response_routed method=model/listExtra errorCode=null\n"
+        "[AppServerConnection] response_routed method=model/list errorCode=nullish\n"
+        "[AppServerConnection] response_routed method=model/list errorCode=null\n"
+        "Failed to load Windows sandbox readiness: Hosted AppServerManager identity is not ready\n"
     )
     events = []
-    windows_app._capture_app_log(io.StringIO(lines), tmp_path / "app.log", events)
+    windows_app._capture_app_log(
+        io.StringIO(lines), tmp_path / "app.log", events, threading.Condition()
+    )
     assert [event["event"] for event in events] == [
         "stdio-transport-spawn",
         "readiness",
         "setupStart",
         "stop_process",
         "start_process",
+        "connected",
+        "model/list",
         "identity-not-ready",
     ]
     assert events[0]["pid"] == 42
