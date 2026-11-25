@@ -100,6 +100,7 @@ from ucode.managed_files import (
     reconcile_privileged_files,
     revert_managed_file,
     warn_managed_write_skipped,
+    withdraw_ug_managed_paths,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -1201,6 +1202,30 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
     ]
 
 
+def _prepare_managed_relay(path: Path) -> tuple[Path, list[str]] | None:
+    """Check independent policy before withdrawing any ug-owned authentication."""
+    requirements = path.with_name(CODEX_REQUIREMENTS_FILE)
+    if requirements != path:
+        conflicts = _managed_relayed_conflicts(requirements)
+        if conflicts:
+            return requirements, conflicts
+
+    conflicts = _managed_relayed_conflicts(path)
+    if conflicts and (
+        managed_settings_skipped()
+        or not withdraw_ug_managed_paths(
+            "codex",
+            path,
+            [key.split(".") for key in conflicts],
+            display="Codex",
+            parser=_parse_managed_config,
+            dumper=tomlkit.dumps,
+        )
+    ):
+        return path, conflicts
+    return None
+
+
 def _reconcile_managed_config(
     state: dict,
     compose: Callable[[dict], dict],
@@ -1231,12 +1256,12 @@ def _reconcile_managed_config(
             "regular file or contact your administrator."
         )
     if relayed:
-        # The relay's loopback proxy only runs during `ug codex`, so skip the machine-wide file.
-        conflicts = _managed_relayed_conflicts(path)
-        if conflicts:
+        blocker = _prepare_managed_relay(path)
+        if blocker:
+            policy, conflicts = blocker
             raise RuntimeError(
                 "Codex ChatGPT relay cannot start because enterprise managed settings define "
-                f"{', '.join(conflicts)} at {path}. Ask your administrator to remove those "
+                f"{', '.join(conflicts)} at {policy}. Ask your administrator to remove those "
                 "entries or use standard Databricks authentication. If ucode previously created "
                 "them, run `ug revert` first."
             )
@@ -1998,26 +2023,26 @@ def use_model_service_relay(
         return False
     path = codex_managed_config_path()
     if path:
-        for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
-            try:
-                conflicts = _managed_relayed_conflicts(policy)
-            except RuntimeError as exc:
-                if selected_relay:
-                    raise
-                print_note(f"Using Databricks authentication for this model list: {exc}")
-                return False
-            if conflicts:
-                if selected_relay:
-                    raise RuntimeError(
-                        f"Model service {selected_model} needs your ChatGPT subscription, but "
-                        f"Codex managed settings define {', '.join(conflicts)} at {policy}. "
-                        "If ug created these settings, run `ug revert` before configuring the "
-                        "relay. Otherwise ask your administrator to update the authentication policy."
-                    )
-                print_note(
-                    f"Codex managed authentication at {policy} takes precedence over your ChatGPT seat."
+        try:
+            blocker = _prepare_managed_relay(path)
+        except RuntimeError as exc:
+            if selected_relay:
+                raise
+            print_note(f"Using Databricks authentication for this model list: {exc}")
+            return False
+        if blocker:
+            policy, conflicts = blocker
+            if selected_relay:
+                raise RuntimeError(
+                    f"Model service {selected_model} needs your ChatGPT subscription, but "
+                    f"Codex managed settings define {', '.join(conflicts)} at {policy}. "
+                    "If ug created these settings, run `ug revert` before configuring the "
+                    "relay. Otherwise ask your administrator to update the authentication policy."
                 )
-                return False
+            print_note(
+                f"Codex managed authentication at {policy} takes precedence over your ChatGPT seat."
+            )
+            return False
     return True
 
 
