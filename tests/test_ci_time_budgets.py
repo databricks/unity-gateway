@@ -20,27 +20,30 @@ BUDGETS = ROOT / ".github" / "ci-time-budgets.json"
 def test_every_ci_job_checks_a_budget():
     assert BUDGETS.is_file(), "CI jobs have no shared budgets yet"
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
-    for workflow in (
-        "ci",
-        "integration",
-        "publish-skills-test",
-        "user-journey-test-required",
-        "zizmor",
+    # The advisory lanes keep their `integration` budget entries: they report the
+    # same workflow, job ids and names they had before the split.
+    for workflow, budget_key in (
+        ("ci", "ci"),
+        ("integration", "integration"),
+        ("integration-advisory", "integration"),
+        ("publish-skills-test", "publish-skills-test"),
+        ("user-journey-test-required", "user-journey-test-required"),
+        ("zizmor", "zizmor"),
     ):
         source = (WORKFLOWS / f"{workflow}.yml").read_text().split("\njobs:\n", 1)[1]
         jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", source))
         for job_id, job in jobs.items():
             if re.search(r"(?m)^    uses: ", job):
                 continue
-            assert job_id in budgets[workflow], (workflow, job_id)
-            variants = budgets[workflow][job_id]
+            assert job_id in budgets[budget_key], (workflow, job_id)
+            variants = budgets[budget_key][job_id]
             assert variants and all(
                 set(budget) == {"setup", "run", "total"} for budget in variants.values()
             )
             name = re.search(r"(?m)^    name: (.+)$", job).group(1)
             if "${{" not in name:
                 assert name in variants, (workflow, job_id, name)
-            if "steps: *live-steps" in job:
+            if "steps: *live-steps" in job or "actions/live-steps" in job:
                 continue
             if "steps: *managed-steps" in job:
                 job = jobs["managed"]
@@ -259,6 +262,7 @@ def test_blocking_jobs_do_not_suppress_budget_failures():
     for workflow in (
         "ci",
         "integration",
+        "integration-advisory",
         "publish-skills-test",
         "user-journey-test-required",
         "zizmor",
@@ -280,9 +284,7 @@ def test_blocking_jobs_do_not_suppress_budget_failures():
         for job_id, job in jobs.items():
             if re.search(r"(?m)^    (?:uses: |continue-on-error: true$)", job):
                 continue
-            if "steps: *live-steps" in job:
-                job = jobs["smoke"]
-            elif "steps: *managed-steps" in job:
+            if "steps: *managed-steps" in job:
                 job = jobs["managed"]
             check = re.search(
                 r"(?m)^      - (?:[&*]budget-check\b|name: Check this job's time budget$)", job
@@ -420,10 +422,14 @@ def _merge_queue_shape(source):
 def test_every_integration_matrix_variant_has_a_budget():
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
     source = (WORKFLOWS / "integration.yml").read_text(encoding="utf-8")
+    advisory_source = (WORKFLOWS / "integration-advisory.yml").read_text(encoding="utf-8")
     jobs = dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", source))
+    advisory_jobs = dict(
+        re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", advisory_source)
+    )
 
-    def values(job, field):
-        match = re.search(rf"(?m)^        {field}: (.+)$", jobs[job])
+    def values(suite, job, field):
+        match = re.search(rf"(?m)^        {field}: (.+)$", suite[job])
         assert match, (job, field)
         expression = match.group(1)
         if expression.startswith("["):
@@ -439,8 +445,8 @@ def test_every_integration_matrix_variant_has_a_budget():
     expected = {
         "smoke": {
             f"Smoke journeys · {agent.capitalize()} · {os_name(os)}"
-            for agent in values("smoke", "agent")
-            for os in values("smoke", "os")
+            for agent in values(jobs, "smoke", "agent")
+            for os in values(jobs, "smoke", "os")
         }
     }
     full_matrix = jobs["full"].split("      matrix:\n", 1)[1].split("\n    env:", 1)[0]
@@ -453,19 +459,23 @@ def test_every_integration_matrix_variant_has_a_budget():
         + (" · Smart routing" if entry.get("smart_routing") == "true" else "")
         for entry in full_entries
     }
-    matrix_line = re.search(r"(?m)^        include: (.+)$", jobs["anthropic-mps"]).group(1)
-    choices = re.findall(r"'(\[[^']+\])'", matrix_line)
-    assert choices, matrix_line
-    anthropic_entries = [entry for choice in choices for entry in json.loads(choice)]
-    expected["anthropic-mps"] = {
-        f"Anthropic MPS - Staging workspace · {entry['agent'].capitalize()} · {os_name(entry['os'])}"
-        + (" (non-blocking)" if entry["agent"] == "copilot" else "")
-        for entry in anthropic_entries
+    # The blocking Claude legs (integration.yml) and the advisory Copilot legs
+    # (integration-advisory.yml) keep the same budget variants the one lane had.
+    mps_matrix = jobs["anthropic-mps"].split("      matrix:\n", 1)[1].split("\n    env:", 1)[0]
+    anthropic = set()
+    for block in re.split(r"(?m)^          - ", mps_matrix)[1:]:
+        fields = dict(line.strip().split(":", 1) for line in block.splitlines() if ":" in line)
+        entry = {key: value.strip().strip('"') for key, value in fields.items()}
+        anthropic.add(f"Anthropic MPS - Staging workspace · Claude · {os_name(entry['os'])}")
+    anthropic |= {
+        f"Anthropic MPS - Staging workspace · Copilot · {os_name(os)} (non-blocking)"
+        for os in values(advisory_jobs, "anthropic-mps", "os")
     }
+    expected["anthropic-mps"] = anthropic
     expected["soft-fail"] = {
         f"Soft-fail journeys · {agent} · {os_name(os)} (non-blocking)"
-        for agent in values("soft-fail", "agent")
-        for os in values("soft-fail", "os")
+        for agent in values(advisory_jobs, "soft-fail", "agent")
+        for os in values(advisory_jobs, "soft-fail", "os")
     }
     for job, label in (
         ("opencode", "OpenCode"),
@@ -473,10 +483,11 @@ def test_every_integration_matrix_variant_has_a_budget():
         ("vscode", "VS Code Copilot Chat"),
     ):
         expected[job] = {
-            f"Full journeys · {label} · {os_name(os)} (non-blocking)" for os in values(job, "os")
+            f"Full journeys · {label} · {os_name(os)} (non-blocking)"
+            for os in values(advisory_jobs, job, "os")
         }
     expected["managed"] = {
-        f"Managed config · {agent.capitalize()}" for agent in values("managed", "agent")
+        f"Managed config · {agent.capitalize()}" for agent in values(jobs, "managed", "agent")
     }
     expected["managed-smart"] = {"Managed config · Codex · Smart routing"}
     assert "BUDGET_WORKFLOW: integration" in jobs["managed-smart"]
@@ -492,7 +503,7 @@ def test_every_integration_matrix_variant_has_a_budget():
         assert names, job
         assert set(budgets["integration"][job]) == names
 
-    publisher = (WORKFLOWS / "publish-skills-test.yml").read_text(encoding="utf-8")
+    publisher = (WORKFLOWS / "publish-skills-test.yml").read_text()
     versions = re.search(r"(?m)^        python: \[([^\]]+)\]", publisher).group(1)
     expected_publishers = {
         f"Publisher tests (Python {version.strip().strip(chr(39))})"
@@ -502,7 +513,9 @@ def test_every_integration_matrix_variant_has_a_budget():
 
 
 def test_budget_steps_do_not_inherit_job_level_secrets():
-    for workflow in ("ci", "integration", "publish-skills-test", "zizmor"):
+    # integration-advisory.yml carries its own anchor definitions, and the shared
+    # live-steps action runs the budget steps for every live lane.
+    for workflow in ("ci", "integration", "integration-advisory", "publish-skills-test", "zizmor"):
         source = (WORKFLOWS / f"{workflow}.yml").read_text(encoding="utf-8")
         secret_free = source.split("env: &budget-secret-free\n", 1)[1].split("        run:", 1)[0]
         check = source.split("name: Check this job's time budget\n", 1)[1].split("\n      - ", 1)[0]
@@ -525,6 +538,23 @@ def test_budget_steps_do_not_inherit_job_level_secrets():
             assert names <= cleared_at_start, (workflow, job_id, names - cleared_at_start)
             assert names <= cleared_at_check, (workflow, job_id, names - cleared_at_check)
 
+    # The shared live-steps action runs the budget steps inside every live lane;
+    # its cleared lists must cover every secret the calling jobs set.
+    action = (ROOT / ".github/actions/live-steps/action.yml").read_text(encoding="utf-8")
+    action_cleared = set(re.findall(r"(?m)^        ([A-Z_]+): ''$", action))
+    assert action_cleared
+    for workflow in ("integration", "integration-advisory"):
+        source = (WORKFLOWS / f"{workflow}.yml").read_text(encoding="utf-8")
+        jobs = dict(
+            re.findall(
+                r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+                source.split("\njobs:\n", 1)[1],
+            )
+        )
+        for job_id, job in jobs.items():
+            header = job.split("\n    steps:", 1)[0]
+            names = set(re.findall(r"(?m)^      ([A-Z_]+): .*secrets\.", header))
+            assert names <= action_cleared, (workflow, job_id, names - action_cleared)
 
 def test_trusted_user_journey_budget_fails_on_overrun(tmp_path):
     import os
