@@ -163,7 +163,8 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         tui.boot()
         tui.submit(
             "Spawn exactly one native child with task_name old, fork_turns none, and message "
-            f"'Read \"{assignment_file}\" and complete every instruction in it.' "
+            f'\'Read "{assignment_file}" and complete every instruction in it. '
+            "After the gate succeeds, spawn exactly one child named nested as the file instructs.' "
             f"End your turn with ONLY 'started {marker}' immediately "
             "after spawning. Do not wait for it or run its commands yourself."
         )
