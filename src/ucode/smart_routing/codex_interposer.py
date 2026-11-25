@@ -284,7 +284,15 @@ async def _handle_tui(
                         and isinstance(params.get("threadId"), str)
                         and (params.get("turnId") is None or isinstance(params.get("turnId"), str))
                     ):
-                        feedback_input.cancel(params["threadId"], params.get("turnId"))
+                        turn_id = params.get("turnId")
+                        if (
+                            picker is not None
+                            and picker.busy
+                            and params["threadId"] == picker.thread_id
+                        ):
+                            # Auto prompts have private turn IDs, not the TUI's last inference ID.
+                            turn_id = None
+                        feedback_input.cancel(params["threadId"], turn_id)
                 if message is not None and message.get("method") in (None, "turn/interrupt"):
                     await upstream.send(frame)
                 else:

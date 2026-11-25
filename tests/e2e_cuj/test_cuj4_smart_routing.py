@@ -345,9 +345,9 @@ class TestCujAutoModelPicker(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     def test_codex_auto_picker_selects_main_model_for_completed_task(self, cuj):
-        """Scenario: select Auto in Codex's native picker and choose another main model.
+        """Scenario: select Auto in Codex's native picker and choose a main model and effort.
 
-        Expected: the chosen model completes a file task while subagent routing stays on.
+        Expected: the chosen model and effort complete a file task while subagent routing stays on.
         After switching to a manual model, selecting Auto opens the main-model chooser again.
         The synthetic Auto ID never reaches gateway inference.
         """
@@ -361,9 +361,9 @@ class TestCujAutoModelPicker(BaseCujTest):
                 request=("model/list", {"cursor": None, "limit": 1000, "includeHidden": False}),
                 name="codex-auto-model-labels",
             )["result"]["data"]
-            alternate_label = next(
-                row["displayName"] for row in catalog if row["model"] == alternate
-            )
+            alternate_row = next(row for row in catalog if row["model"] == alternate)
+            alternate_label = alternate_row["displayName"]
+            alternate_effort = alternate_row["supportedReasoningEfforts"][-1]["reasoningEffort"]
             assert alternate_label != alternate
             evidence = SessionEvidence(session.home, CODEX)
             recorder.prepare_launch()
@@ -379,7 +379,8 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.wait_for(
                     lambda screen: (
                         "select model" in screen.lower()
-                        and re.search(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+Auto\b", screen)
+                        and re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+(\S+)", screen)[:1]
+                        == ["Auto"]
                         and "All models" not in screen
                         and len(re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+\S", screen))
                         >= len(configs[CODEX]["models"]["model_services"]) + 1
@@ -388,6 +389,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 )
                 tui.choose("Select", "Auto")
                 tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
                 tui.wait_for(
                     lambda screen: (
                         f"Auto ({alternate})" in screen and "smart router on" in screen.lower()
@@ -399,6 +401,17 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.submit(task.prompt)
                 tui.task(evidence, task)
                 assert_inference_evidence(recorder, checkpoint, CODEX, task, alternate)
+                model_requests = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.path == INFERENCE_PATHS[CODEX]
+                    and request.payload.get("model") == alternate
+                ]
+                assert model_requests
+                assert all(
+                    request.payload.get("reasoning", {}).get("effort") == alternate_effort
+                    for request in model_requests
+                )
                 assert not any(
                     request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
                 )
@@ -419,6 +432,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.submit("/model")
                 tui.choose("Select", "Auto")
                 tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
                 tui.wait_for(
                     lambda screen: (
                         "smart router on" in screen.lower()

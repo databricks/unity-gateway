@@ -37,7 +37,10 @@ validation, not automated CUJ coverage. These cases do not exercise resume or ex
 overrides. Collection alone does not establish a live pass.
 
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. CUJ4 includes
-Codex's native Auto selection and a completed main-model task. See the
+Codex's native Auto selection, explicit reasoning-effort choice, and a completed
+main-model task with the chosen effort on the wire. Offline Auto cancellation, mode-switch,
+feedback, and rollback cases use `../test_codex_metadata.py`'s interposer harness, not a
+real TUI or gateway. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
 `../test_agent_claude.py`; live configure-to-launch validation remains a gap.

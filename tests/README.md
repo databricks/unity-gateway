@@ -1,7 +1,13 @@
 # Test suites and user journeys
 
-CUJ4 covers Codex's native Auto row, main-model choice, and completed gateway
-inference on the selected model. This live journey has not been run locally.
+CUJ4 covers Codex's native Auto row appearing first, main-model and reasoning-effort
+choices, and completed gateway inference on the selected model and effort. This live
+journey has not been run locally.
+`test_codex_metadata.py` enables Auto in the existing interposer wire harness to cover
+interrupt/reopen and effort cancellation, Shift+Tab collaboration updates, synthetic-ID
+sanitization, model/effort saves, rejected-update rollback, and manual-model feedback
+cancellation and delivery monitoring. These component checks do not exercise a real TUI
+or contact the gateway.
 
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and

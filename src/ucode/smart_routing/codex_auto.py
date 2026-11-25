@@ -97,11 +97,8 @@ class CodexAutoPicker:
                 return True
         if method == "thread/settings/update" and params.get("threadId") == self.thread_id:
             model = params.get("model")
-            collaboration = params.get("collaborationMode")
-            settings = collaboration.get("settings") if isinstance(collaboration, dict) else None
-            if model is None and isinstance(settings, dict) and settings.get("model") == AUTO_MODEL:
-                # Codex omits model when the chosen menu row already matches its visible model.
-                model = AUTO_MODEL
+            # Collaboration-only updates also carry the visible model (e.g. Shift+Tab).
+            # Reselecting Auto without a model update is handled by its native config write.
             if isinstance(model, str) and self.main_model and not self.busy:
                 if model == AUTO_MODEL or model in self.models:
                     self.busy = True
@@ -357,6 +354,37 @@ class CodexAutoPicker:
             row = self.models.get(model)
             if row is None:
                 raise ValueError("The selected model is no longer available. Reopen /model.")
+            effort = requested_effort or old_settings.get("effort")
+            supported_efforts = row["supportedReasoningEfforts"]
+            if effort not in {option["reasoningEffort"] for option in supported_efforts}:
+                effort = row["defaultReasoningEffort"]
+            if selection == AUTO_MODEL and supported_efforts:
+                answer = await self.ask(
+                    {
+                        "id": "auto_effort",
+                        "header": "Reasoning",
+                        "question": "Choose the reasoning effort for Auto's main model.",
+                        "isOther": False,
+                        "isSecret": False,
+                        "options": [
+                            {
+                                "label": option["reasoningEffort"],
+                                "description": option.get("description", ""),
+                            }
+                            for option in sorted(
+                                supported_efforts,
+                                key=lambda option: option["reasoningEffort"] != effort,
+                            )
+                        ],
+                    }
+                )
+                if not answer:
+                    return
+                if len(answer) != 1 or answer[0] not in {
+                    option["reasoningEffort"] for option in supported_efforts
+                }:
+                    raise ValueError("Select a reasoning effort from the offered model options.")
+                effort = answer[0]
             result = await self.route("on" if selection == AUTO_MODEL else "off")
             if result.get("needs_reason"):
                 reason = await collect_feedback(self.ask)
@@ -372,11 +400,6 @@ class CodexAutoPicker:
                 task = asyncio.create_task(self.report_delivery(result["feedback_id"]))
                 self.upload_tasks.add(task)
                 task.add_done_callback(self.upload_tasks.discard)
-            effort = requested_effort or old_settings.get("effort")
-            if effort not in {
-                option["reasoningEffort"] for option in row.get("supportedReasoningEfforts", [])
-            }:
-                effort = row["defaultReasoningEffort"]
             await self.request(
                 "thread/settings/update",
                 {"threadId": self.thread_id, "model": model, "effort": effort},
