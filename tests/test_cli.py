@@ -2402,6 +2402,35 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
         assert "Running without smart routing." in _strip_ansi(result.output)
 
 
+@pytest.mark.parametrize(
+    ("provider_source", "relay_services"),
+    [("saved", ["main.team.mixed"]), ("saved", []), ("explicit", []), ("managed", [])],
+)
+def test_codex_explicit_model_with_configured_provider(provider_source, relay_services):
+    provider = "main.team.seat"
+    service = "main.team.mixed"
+    managed = (
+        {"enabled_agents": {"codex": {"model_config": {"model_provider_service": provider}}}}
+        if provider_source == "managed"
+        else None
+    )
+    args = ["--provider", provider] if provider_source == "explicit" else []
+    with (
+        _launch_policy_patches(managed, persisted_provider=provider) as calls,
+        patch.object(
+            cli_mod.codex_agent, "relay_model_services", return_value=relay_services
+        ) as lookup,
+        patch.object(cli_mod.codex_agent, "use_model_service_relay", return_value=True),
+    ):
+        result = runner.invoke(app, ["codex", *args, "--disable-smart-routing", "--model", service])
+
+    assert result.exit_code == 0, result.output
+    expected = None if relay_services else provider
+    assert calls["configure"].call_args.kwargs["provider"] == expected
+    assert calls["launch"].call_args.args[1]["_codex_launch_provider"] == expected
+    assert lookup.called == (provider_source == "saved")
+
+
 @pytest.mark.parametrize("location", ["main.team", "system.ai"])
 @pytest.mark.parametrize("saved_location", [False, True])
 def test_codex_location_uses_explicitly_selected_seat_service(location, saved_location):

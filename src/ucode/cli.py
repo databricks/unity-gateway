@@ -4456,6 +4456,7 @@ def _launch_tool(
             if tool in MODEL_LOCATION_TOOLS and not managed_provider
             else None
         )
+        selected_service = model or forwarded_model
         if managed_provider:
             provider = managed_provider
             parent_schema = None
@@ -4464,6 +4465,14 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
+        elif (
+            tool == AGENT_CODEX
+            and provider
+            and not explicit_provider
+            and selected_service
+            and codex_agent.relay_model_services(state, [selected_service])
+        ):
+            provider = None
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
         # version. Its version is applied right before launch, after the launch options below.
         managed_smart_routing_applies = (
@@ -4685,7 +4694,6 @@ def _launch_tool(
                 smart_routing_enabled = False
                 managed_smart_routing_applies = False
                 previous = {**smart_routing_v2.disable_smart_routing(), **previous}
-        selected_service = model or forwarded_model
         if tool == AGENT_CODEX and not provider and (not parent_schema or selected_service):
             routed = _routes_launch(
                 tool,
@@ -4922,10 +4930,10 @@ def _launch_tool(
             if provider:
                 state["_claude_launch_provider"] = provider
         elif tool == AGENT_CODEX:
-            if provider:
-                state["_codex_launch_provider"] = provider
-            elif parent_schema:
+            if parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
+            elif provider or persisted_provider:
+                state = {**state, "_codex_launch_provider": provider}
             if relayed and not provider:
                 state = {**state, "_codex_launch_login_checked": True}
         elif tool == AGENT_COPILOT:

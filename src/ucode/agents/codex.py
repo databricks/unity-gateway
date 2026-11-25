@@ -1963,6 +1963,21 @@ def _has_chatgpt_login(binary: str) -> bool:
     return result.returncode == 0 and any(mode in status for mode in ("ChatGPT", "access token"))
 
 
+def relay_model_services(state: dict, models: list[str], *, configuring: bool = False) -> list[str]:
+    """Return the selected UC services with a ChatGPT relay destination."""
+    if machine_wide_only():
+        return []
+    return relay_backed_model_services(
+        state,
+        custom_model_services(models),
+        agent=AGENT_CODEX,
+        provider_type=OPENAI_PROVIDER_TYPE,
+        include_fallbacks=True,
+        configuring=configuring,
+        token_provider=lambda: _launch_token(state, state["workspace"]),
+    )
+
+
 def use_model_service_relay(
     state: dict,
     selected_model: str | None = None,
@@ -1972,21 +1987,11 @@ def use_model_service_relay(
 ) -> bool:
     """Select per-user relay auth for a static list or an explicitly selected model service."""
     models = [] if selected_only else state.get("codex_static_models")
-    candidates = custom_model_services(models if isinstance(models, list) else [])
+    candidates = list(models) if isinstance(models, list) else []
     selection = selected_model or state.get("codex_default_model")
     if isinstance(selection, str) and selection not in candidates:
-        candidates.extend(custom_model_services([selection]))
-    if machine_wide_only():
-        return False
-    relay_backed = relay_backed_model_services(
-        state,
-        candidates,
-        agent=AGENT_CODEX,
-        provider_type=OPENAI_PROVIDER_TYPE,
-        include_fallbacks=True,
-        configuring=configuring,
-        token_provider=lambda: _launch_token(state, state["workspace"]),
-    )
+        candidates.append(selection)
+    relay_backed = relay_model_services(state, candidates, configuring=configuring)
     if not relay_backed:
         return False
     selected_relay = selected_model in relay_backed and not configuring
@@ -2093,23 +2098,20 @@ def launch(
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    launch_provider = state.get("_codex_launch_provider")
-    transient_provider = (
-        launch_provider.strip()
-        if isinstance(launch_provider, str) and launch_provider.strip()
-        else None
-    )
     launch_parent_schema = state.get("_codex_launch_parent_schema")
     parent_schema = (
         launch_parent_schema.strip()
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
-    # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
-    # is most specific; otherwise a transient UC parent must suppress a saved provider.
-    provider = transient_provider or (
-        None if parent_schema else get_provider_service(state, "codex")
-    )
+    # An explicit model-service launch clears a saved provider for this session.
+    launch_provider = state.get("_codex_launch_provider", "")
+    if launch_provider is None:
+        provider = None
+    elif isinstance(launch_provider, str) and launch_provider.strip():
+        provider = launch_provider.strip()
+    else:
+        provider = None if parent_schema else get_provider_service(state, "codex")
     if options.launch_smart_routing and not (provider or parent_schema):
         _launch_smart_routing(state, tool_args)
         return

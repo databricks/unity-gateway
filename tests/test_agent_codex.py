@@ -1120,6 +1120,11 @@ class TestCodexLaunch:
         ("launch_state", "provider_env", "parent_env"),
         [
             ({"_codex_launch_provider": "main.default.openai"}, "main.default.openai", None),
+            (
+                {"_codex_launch_provider": None, "provider_services": {"codex": "main.saved.seat"}},
+                None,
+                None,
+            ),
             ({"_codex_launch_parent_schema": "main.default"}, None, "main.default"),
             ({}, None, None),
         ],
