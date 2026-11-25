@@ -87,18 +87,28 @@ class WindowsApp:
 
     def uia(self, command: str, *args: str) -> str:
         assert self.proc.poll() is None, f"{self.name} exited with {self.proc.returncode}"
-        result = subprocess.run(
-            [str(self.powershell), "-NoProfile", "-STA", "-File", str(UIA_CLIENT), command]
-            + [str(self.proc.pid), *args],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            # A console window would take the foreground, and with it our keystrokes.
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        try:
+            result = subprocess.run(
+                [str(self.powershell), "-NoProfile", "-STA", "-File", str(UIA_CLIENT), command]
+                + [str(self.proc.pid), *args],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                # A console window would take the foreground, and with it our keystrokes.
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except subprocess.TimeoutExpired as error:
+            diagnostic = error.stderr or b""
+            if isinstance(diagnostic, bytes):
+                diagnostic = diagnostic.decode("utf-8", errors="replace")
+            self.session.record(
+                f"{self.name}-uia-timeout.json",
+                {"command": command, "phase": self.session.redact(diagnostic[-2000:])},
+            )
+            raise
         assert result.returncode == 0, f"UI Automation {command} failed: {result.stderr}"
         return result.stdout
 
