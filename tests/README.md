@@ -2112,7 +2112,9 @@ and `ug upgrade` is not run against one.
 ## Smart Router startup validation
 
 The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the default
-without it (no request, band from the first paint). `test_route_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
+without it (no request, band from the first paint). Launches with `ISAAC_LAUNCH_MODE=omni` skip both
+the startup check and the toggle check until Omnigent shows the result: the Claude and Codex launch
+tests check that no request is sent and the toggle check is not wired. `test_route_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
 responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
@@ -2126,7 +2128,8 @@ and `test_codex_smart_routing_v2.py` checks the check is wired even when the fir
 Claude's native mod tests cover the band hold, the result handling, the unsupported and
 validation-failed warnings and their one-turn hide, the failed logs row and detail, the 11 s fallback,
 and the two transcript log lines (`Smart Router is off` and the warning) logged only when
-`ISAAC_LAUNCH_MODE=omni`, which Omnigent reads to show routing off.
+`ISAAC_LAUNCH_MODE=omni`, which Omnigent will read to show routing off. ug does not send those
+launches a check yet, so these mod tests drive the result directly.
 The Claude and Codex back-on TUI journeys in `tests/integration/test_ug_smart_routing_hooks.py` check
 the live validate request that turning routing on sends (HTTP 200, `is_supported: true`), and CUJ 4
 checks the live startup request for both agents. These component tests

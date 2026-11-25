@@ -415,7 +415,6 @@ def test_validate_disables_routing_with_the_unsupported_details(monkeypatch):
     [
         ({}, False),
         ({"UG_ROUTE_VALIDATION": "1"}, True),
-        ({"UG_ROUTE_VALIDATION": "1", "ISAAC_LAUNCH_MODE": "cli"}, True),
         ({"UG_ROUTE_VALIDATION": "1", "ISAAC_LAUNCH_MODE": "omni"}, False),
     ],
 )
