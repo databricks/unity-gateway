@@ -1398,14 +1398,10 @@ subagent-routing activation, orchestration, and preservation of the chosen route
 equivalence and describe cases; a first-prompt orchestration case checks its mapping for
 both agents and that `first_prompt_and_subagent_orch_v0_claude_only` gives Claude the same
 flags. The `_claude_only` version also joins the Claude-only Codex opt-out, describe and
-enabled-version cases. In `test_claude_smart_routing_v2.py`, a launch with either version
-installs both `UserPromptSubmit` hooks (the first-prompt hold and the orchestrator), the
-orchestrator roles and Agent guidance, and no `--model`; a hook case holds then re-sends one
-prompt and checks that the orchestrator hook returns the same workflow both times. In
-`test_codex_smart_routing_v2.py`, a `ug codex app-server` launch with
-`first_prompt_and_subagent_orch_v0` gets both the subagent `PreToolUse` hook and the
-orchestrator `UserPromptSubmit` hook. These are component checks; no ug test yet runs the
-pair in a live Claude TUI.
+enabled-version cases. In `test_claude_smart_routing_v2.py`, a hook case holds then re-sends
+one prompt under the `_claude_only` version and checks that the orchestrator hook returns the
+same workflow both times. These are component checks; no ug test yet runs the pair in a live
+Claude TUI or Codex session.
 `test_enabled_version_routes` checks which agents the version chosen by
 `--enable-smart-routing` or workspace smart routing routes, and
 `test_warns_once_and_launches_unrouted_when_version_leaves_codex_unrouted` in `test_cli.py`

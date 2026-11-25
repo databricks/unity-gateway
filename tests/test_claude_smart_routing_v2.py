@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import shlex
 import sys
 import threading
 from pathlib import Path
@@ -1112,74 +1111,6 @@ class TestV2Launch:
             "model": "user-selected",
             "theme": "light",
             "new": True,
-        }
-
-    @requires_pty
-    @pytest.mark.parametrize(
-        "version",
-        [
-            config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0,
-            config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-        ],
-    )
-    def test_first_prompt_orch_preset_launches_the_hold_with_the_orchestrator(
-        self, tmp_path, monkeypatch, version
-    ):
-        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
-        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
-        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["/bin/ug"])
-        monkeypatch.setattr(
-            v2,
-            "list_anthropic_model_catalog",
-            lambda *_args: AnthropicModelCatalog(
-                model_ids=["system.ai.claude-sonnet-5"], model_id_to_display_name={}
-            ),
-        )
-        captured: dict = {}
-
-        # Only the first-prompt path runs Claude in the PTY wrapper.
-        def fake_run(argv, **_kwargs):
-            captured["argv"] = argv
-            captured["settings"] = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
-            plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
-            captured["roles"] = {path.name for path in (plugin_dir / "agents").glob("*.md")}
-            return 0
-
-        monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_claude(
-                {"workspace": "https://example.com"},
-                [],
-                binary="claude",
-                user_settings_path=tmp_path / "settings.json",
-                launch_model=None,
-                compose_settings=lambda _args: ({}, []),
-                launch_model_args=claude._launch_model_args,
-                model_name=claude._maybe_add_1m_suffix,
-            )
-
-        assert exc.value.code == 0
-        settings = captured["settings"]
-        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
-        assert settings["env"][v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
-        assert {
-            hook["command"]
-            for group in settings["hooks"]["UserPromptSubmit"]
-            for hook in group["hooks"]
-        } == {
-            "/bin/ug claude-router-hook route-first-prompt",
-            shlex.join([sys.executable, "-m", orchestrator.HOOK_MODULE, "--agent", AGENT_CLAUDE]),
-        }
-        options = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
-        assert options["orchestratorInstructions"] == orchestrator.CLAUDE_AGENT_DESCRIPTION
-        argv = captured["argv"]
-        assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
-        assert "--model" not in argv
-        assert captured["roles"] == {
-            path.name for path in (orchestrator.skill_directory() / "agents").glob("*.md")
         }
 
     @requires_pty

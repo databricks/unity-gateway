@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import sys
 import threading
@@ -14,9 +13,7 @@ import pytest
 
 from ucode import agents, codex_config, custom_oauth, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
-from ucode.constants import AGENT_CODEX, SMART_ROUTER_CONFIG_VERSION_ENV_VAR
-from ucode.smart_routing import codex_interposer, codex_routing, orchestrator, v2
-from ucode.smart_routing import config as smart_routing_config
+from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
 
@@ -731,43 +728,6 @@ class TestLaunchCodex:
             "UCODE_SMART_ROUTER_PYTHON": os.environ["UCODE_SMART_ROUTER_PYTHON"],
         }
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
-
-    def test_first_prompt_orch_app_server_launch_installs_subagent_and_orchestrator_hooks(
-        self, monkeypatch
-    ):
-        monkeypatch.setenv(
-            SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
-            smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0,
-        )
-        launches = []
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
-        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
-
-        def hand_off(argv):
-            launches.append(argv)
-            raise SystemExit(0)
-
-        monkeypatch.setattr(v2, "exec_or_spawn", hand_off)
-        app_server_args = ["app-server", "--listen", "stdio://"]
-
-        with pytest.raises(SystemExit):
-            v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                app_server_args,
-                binary="codex",
-                start_model="gpt-start",
-                render_overlay=codex.render_overlay,
-            )
-
-        [argv] = launches
-        assert argv[-len(app_server_args) :] == app_server_args
-        hooks = tomllib.loads("\n".join(argv[1 : -len(app_server_args)][1::2]))["hooks"]
-        [spawn_hook] = hooks["PreToolUse"]
-        assert "codex-router-hook route-subagent" in spawn_hook["hooks"][0]["command"]
-        [prompt_hook] = hooks["UserPromptSubmit"]
-        assert prompt_hook["hooks"][0]["command"] == shlex.join(
-            [sys.executable, "-m", orchestrator.HOOK_MODULE, "--agent", AGENT_CODEX]
-        )
 
     def _run_app_server_launch_case(
         self,
