@@ -826,12 +826,12 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. Turning
-    routing on sends one routes:validate request that the Gateway answers with HTTP 200 and is_supported true. All uniquely tagged calculations complete in
-    native parent and child sessions. The second child's recorded inference payloads carry
-    smart_router_recipe_name DISABLED, with no native model/rationale row and no live gateway
-    decision. The first and third children show native model/rationale rows with live gateway
-    decisions correlated with them; the third is routed again with the same recipe as the first,
-    and both carry that recipe. All payloads omit a recipe header and receive non-empty HTTP 200
+    routing on sends one routes:validate request that the Gateway answers with HTTP 200 and
+    is_supported true. All uniquely tagged calculations complete in native parent and child
+    sessions. The second child's recorded inference payloads carry smart_router_recipe_name
+    DISABLED, with no native model/rationale row and no live gateway decision. The first and
+    third children show native model/rationale rows with live gateway decisions correlated with
+    them; the third is routed again with the same recipe as the first, and both carry that recipe. All payloads omit a recipe header and receive non-empty HTTP 200
     responses (including verified native compatibility retries). Claude's native task view
     reports no running tasks before /exit. No first-prompt routing wrapper starts.
     """

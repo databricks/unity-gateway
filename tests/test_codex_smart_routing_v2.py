@@ -677,11 +677,15 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
 
+    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize("managed_model", [None, "admin-model"])
     def test_app_server_launch_runs_the_given_command_with_routing_settings(
-        self, monkeypatch, managed_model
+        self, monkeypatch, managed_model, platform_name
     ):
         launches = []
+        validations = []
+        # Windows waits on the spawned app-server, so only there does the background check survive.
+        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
@@ -689,7 +693,7 @@ class TestLaunchCodex:
             v2.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("started another process")
         )
         monkeypatch.setattr(
-            v2.route_validation, "start", lambda *_args, **_kw: pytest.fail("started validation")
+            v2.route_validation, "start", lambda *args, **_kw: validations.append(args)
         )
 
         def hand_off(argv):
@@ -737,6 +741,7 @@ class TestLaunchCodex:
             "UCODE_SMART_ROUTER_PYTHON": os.environ["UCODE_SMART_ROUTER_PYTHON"],
         }
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert len(validations) == (platform_name == "nt")
 
     def _run_app_server_launch_case(
         self,

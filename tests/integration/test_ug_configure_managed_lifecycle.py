@@ -119,7 +119,6 @@ def test_managed_fixture_codex_model_lifecycle(live_session, workspace):
     use_managed_config_fixture(session, "codex_lifecycle_b")
     _configure_managed(session, workspace)
     assert _codex_listed(session) == CODEX_B, _codex_listed(session)
-    assert "system.ai.gpt-5-6-terra" not in _codex_listed(session)
 
     # Model discovery via MPS: the header routes, so the static catalog is cleared.
     use_managed_config_fixture(session, "codex_mps")

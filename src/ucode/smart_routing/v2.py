@@ -1275,8 +1275,8 @@ def launch_codex(
             f"Could not enable plaintext Codex task routing: {exc} "
             "Encrypted subagent assignments will keep their requested model."
         )
-    # An app-server launch replaces this process, which would end the background check.
-    if route_validation.enabled(os.environ) and not app_server_launch:
+    # On POSIX an app-server launch execs Codex in place of ug, which ends the background check.
+    if route_validation.enabled(os.environ) and not (app_server_launch and os.name != "nt"):
         # The footer shows a pending state until the check publishes its result.
         with suppress(OSError):
             config_io.atomic_write_json(validation_result_path(session_env_path), {"pending": True})
