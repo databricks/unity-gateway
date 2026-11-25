@@ -97,6 +97,17 @@ def test_rejected_inference_reports_tool_setup_without_conversation():
     assert "secret" not in str(details)
 
 
+def test_model_mismatch_reports_models_without_conversation():
+    payload = {"model": "sonnet", "messages": [{"content": "secret prompt"}]}
+    request = RecordedRequest(1, "POST", "/messages", {}, json.dumps(payload).encode())
+
+    with pytest.raises(AssertionError) as mismatch:
+        request_recorder.assert_served(None, request, "haiku")
+
+    assert mismatch.value.args[0] == {"expected_model": "haiku", "actual_model": "sonnet"}
+    assert "secret prompt" not in str(mismatch.value)
+
+
 def _configured_session(recorder, tmp_path, commands):
     class Session:
         home = tmp_path

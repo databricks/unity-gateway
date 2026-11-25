@@ -432,7 +432,8 @@ def record_claude_response_protocol(session, workspace: str) -> Iterator[TuiRequ
 
 def assert_served(recorder, request, model):
     """The request asked for `model` and its paired response was a non-empty HTTP 200."""
-    assert request.payload["model"] == model, request.payload
+    actual_model = request.payload["model"]
+    assert actual_model == model, {"expected_model": model, "actual_model": actual_model}
     response = recorder.response_for(request, timeout=240)
     assert response.status_code == 200, {
         "status": response.status_code,
