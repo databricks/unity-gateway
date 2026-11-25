@@ -76,6 +76,7 @@ from ucode.constants import (
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     ISAAC_LAUNCH_MODE_ENV_VAR,
+    ISAAC_OMNI_LAUNCH_MODE,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3868,7 +3869,7 @@ def _toggle_current_smart_routing_session(
         agent == AGENT_CODEX
         and not enabled
         and not feedback_collected
-        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == "omni"
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) == ISAAC_OMNI_LAUNCH_MODE
     ):
         print_err(
             "Smart Router is still on. To turn it off, open Omnigent's model menu in this "

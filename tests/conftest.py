@@ -295,6 +295,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch, request):
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
+    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
     # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
     monkeypatch.delenv("UG_HEADERS", raising=False)
     # The routing hooks copy harness headers from these, so the developer's own values would leak.
