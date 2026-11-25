@@ -63,56 +63,61 @@ try {
         Set-Content -LiteralPath $vmLog -Value ('[VM:start] Startup complete' + ('x' * 200)) -Encoding utf8
         if (-not (Test-CoworkVmReady -LogPath $vmLog -Offset $offset -PrefixHash $prefixHash)) { throw 'A longer replacement must still show readiness' }
     } finally { Remove-Item -LiteralPath $vmLog -Force }
-    $script:focusedTestEdit = [pscustomobject]@{ Current = [pscustomobject]@{ Value = '' }; Writes = 0 }
-    $script:focusedTestEdit | Add-Member -MemberType ScriptMethod -Name SetValue -Value {
-        param($Value)
-        $this.Writes++
-        $this.Current.Value = $Value
+    $script:pickerReads = 0
+    $script:fieldWrites = 0
+    $picker = {
+        $script:pickerReads++
+        if ($script:pickerReads -eq 1) { return @{ id = '1152'; type = 'ControlType.Pane'; enabled = $false; handle = 0; class = '' } }
+        return @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Edit' }
     }
-    $script:focusReads = 0
-    $focusedEdit = {
-        $script:focusReads++
-        if ($script:focusReads -eq 1) { return $null }
-        return $script:focusedTestEdit
-    }
-    Set-CoworkFolderInput -ReadFocusedEdit $focusedEdit -Folder '/tmp/CoworkProbe' `
+    $writeAndRead = { param($State, $Value, $Deadline) $script:fieldWrites++; return $Value }
+    $field = Set-CoworkFolderInput -ReadEdit $picker -WriteAndRead $writeAndRead -Folder '/tmp/CoworkProbe' `
         -Deadline ([DateTime]::UtcNow.AddSeconds(3))
-    if ($script:focusReads -ne 2 -or $script:focusedTestEdit.Writes -ne 1 -or $script:focusedTestEdit.Current.Value -cne '/tmp/CoworkProbe') {
-        throw 'Folder input was not written once after focus'
+    if ($script:pickerReads -ne 2 -or $script:fieldWrites -ne 1 -or $field.id -cne '1152' -or $field.value -cne '/tmp/CoworkProbe') {
+        throw 'Folder field was not written exactly once after becoming ready'
     }
-    $script:staleTestEdit = [pscustomobject]@{ Current = [pscustomobject]@{ Value = 'stale' }; Writes = 0 }
-    $script:staleTestEdit | Add-Member -MemberType ScriptMethod -Name SetValue -Value { param($Value) $this.Writes++ }
+    $script:fieldWrites = 0
     try {
-        Set-CoworkFolderInput -ReadFocusedEdit { $script:staleTestEdit } -Folder '/tmp/CoworkProbe' `
-            -Deadline ([DateTime]::UtcNow.AddSeconds(1))
-        throw 'A stale address value must fail'
+        Set-CoworkFolderInput -ReadEdit { @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Edit' } } `
+            -WriteAndRead { param($State, $Value, $Deadline) $script:fieldWrites++; return 'runneradmin' } `
+            -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null
+        throw 'A stale folder field must fail'
     } catch {
         if ($_.Exception.Message -notmatch 'did not retain') { throw }
     }
-    if ($script:staleTestEdit.Writes -ne 1) { throw 'A failed address write must not be repeated' }
-    $script:pickerReads = 0
-    $picker = {
-        $script:pickerReads++
-        if ($script:pickerReads -eq 1) { return @{ address = 'Address: runneradmin'; button = 'wrong' } }
-        return @{ address = 'Address: Documents > CoworkProbe'; button = 'ready' }
+    if ($script:fieldWrites -ne 1) { throw 'A failed folder-field write must not be repeated' }
+    $script:fieldWrites = 0
+    try {
+        Set-CoworkFolderInput -ReadEdit { @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Button' } } `
+            -WriteAndRead $writeAndRead -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null
+        throw 'A non-Edit handle must fail'
+    } catch {
+        if ($_.Exception.Message -notmatch 'class Button') { throw }
     }
-    $button = Wait-CoworkFolderReady -ReadPicker $picker -ExpectedLeaf 'CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3))
-    if ($button -ne 'ready' -or $script:pickerReads -ne 2) { throw 'Folder picker selected before navigation completed' }
+    if ($script:fieldWrites -ne 0) { throw 'A non-Edit handle must never receive the path' }
     $selected = $false
     try {
-        Wait-CoworkFolderReady -ReadPicker { @{ address = 'Address: runneradmin'; button = 'wrong' } } `
-            -ExpectedLeaf 'CoworkProbe' -Deadline ([DateTime]::UtcNow) | Out-Null
+        Set-CoworkFolderInput -ReadEdit { @{ id = '1152'; type = 'ControlType.Pane'; enabled = $false; handle = 0; class = '' } } `
+            -WriteAndRead $writeAndRead -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow) | Out-Null
         $selected = $true
     } catch {
-        if ($_.Exception.Message -notmatch 'Address: runneradmin') { throw }
+        if ($_.Exception.Message -notmatch '1152') { throw }
     }
-    if ($selected) { throw 'A non-navigating picker must not select a folder' }
+    if ($selected) { throw 'An unavailable folder field must not be selected' }
+    $script:buttonReads = 0
+    $button = Wait-CoworkFolderSelect -Deadline ([DateTime]::UtcNow.AddSeconds(3)) -ReadPicker {
+        $script:buttonReads++
+        if ($script:buttonReads -eq 1) { return @{ address = 'Address: runneradmin'; button = $null } }
+        return @{ address = 'Address: runneradmin'; button = 'select-folder' }
+    }
+    if ($button -ne 'select-folder' -or $script:buttonReads -ne 2) { throw 'Select Folder readiness failed' }
     try {
-        Wait-CoworkFolderReady -ReadPicker { @{ address = ''; button = 'wrong' } } `
-            -ExpectedLeaf 'CoworkProbe' -Deadline ([DateTime]::UtcNow) | Out-Null
-        throw 'A missing address must not be accepted'
+        Wait-CoworkFolderSelect -Deadline ([DateTime]::UtcNow) -ReadPicker {
+            @{ address = 'Address: runneradmin'; button = $null }
+        } | Out-Null
+        throw 'A missing Select Folder button must fail'
     } catch {
-        if ($_.Exception.Message -notmatch '<not observed>') { throw }
+        if ($_.Exception.Message -notmatch 'Address: runneradmin') { throw }
     }
 } finally {
     $env:DATABRICKS_BEARER = $savedBearer

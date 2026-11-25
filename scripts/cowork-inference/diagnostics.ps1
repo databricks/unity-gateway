@@ -40,29 +40,33 @@ function Test-CoworkVmReady {
 }
 
 function Set-CoworkFolderInput {
-    param([scriptblock]$ReadFocusedEdit, [string]$Folder, [DateTime]$Deadline)
+    param([scriptblock]$ReadEdit, [scriptblock]$WriteAndRead, [string]$Folder, [DateTime]$Deadline)
     do {
-        $edit = & $ReadFocusedEdit
-        if ($edit -and [DateTime]::UtcNow -lt $Deadline) {
-            $edit.SetValue($Folder)
-            if ($edit.Current.Value -cne $Folder) { throw 'Folder picker address input did not retain the requested path' }
-            return
+        $state = & $ReadEdit
+        if ($state -and $state.enabled -and [IntPtr]$state.handle -ne [IntPtr]::Zero -and [DateTime]::UtcNow -lt $Deadline) {
+            if ($state.class -cne 'Edit') { throw "Folder field 1152 has class $($state.class), not Edit" }
+            $actual = & $WriteAndRead $state $Folder $Deadline
+            if ($actual -cne $Folder) {
+                throw "Folder field did not retain the requested path; observed: $(Protect-DiagnosticText $actual)"
+            }
+            $state.value = $actual
+            return $state
         }
-        if ([DateTime]::UtcNow -ge $Deadline) { throw 'Folder picker address input never obtained focus' }
+        if ([DateTime]::UtcNow -ge $Deadline) {
+            throw "Folder field 1152 not ready; last type: $($state.type); enabled: $($state.enabled); handle: $($state.handle)"
+        }
         Start-Sleep -Milliseconds 500
     } while ($true)
 }
 
-function Wait-CoworkFolderReady {
-    param([scriptblock]$ReadPicker, [string]$ExpectedLeaf, [DateTime]$Deadline)
-    $pattern = '(?i)^Address:\s*(?:.*[\\/>]\s*)?' + [regex]::Escape($ExpectedLeaf) + '\s*$'
+function Wait-CoworkFolderSelect {
+    param([scriptblock]$ReadPicker, [DateTime]$Deadline)
     do {
         $state = & $ReadPicker
-        $address = [string]$state.address
-        if ($state.button -and $address -match $pattern -and [DateTime]::UtcNow -lt $Deadline) { return $state.button }
-        if ([DateTime]::UtcNow -ge $deadline) {
-            $observed = if ($address) { $address } else { '<not observed>' }
-            throw "Folder picker did not navigate to $ExpectedLeaf; last address: $observed"
+        if ($state.button -and [DateTime]::UtcNow -lt $Deadline) { return $state.button }
+        if ([DateTime]::UtcNow -ge $Deadline) {
+            $observed = if ($state.address) { $state.address } else { '<not observed>' }
+            throw "Select Folder was not ready; last address: $observed"
         }
         Start-Sleep -Milliseconds 500
     } while ($true)

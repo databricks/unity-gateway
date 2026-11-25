@@ -8,12 +8,46 @@ if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Use a disposable GitHub runner' }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
 Add-Type @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class CapabilityWindow {
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll", EntryPoint = "RealGetWindowClassW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern uint RealGetWindowClass(IntPtr window, StringBuilder name, uint length);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr SendText(IntPtr window, uint message, IntPtr wParam, string text, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr ReadText(IntPtr window, uint message, IntPtr wParam, StringBuilder text, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr ReadLength(IntPtr window, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+    private static uint Remaining(DateTime deadline) {
+        double ms = (deadline.ToUniversalTime() - DateTime.UtcNow).TotalMilliseconds;
+        if (ms < 1) throw new TimeoutException("Folder field deadline expired");
+        return (uint)Math.Min(ms, UInt32.MaxValue);
+    }
+    public static string WindowClass(IntPtr window) {
+        var name = new StringBuilder(256);
+        if (RealGetWindowClass(window, name, (uint)name.Capacity) == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return name.ToString();
+    }
+    public static string SetAndReadFolder(IntPtr window, string value, DateTime deadline) {
+        IntPtr result;
+        const uint abortIfHung = 2;
+        if (SendText(window, 0x000C, IntPtr.Zero, value, abortIfHung, Remaining(deadline), out result) == IntPtr.Zero || result == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not set the folder field");
+        if (ReadLength(window, 0x000E, IntPtr.Zero, IntPtr.Zero, abortIfHung, Remaining(deadline), out result) == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the folder field length");
+        long length = result.ToInt64();
+        if (length < 0 || length > 32767) throw new InvalidOperationException("Invalid folder field length");
+        var text = new StringBuilder((int)length + 1);
+        if (ReadText(window, 0x000D, (IntPtr)text.Capacity, text, abortIfHung, Remaining(deadline), out result) == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the folder field");
+        return text.ToString();
+    }
 }
 '@
 . "$PSScriptRoot/diagnostics.ps1"
@@ -78,14 +112,18 @@ function Save-UI {
                 elseif ($_.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
                     Protect-DiagnosticText ([string]$valuePattern.Current.Value)
                 } else { $null }
+            $id = [string]$_.Current.AutomationId
+            $handle = [IntPtr]$_.Current.NativeWindowHandle
             @{
                 name = Protect-DiagnosticText ([string]$_.Current.Name)
                 type = $_.Current.ControlType.ProgrammaticName
-                id = Protect-DiagnosticText ([string]$_.Current.AutomationId)
+                id = Protect-DiagnosticText $id
                 enabled = $_.Current.IsEnabled
                 offscreen = $_.Current.IsOffscreen
                 focused = $_.Current.HasKeyboardFocus
                 value = $value
+                nativeHandle = if ($id -eq '1152') { $handle.ToInt64() } else { $null }
+                handleClass = if ($id -eq '1152' -and $handle -ne [IntPtr]::Zero) { [CapabilityWindow]::WindowClass($handle) } else { $null }
             }
         } catch [Windows.Automation.ElementNotAvailableException] { }
     })
@@ -113,22 +151,39 @@ function Select-Folder {
     if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle)) {
         throw 'Could not activate the native folder picker'
     }
-    $navigationDeadline = [DateTime]::UtcNow.AddSeconds(20)
-    [Windows.Forms.SendKeys]::SendWait('^l')
-    Set-CoworkFolderInput -Folder $task.folder -Deadline $navigationDeadline -ReadFocusedEdit {
-        $controls = $dialog.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-        $edit = $controls | Where-Object {
-            try {
-                $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Edit' -and
-                $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and $_.Current.HasKeyboardFocus
-            } catch [Windows.Automation.ElementNotAvailableException] { $false }
-        } | Select-Object -First 1
-        $pattern = $null
-        if ($edit -and $edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $pattern }
+    $selectionDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    try {
+        $field = Set-CoworkFolderInput -Folder $task.folder -Deadline $selectionDeadline -ReadEdit {
+            $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, '1152')
+            $edit = $dialog.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+            if ($edit) {
+                $handle = [IntPtr]$edit.Current.NativeWindowHandle
+                @{
+                    id = $edit.Current.AutomationId
+                    type = $edit.Current.ControlType.ProgrammaticName
+                    enabled = $edit.Current.IsEnabled -and -not $edit.Current.IsOffscreen
+                    handle = $handle
+                    class = if ($handle -ne [IntPtr]::Zero) { [CapabilityWindow]::WindowClass($handle) } else { '' }
+                }
+            }
+        } -WriteAndRead {
+            param($State, $Folder, $Deadline)
+            [CapabilityWindow]::SetAndReadFolder([IntPtr]$State.handle, $Folder, $Deadline)
+        }
+    } catch {
+        $failure = $_
+        try { Save-UI 'folder-input-failed' -Root $dialog }
+        catch { $report.captureError = $_.Exception.Message }
+        throw $failure
     }
+    @{
+        id = $field.id
+        type = $field.type
+        class = $field.class
+        value = Protect-DiagnosticText $field.value
+    } | ConvertTo-Json | Set-Content (Join-Path $evidence 'folder-field.json')
     Save-UI 'folder-input' -Root $dialog
-    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    $button = Wait-CoworkFolderReady -ExpectedLeaf ([IO.Path]::GetFileName($task.folder)) -Deadline $navigationDeadline -ReadPicker {
+    $button = Wait-CoworkFolderSelect -Deadline $selectionDeadline -ReadPicker {
         $addresses = $dialog.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
         $address = $addresses | Where-Object {
             try {
@@ -141,6 +196,7 @@ function Select-Folder {
             button = Find-Control -Names @('Select Folder', 'Select folder', 'Open') -Root $dialog
         }
     }
+    if ([DateTime]::UtcNow -ge $selectionDeadline) { throw 'Folder selection deadline expired before the click' }
     Invoke-Control $button
     $permission = Wait-Control -Names @(
         'Allow Claude to change files in “CoworkProbe”?',

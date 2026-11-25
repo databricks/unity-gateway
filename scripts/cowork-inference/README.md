@@ -73,8 +73,8 @@ After inference, three fresh Cowork tasks run through the same native UI:
 
 1. Create `Documents/CoworkProbe/input.txt` with a random value absent from the prompt.
    Select that folder through the native picker and choose **Allow** for this task. On Windows,
-   wait for the address Edit to receive focus, set and verify the path once, and wait for the
-   target folder address before selecting it. Redacted UI snapshots capture values and focus.
+   wait for native folder field 1152, verify its Win32 `Edit` class, set and read its path once,
+   then select the folder. Redacted UI snapshots capture the field class, value and focus.
    Require a successful native `Read` call on that exact file, its contents in the
    matching tool result, and an identical completed assistant answer.
 2. Install a local test skill through native `claude plugin ... --cowork` commands,
