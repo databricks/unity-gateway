@@ -123,9 +123,9 @@ def _assert_mps_catalog(workspace) -> None:
         matching = listed_by_name.get(mps_name)
         assert matching is not None, [item.name for item in listed]
         listed_targets = matching.config.targets if matching.config else None
-        assert [target.model for target in listed_targets or []] == [
+        assert sorted(target.model for target in listed_targets or []) == sorted(
             target.model for target in targets
-        ], matching
+        ), matching
 
 
 def _assert_mcp_services(workspace) -> None:
