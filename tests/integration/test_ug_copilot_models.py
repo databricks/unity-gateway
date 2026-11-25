@@ -1,5 +1,7 @@
 """CUJs for discovering and switching between Databricks models in GitHub Copilot CLI through ug."""
 
+import json
+
 import pytest
 from utils.constants import (
     CLAUDE_TEST_MODEL,
@@ -116,7 +118,32 @@ def test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions(
 
     assert set(models) <= set(session.workspace_state()["copilot_catalog"]["models"])
     for model, task in tasks.items():
-        task.assert_headless_answer("copilot", results[model])
+        try:
+            task.assert_headless_answer("copilot", results[model])
+        except AssertionError:
+            events = []
+            for line in results[model].stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    events.append(event)
+            diagnostics = {
+                "model": model,
+                "tool_starts": sum(event.get("type") == "tool.execution_start" for event in events),
+                "tool_completions": sum(
+                    event.get("type") == "tool.execution_complete" for event in events
+                ),
+                "assistant_messages": sum(
+                    event.get("type") == "assistant.message" for event in events
+                ),
+            }
+            session.record("copilot-model-answer-failure.json", diagnostics)
+            raise AssertionError(
+                f"Copilot did not complete the {model} file task: {diagnostics}; "
+                "see the command artifact for native events"
+            ) from None
         assert_completed_task_model(session, "copilot", task.value, model)
     selected = copilot_selected_models(session)
     for model in models:
