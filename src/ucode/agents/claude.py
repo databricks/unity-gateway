@@ -1703,7 +1703,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
     The list is shared by every user of the config, so a user who isn't signed in, or whose
     managed settings already pin other auth, keeps gateway auth (and the rest of the list) rather
     than being sent to a browser login or blocked. Configure refreshes each service. Launches
-    reuse confirmed relays for 24 hours and non-relays for five minutes.
+    reuse confirmed results for 24 hours.
     """
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
@@ -3182,9 +3182,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     from ucode import gateway_proxy
 
     def routes_to_subscription_relay(model: str, token: str) -> bool:
-        return model_services_need_subscription_relay(
-            workspace, token, [model], provider_type=ANTHROPIC_PROVIDER_TYPE
-        )
+        return model_services_need_subscription_relay(workspace, token, [model])
 
     server, cache, client = gateway_proxy.start_relay_proxy(
         workspace, token_provider, port, routes_to_subscription_relay=routes_to_subscription_relay

@@ -981,7 +981,7 @@ class TestCodexRelayProxy:
         cache.token_snapshot.return_value = ("tok1", 1)
         monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
 
-        def lookup(workspace, token, name, *, provider_type, include_fallbacks):
+        def lookup(workspace, token, name, *, provider_type, include_fallbacks, use_cache):
             assert include_fallbacks
             assert (workspace, token, provider_type) == ("https://w", "tok1", "openai")
             return (

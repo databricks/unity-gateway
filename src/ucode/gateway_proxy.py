@@ -1033,7 +1033,12 @@ def start_codex_model_service_proxy(
     def relayed(model: str, token: str) -> bool:
         return (
             model_service_relay_lookup(
-                workspace, token, model, provider_type=OPENAI_PROVIDER_TYPE, include_fallbacks=True
+                workspace,
+                token,
+                model,
+                provider_type=OPENAI_PROVIDER_TYPE,
+                include_fallbacks=True,
+                use_cache=True,
             )
             is RelayLookup.RELAYED
         )

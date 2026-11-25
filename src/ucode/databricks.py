@@ -3810,12 +3810,16 @@ class RelayLookup(Enum):
 _RELAY_LOOKUP_TIMEOUT_S = 5
 _RELAY_LOOKUP_RETRY_AFTER_S = 60
 
-_RELAY_LOOKUP_TTL = {
-    RelayLookup.RELAYED: 24 * 60 * 60,
-    RelayLookup.NOT_RELAYED: 5 * 60,
-    RelayLookup.UNKNOWN: _RELAY_LOOKUP_RETRY_AFTER_S,
-}
+_RELAY_LOOKUP_MAX_AGE_S = 24 * 60 * 60
 _RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str, str, bool], tuple[RelayLookup, float]] = {}
+
+
+def _relay_lookup_ttl(result: RelayLookup, provider_type: str) -> int:
+    if result is RelayLookup.UNKNOWN:
+        return _RELAY_LOOKUP_RETRY_AFTER_S
+    if result is RelayLookup.NOT_RELAYED and provider_type == OPENAI_PROVIDER_TYPE:
+        return 5 * 60
+    return _RELAY_LOOKUP_MAX_AGE_S
 
 
 def custom_model_services(models: list[str]) -> list[str]:
@@ -3851,7 +3855,7 @@ def relay_backed_model_services(
         if isinstance(entry, dict)
         and isinstance(entry.get("relayed"), bool)
         and isinstance(entry.get("expires_at"), (float, int))
-        and now < entry["expires_at"] <= now + _RELAY_LOOKUP_TTL[RelayLookup.RELAYED]
+        and now < entry["expires_at"] <= now + _RELAY_LOOKUP_MAX_AGE_S
     }
     pending = [name for name in dict.fromkeys(candidates) if configuring or name not in entries]
     if pending:
@@ -3863,6 +3867,7 @@ def relay_backed_model_services(
         for name in pending:
             entries.pop(name, None)
             if token is None:
+                unknown.append(name)
                 continue
             result = model_service_relay_lookup(
                 state["workspace"],
@@ -3870,13 +3875,14 @@ def relay_backed_model_services(
                 name,
                 provider_type=provider_type,
                 include_fallbacks=include_fallbacks,
+                use_cache=not configuring,
             )
             if result is RelayLookup.UNKNOWN:
                 unknown.append(name)
             else:
                 entries[name] = {
                     "relayed": result is RelayLookup.RELAYED,
-                    "expires_at": now + _RELAY_LOOKUP_TTL[result],
+                    "expires_at": now + _relay_lookup_ttl(result, provider_type),
                 }
         if unknown:
             print_warning(
@@ -3897,6 +3903,7 @@ def model_service_relay_lookup(
     *,
     provider_type: str,
     include_fallbacks: bool,
+    use_cache: bool,
 ) -> RelayLookup:
     """Check the eligible destinations for the selected subscription provider."""
     if not custom_model_services([model]):
@@ -3904,23 +3911,29 @@ def model_service_relay_lookup(
     name = model.removesuffix("[1m]")
     key = (workspace, name, provider_type, include_fallbacks)
     cached = _RELAY_BACKED_MODEL_SERVICES_CACHE.get(key)
-    if cached and time.monotonic() < cached[1]:
+    if use_cache and cached and time.monotonic() < cached[1]:
         return cached[0]
     result = _fetch_model_service_relay_lookup(
         name, workspace, token, provider_type, include_fallbacks
     )
-    _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = (result, time.monotonic() + _RELAY_LOOKUP_TTL[result])
+    _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = (
+        result,
+        time.monotonic() + _relay_lookup_ttl(result, provider_type),
+    )
     return result
 
 
-def model_services_need_subscription_relay(
-    workspace: str, token: str, models: list[str], *, provider_type: str
-) -> bool:
-    """True when any model in ``models`` routes to the requested subscription provider. An unknown answer
+def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
+    """True when any model in ``models`` routes to a Claude subscription relay. An unknown answer
     counts as not relayed, which keeps the gateway-auth behavior."""
     return any(
         model_service_relay_lookup(
-            workspace, token, model, provider_type=provider_type, include_fallbacks=False
+            workspace,
+            token,
+            model,
+            provider_type=ANTHROPIC_PROVIDER_TYPE,
+            include_fallbacks=False,
+            use_cache=True,
         )
         is RelayLookup.RELAYED
         for model in models

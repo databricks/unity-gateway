@@ -1120,7 +1120,10 @@ class TestCodexLaunch:
         [
             ({"_codex_launch_provider": "main.default.openai"}, "main.default.openai", None),
             (
-                {"_codex_launch_provider": None, "provider_services": {"codex": "main.saved.seat"}},
+                {
+                    "_codex_launch_model_service": "main.default.seat",
+                    "provider_services": {"codex": "main.saved.seat"},
+                },
                 None,
                 None,
             ),
@@ -1879,7 +1882,7 @@ class TestCodexLaunch:
             is signed_in
         )
         detect.assert_called_once_with(
-            WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True
+            WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True, use_cache=True
         )
 
     @pytest.mark.parametrize("configuring", [False, True])

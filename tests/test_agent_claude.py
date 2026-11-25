@@ -777,7 +777,7 @@ class TestStaticModelsNeedSubscriptionRelay:
         monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
 
-        def lookup(_ws, _token, model, *, provider_type, include_fallbacks):
+        def lookup(_ws, _token, model, *, provider_type, include_fallbacks, use_cache):
             assert not include_fallbacks
             assert provider_type == "anthropic"
             looked_up.append(model)
@@ -847,7 +847,9 @@ class TestStaticModelsNeedSubscriptionRelay:
         assert claude.static_models_need_subscription_relay(state)
         assert looked_up == []
 
-    def test_cache_survives_model_selection_and_refreshes_negative_results_first(self, monkeypatch):
+    def test_cache_survives_model_selection_and_reuses_confirmed_results_for_a_day(
+        self, monkeypatch
+    ):
         looked_up = self._relay_backed(monkeypatch)
         now = db_mod.time.time()
         monkeypatch.setattr(db_mod.time, "time", lambda: now)
@@ -860,11 +862,10 @@ class TestStaticModelsNeedSubscriptionRelay:
         claude.static_models_need_subscription_relay(state)
         assert looked_up == []
 
-        now += db_mod._RELAY_LOOKUP_TTL[RelayLookup.NOT_RELAYED] + 1
+        now += 24 * 60 * 60 - 1
         claude.static_models_need_subscription_relay(state)
-        assert looked_up == ["main.default.oss"]
-        now += db_mod._RELAY_LOOKUP_TTL[RelayLookup.RELAYED]
-        looked_up.clear()
+        assert looked_up == []
+        now += 1
         claude.static_models_need_subscription_relay(state)
         assert looked_up == ["main.default.relayed", "main.default.oss"]
 

@@ -39,7 +39,6 @@ from ucode.agents import (
     configure_single_tool,
     configure_tool,
     ensure_bootstrap_dependencies,
-    ensure_minimum_version,
     ensure_provider_state,
     explicit_model_arg_value,
     install_databricks_ai_tools_for_agents,
@@ -4457,6 +4456,7 @@ def _launch_tool(
             else None
         )
         selected_service = model or forwarded_model
+        selected_relay_overrides_provider = False
         if managed_provider:
             provider = managed_provider
             parent_schema = None
@@ -4468,6 +4468,7 @@ def _launch_tool(
         elif tool == AGENT_CODEX and codex_agent.selected_service_overrides_saved_provider(
             state, selected_service, provider, explicit_provider
         ):
+            selected_relay_overrides_provider = True
             provider = None
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
         # version. Its version is applied right before launch, after the launch options below.
@@ -4668,44 +4669,23 @@ def _launch_tool(
                     provider_models = authored
                     coding_agent_config_defaults = authored
         routing_unavailable = None
-        if tool == AGENT_CODEX and managed_smart_routing_applies:
-            if relayed:
-                routing_unavailable = (
-                    "Smart routing is unavailable with a ChatGPT subscription relay."
-                )
-            else:
-                try:
-                    routing_unavailable = codex_agent.minimum_version_error(
-                        smart_routing_enabled=True
-                    )
-                    if routing_unavailable:
-                        ensure_minimum_version(
-                            "codex",
-                            lambda: codex_agent.minimum_version_error(smart_routing_enabled=True),
-                        )
-                        routing_unavailable = None
-                except RuntimeError as exc:
-                    routing_unavailable = str(exc)
-        if tool == AGENT_CODEX and not provider and (not parent_schema or selected_service):
-            routed = not routing_unavailable and _routes_launch(
-                tool,
-                ctx.args,
-                smart_routing_enabled=smart_routing_enabled,
-                explicit_prompt=explicit_prompt,
-                model=selected_service,
-                provider=None,
+        if tool == AGENT_CODEX:
+            relayed, routing_unavailable = codex_agent.launch_relay_and_routing(
+                state,
+                selected_service,
+                provider=provider,
+                parent_schema=parent_schema,
+                relayed=relayed,
+                routed=_routes_launch(
+                    tool,
+                    ctx.args,
+                    smart_routing_enabled=smart_routing_enabled,
+                    explicit_prompt=explicit_prompt,
+                    model=selected_service,
+                    provider=provider,
+                ),
+                managed_routing=managed_smart_routing_applies,
             )
-            if not routed or selected_service:
-                relayed = codex_agent.use_model_service_relay(
-                    state,
-                    selected_service,
-                    selected_only=routed or bool(parent_schema),
-                    configuring=False,
-                )
-                if routed and relayed:
-                    routing_unavailable = (
-                        "Smart routing is unavailable with a ChatGPT subscription relay."
-                    )
         if routing_unavailable:
             print_warning(f"{routing_unavailable} Running without smart routing.")
             smart_routing_enabled = False
@@ -4937,8 +4917,9 @@ def _launch_tool(
         elif tool == AGENT_CODEX:
             if parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-            elif explicit_provider or managed_provider or (persisted_provider and not provider):
-                # A saved relay is a default for native model IDs; only an explicit or managed MPS pins the session.
+            elif selected_relay_overrides_provider:
+                state = {**state, "_codex_launch_model_service": selected_service}
+            elif explicit_provider or managed_provider:
                 state = {**state, "_codex_launch_provider": provider}
             if relayed and not provider and not selected_service:
                 state = {**state, "_codex_launch_login_checked": True}

@@ -2351,6 +2351,7 @@ class TestManagedConfigLaunchSourceGuard:
             True,
         ),
         ([], ["main.team.chatgpt"], True, True),
+        (["--model", "main.team.chatgpt"], ["main.team.chatgpt"], True, True),
     ],
 )
 def test_codex_managed_model_service_launch(monkeypatch, args, services, old_codex, relay):
@@ -2400,7 +2401,10 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
             "minimum_version_error",
             return_value="old Codex" if old_codex else None,
         ),
-        patch("ucode.cli.ensure_minimum_version", side_effect=RuntimeError("upgrade declined")),
+        patch(
+            "ucode.agents.ensure_minimum_version",
+            side_effect=RuntimeError("upgrade declined") if old_codex else None,
+        ) as upgrade,
     ):
         result = runner.invoke(app, ["codex", *args])
 
@@ -2413,6 +2417,8 @@ def test_codex_managed_model_service_launch(monkeypatch, args, services, old_cod
         lookup.assert_not_called()
     if "--model" in args:
         assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is not relay
+    if old_codex and "--model" in args and relay:
+        upgrade.assert_not_called()
     if old_codex or ("--model" in args and relay):
         assert not calls["launch"].call_args.kwargs["options"].launch_smart_routing
         assert "Running without smart routing." in " ".join(_strip_ansi(result.output).split())
@@ -2444,8 +2450,11 @@ def test_codex_explicit_model_with_configured_provider(provider_source, relay_se
     expected = None if relay_services else provider
     assert calls["configure"].call_args.kwargs["provider"] == expected
     launch_state = calls["launch"].call_args.args[1]
-    if provider_source == "saved" and expected:
+    if provider_source == "saved":
         assert "_codex_launch_provider" not in launch_state
+        assert launch_state.get("_codex_launch_model_service") == (
+            service if relay_services else None
+        )
     else:
         assert launch_state["_codex_launch_provider"] == expected
     assert lookup.called == (provider_source == "saved")

@@ -2021,6 +2021,38 @@ def use_model_service_relay(
     return True
 
 
+def launch_relay_and_routing(
+    state: dict,
+    selected_model: str | None,
+    *,
+    provider: str | None,
+    parent_schema: str | None,
+    relayed: bool,
+    routed: bool,
+    managed_routing: bool,
+) -> tuple[bool, str | None]:
+    """Choose the launch credentials and report why smart routing must be disabled."""
+    if not provider and (selected_model or (not routed and not parent_schema)):
+        relayed = use_model_service_relay(
+            state, selected_model, configuring=False, selected_only=routed or bool(parent_schema)
+        )
+    if relayed and (managed_routing or (routed and not provider)):
+        return True, "Smart routing is unavailable with a ChatGPT subscription relay."
+    if managed_routing:
+        try:
+            agents.ensure_minimum_version(
+                AGENT_CODEX, lambda: minimum_version_error(smart_routing_enabled=True)
+            )
+        except RuntimeError as exc:
+            if routed and not provider and not parent_schema:
+                # The ordinary launch may use seats from the managed static list.
+                relayed = use_model_service_relay(
+                    state, selected_model, configuring=False, selected_only=False
+                )
+            return relayed, str(exc)
+    return relayed, None
+
+
 def _ensure_chatgpt_login(binary: str) -> None:
     """Run Codex's browser sign-in if it has no ChatGPT login. ug never sees the token."""
     # Codex reads an access token from the environment directly, so no interactive login applies;
@@ -2103,14 +2135,11 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
-    # An explicit model-service launch clears a saved provider for this session.
-    launch_provider = state.get("_codex_launch_provider", "")
-    if launch_provider is None:
-        provider = None
-    elif isinstance(launch_provider, str) and launch_provider.strip():
-        provider = launch_provider.strip()
-    else:
-        provider = None if parent_schema else get_provider_service(state, "codex")
+    launch_provider = state.get("_codex_launch_provider")
+    pinned_provider = launch_provider.strip() if isinstance(launch_provider, str) else None
+    provider = pinned_provider
+    if not (provider or parent_schema or state.get("_codex_launch_model_service")):
+        provider = get_provider_service(state, AGENT_CODEX)
     if options.launch_smart_routing and not (provider or parent_schema):
         _launch_smart_routing(state, tool_args)
         return
@@ -2218,7 +2247,7 @@ def launch(
 
         provider_config = profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
         token_provider = proxy_token_provider(state, workspace)
-        if provider and "_codex_launch_provider" in state:
+        if pinned_provider:
             relay = gateway_proxy.start_relay_proxy(workspace, token_provider, 0, agent=AGENT_CODEX)
         else:
             secret = secrets.token_urlsafe(32)

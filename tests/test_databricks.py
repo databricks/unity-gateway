@@ -7306,6 +7306,7 @@ class TestModelServicesNeedSubscriptionRelay:
             name,
             provider_type=db_mod.ANTHROPIC_PROVIDER_TYPE,
             include_fallbacks=False,
+            use_cache=True,
         )
 
     @pytest.fixture(autouse=True)
@@ -7387,7 +7388,6 @@ class TestModelServicesNeedSubscriptionRelay:
             "https://ws",
             "tok",
             ["main.default.oss", "main.default.sonnet[1m]"],
-            provider_type=db_mod.ANTHROPIC_PROVIDER_TYPE,
         )
         # Lookups use the short relay timeout, not the 30s default.
         assert {timeout for _name, timeout in calls} == {db_mod._RELAY_LOOKUP_TIMEOUT_S}
@@ -7430,11 +7430,19 @@ class TestModelServicesNeedSubscriptionRelay:
             openai=frozenset({"main.default.chatgpt"}),
         )
         assert not db_mod.model_services_need_subscription_relay(
-            "https://ws", "tok", ["main.default.gpt"], provider_type=db_mod.ANTHROPIC_PROVIDER_TYPE
+            "https://ws", "tok", ["main.default.gpt"]
         )
 
-        assert db_mod.model_services_need_subscription_relay(
-            "https://ws", "tok", ["main.default.gpt"], provider_type="openai"
+        assert (
+            db_mod.model_service_relay_lookup(
+                "https://ws",
+                "tok",
+                "main.default.gpt",
+                provider_type="openai",
+                include_fallbacks=True,
+                use_cache=True,
+            )
+            is db_mod.RelayLookup.RELAYED
         )
 
     @pytest.mark.parametrize("budget", [False, True])
@@ -7459,9 +7467,77 @@ class TestModelServicesNeedSubscriptionRelay:
                 "main.default.gpt",
                 provider_type="openai",
                 include_fallbacks=True,
+                use_cache=True,
             )
             is db_mod.RelayLookup.RELAYED
         )
+
+    def test_codex_discovers_a_new_seat_after_five_minutes(self, monkeypatch):
+        name = "main.default.gpt"
+        provider = "main.default.chatgpt"
+        relayed = set()
+        services = {name: self._service(name, self._external(provider))}
+        calls = self._patch(monkeypatch, services, relayed, openai=frozenset({provider}))
+        now = 1000.0
+        monkeypatch.setattr(db_mod.time, "time", lambda: now)
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now)
+        state = {"workspace": "https://ws"}
+
+        def discover(configuring):
+            return db_mod.relay_backed_model_services(
+                state,
+                [name],
+                agent="codex",
+                provider_type="openai",
+                include_fallbacks=True,
+                configuring=configuring,
+                token_provider=lambda: "tok",
+            )
+
+        assert discover(False) == []
+        relayed.add(provider)
+        now += 299
+        assert discover(False) == []
+        assert len(calls) == 1
+        now += 1
+        assert discover(False) == [name]
+        assert len(calls) == 2
+        relayed.clear()
+        assert discover(True) == []
+        assert len(calls) == 3
+
+    def test_invalid_saved_entries_and_token_failure_are_retried(self, monkeypatch, capsys):
+        now = 1000.0
+        monkeypatch.setattr(db_mod.time, "time", lambda: now)
+        state = {
+            "workspace": "https://ws",
+            "codex_relay_detection": {
+                "cat.s.bad": {"relayed": "true", "expires_at": now + 1},
+                "cat.s.future": {"relayed": True, "expires_at": now + 2 * 86400},
+                "cat.s.good": {"relayed": True, "expires_at": now + 10},
+            },
+        }
+        token = Mock(side_effect=[RuntimeError("expired"), "tok"])
+        lookup = Mock(return_value=db_mod.RelayLookup.RELAYED)
+        monkeypatch.setattr(db_mod, "model_service_relay_lookup", lookup)
+        names = list(state["codex_relay_detection"])
+
+        def discover():
+            return db_mod.relay_backed_model_services(
+                state,
+                names,
+                agent="codex",
+                provider_type="openai",
+                include_fallbacks=True,
+                configuring=False,
+                token_provider=token,
+            )
+
+        assert discover() == ["cat.s.good"]
+        assert "cat.s.bad, cat.s.future" in capsys.readouterr().out
+        lookup.assert_not_called()
+        assert discover() == names
+        assert [call.args[2] for call in lookup.call_args_list] == names[:2]
 
     def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):
         service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
