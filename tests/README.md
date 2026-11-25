@@ -2188,3 +2188,8 @@ do not establish live Gateway or classifier compatibility.
 caller-authorized SDK downloads, same-path refresh, source conflicts, bounded reads and parsing
 failures. `test_workspace_selection.py` covers workspace selector headers on the download client.
 These component tests do not establish live Volume permissions or agent inference.
+
+`test_published_agent_config.py` covers file-backed configure composition, gateway-owned fields,
+unchanged reference persistence, offline draft previews, spec gating, and download/parse failures
+leaving existing settings, saved policy, and marker unchanged. Live Volume ACLs and inference
+remain unverified.

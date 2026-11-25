@@ -554,6 +554,120 @@ def _draft(tmp_path) -> Path:
 
 
 class TestRun:
+    def test_native_files_use_existing_composition_and_keep_references(self, tmp_path, writes):
+        written, saved = writes
+        (tmp_path / "managed-settings.json").write_text(
+            '{"cleanupPeriodDays": 14, "apiKeyHelper": "admin-helper"}'
+        )
+        (tmp_path / "config.toml").write_text('file_opener = "none"')
+        (tmp_path / "requirements.toml").write_text(
+            'allowed_sandbox_modes = ["read-only", "workspace-write"]'
+        )
+        raw = _raw_config(
+            claude_config={
+                "default_models": {"default_model": "system.ai.claude-x"},
+                "claude_code": {"managed_settings_json": "managed-settings.json"},
+            },
+            codex_config={
+                "codex": {"config_toml": "config.toml", "requirements_toml": "requirements.toml"}
+            },
+        )
+        raw["spec_version"] = 3
+        _run(raw, source=str(tmp_path / "draft.json"))
+        claude_doc = json.loads(written[claude.managed_settings_path()])
+        assert claude_doc["cleanupPeriodDays"] == 14
+        assert claude_doc["apiKeyHelper"] != "admin-helper"
+        assert (
+            tomllib.loads(written[managed_files_mod.CODEX_SYSTEM_CONFIG_PATH])["file_opener"]
+            == "none"
+        )
+        assert tomllib.loads(written[managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH])[
+            "allowed_sandbox_modes"
+        ] == ["read-only", "workspace-write"]
+        assert saved[0][0][1] == raw
+        assert (
+            "managed_settings"
+            not in raw["enabled_agents"][0]["config"]["agent_native_config"]["claude_code"]
+        )
+
+    @pytest.mark.parametrize("failure", ["missing", "invalid-json", "invalid-toml"])
+    def test_native_file_failure_leaves_the_previous_installation(
+        self, tmp_path, writes, monkeypatch, failure
+    ):
+        written, saved = writes
+        _run(_raw_config(claude_config={}, codex_config={}))
+        before = {
+            path: path.read_bytes() for path, content in written.items() if content is not None
+        }
+        saved_before = list(saved)
+        written.clear()
+        (tmp_path / "claude.json").write_text(
+            '{"language": "French"}' if failure != "invalid-json" else "{"
+        )
+        if failure != "missing":
+            (tmp_path / "requirements.toml").write_text(
+                'allowed_sandbox_modes = ["read-only"]' if failure != "invalid-toml" else "[broken"
+            )
+        raw = _raw_config(
+            claude_config={
+                "default_models": {"default_model": "system.ai.claude-x"},
+                "claude_code": {"managed_settings_json": "claude.json"},
+            },
+            codex_config={"codex": {"requirements_toml": "requirements.toml"}},
+        )
+        monkeypatch.setattr(
+            claude,
+            "cleanup_auto_configuration",
+            lambda: pytest.fail("cleanup before file preflight"),
+        )
+        with pytest.raises(machine.ManagedRunError) as exc:
+            _run(raw, source=str(tmp_path / "draft.json"))
+        assert exc.value.code == machine.EXIT_USAGE
+        reference = "managed_settings_json" if failure == "invalid-json" else "requirements_toml"
+        assert reference in str(exc.value)
+        assert {path: path.read_bytes() for path in before} == before
+        assert saved == saved_before
+        assert written == {}
+
+    def test_failed_remote_download_changes_no_settings(self, writes, monkeypatch):
+        from types import SimpleNamespace
+
+        from databricks.sdk.errors import PermissionDenied
+
+        def denied(path):
+            raise PermissionDenied("READ VOLUME is required")
+
+        monkeypatch.setattr(
+            "databricks.sdk.WorkspaceClient",
+            lambda **kwargs: SimpleNamespace(
+                config=SimpleNamespace(workspace_id="stale"), files=SimpleNamespace(download=denied)
+            ),
+        )
+        with pytest.raises(machine.ManagedRunError) as exc:
+            _run(
+                _raw_config(
+                    claude_config={
+                        "claude_code": {
+                            "managed_settings_json": "/Volumes/main/ai/configs/settings.json"
+                        }
+                    }
+                ),
+                token="test-token",
+            )
+        assert exc.value.code == machine.EXIT_FETCH
+        assert "READ VOLUME" in str(exc.value)
+        assert writes == ({}, [])
+
+    def test_unsupported_draft_spec_is_refused_before_writes(self, writes):
+        with pytest.raises(machine.ManagedRunError, match="newer Unity Gateway"):
+            _run(
+                {
+                    **_raw_config(claude_config={}),
+                    "spec_version": managed_config_mod.MAX_SPEC_VERSION + 1,
+                }
+            )
+        assert writes == ({}, [])
+
     def test_writes_files_policy_copy_and_marker(self, writes):
         written, saved = writes
         raw = _raw_config(claude_config={}, codex_config={})
@@ -1126,6 +1240,32 @@ class TestGlobalCli:
         assert result.exit_code == 0, result.output
         assert "apiKeyHelper" in result.output
         assert written == {} and global_cli == []
+
+    def test_preview_draft_reads_local_native_files_without_login(
+        self, monkeypatch, writes, global_cli, tmp_path
+    ):
+        (tmp_path / "native.json").write_text('{"language": "French"}')
+        draft = tmp_path / "draft.json"
+        draft.write_text(
+            json.dumps(
+                {
+                    **_raw_config(
+                        claude_config={
+                            "default_models": {"default_model": "system.ai.claude-x"},
+                            "claude_code": {"managed_settings_json": "native.json"},
+                        }
+                    ),
+                    "spec_version": 3,
+                }
+            )
+        )
+        monkeypatch.setattr(
+            machine, "get_databricks_token", lambda *a, **kw: pytest.fail("draft requested login")
+        )
+        result = _configure("--dry-run", "--agents", "claude", "--from-file", str(draft))
+        assert result.exit_code == 0, result.output
+        assert '"language": "French"' in result.output
+        assert writes == ({}, []) and global_cli == []
 
     def test_preview_custom_codex_service_needs_no_credentials(
         self, monkeypatch, writes, global_cli, tmp_path

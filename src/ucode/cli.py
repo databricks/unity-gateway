@@ -5836,7 +5836,8 @@ def configure(
         typer.Option(
             "--from-file",
             help="With --global --dry-run: preview the machine-wide files a draft agent "
-            "configuration (the JSON `ug export` writes) produces, instead of the published one.",
+            "configuration (the JSON `ug export` writes) produces. Native file paths are local, "
+            "relative to this JSON file.",
         ),
     ] = None,
 ) -> None:
@@ -6242,13 +6243,6 @@ def _configure_global_from_agent_config(
                 ) from exc
             # The preview still shows the files, with this installation's paths in them.
             print_warning(f"A real run would stop here: {exc}")
-        if not claude_agent.auto_configuration_enabled():
-            try:
-                claude_agent.cleanup_auto_configuration()
-            except RuntimeError as exc:
-                raise published_agent_config.ManagedRunError(
-                    published_agent_config.EXIT_WRITE, str(exc)
-                ) from exc
         enabled = normalize_managed_config(raw).get("enabled_agents") or {}
         if not dry_run and from_file is None:
             # Install missing enabled agents as the merge does, before the build checks versions.

@@ -81,6 +81,47 @@ Each field is a JSON object. Codex fields have the same structure as the TOML fi
 written as given, including `null` for Claude Code. Codex drops `null` values, because TOML has no
 `null`, and the run report lists each dropped key.
 
+## Native files
+
+A published configuration can reference UTF-8 files in ordinary UC Volumes instead of inline
+objects. File-backed configurations require `spec_version` 3. Each role accepts one source:
+`managed_settings` or `managed_settings_json`, `config` or `config_toml`, and `requirements` or
+`requirements_toml`. Different roles can mix inline and file sources.
+
+```json
+{
+  "agent": "CODING_AGENT_CODEX",
+  "config": {
+    "agent_native_config": {
+      "codex": {
+        "config_toml": "/Volumes/main/ai/agent_configs/codex/config.toml",
+        "requirements_toml": "/Volumes/main/ai/agent_configs/codex/requirements.toml"
+      }
+    }
+  }
+}
+```
+
+Claude Code uses `agent_native_config.claude_code.managed_settings_json` to reference a native
+JSON object. Codex files use native TOML. Each file is limited to 1 MiB. The ownership rules
+below apply after parsing, so Unity Gateway's required settings retain precedence.
+
+The configuring user or MDM principal needs `USE CATALOG`, `USE SCHEMA`, and `READ VOLUME`
+for these files. Access to the CAC alone does not grant access to the Volume. Unity Gateway
+reads them through the Databricks SDK Files API using that principal's workspace token.
+It does not upload, copy, delete, or grant permissions on the referenced Volume files.
+
+Every explicit `ug configure --global` reads selected agents' files again, including when the
+CAC and paths are unchanged. Download and parse failures stop before agent settings, saved policy,
+or marker writes. The saved CAC and `ug export` retain the references. Launches use the installed
+snapshot without downloading files. These files use the same Linux/macOS managed-run flow as inline
+`agent_native_config`; the separate Windows managed-run work is required for Windows installation.
+
+For `--global --dry-run --from-file draft.json`, references name local files. Relative paths resolve
+beside `draft.json`; absolute local paths are also accepted. Native file loading requires no workspace
+credentials in this preview. Point the draft at local copies of your JSON/TOML files. Keep full
+`/Volumes/...` references in the published configuration.
+
 ## Command
 
 ```bash
