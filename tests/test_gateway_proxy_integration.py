@@ -212,7 +212,11 @@ class TestRelayedProxyEndToEnd:
         gw = make_gateway(
             statuses=[401, 200] if retry else [200],
             chunks=[b"private-response"],
-            headers={"X-Private": "private-response-header"},
+            headers={
+                "X-Private": "private-response-header",
+                "X-Databricks-Request-Id": "gateway-123",
+                "X-Databricks-Trace-Id": "private/unsafe",
+            },
         )
         with _running_proxy(gw, _counting_token("private-token")) as proxy_url:
             response = httpx.post(
@@ -233,6 +237,11 @@ class TestRelayedProxyEndToEnd:
             return
         events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
         assert len({event["request_id"] for event in events}) == 1
+        headers = [event for event in events if event["event"] == "upstream_headers"]
+        assert len(headers) == (2 if retry else 1)
+        assert all(
+            event["response_ids"] == {"x-databricks-request-id": "gateway-123"} for event in headers
+        )
         transport = [event for event in events if event["event"] == "upstream_transport"]
         assert {event["attempt"] for event in transport} == ({1, 2} if retry else {1})
         for attempt in range(1, 3 if retry else 2):
