@@ -810,7 +810,7 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert "continue-on-error: ${{ matrix.agent == 'copilot' }}" in job
     assert (
         "timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || "
-        "matrix.os == 'windows-latest' && 85 || 40 }}"
+        "matrix.os == 'windows-latest' && 30 || 40 }}"
     ) in job
     assert "AGENT: ${{ matrix.agent }}" in job
     assert (
@@ -841,12 +841,13 @@ def test_staging_usage_and_provider_quota_are_collected_without_inference():
     steps = jobs["smoke"]
     assert "name: Record staging model usage" in steps
     assert "--lane staging" in steps
-    assert "name: Inspect staging provider rate limits" in steps
-    assert "scripts/managed_quota_diagnostics.py --provider-only" in steps
-    assert "name: Record staging Desktop model usage" in steps
-    assert "--lane staging-desktop" in steps
-    assert "configuration.json" in steps
-    assert steps.index("name: Record staging Desktop model usage") < steps.index(
+    desktop = jobs["cowork-inference-staging"]
+    assert "name: Inspect staging provider rate limits" in desktop
+    assert "scripts/managed_quota_diagnostics.py --provider-only" in desktop
+    assert "name: Record staging Desktop model usage" in desktop
+    assert "--lane staging-desktop" in desktop
+    assert "configuration.json" in desktop
+    assert desktop.index("name: Record staging Desktop model usage") < desktop.index(
         "name: Upload Cowork evidence"
     )
 
@@ -1176,6 +1177,7 @@ SKIPPED_ON_FORK_PRS = {
     "codex-relay",
     "cowork-inference-windows",
     "cowork-inference-macos",
+    "cowork-inference-staging",
     "workspace",
     "smoke",
     "headless-windows",
@@ -2565,50 +2567,79 @@ def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
     assert "      UG_COWORK_MCP: true\n" in job
 
 
-def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
+def test_staging_cowork_lane_runs_desktop_tasks_in_parallel_on_protected_runners():
     jobs = _integration_jobs()
-    job = jobs["anthropic-mps"]
-    assert (
-        "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}\n"
-    ) in job
+    job = jobs["cowork-inference-staging"]
+    assert "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in job
+    assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
+    assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
+    assert "DATABRICKS_BEARER:" not in job
+    # Staging rejects GitHub-hosted runners, so the Desktop tasks stay on the protected group.
+    assert "group: databricks-protected-runner-group" in job
+    assert "labels: windows-server-latest" in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
     assert "      UG_COWORK_RELAY: false\n" in job
-    # The shared live steps reach every live job; only this lane opts in.
-    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_DESKTOP:" in body]
-    assert opted_in == ["anthropic-mps"]
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
-    live_steps = workflow.split("    steps: &live-steps\n", 1)[1].split("\n\n", 1)[0]
-    desktop = live_steps.split("      - name: Install Claude Desktop\n", 1)[1]
-    gates = re.findall(r"(?m)^        if: (.*)$", desktop)
-    # Every Desktop step is skipped unless the lane opts in through the install step.
-    assert gates[0] == "${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}"
-    assert all("steps.desktop-" in gate for gate in gates[1:])
-    assert len(gates) == desktop.count("      - name: ") + 1
-    assert "DATABRICKS_BEARER_COMMAND=" in desktop
-    assert "name: cowork-inference-anthropic\n" in desktop
-    # The staging lane runs the same MCP web search; its PAT is minted with the bearer command.
     assert "      UG_COWORK_MCP: true\n" in job
-    mcp = desktop.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+    # The lane runs beside the CLI shards instead of after the first shard's cases.
+    assert not re.search(r"(?m)^    needs:", job)
+    assert "inputs.mode != 'advisory' && github.event_name != 'merge_group'" in job
+    assert f"({FORK_GUARD})" in job
+    # The three legs run side by side: the provider service reports no configured rate
+    # limits and already serves the lane's concurrent Claude shards (#1824).
+    assert "fail-fast: false" in job
+    assert "max-parallel" not in job
+    assert "format('Cowork desktop tasks · Staging Anthropic MPS · {0}', matrix.check.name)" in job
+    assert "UG_COWORK_TASK: ${{ matrix.check.task }}" in job
+    # The Databricks CLI is on PATH before the checks: Desktop's credential helper and
+    # the connector proxy resolve the PAT profile through `databricks auth profiles`, and
+    # this lane has no DATABRICKS_BEARER to short-circuit that resolution with. Configure's
+    # own winget bootstrap only fixes the configure process, never the later steps.
+    assert "uses: databricks/setup-cli@" in job
+    expose = job.split("      - name: Expose the Databricks CLI on Windows\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert "cygpath -w" in expose
+    assert job.index("uses: databricks/setup-cli@") < job.index(
+        "name: Assert Cowork inference through Windows UI Automation"
+    )
+    # Every leg runs the inference check first: it completes Desktop's gateway onboarding
+    # on a fresh runner, and the skill task's plugin commands reuse the inference task's
+    # Cowork account directory on the same runner.
+    inference = job.split(
+        "      - name: Assert Cowork inference through Windows UI Automation\n", 1
+    )[1].split("      - name: ", 1)[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' }}\n"
+        in inference
+    )
+    task = job.split("      - name: Assert Cowork ${{ matrix.check.task_name }}\n", 1)[1].split(
         "      - name: ", 1
     )[0]
     assert (
-        "        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}\n" in mcp
+        "        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}\n" in task
     )
-    assert "-Capability mcp" in mcp
-    revoke = desktop.split("      - name: Revoke the Desktop PAT\n", 1)[1].split(
-        "      - name: ", 1
-    )[0]
+    assert '-Capability "$env:UG_COWORK_TASK"' in task
+    assert task.count("test-task.ps1") == 1
+    # The staging lane's PAT is minted through the rerunnable bearer command.
+    assert "DATABRICKS_BEARER_COMMAND=" in job
+    revoke = job.split("      - name: Revoke the Desktop PAT\n", 1)[1].split("      - name: ", 1)[0]
     assert (
         "        if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}\n" in revoke
     )
     assert "desktop-pat.py revoke" in revoke
-    assert "${{ runner.temp }}/cowork-inference/mcp/\n" in desktop
+    assert "name: cowork-inference-staging-${{ matrix.check.id }}\n" in job
+    assert "${{ runner.temp }}/cowork-inference/mcp/\n" in job
+    # The CLI lane no longer carries the Desktop steps; they are out of the shared live steps.
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    assert "UG_COWORK_DESKTOP" not in workflow
+    live_steps = workflow.split("    steps: &live-steps\n", 1)[1].split("\n\n", 1)[0]
+    assert "Install Claude Desktop" not in live_steps
+    assert "cowork-inference-anthropic" not in workflow
     opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_MCP:" in body]
     assert sorted(opted_in) == [
-        "anthropic-mps",
         "cowork-inference-macos",
+        "cowork-inference-staging",
         "cowork-inference-windows",
     ]
 
@@ -3398,6 +3429,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "installation-windows",
         "cowork-inference-windows",
         "cowork-inference-macos",
+        "cowork-inference-staging",
         "smoke",
         "headless-windows",
         "full",
@@ -3427,6 +3459,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "headless-windows",
         "cowork-inference-windows",
         "cowork-inference-macos",
+        "cowork-inference-staging",
         "workspace",
         "smoke",
         "full",

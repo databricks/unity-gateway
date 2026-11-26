@@ -1,8 +1,9 @@
 # Cowork desktop tests
 
-The `cowork-inference-windows` and `cowork-inference-macos` jobs in `.github/workflows/integration.yml` exercise real
+The `cowork-inference-windows`, `cowork-inference-staging`, and `cowork-inference-macos` jobs in `.github/workflows/integration.yml` exercise real
 Claude Desktop inference, local file reads, and native skill execution through Unity Gateway
-on disposable Windows and macOS runners. All three tasks run sequentially in each blocking job.
+on disposable Windows and macOS runners. All three tasks run sequentially in each blocking job;
+the staging lane splits them across parallel matrix legs on one runner each.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual
 CI dispatches. It skips merge-group runs and fork PRs, which lack the required
 credentials. Authorized fork-integration runs test the pinned commit.
@@ -33,15 +34,24 @@ Every step below runs once per Claude model source on each OS:
 | Source | `ug configure` | Target model | Windows lane | macOS lane |
 |--------|----------------|--------------|--------------|------------|
 | Databricks Hosted | no `--provider` | `system.ai.claude-haiku-4-5` | `cowork-inference-windows` | `cowork-inference-macos` |
-| Anthropic MPS | `--provider main.ucode.dont_delete_ci_company_anthropic_mps` (staging) | `claude-haiku-4-5-20251001` | `anthropic-mps`, Windows Claude row | — |
+| Anthropic MPS | `--provider main.ucode.dont_delete_ci_company_anthropic_mps` (staging) | `claude-haiku-4-5-20251001` | `cowork-inference-staging` | — |
 | Anthropic MPS (legacy) | `--provider main.ucode.ci_e2e_anthropic_nonrelay_mps` | `claude-haiku-4-5-20251001` | — | `cowork-inference-macos` |
 | Anthropic relay MPS | `--provider main.ucode.ci_e2e_anthropic_relay_mps` | `claude-haiku-4-5-20251001` | `cowork-inference-windows` | `cowork-inference-macos` |
 
 The non-relay service lives in the staging workspace that the CLI `anthropic-mps` tests use.
-Staging rejects GitHub-hosted runners, so the Windows Desktop tasks run as extra steps of that
-lane's Windows Claude row on `databricks-protected-runner-group`. These steps are in the
-shared live steps but run only where the job sets `UG_COWORK_DESKTOP`, and they skip
-merge-group runs like the other Desktop lanes. That runner reaches packages only through the
+Staging rejects GitHub-hosted runners, so the Windows Desktop tasks run in their own
+`cowork-inference-staging` job on `databricks-protected-runner-group`, beside that lane's CLI
+shards instead of after them. The job splits the four checks into three parallel legs —
+inference with the skill task, the file read, and the MCP web search — because the provider
+service serves the lane's concurrent Claude shards already, reports no configured rate
+limits, and each check issues only a handful of tiny requests. Every leg runs the inference
+check first: it completes Desktop's first-launch gateway onboarding on a fresh runner, and
+the skill task's plugin commands reuse that task's Cowork account directory on the same
+runner. The Databricks CLI is installed and exposed on PATH before the checks, as in the
+CLI lanes: Desktop's credential helper and the connector proxy resolve the `desktop-ci` PAT
+profile through `databricks auth profiles`, and this lane carries no `DATABRICKS_BEARER` to
+short-circuit that resolution. It skips merge-group
+runs like the other Desktop lanes. The protected runner reaches packages only through the
 internal PyPI and npm proxies; the Claude installer still downloads directly. Desktop's
 credential helper authenticates with the lane's `ug-ci-sp` service principal through
 `DATABRICKS_BEARER_COMMAND`, which reruns `bearer-token.py` to mint a fresh M2M token on each
@@ -92,7 +102,7 @@ After inference, three fresh Cowork tasks run through the same native UI:
    asserted; Desktop's native web search cannot satisfy it. Desktop asks before the connector's
    first use; the task approves it (**Allow for this task** on Windows 2.42304.2, **Allow once** on macOS
    4.23118.0) and records the label. This runs in every Desktop job, including the staging
-   `anthropic-mps` lane.
+   `cowork-inference-staging` lane.
    UG writes the connector's absolute command from the `ug` on `PATH`, so both install scripts
    add the test runtime to `PATH`, as an installed `ug` would be.
    Desktop starts connectors with a near-empty environment, so the job's `DATABRICKS_BEARER`
