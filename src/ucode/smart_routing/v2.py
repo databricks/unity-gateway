@@ -539,6 +539,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
         "routing-state.ts",
         "routing-logs.ts",
         "smart-routing-status.ts",
+        "subagent-program-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
     ):
@@ -850,6 +851,7 @@ def launch_claude(
     auto_picker = (
         auto_mode_enabled() and not route_first_prompt and not claude_print_mode(remaining)
     )
+    from ucode.agents import claude_program_status
     from ucode.agents.claude import _managed_settings_path
     from ucode.agents.claude_auto import (
         add_picker_entry,
@@ -1008,7 +1010,12 @@ def launch_claude(
     auto_env_before = {key: os.environ.get(key) for key in AUTO_CUSTOM_MODEL_ENV_KEYS}
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:
+        with (
+            TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory,
+            claude_program_status.publish(
+                Path(directory) / "subagents.json", enabled=not claude_print_mode(remaining)
+            ) as program_status,
+        ):
             launch_dir = Path(directory)
             settings_path = launch_dir / "settings.json"
             socket_path = launch_dir / "first.sock"
@@ -1032,6 +1039,11 @@ def launch_claude(
             env[SESSION_ENV_VAR] = str(session_path)
             env["UCODE_AGENT_LABELS_DIR"] = str(APP_DIR / "claude-agent-labels")
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            # Always replace an inherited path. Nested/headless launches must
+            # never publish into their parent's conversation snapshot.
+            env[claude_program_status.SNAPSHOT_ENV] = (
+                str(program_status.path) if program_status.path else ""
+            )
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
             launch_source = {**resolve_environment(agent=AGENT_CLAUDE), **env}
             mod_options = {
@@ -1096,6 +1108,7 @@ def launch_claude(
             elif route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
+                    on_started=program_status.start,
                     route_prompt=route_prompt,
                     socket_path=socket_path,
                     prepare_model_switch=model_setting.begin,
@@ -1108,6 +1121,7 @@ def launch_claude(
                 proc = subprocess_cross_os.popen(
                     argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
                 )
+                program_status.start()
                 if stdin_prompt is not None and proc.stdin is not None:
                     # ug consumed stdin to route the prompt, so hand Claude the same bytes.
                     try:

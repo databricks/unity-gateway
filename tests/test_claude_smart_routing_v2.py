@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from ucode import custom_oauth
-from ucode.agents import LaunchOptions, claude
+from ucode.agents import LaunchOptions, claude, claude_program_status
 from ucode.constants import AGENT_CLAUDE, ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import (
@@ -2373,6 +2373,14 @@ class TestV2HeadlessClaude:
         argv = launched["argv"]
         assert argv[argv.index("--model") + 1] == "system.ai.claude-sonnet-5[1m]"
         assert launched["stdin_bytes"] == b"fix the parser\n"
+
+    def test_headless_launch_never_publishes_into_an_inherited_status_file(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv(claude_program_status.SNAPSHOT_ENV, "/parent/subagents.json")
+        launched, _ = self._launch(monkeypatch, tmp_path, ["-p", "Say OK"])
+        assert launched["settings"]["env"][claude_program_status.SNAPSHOT_ENV] == ""
+        assert os.environ[claude_program_status.SNAPSHOT_ENV] == "/parent/subagents.json"
         # Subagents still route; the PTY's first-prompt hook isn't installed.
         assert launched["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert v2.FIRST_PROMPT_SOCKET_ENV not in launched["settings"]["env"]

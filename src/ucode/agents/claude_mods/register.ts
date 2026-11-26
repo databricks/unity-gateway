@@ -1,4 +1,5 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
+import { createSubagentProgramStatus } from './subagent-program-status.ts';
 import {
   endStatusBandTurn,
   registerStatusBand,
@@ -379,6 +380,7 @@ async function runInternalModel($: EngineInterface, internalModels: string[], mo
 }
 
 export function register(on: On, options: PluginOptions): void {
+  const programStatus = createSubagentProgramStatus();
   const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   const routingSync: RoutingSyncState = {};
   type MainModelChooser = {
@@ -417,6 +419,15 @@ export function register(on: On, options: PluginOptions): void {
   }
 
   on('session.start', async ($, e, next) => {
+    const statusPath = e.surface === 'terminal' && e.isInteractive
+      && !await $.env.get('CLAUDE_CODE_DISABLE_TERMINAL_TITLE').catch(() => undefined)
+      ? await $.env.get('UG_CLAUDE_PROGRAM_STATUS_FILE').catch(() => undefined) : undefined;
+    await programStatus.start({
+      path: statusPath,
+      read: async () => ({ sessionId: await $.session.id(), agents: await $.agent.list() }),
+      write: (path, text) => $.fs.write(path, text),
+      every: tick => $.clock.every(1000, tick),
+    });
     routedDisplays.records.clear();
     try {
       const session_id = await $.session.id();
@@ -460,6 +471,7 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    await programStatus.end(e);
     sessionActive = false;
     if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
     resetChooser();
