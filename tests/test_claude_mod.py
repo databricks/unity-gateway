@@ -29,6 +29,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "routing-logs.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
+        "subagent-program-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
     )

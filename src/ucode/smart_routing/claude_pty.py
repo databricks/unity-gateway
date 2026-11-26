@@ -353,6 +353,7 @@ def run_claude_pty(
     model_switch_persisted: Callable[[], bool] = lambda: True,
     restore_model_setting: Callable[[], None] = lambda: None,
     log_path: Path | None = None,
+    on_started: Callable[[], None] = lambda: None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
 
@@ -413,6 +414,8 @@ def run_claude_pty(
         sync_winsize(master_fd)
 
     try:
+        # Launch-owned workers must start in the parent, after this fork.
+        on_started()
         with TerminalModeGuard(0):
             signal.signal(signal.SIGWINCH, on_winch)
             sync_winsize(master_fd)
