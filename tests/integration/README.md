@@ -465,6 +465,8 @@ and completion token. Windows completes sandbox setup through the visible Contin
 It waits through a missing or partially written config within the same setup deadline, then
 reads the elevated mode saved by the app after success, without writing native settings or
 depending on the transient success banner, and retains early MCP/setup diagnostics in evidence.
+The wait for setup's app-server restart counts the app's events from launch, because the app
+can start setup itself before the first onboarding click.
 After setup's app-server restart, a visible readiness error gets one Try again recheck before
 Send. A persistent error fails; this does not resubmit a task or change sandbox permissions.
 Both platforms wait for the typed draft, click Send, and require the user prompt in the native

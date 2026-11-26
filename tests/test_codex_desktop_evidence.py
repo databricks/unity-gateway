@@ -225,7 +225,21 @@ def test_restart_experiment_requires_post_setup_start_connected_and_model_list()
         {"event": "model/list"},
     ]
     app.timings = []
-    app.wait_for_setup_restart(3, time.monotonic() + 1)
+    app.wait_for_setup_restart(time.monotonic() + 1)
+    assert app.timings[-1]["phase"] == "restart-experiment-gate-open"
+
+
+def test_restart_experiment_accepts_setup_the_app_started_before_any_click():
+    # The order a failed CI journey recorded before its first onboarding click.
+    order = (
+        "start_process stdio-transport-spawn connected readiness model/list setupStart readiness "
+        "stop_process start_process stdio-transport-spawn connected readiness model/list model/list"
+    )
+    app = object.__new__(windows_app.WindowsApp)
+    app.setup_condition = threading.Condition()
+    app.setup_events = [{"event": kind, "error_code": "null"} for kind in order.split()]
+    app.timings = []
+    app.wait_for_setup_restart(time.monotonic())
     assert app.timings[-1]["phase"] == "restart-experiment-gate-open"
 
 
@@ -243,7 +257,7 @@ def test_restart_experiment_rejects_stale_or_out_of_order_responses():
     ]
     app.timings = []
     with pytest.raises(AssertionError, match="post-setup restart"):
-        app.wait_for_setup_restart(0, time.monotonic())
+        app.wait_for_setup_restart(time.monotonic())
 
 
 def test_restart_experiment_reports_identity_errors_relative_to_first_interaction():

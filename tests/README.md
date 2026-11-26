@@ -1695,6 +1695,8 @@ If a sandbox-readiness error replaces the setup screen or follows the app's setu
 the journey presses its visible Try again control once per screen within that screen's
 deadline; a persistent or repeated error fails. The app can then finish setup without showing
 its banner, so the setup wait also accepts the saved elevated mode; a missing banner alone fails.
+The app can also start setup itself before the first onboarding click, so the wait for setup's
+app-server restart counts events from launch.
 No task is resubmitted.
 Offline submission checks reject assistant echoes, unrelated prompts and non-message events.
 The native MCP approval is answered with Allow once only when the dialog names web_search on
