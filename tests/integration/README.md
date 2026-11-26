@@ -10,6 +10,9 @@ and hint row, Codex's footer). The Claude and Codex back-on TUI journeys in
 `test_ug_smart_routing_hooks.py` also check the validate request that turning routing on sends:
 exactly one, answered with HTTP 200 and `is_supported: true`.
 No live unsupported or classifier journey is claimed.
+The loopback component suite waits through the HTTP validation deadline before declaring
+a missing result; it still requires the expected unreachable response and rejects a late
+success after a timeout. It does not establish live Windows networking behavior.
 
 The Codex footer has offline protocol, process-isolation, and launcher coverage in
 `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
@@ -1387,6 +1390,10 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
+`../test_smart_router_feedback.py` separately runs the documented Bash feedback command
+through POSIX Bash and Windows Git Bash with a native argv recorder, including leading-slash
+reasons protected from MSYS path conversion. It also runs the PowerShell recipe on Windows.
+These are process/component checks, not live-agent consent, approval, or delivery evidence.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`

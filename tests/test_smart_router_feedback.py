@@ -192,11 +192,11 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
     assert not session_env.session_routing_enabled(controls)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX Bash and native argv handling")
 @pytest.mark.parametrize(
     "reason",
     [
         pytest.param(REASON, id="multiline-apostrophe"),
+        pytest.param("/model picks are slow for this task", id="leading-slash"),
         pytest.param(
             'Keep "$UG_QUOTING_SENTINEL", $(printf injected > "$UG_QUOTING_SENTINEL"), '
             '`printf injected > "$UG_QUOTING_SENTINEL"` and * literal.\r\n'
@@ -214,23 +214,31 @@ def test_bash_feedback_reason_is_one_literal_argument(tmp_path, reason):
     executable = shutil.which("bash")
     if executable is None and not os.environ.get("CI"):
         pytest.skip("Bash is unavailable")
-    assert executable is not None, "Required POSIX shell is unavailable: bash"
+    assert executable is not None, "Required shell is unavailable: bash"
     sentinel = tmp_path / "embedded-command-executed"
     recorder = tmp_path / "record argv.py"
     recorder.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
-    # Exercise the skill's Bash quoting with a child that records its received argv.
+    skill = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    command = skill.split("```bash\n", 1)[1].split("\n```", 1)[0]
+    assert command.count("'<reason>'") == 1
+    assert command.count("-m ucode.cli") == 1
+    allowed_command = command.replace("'<reason>'", "*")
+    assert f"Bash({allowed_command})" in skill
+    # Keep the documented command, substituting only the reason and argv-recording child.
     literal = "'" + reason.replace("'", "'\\''") + "'"
-    command = (
-        '"$UCODE_SMART_ROUTER_PYTHON" "$UG_QUOTING_RECORDER" claude '
-        "--disable-smart-routing --smart-router-feedback " + literal
+    command = command.replace("'<reason>'", literal).replace(
+        "-m ucode.cli", '"$UG_QUOTING_RECORDER"'
     )
     result = subprocess.run(
         [executable, "--noprofile", "--norc", "-c", command],
         cwd=tmp_path,
         env={
-            "UCODE_SMART_ROUTER_PYTHON": sys.executable,
-            "UG_QUOTING_RECORDER": str(recorder),
-            "UG_QUOTING_SENTINEL": str(sentinel),
+            **{key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ},
+            "UCODE_SMART_ROUTER_PYTHON": Path(sys.executable).as_posix(),
+            "UG_QUOTING_RECORDER": recorder.as_posix(),
+            "UG_QUOTING_SENTINEL": sentinel.as_posix(),
         },
         stdin=subprocess.DEVNULL,
         capture_output=True,

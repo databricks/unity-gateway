@@ -1,9 +1,9 @@
 ---
 name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
-allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
+allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash(MSYS2_ARG_CONV_EXCL='*' "$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.11.1"
+  version: "1.11.2"
 ---
 
 # Smart Router
@@ -32,9 +32,10 @@ Git Bash on Windows. Use the Python executable exported by the launching Unity
 Gateway installation. Keep its path quoted and do not substitute
 `ug` or `python` from PATH. Run exactly
 `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing` for `on` or
-`"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`,
-adding a reason on the first call only when one was explicitly supplied for this
-off request, as described below.
+`"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`.
+For an off call with a reason, use the literal-argument recipe below, including
+its command-scoped `MSYS2_ARG_CONV_EXCL='*'` setting. Add a reason on the first call
+only when one was explicitly supplied for this off request, as described below.
 
 - In Codex only, for `logs`, run exactly
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table`
@@ -123,6 +124,14 @@ routing on and send nothing.
 Pass a reason as one literal shell argument. For Bash, enclose it in single quotes
 and replace every embedded apostrophe with `'\''`; for example,
 `--smart-router-feedback 'it'\''s too slow for this task'`.
+Use this command, replacing only the quoted placeholder with the escaped reason.
+The environment setting applies to this command only and prevents Git Bash on
+Windows from converting reasons such as `/model picks are slow` into filesystem paths.
+
+```bash
+MSYS2_ARG_CONV_EXCL='*' "$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback '<reason>'
+```
+
 For PowerShell, copy the complete reason into the single-quoted here-string below.
 Keep its quotes and line breaks unchanged; the newlines immediately after `@'` and
 before `'@` delimit the string and are not part of the reason.

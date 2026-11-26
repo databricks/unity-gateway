@@ -14,6 +14,11 @@ Live shard coverage reports checkout and each
 artifact-download interval in the job summary without excluding them from the budget.
 Budget checks do not run in the merge queue.
 
+`test_route_validation.py` allows the real HTTP validation deadline plus publication
+time before failing a missing worker result. In particular, Windows connection refusal
+may take longer than three seconds. The unreachable-response, routing state, metrics,
+deadline, and late-result assertions remain required.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
@@ -1308,6 +1313,12 @@ remain compatible. A denied CLI control-file read/write leaves saved controls un
 The shared CLI only validates the reason and toggles routing; neither harness's CLI
 prepares, captures, or uploads feedback. Native Codex owns that flow. CLI parity cases
 verify that valid reasons work without Isaac and that repeated off calls collect nothing.
+`test_smart_router_feedback.py` executes the documented Bash reason command with an argv
+recorder on POSIX and Windows Git Bash, including leading slashes, apostrophes, multiline
+text, CRLF, final newlines, and executable-looking text. The command disables MSYS path
+conversion only for its child; the test checks exact arguments and no injected side effect.
+PowerShell 5.1 and 7 exercise the documented Windows command separately. These process
+checks do not establish native-agent consent, approval matching, or feedback delivery.
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
 `ISAAC_LAUNCH_MODE=omni` exemption from that reason rule, and native Codex uses the same

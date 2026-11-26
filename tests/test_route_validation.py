@@ -92,7 +92,8 @@ def real_transport(monkeypatch):
 
 
 def _wait_for_result(path):
-    deadline = time.monotonic() + 3
+    # The real transport may use its full deadline before the worker publishes a verdict.
+    deadline = time.monotonic() + validation.VALIDATION_TIMEOUT_SECONDS + 3
     while time.monotonic() < deadline:
         if path.exists():
             return json.loads(path.read_text())
