@@ -1,6 +1,8 @@
 """Codex off collection with a controlled Isaac subprocess boundary."""
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -171,7 +173,6 @@ def test_short_cli_reason_does_not_capture_or_disable(inline_feedback, reason, a
 def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monkeypatch, agent):
     controls, run, popen, _ = inline_feedback
     monkeypatch.setattr(feedback.shutil, "which", lambda _: None)
-    assert off(agent=agent).exit_code == 2
 
     result = off(REASON, agent=agent)
 
@@ -183,9 +184,210 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
     repeated = off(agent=agent)
     assert repeated.exit_code == 0, repeated.output
     assert "already off" in repeated.output
+    repeated_with_reason = off(REASON, agent=agent)
+    assert repeated_with_reason.exit_code == 0, repeated_with_reason.output
+    assert "already off" in repeated_with_reason.output
     run.assert_not_called()
     popen.assert_not_called()
     assert not session_env.session_routing_enabled(controls)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param(REASON, id="multiline-apostrophe"),
+        pytest.param("/model picks are slow for this task", id="leading-slash"),
+        pytest.param(
+            "Keep a lone\rreturn, a CRLF\r\nline ending and a final CR.\r",
+            id="carriage-returns",
+        ),
+        pytest.param(
+            'Keep "$UG_QUOTING_SENTINEL", $(printf injected > "$UG_QUOTING_SENTINEL"), '
+            '`printf injected > "$UG_QUOTING_SENTINEL"` and * literal.\r\n'
+            "Don't drop this final backslash and newline: \\\n",
+            id="shell-syntax-crlf",
+        ),
+        pytest.param(
+            'Do not run this\'; printf injected > "$UG_QUOTING_SENTINEL"; #\n'
+            "The second line stays in the reason.",
+            id="quote-breakout",
+        ),
+    ],
+)
+def test_bash_feedback_reason_is_one_literal_argument(tmp_path, reason):
+    executable = shutil.which("bash")
+    if executable is None and not os.environ.get("CI"):
+        pytest.skip("Bash is unavailable")
+    assert executable is not None, "Required shell is unavailable: bash"
+    sentinel = tmp_path / "embedded-command-executed"
+    recorder = tmp_path / "record argv.py"
+    recorder.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+    skill = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    command = skill.split("```bash\n", 1)[1].split("\n```", 1)[0]
+    assert command.count("'<reason>'") == 1
+    assert command.count("-m ucode.cli") == 1
+    allowed_command = command.replace("'<reason>'", "*")
+    assert f"Bash({allowed_command})" in skill
+    # Keep the documented command, substituting only the reason and argv-recording child.
+    # Fixed Bash literals keep Git Bash's command-line normalization from dropping CRs.
+    literal = "'" + reason.replace("'", "'\\''").replace("\r", "'$'\\r''") + "'"
+    command = command.replace("'<reason>'", literal).replace(
+        "-m ucode.cli", '"$UG_QUOTING_RECORDER"'
+    )
+    result = subprocess.run(
+        [executable, "--noprofile", "--norc", "-c", command],
+        cwd=tmp_path,
+        env={
+            **{key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ},
+            "UCODE_SMART_ROUTER_PYTHON": Path(sys.executable).as_posix(),
+            "UG_QUOTING_RECORDER": recorder.as_posix(),
+            "UG_QUOTING_SENTINEL": sentinel.as_posix(),
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == [
+        "claude",
+        "--disable-smart-routing",
+        "--smart-router-feedback",
+        reason,
+    ]
+    assert not sentinel.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell and native argv handling")
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("it’s too slow for this task", id="curly-apostrophe"),
+        pytest.param(
+            "too slow‘; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #",
+            id="command-breakout",
+        ),
+        pytest.param(
+            'it\'s ‘slow’ ‚here‛.\nKeep "double quotes", one\\"quote and two\\\\"quotes.\r\n'
+            "Keep $env:UG_QUOTING_SENTINEL and "
+            "$(Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected) literal, ending in \\",
+            id="all-quotes-multiline",
+        ),
+        pytest.param("Keep the final backslash and newline exactly: \\\n", id="backslash-newline"),
+        *[
+            pytest.param(
+                "Keep this multiline explanation literal.\n"
+                f"{quote}@; Set-Content -LiteralPath $env:UG_QUOTING_SENTINEL -Value injected; #\n"
+                "The last line also belongs to the reason.",
+                id=f"here-string-delimiter-{name}",
+            )
+            for name, quote in [
+                ("ascii", "'"),
+                ("left", "‘"),
+                ("right", "’"),
+                ("low", "‚"),
+                ("reversed", "‛"),
+            ]
+        ],
+    ],
+)
+def test_powershell_feedback_reason_is_one_literal_argument(tmp_path, shell, reason):
+    executable = shutil.which(shell)
+    if executable is None and not os.environ.get("CI"):
+        pytest.skip(f"{shell} is unavailable")
+    assert executable is not None, f"Required Windows shell is unavailable: {shell}"
+    sentinel = tmp_path / "embedded-command-executed"
+    argv_path = tmp_path / "received-argv.json"
+    recorder = tmp_path / "record argv.py"
+    recorder.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['UG_QUOTING_ARGV']).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "print('feedback child stdout')\n"
+        "print('feedback child stderr', file=sys.stderr)\n"
+        "sys.exit(int(os.environ.get('UG_QUOTING_EXIT_CODE', '0')))\n",
+        encoding="utf-8",
+    )
+    skill = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    native_command = skill.split("```powershell\n", 1)[1].split("\n```", 1)[0]
+    placeholder = "@'\n<reason>\n'@"
+    assert native_command.count(placeholder) == 1
+    assert native_command.count("'-m', 'ucode.cli'") == 1
+    delimiters = "'‘’‚‛"
+    # Insert the raw reason using the documented delimiter-collision fallback.
+    if any(
+        line.lstrip().startswith(tuple(quote + "@" for quote in delimiters))
+        for line in reason.splitlines()
+    ):
+        literal = "'" + "".join(char * 2 if char in delimiters else char for char in reason) + "'"
+    else:
+        literal = placeholder.replace("<reason>", reason)
+    # Keep the documented launch and quoting, substituting only the child that records argv.
+    recorder_arg = subprocess.list2cmdline([str(recorder)]).replace("'", "''")
+    native_command = native_command.replace(placeholder, literal).replace(
+        "'-m', 'ucode.cli'", f"'{recorder_arg}'"
+    )
+    parser = tmp_path / "parse-and-run-reason.ps1"
+    parser.write_text(
+        """
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$inputCase = [Console]::In.ReadToEnd() | ConvertFrom-Json
+# PowerShell 5.1 always uses legacy native binding; exercise it explicitly in 7 too.
+$PSNativeCommandArgumentPassing = 'Legacy'
+& ([scriptblock]::Create($inputCase.execution))
+""",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "UCODE_SMART_ROUTER_PYTHON": sys.executable,
+        "UG_QUOTING_SENTINEL": str(sentinel),
+        "UG_QUOTING_ARGV": str(argv_path),
+        "UG_QUOTING_EXIT_CODE": "0",
+    }
+    invocation = [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(parser)]
+    payload = json.dumps({"execution": native_command})
+    result = subprocess.run(
+        invocation,
+        input=payload,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "feedback child stdout"
+    assert result.stderr.strip() == "feedback child stderr"
+    assert json.loads(argv_path.read_text(encoding="utf-8")) == [
+        "claude",
+        "--disable-smart-routing",
+        "--smart-router-feedback",
+        reason,
+    ]
+    assert not sentinel.exists()
+    if reason == "it’s too slow for this task":
+        failed = subprocess.run(
+            invocation,
+            input=payload,
+            env={**env, "UG_QUOTING_EXIT_CODE": "7"},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+        )
+        assert failed.returncode != 0
+        assert failed.stdout.strip() == "feedback child stdout"
+        assert "feedback child stderr" in failed.stderr
+        assert "Smart Router exited with code 7" in failed.stderr
 
 
 @pytest.mark.parametrize("reenable", ["claude", "codex", "native"])

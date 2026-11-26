@@ -1972,7 +1972,15 @@ class TestSubagentRouting:
         assert record["router_name"] == body["route_selector"]["router_name"]
         assert record["router_name"] == routing.ROUTER_NAME
 
-    def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "assignment",
+        [
+            {"prompt": "Inspect the parser"},
+            {"prompt": " \n", "description": "Inspect the parser"},
+        ],
+        ids=["prompt", "blank-prompt-description"],
+    )
+    def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch, assignment):
         gateway_model = "anthropic-aigw-77df06ea-system.ai.glm-5-3"
         monkeypatch.setattr(
             v2,
@@ -1984,7 +1992,7 @@ class TestSubagentRouting:
         )
 
         output = v2.route_claude_subagent(
-            {"tool_name": "Task", "tool_input": {"prompt": "Inspect the parser"}},
+            {"tool_name": "Task", "tool_input": assignment},
             workspace="https://example.com",
             token="token",
             available_models=[gateway_model],
@@ -1992,6 +2000,12 @@ class TestSubagentRouting:
         )
 
         assert "Selected Model : system.ai.glm-5-3 " in output["systemMessage"]
+        assert "Prompt preview : Inspect the parser" in output["systemMessage"]
+        assert output["hookSpecificOutput"]["permissionDecisionReason"] == output["systemMessage"]
+        assert output["hookSpecificOutput"]["updatedInput"] == {
+            **assignment,
+            "subagent_type": v2._routed_claude_agent_name(gateway_model),
+        }
 
     @pytest.mark.parametrize(
         ("selected_model", "spawn_model"),

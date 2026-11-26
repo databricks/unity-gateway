@@ -215,6 +215,9 @@ def test_workflow_uses_pinned_open_code_review_action_and_cli():
     assert "rule: .github/open-code-review/rules.json" in workflow
     rules = json.loads((ROOT / ".github" / "open-code-review" / "rules.json").read_text())
     assert "tests/**/*.py" in rules["include"]
+    assert "README.md" in rules["include"]
+    assert "skills/**/*.md" in rules["include"]
+    assert "src/ucode/agents/desktop/connector_skills/*.md" in rules["include"]
 
 
 def test_workflow_posts_findings_inline_and_drops_summary_only_when_nothing_was_routed():

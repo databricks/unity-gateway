@@ -65,13 +65,74 @@ def test_record_shape(log_dir, decision):
     }
 
 
-def test_preview_first_nonblank_line_truncated(log_dir, decision):
-    task = "\n  \n  " + "x" * 161 + "  \nsecond line"
+@pytest.mark.parametrize(
+    ("first_line", "expected"),
+    [
+        ("word " * 47 + "word", "word " * 47 + "word"),
+        ("word " * 47 + "words", "word " * 47 + "words"),
+        ("word " * 47 + "wordss", "word " * 47 + "wo..."),
+        ("x" * 241, "x" * 237 + "..."),
+        ("λ" * 300, "λ" * 237 + "..."),
+    ],
+    ids=["words-239", "words-240", "words-241", "long-word", "unicode"],
+)
+def test_preview_first_nonblank_line_truncated(log_dir, decision, first_line, expected):
+    task = "\n  \n  " + first_line + "  \nsecond line"
     write({"session_id": "s1"}, decision, task)
     record = json.loads((log_dir / "claude-s1.jsonl").read_text())
-    assert record["prompt"]["preview"] == "x" * 160 + "…"
+    assert record["prompt"]["preview"] == expected
+    assert len(record["prompt"]["preview"]) <= 240
     assert record["prompt"]["length"] == len(task)
     assert record["tool_use_id"] is None
+    message = routing.format_subagent_message("m", None, prompt=task)
+    assert "second line" not in message
+    preview = message.split("Prompt preview : ", 1)[1].split("Selected Model : ", 1)[0]
+    assert "".join(preview.replace("│", "").split()) == "".join(expected.split())
+
+
+@pytest.mark.parametrize("task", ["", " \t\n  ", "\r\n\t"])
+def test_blank_preview_is_omitted(log_dir, decision, task):
+    write({"session_id": "s1"}, decision, task)
+    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
+    assert record["prompt"]["preview"] is None
+    assert "Prompt preview" not in routing.format_subagent_message("m", None, prompt=task)
+
+
+@pytest.mark.parametrize(
+    ("first_line", "expected"),
+    [
+        ("  inspect\t  the parser  ", "inspect the parser"),
+        ("inspect \x1b[31mparser\x1b[0m\x07\x08\x00", "inspect �[31mparser�[0m���"),
+        ("inspect \x80\x9b31mparser\x7f", "inspect ��31mparser�"),
+        (
+            "inspect \u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069parser",
+            "inspect ������������parser",
+        ),
+        ("inspect \u200bparser\u2063part\ufeff", "inspect �parser�part�"),
+        (
+            "inspect \u0645\u06cc\u200c\u0631\u0648\u0645 \U0001f469\u200d\U0001f4bb",
+            "inspect \u0645\u06cc\u200c\u0631\u0648\u0645 \U0001f469\u200d\U0001f4bb",
+        ),
+    ],
+    ids=[
+        "whitespace",
+        "ansi-c0",
+        "c1-del",
+        "bidi-format",
+        "zero-width-separators",
+        "language-and-emoji-joiners",
+    ],
+)
+def test_preview_whitespace_matches_notice_and_log(log_dir, decision, first_line, expected):
+    task = first_line + "\nprivate second line"
+    write({"session_id": "s1"}, decision, task)
+    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
+    assert record["prompt"]["preview"] == expected
+    assert record["prompt"]["sha256"] == hashlib.sha256(task.encode()).hexdigest()
+    assert record["prompt"]["length"] == len(task)
+    message = routing.format_subagent_message("m", None, prompt=task)
+    assert f"Prompt preview : {expected}" in message
+    assert "private second line" not in message
 
 
 @pytest.mark.parametrize("session_id", ["../escape", "a" * 129, "a/b", "é"])

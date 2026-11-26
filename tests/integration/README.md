@@ -10,6 +10,9 @@ back-on TUI journeys in `test_ug_smart_routing_hooks.py` also check the validate
 turning routing on sends:
 exactly one, answered with HTTP 200 and `is_supported: true`.
 No live unsupported or classifier journey is claimed.
+The loopback component suite waits through the HTTP validation deadline before declaring
+a missing result; it still requires the expected unreachable response and rejects a late
+success after a timeout. It does not establish live Windows networking behavior.
 
 The Codex footer has offline protocol, process-isolation, and launcher coverage in
 `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`. Those component
@@ -1392,6 +1395,17 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
+`../test_smart_router_feedback.py` separately runs the documented Bash feedback command
+through POSIX Bash and Windows Git Bash with a native argv recorder, including leading-slash
+reasons protected from MSYS path conversion and carriage returns preserved through command-line
+normalization with fixed Bash `$'\r'` spans. It also runs the PowerShell recipe on Windows.
+These are process/component checks, not live-agent consent, approval, or delivery evidence.
+The Claude fallback's ordered flow needs a native check with known and unknown feedback
+requirements: every off must first probe without a reason, and an explicit reason given
+before disclosure must wait for consent to send session details. Cancellation must leave
+routing on without submission. Also check accepted and declined reuse of an unrelated
+remark, already-off requests, and the complete user-only manual handoff. Existing native-mod
+toggle journeys do not establish this fallback.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
