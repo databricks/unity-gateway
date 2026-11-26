@@ -133,7 +133,7 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 
 class ClaudeRoutingSetupError(RuntimeError):
-    """Routing files could not be written; the caller can launch Claude normally."""
+    """Routing setup failed before Claude started; the caller can launch Claude normally."""
 
 
 def _prepare_smart_router_session(agent: str) -> Path:

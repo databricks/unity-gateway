@@ -3456,8 +3456,9 @@ def launch(
                 ),
                 model_name=_maybe_add_1m_suffix,
             )
-        except smart_routing_v2.ClaudeRoutingSetupError:
+        except smart_routing_v2.ClaudeRoutingSetupError as exc:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            print_warning(f"{exc}; starting Claude Code without Smart Routing.")
             routing_setup_failed = True
         else:
             return
