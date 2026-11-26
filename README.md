@@ -727,6 +727,23 @@ summaries for that delegated request. Tool calls remain available, background
 completion follows the same path, and a fresh main-agent request replies normally.
 Routing-enabled responses are buffered until each model step completes.
 
+### Smart Router model-list validation
+
+When smart routing is enabled, `ug claude` and `ug codex` check the session's model
+list with `POST /ai-gateway/routing/v1/routes:validate`. The check runs in the
+background at startup with a 10-second deadline and sends no task or prompt.
+It also runs before `/smart-router on` in Claude or `$smart-router on` in Codex.
+No extra opt-in environment variable is required. Omnigent launches skip the check.
+
+A supported list keeps routing on. An unsupported list, timeout, network error,
+or unexpected response turns routing off for the session and shows a warning.
+HTTP 404 leaves routing available for workspaces where validation is unavailable.
+The agent session continues with routing off; the workspace configuration is unchanged.
+Open `/smart-router logs` in Claude or `$smart-router logs` in Codex for details.
+
+See [Smart Router model-list validation](docs/smart-router-validation.md) for the
+endpoint contract, result handling, and troubleshooting.
+
 ### Codex smart-routing compatibility
 
 Smart-routed terminal launches require Codex **0.171.0 or newer**. For earlier
