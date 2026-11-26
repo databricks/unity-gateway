@@ -118,7 +118,9 @@ def wait_for_skill_answer(
     deadline = time.monotonic() + timeout
     while True:
         tree = app.read_tree()
-        labels = [label for row in tree if row[0] == text_role for label in row[1:]]
+        # The app can title the chat with the token; only the conversation shows the answer.
+        start = next((i for i, row in enumerate(tree) if "Conversation" in row[1:]), len(tree))
+        labels = [label for row in tree[start:] if row[0] == text_role for label in row[1:]]
         approvals = [
             index
             for index, row in enumerate(tree)
