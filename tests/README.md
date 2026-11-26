@@ -1321,6 +1321,11 @@ Carriage returns use fixed Bash `$'\r'` spans to survive Git Bash command-line n
 the cases retain CRLF and cover lone and terminal carriage returns too.
 PowerShell 5.1 and 7 exercise the documented Windows command separately. These process
 checks do not establish native-agent consent, approval matching, or feedback delivery.
+Claude fallback's ordered probe, consent, toggle, and submission steps still need
+native verification: every off starts with a reasonless probe, and supplying an off
+reason before disclosure must wait for consent to send it with session details.
+Declining must send nothing. Reusing an already disclosed and accepted reason must
+not ask for the reason again.
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
 `ISAAC_LAUNCH_MODE=omni` exemption from that reason rule, and native Codex uses the same

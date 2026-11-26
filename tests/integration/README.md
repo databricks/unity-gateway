@@ -1395,6 +1395,12 @@ through POSIX Bash and Windows Git Bash with a native argv recorder, including l
 reasons protected from MSYS path conversion and carriage returns preserved through command-line
 normalization with fixed Bash `$'\r'` spans. It also runs the PowerShell recipe on Windows.
 These are process/component checks, not live-agent consent, approval, or delivery evidence.
+The Claude fallback's ordered flow needs a native check with known and unknown feedback
+requirements: every off must first probe without a reason, and an explicit reason given
+before disclosure must wait for consent to send session details. Cancellation must leave
+routing on without submission. Also check accepted and declined reuse of an unrelated
+remark, already-off requests, and the complete user-only manual handoff. Existing native-mod
+toggle journeys do not establish this fallback.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
