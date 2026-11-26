@@ -2,6 +2,9 @@
 
 Merges the two ways a skill is configured -- downloaded to disk (``skills_state``) and a
 schema scoped into the skills MCP connection (``mcp``) -- into one table.
+
+`ug skills list --available` instead lists the skills the workspace offers in Unity Catalog,
+whether or not they are configured, so a developer can find one to add without the picker.
 """
 
 from __future__ import annotations
@@ -9,19 +12,31 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from rich.cells import cell_len, set_cell_size
 from rich.table import Table
+from rich.text import Text
 
 from ucode.databricks import get_databricks_token
 from ucode.mcp import configured_skill_workspace_and_mcp_locations
-from ucode.skills_api import list_schema_skills
+from ucode.skills_api import (
+    _SKILLS_WALK_DEADLINE_SECONDS,
+    _SKILLS_WALK_TIMEOUT_REASON,
+    SkillRef,
+    list_all_skills,
+    list_schema_skills,
+)
 from ucode.skills_state import list_downloaded
 from ucode.state import load_state
-from ucode.ui import console, print_heading, print_note, print_warning
+from ucode.ui import console, print_heading, print_note, print_warning, spinner
 
 _LOCAL = "local"
 _MCP = "mcp"
 _BOTH = "local,mcp"
 _ALL_AGENTS = "all"
+_NOT_CONFIGURED = "-"
+_NO_SKILLS_FOUND = "no skills found"
+_COLUMN_GAP = "    "
+_MIN_DESCRIPTION_WIDTH = 20
 
 
 @dataclass(frozen=True)
@@ -137,4 +152,148 @@ def list_configured_skills_command() -> int:
 
     console.print()
     print_note("Use `ug skills add` / `ug skills remove` to change the skills ug configures.")
+    return 0
+
+
+@dataclass(frozen=True)
+class AvailableSkill:
+    name: str
+    location: str
+    configured: str
+    description: str
+
+
+def _configured_via(
+    fqn: str, location: str, downloaded: frozenset[str], scoped: frozenset[str]
+) -> str:
+    """How an available skill is already configured: ``local``, ``mcp``, both, or ``-``."""
+    in_download, in_mcp = fqn in downloaded, location in scoped
+    if in_download and in_mcp:
+        return _BOTH
+    if in_download:
+        return _LOCAL
+    if in_mcp:
+        return _MCP
+    return _NOT_CONFIGURED
+
+
+def _available_skills(state: dict, refs: list[SkillRef]) -> list[AvailableSkill]:
+    """``refs`` as rows sorted by location then name, each marked with how it is configured.
+
+    Uses only local state for the ``CONFIGURED`` column: a downloaded record, or the skill's
+    schema in the skills MCP connection's scope for any agent. No extra workspace calls.
+    """
+    downloaded = frozenset(record["fqn"] for record in list_downloaded() if record.get("fqn"))
+    configured = configured_skill_workspace_and_mcp_locations(state)
+    scoped = (
+        frozenset(location for locations in configured[1].values() for location in locations)
+        if configured is not None
+        else frozenset()
+    )
+    rows = [
+        AvailableSkill(
+            name=ref.securable_name,
+            location=f"{ref.catalog}.{ref.schema}",
+            configured=_configured_via(ref.fqn, f"{ref.catalog}.{ref.schema}", downloaded, scoped),
+            description=" ".join((ref.description or "").split()),
+        )
+        for ref in {ref.fqn: ref for ref in refs}.values()
+    ]
+    rows.sort(key=lambda skill: (skill.location, skill.name))
+    return rows
+
+
+def _render_available(rows: list[AvailableSkill], width: int | None) -> list[str]:
+    """The available-skills table as a header line followed by one line per skill.
+
+    A workspace can offer thousands of skills, so each stays on one line that can be scanned or
+    grepped. NAME and LOCATION, which ``ug skills add`` needs, are never cut. On a terminal
+    (``width`` set), the description is truncated to the space left, keeping at least
+    ``_MIN_DESCRIPTION_WIDTH`` cells, so a line may overflow a very narrow terminal rather than
+    lose a column. Piped output (``width`` None) keeps every description whole.
+    """
+    headers = ("NAME", "LOCATION", "CONFIGURED", "DESCRIPTION")
+    cells = [(row.name, row.location, row.configured, row.description) for row in rows]
+    widths = [
+        max(cell_len(value) for value in column) for column in zip(headers, *cells, strict=True)
+    ]
+    if width is not None:
+        fixed = sum(widths[:3]) + len(_COLUMN_GAP) * 3
+        widths[3] = min(widths[3], max(width - fixed, _MIN_DESCRIPTION_WIDTH))
+
+    def line(values: tuple[str, str, str, str]) -> str:
+        *fixed_values, description = values
+        if cell_len(description) > widths[3]:
+            description = set_cell_size(description, widths[3] - 1) + "…"
+        padded = [
+            set_cell_size(value, size) for value, size in zip(fixed_values, widths[:3], strict=True)
+        ]
+        return _COLUMN_GAP.join([*padded, description]).rstrip()
+
+    return [line(headers), *(line(values) for values in cells)]
+
+
+def _list_available_refs(
+    workspace: str, token: str, locations: list[str]
+) -> tuple[list[SkillRef], str | None]:
+    """The finalized skills in ``locations``, or in every readable schema when it is empty.
+
+    A schema in ``locations`` that cannot be listed is warned about and skipped, so the others
+    still show. Without ``locations`` this is the workspace-wide walk the ``ug skills add``
+    picker uses, which returns partial results with a timeout reason past its deadline.
+    """
+    if not locations:
+        return list_all_skills(workspace, token)
+    refs: list[SkillRef] = []
+    for location in locations:
+        catalog, schema = location.split(".")
+        found, reason = list_schema_skills(workspace, token, catalog, schema)
+        if reason:
+            print_warning(f"Could not list skills in `{location}`: {reason}.")
+            continue
+        refs.extend(found)
+    return refs, None
+
+
+def list_available_skills_command(locations: list[str]) -> int:
+    """`ug skills list --available`: print the skills the workspace offers in Unity Catalog.
+
+    Lists ``locations`` (``<catalog>.<schema>``), or every schema the user can read when empty.
+    Read-only: it configures nothing and writes no state.
+    """
+    state = load_state()
+    workspace = state.get("workspace")
+    if not workspace:
+        raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
+    profile = state.get("profile") if isinstance(state.get("profile"), str) else None
+    token = get_databricks_token(workspace, profile)
+
+    scope = ", ".join(f"`{location}`" for location in locations) or "every schema you can read"
+    with spinner(f"Listing skills in {scope}..."):
+        refs, reason = _list_available_refs(workspace, token, locations)
+    if reason == _SKILLS_WALK_TIMEOUT_REASON:
+        print_warning(
+            f"Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s; showing the {len(refs)} "
+            "skills found so far. Use `--location <catalog.schema>` to list a schema directly."
+        )
+    elif reason not in (None, _NO_SKILLS_FOUND):
+        raise RuntimeError(f"Could not list skills in {workspace}: {reason}.")
+
+    rows = _available_skills(state, refs)
+    if not rows:
+        print_note(f"No skills found in {scope}.")
+        return 0
+
+    print_heading("Available Skills")
+    console.print()
+    header, *lines = _render_available(rows, console.width if console.is_terminal else None)
+    console.print(Text(header, style="bold"), soft_wrap=True)
+    for line in lines:
+        console.print(Text(line), soft_wrap=True)
+
+    console.print()
+    print_note(
+        "Add a skill with `ug skills add --names <catalog.schema.skill>`, or a whole schema "
+        "with `ug skills add --location <catalog.schema>` (add `--via mcp` to load it live)."
+    )
     return 0

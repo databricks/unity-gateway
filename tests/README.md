@@ -320,6 +320,14 @@ from configuration/installation, protects read-only managed MCP rows, and checks
 attribution against source identity, target directories, and surviving files. These checks
 do not establish live workspace discovery or agent invocation coverage.
 
+`test_skills_list.py` covers `ug skills list` and `ug skills list --available`: the workspace-wide
+walk without `--location`, per-schema listing with `--location`, warned-and-skipped unreadable
+schemas, partial results after the walk deadline, listing errors, the CONFIGURED column
+derived from local state only, and the one-line-per-skill rendering (NAME and LOCATION never
+cut, DESCRIPTION fitted to a terminal and kept whole when piped).
+`test_cli.py::TestSkillsListCommand` covers flag dispatch and validation. These are component
+checks with mocked listing calls; live workspace listing is not covered.
+
 `test_skills_state.py` covers indexed attribution reconciliation, malformed directory containers and list
 members, within-batch ownership changes, and orphan cleanup with persisted state. These are
 component checks; live skill-download latency is unmeasured.

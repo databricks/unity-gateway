@@ -505,6 +505,12 @@ ug skills
 # List configured skills and how each was configured.
 ug skills list
 
+# List the skills you can add from Unity Catalog, marking the configured ones.
+ug skills list --available
+
+# Same, limited to some schemas (faster than searching every schema).
+ug skills list --available --location main.default,ml.prod
+
 # Download every skill in a schema into your local agent skill directories.
 ug skills add --location main.default
 
@@ -539,6 +545,7 @@ ug skills remove --location main.default --via mcp
 | `ug agents list` | Show the admin-managed and self-managed agents |
 | `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
+| `ug skills list --available` | List the skills you can add from Unity Catalog |
 | `ug skills add` | Add skill MCP scopes or download skills |
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
