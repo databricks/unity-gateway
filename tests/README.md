@@ -1339,11 +1339,14 @@ monotonic counter resets. A high-resolution monotonic counter breaks ties within
 Prompt-copy checks cover private files retained until deletion, a ten-file creation limit,
 concurrent writers, failed partial-copy cleanup and escaped inline fallback while preserving earlier
 copies. `test_config_io.py` rejects an external copier that replaces the staged inode, preserving the
-original file, and covers missing copiers in both filtered and absolute search paths.
+original file, and covers missing copiers in both filtered and absolute search paths. A preserving
+write to a new path succeeds without a copier, uses private permissions or the explicit mode,
+and leaves no staging files.
 The fake-TUI wrapper uses shorter switch and ready deadlines. Persistence, ownership and retry
 backoff retain their production timing and final-state assertions. Input-origin matrices live in
 the parser tests; PTY cases retain each native settlement path, exact input forwarding and recovery
-outcome. Contended preparation sends one prompt on the default model with an actionable notice.
+outcome. Contended preparation throttles retries even on fast loop turns and sends one prompt
+on the default model with an actionable notice when the readiness deadline expires.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail

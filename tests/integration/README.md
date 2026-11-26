@@ -1396,7 +1396,8 @@ by component tests in `../test_claude_smart_routing_v2.py`, not by a live regist
 Exact candidate-model and router-name preservation in decision logs has component
 coverage in `../test_claude_smart_routing_v2.py`; this suite does not assert those fields.
 The [main test guide](../README.md) describes offline Claude prompt and saved-default recovery
-coverage. Current-source native receipt acceptance, ordering, delayed persistence and concurrent
+coverage, including bounded preparation retries and preserving writes to new files without a copier.
+Current-source native receipt acceptance, ordering, delayed persistence and concurrent
 picker acceptance remain unverified by those component tests.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in

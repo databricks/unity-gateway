@@ -210,6 +210,21 @@ class TestWriteHelpers:
         assert json.loads(p.read_text()) == {"a": 2}
         assert not list(tmp_path.glob(".out.json.*"))
 
+    @pytest.mark.parametrize("mode", [None, 0o640])
+    def test_atomic_preserving_write_creates_a_new_file_without_a_copier(
+        self, tmp_path, monkeypatch, mode
+    ):
+        path = tmp_path / "nested" / "out.json"
+        payload = {"model": "haiku"}
+        monkeypatch.setenv("PATH", "")
+
+        config_io.atomic_write_json(path, payload, mode=mode, preserve_permissions=True)
+
+        assert path.read_text() == json.dumps(payload, indent=2)
+        if os.name == "posix":
+            assert stat.S_IMODE(path.stat().st_mode) == (0o600 if mode is None else mode)
+        assert list(path.parent.iterdir()) == [path]
+
     @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
     @pytest.mark.parametrize("mode", [None, 0o640])
     def test_atomic_write_preserves_permissions_with_the_available_copier(

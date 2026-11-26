@@ -61,7 +61,8 @@ def atomic_write_json(
     full disk, or a concurrent reader never sees a half-written file. This is a raw writer: unlike
     ``write_json_file`` it does not honor dry-run, so callers that should be skipped under dry-run
     must guard the call themselves. An explicit ``mode`` is applied before publishing the file.
-    ``preserve_permissions`` retains an existing POSIX file's ownership and ACLs.
+    ``preserve_permissions`` retains an existing POSIX file's ownership and ACLs;
+    a new file uses the usual private temporary-file permissions unless ``mode`` is set.
     ``copy_timeout`` bounds the permission-copy subprocess.
     """
     ensure_parent_dir(path)
@@ -75,7 +76,7 @@ def atomic_write_json(
         fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                if preserve_permissions:
+                if preserve_permissions and path.exists():
                     before = path.stat()
                     # Relative PATH entries could select a copier from the user's project.
                     search_path = os.pathsep.join(

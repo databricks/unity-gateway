@@ -44,6 +44,7 @@ SWITCH_TIMEOUT_S = 6.0
 MODEL_PERSIST_TIMEOUT_S = 2.0
 # Leave the receipt helper time to receive a refusal before its five-second socket timeout.
 MODEL_SETTING_RECEIPT_TIMEOUT_S = 4.0
+MODEL_PREPARE_INTERVAL_S = 0.2
 MODEL_RESTORE_INTERVAL_S = 0.2
 MODEL_RESTORE_MAX_INTERVAL_S = 2.0
 READY_QUIET_S = 0.75
@@ -742,6 +743,7 @@ def run_claude_pty(
             routed_model = ""
             switch_started = 0.0
             ready_capture = 0.0
+            next_prepare_check = 0.0
             paste_deadline = 0.0
             verify_deadline = 0.0
             esc_deadline = 0.0
@@ -1061,11 +1063,15 @@ def run_claude_pty(
                             restore_error_logged = True
                 if user_input.pending:
                     continue  # Do not inject keystrokes into an incomplete terminal reply.
+                switch_prepared = False
                 if (
                     phase == "waiting_to_switch"
                     and idle
-                    and prepare_model_switch(routed_model) is not False
+                    and now >= next_prepare_check
                 ):
+                    switch_prepared = prepare_model_switch(routed_model) is not False
+                    next_prepare_check = time.monotonic() + MODEL_PREPARE_INTERVAL_S
+                if switch_prepared:
                     model_pending = True
                     automatic_command_pending = True
                     clear_input()

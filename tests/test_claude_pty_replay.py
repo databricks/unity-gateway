@@ -1346,6 +1346,9 @@ class TestWaitingToSwitchTimeout:
         monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05 if contended else 100.0)
         monkeypatch.setattr(claude_pty, "READY_TIMEOUT_S", 0.3)
         monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+        # Fast loop turns must not turn a contended settings lock into a busy poll.
+        monkeypatch.setattr(claude_pty, "SELECT_TIMEOUT_S", 0.005)
+        monkeypatch.setattr(claude_pty, "MODEL_PREPARE_INTERVAL_S", 0.05)
 
         socket_path = tmp_path / "first.sock"
         capture = tmp_path / "capture.json"
@@ -1379,6 +1382,7 @@ capture_path.write_text(json.dumps({
     "extra_input": extra.hex(),
     "no_model_cmd_before_paste": b"/model" not in pre,
     "paste_received": True,
+    "prompt": prompt_bytes[:-6].decode(),
     "enter_is_cr": enter == b"\\r",
 }))
 """,
@@ -1387,7 +1391,7 @@ capture_path.write_text(json.dumps({
         preparations = []
 
         def prepare(model):
-            preparations.append(model)
+            preparations.append((model, time.monotonic()))
             return False
 
         result = claude_pty.run_claude_pty(
@@ -1403,10 +1407,18 @@ capture_path.write_text(json.dumps({
             "no /model command should be sent when the quiet window times out"
         )
         assert data["paste_received"]
+        assert data["prompt"] == "hello"
         assert data["enter_is_cr"]
 
         assert data["extra_input"] == ""
         assert bool(preparations) is contended
+        if contended:
+            assert len(preparations) >= 2, "a transient lock failure must remain retryable"
+            assert all(model == "sonnet" for model, _ in preparations)
+            assert all(
+                later[1] - earlier[1] >= 0.045
+                for earlier, later in zip(preparations, preparations[1:], strict=False)
+            ), "preparation retries must respect their interval even on fast loop turns"
         assert b"could not prepare the model switch" in capfdbinary.readouterr().out
 
 
