@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash(MSYS2_ARG_CONV_EXCL='*' "$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.11.2"
+  version: "1.11.3"
 ---
 
 # Smart Router
@@ -124,6 +124,10 @@ routing on and send nothing.
 Pass a reason as one literal shell argument. For Bash, enclose it in single quotes
 and replace every embedded apostrophe with `'\''`; for example,
 `--smart-router-feedback 'it'\''s too slow for this task'`.
+For each carriage return, close the single-quoted span, append the fixed literal
+`$'\r'`, and reopen the span: `'first'$'\r''second'`. Do this for the CR in CRLF too,
+leaving each LF unchanged. Git Bash can normalize raw CRLF in its command line;
+the fixed escape preserves the original carriage return in the reason argument.
 Use this command, replacing only the quoted placeholder with the escaped reason.
 The environment setting applies to this command only and prevents Git Bash on
 Windows from converting reasons such as `/model picks are slow` into filesystem paths.

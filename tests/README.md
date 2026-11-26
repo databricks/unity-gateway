@@ -1317,6 +1317,8 @@ verify that valid reasons work without Isaac and that repeated off calls collect
 recorder on POSIX and Windows Git Bash, including leading slashes, apostrophes, multiline
 text, CRLF, final newlines, and executable-looking text. The command disables MSYS path
 conversion only for its child; the test checks exact arguments and no injected side effect.
+Carriage returns use fixed Bash `$'\r'` spans to survive Git Bash command-line normalization;
+the cases retain CRLF and cover lone and terminal carriage returns too.
 PowerShell 5.1 and 7 exercise the documented Windows command separately. These process
 checks do not establish native-agent consent, approval matching, or feedback delivery.
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character

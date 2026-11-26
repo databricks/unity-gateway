@@ -1392,7 +1392,8 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 establish PowerShell command execution.
 `../test_smart_router_feedback.py` separately runs the documented Bash feedback command
 through POSIX Bash and Windows Git Bash with a native argv recorder, including leading-slash
-reasons protected from MSYS path conversion. It also runs the PowerShell recipe on Windows.
+reasons protected from MSYS path conversion and carriage returns preserved through command-line
+normalization with fixed Bash `$'\r'` spans. It also runs the PowerShell recipe on Windows.
 These are process/component checks, not live-agent consent, approval, or delivery evidence.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of

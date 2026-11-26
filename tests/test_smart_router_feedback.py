@@ -198,6 +198,10 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
         pytest.param(REASON, id="multiline-apostrophe"),
         pytest.param("/model picks are slow for this task", id="leading-slash"),
         pytest.param(
+            "Keep a lone\rreturn, a CRLF\r\nline ending and a final CR.\r",
+            id="carriage-returns",
+        ),
+        pytest.param(
             'Keep "$UG_QUOTING_SENTINEL", $(printf injected > "$UG_QUOTING_SENTINEL"), '
             '`printf injected > "$UG_QUOTING_SENTINEL"` and * literal.\r\n'
             "Don't drop this final backslash and newline: \\\n",
@@ -227,7 +231,8 @@ def test_bash_feedback_reason_is_one_literal_argument(tmp_path, reason):
     allowed_command = command.replace("'<reason>'", "*")
     assert f"Bash({allowed_command})" in skill
     # Keep the documented command, substituting only the reason and argv-recording child.
-    literal = "'" + reason.replace("'", "'\\''") + "'"
+    # Fixed Bash literals keep Git Bash's command-line normalization from dropping CRs.
+    literal = "'" + reason.replace("'", "'\\''").replace("\r", "'$'\\r''") + "'"
     command = command.replace("'<reason>'", literal).replace(
         "-m ucode.cli", '"$UG_QUOTING_RECORDER"'
     )
