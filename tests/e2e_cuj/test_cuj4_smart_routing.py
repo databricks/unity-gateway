@@ -42,6 +42,7 @@ from .helpers.evidence import (
     canonical_model,
     claude_file_task,
     served_inference_request,
+    task_inference_request,
 )
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
@@ -166,91 +167,6 @@ def _run_session(session, recorder, agent, task, launch_args):
     return evidence.observe(task), recorder.requests_after(checkpoint)
 
 
-def _task_inference_request(requests, agent, prompt, *, after=0):
-    """Match exact task prompts, including Codex child assignment envelopes."""
-    prompts = {prompt}
-    if agent == CLAUDE and after:
-        prompts.add(prompt + "\n")
-    for request in requests:
-        if (
-            request.sequence <= after
-            or request.method != "POST"
-            or request.path != INFERENCE_PATHS[agent]
-        ):
-            continue
-        payload = request.payload
-        entries = payload.get("messages" if agent == CLAUDE else "input", [])
-        tools = payload.get("tools")
-        if agent == CODEX and not tools and isinstance(entries, list):
-            # Responses Lite carries tool definitions in developer input items.
-            tools = next(
-                (
-                    entry.get("tools")
-                    for entry in entries
-                    if isinstance(entry, dict)
-                    and entry.get("type") == "additional_tools"
-                    and entry.get("role") == "developer"
-                ),
-                None,
-            )
-        if not isinstance(tools, list) or not tools:
-            continue
-        if isinstance(entries, str):
-            if entries in prompts:
-                return request
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            content = entry.get("content", [])
-            if (
-                agent == CODEX
-                and after
-                and entry.get("type") == "agent_message"
-                and isinstance(entry.get("recipient"), str)
-                and isinstance(content, list)
-            ):
-                # Encrypted Codex child instructions leave only task_name readable.
-                if entry["recipient"].rsplit("/", 1)[-1] in {prompt, prompt + "__sr_on"} and any(
-                    isinstance(part, dict)
-                    and part.get("type") == "encrypted_content"
-                    and isinstance(part.get("encrypted_content"), str)
-                    and part["encrypted_content"]
-                    for part in content
-                ):
-                    return request
-                author = entry.get("author")
-                if isinstance(author, str) and author and entry["recipient"]:
-                    # Match the native envelope exactly so notifications cannot qualify.
-                    assignment = (
-                        f"Message Type: NEW_TASK\nTask name: {entry['recipient']}\n"
-                        f"Sender: {author}\nPayload:\n{prompt}"
-                    )
-                    if any(
-                        isinstance(part, dict)
-                        and part.get("type") == "input_text"
-                        and part.get("text") == assignment
-                        for part in content
-                    ):
-                        return request
-            if entry.get("role") != "user":
-                continue
-            if isinstance(content, str):
-                if content in prompts:
-                    return request
-            elif isinstance(content, list) and any(
-                isinstance(part, dict)
-                and part.get("type") in {"text", "input_text"}
-                and isinstance(part.get("text"), str)
-                and part.get("text") in prompts
-                for part in content
-            ):
-                return request
-    raise AssertionError("No tool-capable inference request contained the exact task prompt")
-
-
 def _assert_published_config_matches_expectations(published):
     assert published["spec_version"] == 1
     assert published["default_agent"] == CodingAgent.CLAUDE_CODE
@@ -299,7 +215,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
     for agent in AGENTS:
         task = _file_task(session, agent)
         observation, requests = _run_session(session, recorder, agent, task, (agent,))
-        inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         no_model_override[agent] = SessionCase(
             agent=agent,
@@ -314,7 +230,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         task = _file_task(session, agent)
         launch_args = (agent, "--model", overrides[agent])
         observation, requests = _run_session(session, recorder, agent, task, launch_args)
-        inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         with_model_override[agent] = SessionCase(
             agent=agent,
@@ -681,7 +597,7 @@ class TestCujSmartRouting(BaseCujTest):
                     assert offered <= {canonical_model(model) for model in supported}
                     selected = canonical_model(expected_model)
                     assert selected in offered and selected.startswith("system.ai."), selected
-                inference = _task_inference_request(requests, agent, task.prompt)
+                inference = task_inference_request(requests, agent, task.prompt)
                 inference = served_inference_request(recorder, requests, inference, agent)
                 assert canonical_model(inference.payload["model"]) == canonical_model(
                     expected_model
@@ -808,7 +724,7 @@ class TestCujSmartRouting(BaseCujTest):
                     assert response.status_code == 200
                     selections = response.payload["route_selection"]
                     assert len(selections) == 1
-                    inference = _task_inference_request(
+                    inference = task_inference_request(
                         requests,
                         agent,
                         route_prompt,

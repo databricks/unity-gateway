@@ -1,7 +1,10 @@
 import base64
 import io
+import json
+import os
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +13,125 @@ from scripts import run_integration as runner
 
 def windows_live_environment():
     return {"DATABRICKS_BEARER": "bearer"}
+
+
+def test_isolated_runner_forwards_only_explicit_uia_diagnostic_settings():
+    environment = {
+        "PATH": "/bin",
+        "UG_UIA_BASELINE_SAMPLE": "1",
+        "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
+        "UG_MODEL_LEDGER": "smart",
+        "UG_INTEGRATION_OLD_CODEX_BIN_DIR": "/old/bin",
+        "DATABRICKS_BEARER": "secret",
+        "UNRELATED_SETTING": "private",
+    }
+    assert runner.isolated_base_environment(environment) == {
+        "PATH": "/bin",
+        "UG_UIA_BASELINE_SAMPLE": "1",
+        "UG_UIA_PROBE_ASSEMBLY": "C:/probe.dll",
+        "UG_MODEL_LEDGER": "smart",
+        "UG_INTEGRATION_OLD_CODEX_BIN_DIR": "/old/bin",
+    }
+
+
+def test_old_codex_selection_is_confined_to_one_session(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "integration"))
+    from tests.integration import conftest as integration_fixtures
+    from tests.integration.utils.harness import UserSession
+
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    executable = "codex.cmd" if os.name == "nt" else "codex"
+    for directory in (old_dir, new_dir):
+        path = directory / executable
+        path.write_text("placeholder")
+        path.chmod(0o755)
+    project = tmp_path / "projects"
+    project.mkdir()
+    one = UserSession(tmp_path / "one", project, tmp_path / "ug", tmp_path / "artifacts-one")
+    project_two = tmp_path / "projects-two"
+    project_two.mkdir()
+    other = UserSession(tmp_path / "two", project_two, tmp_path / "ug", tmp_path / "artifacts-two")
+    one.env["PATH"] = other.env["PATH"] = str(new_dir)
+    monkeypatch.setenv("UG_MODEL_LEDGER", "smart")
+    monkeypatch.setenv("UG_INTEGRATION_OLD_CODEX_BIN_DIR", str(old_dir))
+    selected = integration_fixtures.version_aware_codex_session.__wrapped__(one)
+    assert selected.which("codex").resolve() == (old_dir / executable).resolve()
+    assert other.which("codex").resolve() == (new_dir / executable).resolve()
+    monkeypatch.delenv("UG_INTEGRATION_OLD_CODEX_BIN_DIR")
+    with pytest.raises(AssertionError, match="old Codex"):
+        integration_fixtures.version_aware_codex_session.__wrapped__(other)
+    monkeypatch.delenv("UG_MODEL_LEDGER")
+    assert (
+        integration_fixtures.version_aware_codex_session.__wrapped__(other).which("codex").resolve()
+        == (new_dir / executable).resolve()
+    )
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_windows_desktop_session_records_sandbox_selection_on_teardown(
+    tmp_path, monkeypatch, outcome
+):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "integration"))
+    from tests.integration import conftest as integration_fixtures
+
+    monkeypatch.setenv("UG_INTEGRATION_RUN_DIR", str(tmp_path))
+    monkeypatch.delenv("UG_MODEL_LEDGER", raising=False)
+    node = SimpleNamespace(
+        name="desktop", get_closest_marker=lambda marker: marker == "windows_desktop"
+    )
+    fixture = integration_fixtures.session.__wrapped__(SimpleNamespace(node=node), tmp_path / "ug")
+    session = next(fixture)
+    log = session.home / ".codex" / ".sandbox" / "sandbox.2026-11-25.log"
+    log.parent.mkdir(parents=True)
+    line = "[2026-11-25 12:34:56.789 codex.exe] Windows sandbox selection: disabled"
+    log.write_text(line + "\n", encoding="utf-8")
+    if outcome == "failure":
+        with pytest.raises(RuntimeError, match="case failed"):
+            fixture.throw(RuntimeError("case failed"))
+    else:
+        with pytest.raises(StopIteration):
+            next(fixture)
+    evidence = json.loads((session.artifacts / "windows-sandbox-selection.json").read_text())
+    assert evidence == {"lines": [line]}
+    proxy = json.loads((session.artifacts / "windows-mcp-proxy-diagnostics.json").read_text())
+    assert proxy == {"log_count": 0, "events": []}
+    provisioning = json.loads((session.artifacts / "windows-sandbox-provisioning.json").read_text())
+    assert provisioning["before"]["config"]["exists"] is False
+    assert provisioning["after"]["marker"]["exists"] is False
+
+
+def test_staging_session_ledger_uses_staging_workspace(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "integration"))
+    from tests.integration import conftest as integration_fixtures
+
+    monkeypatch.setenv("UG_INTEGRATION_RUN_DIR", str(tmp_path))
+    monkeypatch.setenv("UG_MODEL_LEDGER", "staging")
+    monkeypatch.setenv("UG_INTEGRATION_CLAUDE_PROVIDER_MODEL", "claude-haiku-4-5-20251001")
+    node = SimpleNamespace(name="case", get_closest_marker=lambda marker: False)
+    fixture = integration_fixtures.session.__wrapped__(SimpleNamespace(node=node), tmp_path / "ug")
+    session = next(fixture)
+    path = session.home / ".claude/projects/session.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-11-25T00:00:01Z",
+                "message": {
+                    "id": "response",
+                    "model": "claude-haiku-4-5-20251001",
+                    "usage": {"input_tokens": 3, "output_tokens": 1},
+                },
+            }
+        )
+        + "\n"
+    )
+    with pytest.raises(StopIteration):
+        next(fixture)
+    result = json.loads((session.artifacts / "model-ledger.json").read_text())
+    assert result["responses"][0]["workspace"] == "staging"
 
 
 def test_secrets_are_redacted_from_build_output():

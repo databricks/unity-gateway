@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -47,6 +48,8 @@ _STOP_REASONS = {
     "refusal",
     "model_context_window_exceeded",
 }
+# The statuses whose evidence is captured through _overload_details.
+_OVERLOAD_STATUSES = {429, 503}
 
 
 @dataclass(frozen=True)
@@ -210,6 +213,15 @@ class TuiRequestRecorder:
             for sequence, response in responses
         ]
 
+    def _overload_responses(self) -> list[dict]:
+        with self._condition:
+            responses = list(self._responses.items())
+        return [
+            {"sequence": sequence, **_overload_details(response)}
+            for sequence, response in responses
+            if response.status_code in _OVERLOAD_STATUSES
+        ]
+
     def _forward(self, handler: BaseHTTPRequestHandler) -> None:
         assert self._client
         length = int(handler.headers.get("Content-Length", 0))
@@ -283,6 +295,47 @@ class TuiRequestRecorder:
                 )
                 self._condition.notify_all()
             handler.send_error(502, "upstream request failed")
+
+
+def _rate_limit_headers(response: RecordedResponse) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in response.headers.items()
+        if name.lower() in {"retry-after", "x-request-id", "server"}
+        or name.lower().startswith("x-ratelimit-")
+    }
+
+
+def _overload_details(response: RecordedResponse) -> dict:
+    try:
+        body = httpx.Response(
+            response.status_code, headers=response.headers, content=response.body
+        ).text
+    except httpx.DecodingError:
+        return {
+            "status": response.status_code,
+            "headers": _rate_limit_headers(response),
+            "body": "<invalid response omitted>",
+        }
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = None
+    fields = {}
+    if isinstance(payload, dict) and set(payload) & {"error", "error_code"}:
+        nested = payload.get("error")
+        for source in (payload, nested if isinstance(nested, dict) else {}):
+            for name in ("code", "error_code", "type", "param", "status"):
+                value = source.get(name)
+                if (
+                    value is None
+                    or type(value) is int
+                    or (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,160}", value))
+                ):
+                    if name in source:
+                        fields["code" if name == "error_code" else name] = value
+    body = json.dumps(fields) if fields else "<non-error response omitted>"
+    return {"status": response.status_code, "headers": _rate_limit_headers(response), "body": body}
 
 
 def _response_protocol(response: RecordedResponse | None) -> dict:
@@ -424,6 +477,9 @@ def record_claude_response_protocol(session, workspace: str) -> Iterator[TuiRequ
     finally:
         try:
             session.record("claude-response-protocol.json", recorder._claude_response_protocol())
+            overloads = recorder._overload_responses()
+            if overloads:
+                session.record("overload-responses.json", overloads)
         except BaseException:
             if failure is None:
                 raise
@@ -434,6 +490,7 @@ def assert_served(recorder, request, model):
     """The request asked for `model` and its paired response was a non-empty HTTP 200."""
     assert request.payload["model"] == model, request.payload
     response = recorder.response_for(request, timeout=240)
+    diagnostic = _overload_details(response) if response.status_code != 200 else None
     assert response.status_code == 200, {
         "status": response.status_code,
         "model": request.payload["model"],
@@ -444,9 +501,10 @@ def assert_served(recorder, request, model):
             {"name": tool.get("name"), "defer_loading": tool.get("defer_loading")}
             for tool in request.payload.get("tools", [])
         ],
-        "response_body": httpx.Response(
-            response.status_code, headers=response.headers, content=response.body
-        ).text[:2000],
+        "response_headers": diagnostic["headers"]
+        if diagnostic and response.status_code in _OVERLOAD_STATUSES
+        else {},
+        "response_body": diagnostic["body"] if diagnostic else "",
     }
     assert response.body, "Inference response was empty"
 

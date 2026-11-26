@@ -327,3 +327,88 @@ class SessionEvidence:
 
     def assert_applied(self, task, supported, *, expected):
         return self.observe(task).assert_applied(task, supported, expected=expected)
+
+
+def task_inference_request(requests, agent, prompt, *, after=0):
+    """Match exact task prompts, including Codex child assignment envelopes."""
+    prompts = {prompt}
+    if agent == CLAUDE and after:
+        prompts.add(prompt + "\n")
+    for request in requests:
+        if (
+            request.sequence <= after
+            or request.method != "POST"
+            or request.path != INFERENCE_PATHS[agent]
+        ):
+            continue
+        payload = request.payload
+        entries = payload.get("messages" if agent == CLAUDE else "input", [])
+        tools = payload.get("tools")
+        if agent == CODEX and not tools and isinstance(entries, list):
+            # Responses Lite carries tool definitions in developer input items.
+            tools = next(
+                (
+                    entry.get("tools")
+                    for entry in entries
+                    if isinstance(entry, dict)
+                    and entry.get("type") == "additional_tools"
+                    and entry.get("role") == "developer"
+                ),
+                None,
+            )
+        if not isinstance(tools, list) or not tools:
+            continue
+        if isinstance(entries, str):
+            if entries in prompts:
+                return request
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            content = entry.get("content", [])
+            if (
+                agent == CODEX
+                and after
+                and entry.get("type") == "agent_message"
+                and isinstance(entry.get("recipient"), str)
+                and isinstance(content, list)
+            ):
+                # Encrypted Codex child instructions leave only task_name readable.
+                if entry["recipient"].rsplit("/", 1)[-1] in {prompt, prompt + "__sr_on"} and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "encrypted_content"
+                    and isinstance(part.get("encrypted_content"), str)
+                    and part["encrypted_content"]
+                    for part in content
+                ):
+                    return request
+                author = entry.get("author")
+                if isinstance(author, str) and author and entry["recipient"]:
+                    # Match the native envelope exactly so notifications cannot qualify.
+                    assignment = (
+                        f"Message Type: NEW_TASK\nTask name: {entry['recipient']}\n"
+                        f"Sender: {author}\nPayload:\n{prompt}"
+                    )
+                    if any(
+                        isinstance(part, dict)
+                        and part.get("type") == "input_text"
+                        and part.get("text") == assignment
+                        for part in content
+                    ):
+                        return request
+            if entry.get("role") != "user":
+                continue
+            if isinstance(content, str):
+                if content in prompts:
+                    return request
+            elif isinstance(content, list) and any(
+                isinstance(part, dict)
+                and part.get("type") in {"text", "input_text"}
+                and isinstance(part.get("text"), str)
+                and part.get("text") in prompts
+                for part in content
+            ):
+                return request
+    raise AssertionError("No tool-capable inference request contained the exact task prompt")

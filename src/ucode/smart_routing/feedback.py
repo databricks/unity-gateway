@@ -14,7 +14,11 @@ from collections.abc import Mapping
 from typing import Protocol
 from uuid import UUID
 
-from ucode.constants import ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR
+from ucode.constants import (
+    ISAAC_LAUNCH_MODE_ENV_VAR,
+    ISAAC_OMNI_LAUNCH_MODE,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+)
 from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, effective_environment
@@ -23,7 +27,7 @@ from ucode.smart_routing.session_env import SESSION_ENV_VAR, effective_environme
 def smart_router_feedback_required() -> bool:
     return (
         env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni"
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != ISAAC_OMNI_LAUNCH_MODE
     )
 
 
