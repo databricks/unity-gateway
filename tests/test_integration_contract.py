@@ -784,6 +784,27 @@ def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
     assert "codex-relay" in {name.strip() for name in needs.group(1).split(",")}
 
 
+def test_copilot_seat_ci_is_its_own_non_blocking_lane(monkeypatch):
+    monkeypatch.setenv("UG_INTEGRATION_AGENTS", "copilot")
+    jobs = _integration_jobs()
+    seat = jobs["copilot-seat"]
+    assert "COPILOT_SEAT_GITHUB_TOKEN: ${{ secrets.COPILOT_SEAT_GITHUB_TOKEN }}" in seat
+    assert not [name for name in jobs if name != "copilot-seat" and "COPILOT_SEAT" in jobs[name]]
+    assert "continue-on-error: true" in seat
+    assert "steps: *live-steps" in seat
+    seat_cases = _collect_integration_cases(_ci_marker_expression(seat, "copilot"))
+    assert seat_cases == {
+        "test_ug_copilot_seat_relay.py::test_ug_copilot_seat_relay_headless_task",
+        "test_ug_copilot_vscode_seat_relay.py::"
+        "test_ug_configure_routes_vscode_copilot_through_the_seat_relay",
+    }
+    copilot_cases = _collect_integration_cases(_ci_marker_expression(jobs["copilot"], "copilot"))
+    assert not copilot_cases & seat_cases
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "copilot-seat" not in {name.strip() for name in needs.group(1).split(",")}
+
+
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
     monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
     jobs = _integration_jobs()
@@ -1183,6 +1204,7 @@ SKIPPED_ON_FORK_PRS = {
     "soft-fail",
     "opencode",
     "copilot",
+    "copilot-seat",
     "antigravity",
     "vscode",
     "managed",

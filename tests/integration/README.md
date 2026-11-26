@@ -1590,6 +1590,8 @@ MPS CUJs select preprovisioned services:
   CI supplies this environment variable from the repository secret `CODEX_OAUTH_TOKEN`.
   Renew the secret before it expires. The ChatGPT workspace IP allowlist must cover both the
   runner's login egress and the gateway's inference egress.
+- Copilot (relayed GitHub Copilot seat): `main.ucode.ci_e2e_copilot_seat_relay_mps` (a seat-relay
+  MPS that must exist on the e2e workspace), which also requires `COPILOT_SEAT_GITHUB_TOKEN`.
 - Codex and Copilot (OpenAI): `main.ucode.ci_openai_mps`, using its allowed `gpt-6-luna` model.
 - Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
   target (`--antigravity-provider`, `--antigravity-provider-models`).
@@ -2577,3 +2579,18 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 Configure loading indicators: skill download component coverage verifies the shared spinner
 starts before bundle requests and reports completed/total downloads. MCP and skill
 reconciliation behavior retains existing component coverage; terminal appearance is not an E2E claim.
+
+GitHub Copilot seat relay journeys carry the `copilot_seat` marker and run in their own
+non-blocking lane. They need `main.ucode.ci_e2e_copilot_seat_relay_mps`, a Model Provider Service
+that relays Copilot seats and must exist on the e2e workspace (override it with
+`--copilot-seat-provider`), and a GitHub token for an account with a Copilot seat (`COPILOT_SEAT_GITHUB_TOKEN`, a repository secret that the runner passes to
+Copilot CLI as `GH_TOKEN`). `test_ug_copilot_seat_relay.py` completes a headless task through the
+relay with a plain HTTP proxy named in the environment and shows the proxy receives nothing,
+and that neither the Databricks bearer nor the GitHub token lands in ug's or Copilot's files.
+`test_ug_copilot_vscode_seat_relay.py` configures a stand-in VS Code install and, on Linux, starts
+ug's runtime wrapper the way VS Code would, checking the bundled runtime's environment; the real
+`code.cmd` and `ug.exe` chain on Windows remains a manual check. `test_ug_copilot_plugin_isolation.py`
+(plain `copilot` marker) installs ug's desktop-app plugin into the Copilot home with the step
+configure runs once it finds the app, turns Copilot's experimental features on, and shows a `ug copilot`
+session still completes on its Databricks model while the plugin's extension records that it was
+not under the app. None of these drive the real desktop app, which needs a signed-in GitHub account.

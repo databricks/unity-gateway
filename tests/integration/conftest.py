@@ -308,6 +308,24 @@ def claude_relayed_provider():
 
 
 @pytest.fixture(scope="session")
+def copilot_seat_provider():
+    # A Model Provider Service that relays each developer's own GitHub Copilot seat.
+    value = os.environ.get("UG_INTEGRATION_COPILOT_SEAT_PROVIDER", "").strip()
+    if not value:
+        pytest.fail("Seat relay journeys need UG_INTEGRATION_COPILOT_SEAT_PROVIDER.")
+    return value
+
+
+@pytest.fixture(scope="session")
+def copilot_seat_github_token():
+    # A GitHub token for an account with a Copilot seat; Copilot CLI reads it from GH_TOKEN.
+    value = os.environ.get("UG_INTEGRATION_COPILOT_SEAT_GITHUB_TOKEN", "").strip()
+    if not value:
+        pytest.fail("Seat relay journeys need UG_INTEGRATION_COPILOT_SEAT_GITHUB_TOKEN.")
+    return value
+
+
+@pytest.fixture(scope="session")
 def claude_bedrock_provider():
     # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Opus).
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]

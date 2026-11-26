@@ -218,7 +218,7 @@ class UserSession:
         self.commands = 0
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
-        # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
+        # Also scrub the relayed launches' subscription and GitHub tokens, not just the bearer.
         for name in (
             "DATABRICKS_BEARER",
             "DATABRICKS_SECOND_BEARER",
@@ -226,6 +226,9 @@ class UserSession:
             "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN",
             "CODEX_ACCESS_TOKEN",
             "UG_INTEGRATION_CODEX_ACCESS_TOKEN",
+            "GH_TOKEN",
+            "COPILOT_SEAT_GITHUB_TOKEN",
+            "UG_INTEGRATION_COPILOT_SEAT_GITHUB_TOKEN",
         ):
             for token in (os.environ.get(name), self.env.get(name)):
                 if token and token.strip():
