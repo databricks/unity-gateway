@@ -165,8 +165,10 @@ A separate CUJ2 Claude TUI case checks default Model Provider Service support wi
 first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
 both route-selection requests, plus completed parent and child turns.
 
-CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
-Responses and Chat Completions native APIs; its workspace's Codex default must match.
+CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose `gpt-6-luna`, with every target on both
+Responses and Chat Completions native APIs; its workspace's Codex default must match. CUJ2 and
+CUJ7 accept extra targets on both shared provider services; CUJ9 accepts them too and expects
+Copilot's `ug_e2e.providers.openai.*` source to list every live OpenAI target.
 CUJ1 and CUJ6 use `system.ai.gpt-6-luna` for the Codex Luna selection. Provision the CUJ1
 and CUJ6 phase A model lists, plus the CUJ6 phase C model list and default, before running
 these cases. Tests only validate the published fixtures; they never update them.
@@ -188,6 +190,11 @@ cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journe
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+Its Codex Auto case uses the shared `subagent_auto_v0` selector, checks Auto above
+the regular models in one native picker, chooses an alternate main model by its display
+name and one of its supported reasoning efforts, and requires a completed file task
+with paired gateway inference on that model and effort and no first-prompt routing request.
+It then switches to a manual model and back to Auto, requiring both choosers to reopen.
 An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns

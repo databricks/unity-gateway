@@ -603,11 +603,12 @@ the last 20 decisions, and `$smart-router logs --id <ID>` shows one.
 Auto visibility is opt-in. Enable the new config version for configure and launch:
 
 ```bash
-SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent claude
-SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0 ug configure --agent claude
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0 ug claude
 ```
 
-Auto requires this version for both configure and launch. The version derives
+Auto requires the shared version for both configure and launch; the previous
+`subagent_auto_v0_claude_only` version continues to work for Claude. The version derives
 `ENABLE_SMART_ROUTER_AUTO_MODE` internally; setting that flag directly does not enable Auto.
 Managed smart routing alone does not opt into Auto.
 
@@ -808,6 +809,7 @@ use identical mappings for both agents. The Claude-only versions disable routing
 | Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker | Subagent model details |
 | --- | --- | --- | --- | --- | --- | --- |
 | `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off | Shown |
+| `first_prompt_and_subagent_orch_v0` | Claude, Codex | On | On | On | Off | Shown |
 | `subagent_only_v0` | Claude, Codex | On | Off | Off | Off | Shown |
 | `subagent_only_v1` | Claude, Codex | On | Off | Off | Off | Shown |
 | `subagent_orch_v0` | Claude, Codex | On | Off | On | Off | Shown |
@@ -816,10 +818,24 @@ use identical mappings for both agents. The Claude-only versions disable routing
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off | Shown |
 | `subagent_orch_v0_blind_subagent_model_claude_only` | Claude | On | Off | On | Off | Hidden |
 | `subagent_auto_v0_claude_only` | Claude | On | Off | On | On | Hidden |
+| `subagent_auto_v0` | Claude, Codex | On | Off | On | On | Hidden |
+| `first_prompt_and_subagent_orch_v0_claude_only` | Claude | On | On | On | Off | Shown |
+
+For Codex Auto, launch with `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0 ug codex`.
+The native `/model` menu shows Auto first. Selecting it opens a main-model choice followed
+by that model's supported reasoning efforts. Canceling either choice keeps the current model,
+effort, and routing state. Shift+Tab still switches native modes without opening the picker.
+Selecting a specific model turns session routing off. The footer shows Auto and the chosen main model.
+The Codex picker is launch-only and requires Codex 0.171.0 or newer.
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. Every other version routes subagents only;
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. `first_prompt_and_subagent_orch_v0` sets the same
+flags with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, so the main agent starts on the model routed
+from the first prompt with the orchestrator workflow. A routed `ug codex app-server` gets its
+subagent routing and orchestrator but, as with any preset, no first-prompt routing.
+`first_prompt_and_subagent_orch_v0_claude_only` keeps those flags for Claude and turns all
+routing flags off for Codex. Every other version routes subagents only;
 `subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)

@@ -14,15 +14,23 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
-from ucode.constants import AGENT_CLAUDE
+from ucode.constants import AGENT_CLAUDE, ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, session_log, v2
+from ucode.smart_routing import (
+    claude_hooks,
+    config,
+    orchestrator,
+    routing,
+    session_env,
+    session_log,
+    v2,
+)
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -954,6 +962,49 @@ class TestFirstPromptHook:
         finally:
             stop.set()
 
+    @requires_pty
+    def test_orchestrator_context_survives_the_first_prompt_hold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
+        )
+        controls: dict[str, str] = {}
+        session_env.start_session(controls)
+        for key, value in controls.items():
+            monkeypatch.setenv(key, value)
+        socket_path = tmp_path / "first.sock"
+        stop = threading.Event()
+        ready = threading.Event()
+        claude_pty.serve_first_prompt_socket(
+            socket_path,
+            lambda _prompt: claude_pty.FirstPromptRoute(
+                model="sonnet", display_model="sonnet", rationale="Selected for a narrow task."
+            ),
+            lambda _prompt, _model: None,
+            stop,
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt": "fix the parser",
+        }
+        try:
+            assert ready.wait(5)
+            held = claude_pty.request_first_prompt_route(socket_path, payload)
+            held_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+            replay = claude_pty.request_first_prompt_route(socket_path, payload)
+            replay_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+        finally:
+            stop.set()
+
+        assert claude_pty.first_prompt_hook_output(held)["decision"] == "block"
+        assert claude_pty.first_prompt_hook_output(replay) is None
+        # Claude discards a blocked prompt's context, so a once per session injection would be lost.
+        assert replay_context == held_context
+        context = replay_context["hookSpecificOutput"]["additionalContext"]
+        assert "Smart Router Orchestrator is on for this session" in context
+        assert orchestrator.CLAUDE_AGENT_DESCRIPTION in context
+
     def test_first_prompt_hook_is_per_launch(self):
         settings = {
             "hooks": {
@@ -1054,6 +1105,23 @@ class TestV2Launch:
             claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
 
         claude.exec_or_spawn.assert_not_called()
+
+    def test_setup_failure_launches_claude_unrouted_with_a_warning(self, monkeypatch):
+        error = v2.ClaudeRoutingSetupError("Smart routing could not start its socket")
+        monkeypatch.setattr(v2, "launch_claude", Mock(side_effect=error))
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        monkeypatch.setattr(claude, "exec_or_spawn", Mock())
+        monkeypatch.setattr(claude, "print_warning", Mock())
+
+        with patch.dict(os.environ):
+            claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
+            assert os.environ[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+            assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+
+        claude.exec_or_spawn.assert_called_once()
+        claude.print_warning.assert_any_call(
+            "Smart routing could not start its socket; starting Claude Code without Smart Routing."
+        )
 
     @requires_pty
     def test_restores_model_captured_immediately_before_switch(
@@ -1276,13 +1344,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    @pytest.mark.parametrize("validation", [False, True])
+    @pytest.mark.parametrize("omnigent", [False, True])
     @pytest.mark.parametrize("auto_picker", [False, True])
     def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, auto_picker, validation
+        self, tmp_path, monkeypatch, auto_picker, omnigent
     ):
-        if validation:
-            monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        if omnigent:
+            monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1377,22 +1445,23 @@ class TestV2Launch:
             "--model",
             "system.ai.claude-opus-4-8",
         ]
+        validate_command = (
+            {}
+            if omnigent
+            else {
+                "validateCommand": [
+                    *route_argv[:2],
+                    claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                    *route_argv[3:],
+                ]
+            }
+        )
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": route_argv,
-                **(
-                    {
-                        "validateCommand": [
-                            *route_argv[:2],
-                            claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
-                            *route_argv[3:],
-                        ]
-                    }
-                    if validation
-                    else {}
-                ),
+                **validate_command,
             }
         }
         env = settings["env"]
@@ -1828,7 +1897,6 @@ class TestV2ModelPickerDiscovery:
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
         monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
-        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
         catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
@@ -1842,9 +1910,10 @@ class TestV2ModelPickerDiscovery:
             provider=provider,
         )
 
-    def test_startup_validation_is_off_by_default(self, tmp_path, monkeypatch):
+    def test_startup_validation_is_skipped_for_omnigent(self, tmp_path, monkeypatch):
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
+        monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0
@@ -3085,7 +3154,7 @@ class TestPtyFlow:
             lambda: pytest.fail("Claude must not launch without the routing socket"),
         )
 
-        with pytest.raises(RuntimeError, match="Claude was not launched"):
+        with pytest.raises(v2.ClaudeRoutingSetupError, match="prompt-routing socket"):
             claude_pty.run_claude_pty(
                 ["claude"],
                 route_prompt=lambda _prompt: claude_pty.FirstPromptRoute(

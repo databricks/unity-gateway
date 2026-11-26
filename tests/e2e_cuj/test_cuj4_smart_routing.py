@@ -16,10 +16,10 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
-from ucode.constants import UG_ROUTE_VALIDATION_ENV_VAR
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_AUTO_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
@@ -41,6 +41,7 @@ from .helpers.evidence import (
     canonical_model,
     claude_file_task,
     served_inference_request,
+    task_inference_request,
 )
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
@@ -165,91 +166,6 @@ def _run_session(session, recorder, agent, task, launch_args):
     return evidence.observe(task), recorder.requests_after(checkpoint)
 
 
-def _task_inference_request(requests, agent, prompt, *, after=0):
-    """Match exact task prompts, including Codex child assignment envelopes."""
-    prompts = {prompt}
-    if agent == CLAUDE and after:
-        prompts.add(prompt + "\n")
-    for request in requests:
-        if (
-            request.sequence <= after
-            or request.method != "POST"
-            or request.path != INFERENCE_PATHS[agent]
-        ):
-            continue
-        payload = request.payload
-        entries = payload.get("messages" if agent == CLAUDE else "input", [])
-        tools = payload.get("tools")
-        if agent == CODEX and not tools and isinstance(entries, list):
-            # Responses Lite carries tool definitions in developer input items.
-            tools = next(
-                (
-                    entry.get("tools")
-                    for entry in entries
-                    if isinstance(entry, dict)
-                    and entry.get("type") == "additional_tools"
-                    and entry.get("role") == "developer"
-                ),
-                None,
-            )
-        if not isinstance(tools, list) or not tools:
-            continue
-        if isinstance(entries, str):
-            if entries in prompts:
-                return request
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            content = entry.get("content", [])
-            if (
-                agent == CODEX
-                and after
-                and entry.get("type") == "agent_message"
-                and isinstance(entry.get("recipient"), str)
-                and isinstance(content, list)
-            ):
-                # Encrypted Codex child instructions leave only task_name readable.
-                if entry["recipient"].rsplit("/", 1)[-1] in {prompt, prompt + "__sr_on"} and any(
-                    isinstance(part, dict)
-                    and part.get("type") == "encrypted_content"
-                    and isinstance(part.get("encrypted_content"), str)
-                    and part["encrypted_content"]
-                    for part in content
-                ):
-                    return request
-                author = entry.get("author")
-                if isinstance(author, str) and author and entry["recipient"]:
-                    # Match the native envelope exactly so notifications cannot qualify.
-                    assignment = (
-                        f"Message Type: NEW_TASK\nTask name: {entry['recipient']}\n"
-                        f"Sender: {author}\nPayload:\n{prompt}"
-                    )
-                    if any(
-                        isinstance(part, dict)
-                        and part.get("type") == "input_text"
-                        and part.get("text") == assignment
-                        for part in content
-                    ):
-                        return request
-            if entry.get("role") != "user":
-                continue
-            if isinstance(content, str):
-                if content in prompts:
-                    return request
-            elif isinstance(content, list) and any(
-                isinstance(part, dict)
-                and part.get("type") in {"text", "input_text"}
-                and isinstance(part.get("text"), str)
-                and part.get("text") in prompts
-                for part in content
-            ):
-                return request
-    raise AssertionError("No tool-capable inference request contained the exact task prompt")
-
-
 def _assert_published_config_matches_expectations(published):
     assert published["spec_version"] == 1
     assert published["default_agent"] == CodingAgent.CLAUDE_CODE
@@ -298,7 +214,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
     for agent in AGENTS:
         task = _file_task(session, agent)
         observation, requests = _run_session(session, recorder, agent, task, (agent,))
-        inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         no_model_override[agent] = SessionCase(
             agent=agent,
@@ -313,7 +229,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         task = _file_task(session, agent)
         launch_args = (agent, "--model", overrides[agent])
         observation, requests = _run_session(session, recorder, agent, task, launch_args)
-        inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         with_model_override[agent] = SessionCase(
             agent=agent,
@@ -342,6 +258,104 @@ def completed_smart_routing_runs(cuj):
 
 class TestCujAutoModelPicker(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    def test_codex_auto_picker_selects_main_model_for_completed_task(self, cuj):
+        """Scenario: select Auto in Codex's native picker and choose a main model and effort.
+
+        Expected: the chosen model and effort complete a file task while subagent routing stays on.
+        After switching to a manual model, selecting Auto opens the main-model chooser again.
+        The synthetic Auto ID never reaches gateway inference.
+        """
+        with smart_router_preset(cuj, SUBAGENT_AUTO_V0) as (session, _, recorder, configs):
+            default = configs[CODEX]["default_models"]["default_model"]
+            alternate = next(
+                model for model in configs[CODEX]["models"]["model_services"] if model != default
+            )
+            catalog = session.app_server_handshake(
+                ["app-server", "--listen", "stdio://"],
+                request=("model/list", {"cursor": None, "limit": 1000, "includeHidden": False}),
+                name="codex-auto-model-labels",
+            )["result"]["data"]
+            alternate_row = next(row for row in catalog if row["model"] == alternate)
+            alternate_label = alternate_row["displayName"]
+            alternate_effort = alternate_row["supportedReasoningEfforts"][-1]["reasoningEffort"]
+            assert alternate_label != alternate
+            evidence = SessionEvidence(session.home, CODEX)
+            recorder.prepare_launch()
+            with Terminal(session, "codex-auto-picker", [CODEX]) as tui:
+                tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({default})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto selected at launch",
+                )
+                tui.submit("/model")
+                tui.wait_for(
+                    lambda screen: (
+                        "select model" in screen.lower()
+                        and re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+(\S+)", screen)[:1]
+                        == ["Auto"]
+                        and "All models" not in screen
+                        and len(re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+\S", screen))
+                        >= len(configs[CODEX]["models"]["model_services"]) + 1
+                    ),
+                    "Auto above all regular models in Codex's picker",
+                )
+                tui.choose("Select", "Auto")
+                tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({alternate})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto footer with routing on and the selected main model",
+                )
+                task = _file_task(session, CODEX)
+                checkpoint = recorder.checkpoint()
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                assert_inference_evidence(recorder, checkpoint, CODEX, task, alternate)
+                model_requests = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.path == INFERENCE_PATHS[CODEX]
+                    and request.payload.get("model") == alternate
+                ]
+                assert model_requests
+                assert all(
+                    request.payload.get("reasoning", {}).get("effort") == alternate_effort
+                    for request in model_requests
+                )
+                assert not any(
+                    request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+                tui.submit("/model")
+                tui.choose("Select", alternate_label)
+                tui.wait_for(
+                    lambda screen: (
+                        "Select Reasoning Level" in screen or "smart router off" in screen.lower()
+                    ),
+                    "manual model selection",
+                )
+                if "Select Reasoning Level" in tui.visible:
+                    tui.send("\r", "accept the default reasoning level")
+                tui.wait_for(
+                    lambda screen: "smart router off" in screen.lower(),
+                    "manual model with routing off",
+                )
+                tui.submit("/model")
+                tui.choose("Select", "Auto")
+                tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
+                tui.wait_for(
+                    lambda screen: (
+                        "smart router on" in screen.lower()
+                        and "Select Reasoning Level" not in screen
+                    ),
+                    "Auto selected again with routing on",
+                )
+                tui.exit_normally()
 
     def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
         """Scenario: select the Auto preset, launch Claude, switch to manual, then back.
@@ -582,7 +596,7 @@ class TestCujSmartRouting(BaseCujTest):
                     assert offered <= {canonical_model(model) for model in supported}
                     selected = canonical_model(expected_model)
                     assert selected in offered and selected.startswith("system.ai."), selected
-                inference = _task_inference_request(requests, agent, task.prompt)
+                inference = task_inference_request(requests, agent, task.prompt)
                 inference = served_inference_request(recorder, requests, inference, agent)
                 assert canonical_model(inference.payload["model"]) == canonical_model(
                     expected_model
@@ -709,7 +723,7 @@ class TestCujSmartRouting(BaseCujTest):
                     assert response.status_code == 200
                     selections = response.payload["route_selection"]
                     assert len(selections) == 1
-                    inference = _task_inference_request(
+                    inference = task_inference_request(
                         requests,
                         agent,
                         route_prompt,
@@ -857,41 +871,34 @@ class TestCujSmartRouting(BaseCujTest):
     def test_supported_model_list_passes_startup_route_validation_and_routing_stays_on(
         self, cuj, agent, version
     ):
-        """Scenario: launch the agent with startup route validation on and the published model list.
+        """Scenario: launch the agent with the published model list.
 
         Expected: ug sends one routes:validate request with the session's route options for that
         agent, the Gateway answers HTTP 200 with is_supported true, and Smart Router stays ON
         without the unsupported warning (Claude's band and prompt hint row, Codex's footer).
         """
         with smart_router_preset(cuj, version) as (session, _, recorder, _):
-            session.env[UG_ROUTE_VALIDATION_ENV_VAR] = "1"
-            try:
-                checkpoint = recorder.checkpoint()
-                recorder.prepare_launch()
-                with Terminal(
-                    session, f"startup-route-validation-supported-{agent}", [agent]
-                ) as tui:
-                    tui.boot(timeout=150)
-                    if agent == CLAUDE:
-                        tui.wait_for(
-                            lambda _: (
-                                _smart_router_band_shown(tui, enabled=True, first_prompt=False)
-                                and _smart_router_hint_shown(tui, enabled=True)
-                            ),
-                            "the ON Smart Router band and smart router ON in the prompt hint row",
-                        )
-                    else:
-                        tui.wait_for(
-                            lambda _: any(
-                                re.search(r"smart router\s+ON\b", line)
-                                for line in tui.screen.display
-                            ),
-                            "smart router ON in the Codex footer",
-                        )
-                    assert not any("isn't supported" in line for line in tui.screen.display)
-                    tui.exit_normally()
-            finally:
-                session.env.pop(UG_ROUTE_VALIDATION_ENV_VAR, None)
+            checkpoint = recorder.checkpoint()
+            recorder.prepare_launch()
+            with Terminal(session, f"startup-route-validation-supported-{agent}", [agent]) as tui:
+                tui.boot(timeout=150)
+                if agent == CLAUDE:
+                    tui.wait_for(
+                        lambda _: (
+                            _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                            and _smart_router_hint_shown(tui, enabled=True)
+                        ),
+                        "the ON Smart Router band and smart router ON in the prompt hint row",
+                    )
+                else:
+                    tui.wait_for(
+                        lambda _: any(
+                            re.search(r"smart router\s+ON\b", line) for line in tui.screen.display
+                        ),
+                        "smart router ON in the Codex footer",
+                    )
+                assert not any("isn't supported" in line for line in tui.screen.display)
+                tui.exit_normally()
             [request] = [
                 r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
             ]

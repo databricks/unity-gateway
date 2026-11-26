@@ -168,7 +168,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
-        "startupValidation": "",
+        "startupValidation": "1",
     }
     # Taking the baseline must not alter the caller's launch environment.
     assert env == before
@@ -192,7 +192,7 @@ def test_launch_options_preserve_empty_and_absent_values():
         "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
-        "startupValidation": "",
+        "startupValidation": "1",
     }
 
 
@@ -204,7 +204,7 @@ def test_mod_auto_flag_is_derived_only_from_version(version):
     before = env.copy()
     options = v2._claude_mod_launch_options(env)
     assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == (
-        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY else "0"
+        "1" if version in (config.SUBAGENT_AUTO_V0, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY) else "0"
     )
     assert "ENABLE_SMART_ROUTER_AUTO_MODE" not in options["unset"]
     assert env == before

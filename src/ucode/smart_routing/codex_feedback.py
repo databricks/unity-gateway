@@ -124,7 +124,7 @@ class CodexFeedbackInput:
             result = reply.get("result")
             if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
                 raise ValueError("Could not open the feedback prompt. Smart Router is still on.")
-            answer = result["answers"].get(FEEDBACK_QUESTION_ID, {})
+            answer = result["answers"].get(question["id"], {})
             values = answer.get("answers") if isinstance(answer, dict) else None
             if values is None:
                 return None

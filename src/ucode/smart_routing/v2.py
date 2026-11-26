@@ -45,8 +45,6 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
-    TRUE_ENV_VALUES,
-    UG_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -57,7 +55,6 @@ from ucode.databricks import (
     map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import published_agent_config_used
 from ucode.os_compatibility import subprocess_cross_os
@@ -90,6 +87,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import (
+    SUBAGENT_AUTO_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     apply_config,
     apply_enabled_version,
@@ -138,7 +136,7 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 
 class ClaudeRoutingSetupError(RuntimeError):
-    """Routing files could not be written; the caller can launch Claude normally."""
+    """Routing setup failed before Claude started; the caller can launch Claude normally."""
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
@@ -415,7 +413,7 @@ def _claude_mod_launch_options(
     source = resolve_environment(env, agent=AGENT_CLAUDE)
     version = selected_version(env) if config_version is None else config_version
     source[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] = (
-        "1" if version == SUBAGENT_AUTO_V0_CLAUDE_ONLY else "0"
+        "1" if version in (SUBAGENT_AUTO_V0, SUBAGENT_AUTO_V0_CLAUDE_ONLY) else "0"
     )
     isaac = shutil.which("isaac")
     return {
@@ -431,11 +429,7 @@ def _claude_mod_launch_options(
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
-        "startupValidation": (
-            "1"
-            if source.get(UG_ROUTE_VALIDATION_ENV_VAR, "").strip().lower() in TRUE_ENV_VALUES
-            else ""
-        ),
+        "startupValidation": "1" if route_validation.is_route_validation_enabled(source) else "",
     }
 
 
@@ -1494,7 +1488,7 @@ def launch_claude(
                 # Initialization is not a user-requested disable. Start OFF until
                 # the native session resolves its model (including resume).
                 write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+            if route_validation.is_route_validation_enabled(os.environ):
                 route_validation.start(
                     workspace,
                     token,
@@ -1524,7 +1518,7 @@ def launch_claude(
             env[routing.ROUTER_NAME_ENV_VAR] = (
                 launch_source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME
             )
-            if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+            if route_validation.is_route_validation_enabled(os.environ):
                 mod_options["validateCommand"] = routing_hook_argv(
                     routing_state, ROUTE_VALIDATION_MOD_EVENT
                 )
@@ -1745,6 +1739,15 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    auto_picker = selected_version() == SUBAGENT_AUTO_V0 and not app_server_launch
+    try:
+        if auto_picker and (has_explicit_model_arg(tool_args) or tool_args[:1] == ["resume"]):
+            from ucode.smart_routing.session_env import set_session_environment
+
+            set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+    except (OSError, RuntimeError, ValueError) as exc:
+        print_warning(f"Could not initialize Codex Auto session routing: {exc}")
+        auto_picker = False
     try:
         catalog_path = overlay.get("model_catalog_json") or custom_catalog_path()
         if catalog_path is not None:
@@ -1762,7 +1765,10 @@ def launch_codex(
             f"Could not enable plaintext Codex task routing: {exc} "
             "Encrypted subagent assignments will keep their requested model."
         )
-    if env_bool(UG_ROUTE_VALIDATION_ENV_VAR):
+    # On POSIX an app-server launch execs Codex in place of ug, which ends the background check.
+    if route_validation.is_route_validation_enabled(os.environ) and not (
+        app_server_launch and os.name != "nt"
+    ):
         # The footer shows a pending state until the check publishes its result.
         with suppress(OSError):
             config_io.atomic_write_json(validation_result_path(session_env_path), {"pending": True})
@@ -1819,6 +1825,7 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            **({"auto_picker": True} if auto_picker else {}),
             validate_model_list=(
                 (
                     lambda: codex_routing.validate_codex_model_list(
@@ -1828,7 +1835,7 @@ def launch_codex(
                         provider=state.get("_codex_launch_provider"),
                     )
                 )
-                if env_bool(UG_ROUTE_VALIDATION_ENV_VAR)
+                if route_validation.is_route_validation_enabled(os.environ)
                 else None
             ),
             **(

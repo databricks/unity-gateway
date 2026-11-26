@@ -42,6 +42,8 @@ def test_every_ci_job_checks_a_budget():
                 assert name in variants, (workflow, job_id, name)
             if "steps: *live-steps" in job:
                 continue
+            if "steps: *managed-steps" in job:
+                job = jobs["managed"]
             assert "budget-start" in job or "Start the budget clock" in job, (workflow, job_id)
             assert "budget-setup-done" in job or "Mark setup done" in job, (workflow, job_id)
             assert "budget-check" in job or "Check this job's time budget" in job, (
@@ -262,7 +264,8 @@ def test_blocking_jobs_do_not_suppress_budget_failures():
         "zizmor",
     ):
         source = (WORKFLOWS / f"{workflow}.yml").read_text()
-        check = source.split("name: Check this job's time budget\n", 1)[1].split("\n      - ", 1)[0]
+        check = source.split("name: Check this job's time budget\n", 1)[1]
+        check = re.split(r"(?m)^(?:      - |  [a-z0-9-]+:)", check, maxsplit=1)[0]
         assert "if: ${{ github.event_name == 'pull_request' && !cancelled() }}" in check
         assert "continue-on-error:" not in check
         if workflow != "user-journey-test-required":
@@ -279,6 +282,8 @@ def test_blocking_jobs_do_not_suppress_budget_failures():
                 continue
             if "steps: *live-steps" in job:
                 job = jobs["smoke"]
+            elif "steps: *managed-steps" in job:
+                job = jobs["managed"]
             check = re.search(
                 r"(?m)^      - (?:[&*]budget-check\b|name: Check this job's time budget$)", job
             )
@@ -473,12 +478,10 @@ def test_every_integration_matrix_variant_has_a_budget():
     expected["managed"] = {
         f"Managed config · {agent.capitalize()}" for agent in values("managed", "agent")
     }
-    expected["managed"].update(
-        f"Managed config · {agent.capitalize()} · Smart routing"
-        for agent in re.findall(
-            r"(?m)^          - agent: (.+)\n            smart_routing: true$", jobs["managed"]
-        )
-    )
+    expected["managed-smart"] = {"Managed config · Codex · Smart routing"}
+    assert "BUDGET_WORKFLOW: integration" in jobs["managed-smart"]
+    assert "BUDGET_JOB_NAME: Managed config · Codex · Smart routing" in jobs["managed-smart"]
+    assert "steps: *managed-steps" in jobs["managed-smart"]
     for job, platform in (
         ("cowork-inference-windows", "Windows"),
         ("cowork-inference-macos", "macOS"),

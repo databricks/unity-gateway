@@ -1807,7 +1807,14 @@ class TestWriteToolConfigManagedSettings:
     @pytest.mark.parametrize("managed_routing", [False, True])
     @pytest.mark.parametrize(
         "configure_version",
-        [None, "", "unknown_v99", "subagent_orch_v0_claude_only", "subagent_auto_v0_claude_only"],
+        [
+            None,
+            "",
+            "unknown_v99",
+            "subagent_orch_v0_claude_only",
+            "subagent_auto_v0_claude_only",
+            "subagent_auto_v0",
+        ],
     )
     def test_auto_picker_survives_ordinary_launch(
         self, tmp_path, monkeypatch, can_write, managed_routing, configure_version
@@ -1825,7 +1832,7 @@ class TestWriteToolConfigManagedSettings:
         state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
         ordinary_version = "subagent_orch_v0_claude_only"
         auto_version = "subagent_auto_v0_claude_only"
-        configure_auto = configure_version == auto_version
+        configure_auto = configure_version in (auto_version, "subagent_auto_v0")
         monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
         if configure_version is None:
             monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
@@ -6170,14 +6177,24 @@ class TestAutoConfigurationCleanup:
         assert [path.read_bytes() for path in files] == before
 
     @pytest.mark.parametrize(
-        "version", [None, "", "unknown", "subagent_only_v0", "subagent_auto_v0_claude_only"]
+        "version",
+        [
+            None,
+            "",
+            "unknown",
+            "subagent_only_v0",
+            "subagent_auto_v0_claude_only",
+            "subagent_auto_v0",
+        ],
     )
     def test_only_exact_version_can_retain_auto(self, monkeypatch, version):
         if version is not None:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
-        assert claude.auto_configuration_enabled() is (version == "subagent_auto_v0_claude_only")
+        assert claude.auto_configuration_enabled() is (
+            version in ("subagent_auto_v0_claude_only", "subagent_auto_v0")
+        )
 
     def test_resolved_routing_off_overrides_exact_version(self, monkeypatch):
         from ucode.smart_routing import config

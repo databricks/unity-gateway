@@ -13,6 +13,7 @@ import pytest
 
 from ucode import agents, codex_config, custom_oauth, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
+from ucode.constants import ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
@@ -431,6 +432,7 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
+    @pytest.mark.parametrize("omnigent", [False, True], ids=["cli", "omnigent"])
     @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize("first_prompt", [False, True])
     @pytest.mark.parametrize(
@@ -439,7 +441,7 @@ class TestLaunchCodex:
         ids=["default-model", "split-model", "equals-model", "short-model"],
     )
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, tmp_path, monkeypatch, platform_name, first_prompt, model_args
+        self, tmp_path, monkeypatch, platform_name, first_prompt, model_args, omnigent
     ):
         processes = []
         interposer_args = {}
@@ -454,7 +456,8 @@ class TestLaunchCodex:
             return {"is_supported": True}, None
 
         monkeypatch.setattr(v2.route_validation, "_http_post_json", validate)
-        monkeypatch.setenv(v2.UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        if omnigent:
+            monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -528,7 +531,7 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 7
-        assert startup_check_sent.wait(3)
+        assert startup_check_sent.wait(3) is not omnigent
         validation_body = {
             "route_options": [
                 {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
@@ -537,7 +540,9 @@ class TestLaunchCodex:
             "route_selector": {"router_name": v2.routing.configured_router_name()},
         }
         provider_header = {v2.route_validation.MODEL_PROVIDER_SERVICE_HEADER: "provider-a"}
-        assert validation_requests == [("token-1", validation_body, provider_header)]
+        assert validation_requests == (
+            [] if omnigent else [("token-1", validation_body, provider_header)]
+        )
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
@@ -664,23 +669,34 @@ class TestLaunchCodex:
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == ("0" if first_prompt else "1")
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
-        assert interposer_args["kwargs"]["validate_model_list"]() == {"routing_disabled": False}
-        assert validation_requests[1:] == [
-            (f"token-{len(token_calls)}", validation_body, provider_header)
-        ]
+        if omnigent:
+            assert interposer_args["kwargs"]["validate_model_list"] is None
+            assert validation_requests == []
+        else:
+            assert interposer_args["kwargs"]["validate_model_list"]() == {"routing_disabled": False}
+            assert validation_requests[1:] == [
+                (f"token-{len(token_calls)}", validation_body, provider_header)
+            ]
         assert stopped == [True]
         assert processes[0].terminated is True
 
+    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize("managed_model", [None, "admin-model"])
     def test_app_server_launch_runs_the_given_command_with_routing_settings(
-        self, monkeypatch, managed_model
+        self, monkeypatch, managed_model, platform_name
     ):
         launches = []
+        validations = []
+        # Windows waits on the spawned app-server, so only there does the background check survive.
+        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(
             v2.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("started another process")
+        )
+        monkeypatch.setattr(
+            v2.route_validation, "start", lambda *args, **_kw: validations.append(args)
         )
 
         def hand_off(argv):
@@ -728,6 +744,7 @@ class TestLaunchCodex:
             "UCODE_SMART_ROUTER_PYTHON": os.environ["UCODE_SMART_ROUTER_PYTHON"],
         }
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert len(validations) == (platform_name == "nt")
 
     def _run_app_server_launch_case(
         self,

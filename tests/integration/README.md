@@ -3,11 +3,11 @@
 Startup compatibility validation has component coverage in `../test_route_validation.py`,
 the smart-routing launch tests, and the native Claude mod suite. They control the validation
 response or transport. CUJ 4 adds one live supported journey for Claude and one for Codex: with
-`UG_ROUTE_VALIDATION=1` and the published model list, ug sends one recorded routes:validate
-request with that agent's route options, the Gateway answers with HTTP 200 and
-`is_supported: true`, and Smart Router shows ON without the unsupported warning (Claude's band
-and hint row, Codex's footer). The Claude and Codex back-on TUI journeys in
-`test_ug_smart_routing_hooks.py` also check the validate request that turning routing on sends:
+the published model list, ug sends one recorded routes:validate request with that agent's route
+options, the Gateway answers with HTTP 200 and `is_supported: true`, and Smart Router shows ON
+without the unsupported warning (Claude's band and hint row, Codex's footer). The Claude and Codex
+back-on TUI journeys in `test_ug_smart_routing_hooks.py` also check the validate request that
+turning routing on sends:
 exactly one, answered with HTTP 200 and `is_supported: true`.
 No live unsupported or classifier journey is claimed.
 
@@ -40,7 +40,11 @@ fixtures have small catalogs; allow-all startup and catalogs over 128 entries re
 validation, not automated CUJ coverage. These cases do not exercise resume or explicit-model
 overrides. Collection alone does not establish a live pass.
 
-Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
+Auto picker coverage lives in the read-only workspace CUJs 4 and 7. CUJ4 includes
+Codex's native Auto selection, explicit reasoning-effort choice, and a completed
+main-model task with the chosen effort on the wire. Offline Auto cancellation, mode-switch,
+feedback, and rollback cases use `../test_codex_metadata.py`'s interposer harness, not a
+real TUI or gateway. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
 `../test_agent_claude.py`; live configure-to-launch validation remains a gap.
@@ -438,7 +442,8 @@ then clicks an absent label in the same app and requires a nonzero helper exit w
 four-column accessibility tree captured before the fatal error in command evidence.
 `test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
 Automation: each screen gets 60 seconds and the answer four minutes, and the only retry is one
-visible Try again per sandbox-readiness error screen, within that screen's deadline; it saves
+visible Try again per sandbox-readiness error screen, within that screen's deadline. Setup
+already saved as elevated is accepted without its banner. It saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
 The Windows inference-only journey explicitly completes sandbox setup and the same
@@ -2108,7 +2113,8 @@ executable links recreated by version checks. The links can point to hundreds of
 are excluded before reading file contents. Persistent agent files stay compared byte for byte.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
-workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
+workspace on the valid default model `system.ai.gpt-5-6-terra`, with `system.ai.gpt-6-luna` as a
+second model so route validation has two supported options. With legacy smart routing off and
 on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
 to be listed. The fixture itself has no managed smart-routing setting.
 
@@ -2397,9 +2403,11 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
 The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the prompt
-hint after a main-model switch and verifies that the selected model serves a file task
-both before and after restart. Native component tests open a saved custom alias and check the
-window displayed by `/context` with a catalog limit and an explicit preference.
+hint after a Claude main-model switch and verifies that the selected model serves a file task
+both before and after restart. Its Codex case chooses Auto and a main model in the native
+picker, then verifies completed gateway inference on that model. Native component tests
+open a saved custom alias and check the window displayed by `/context` with a catalog
+limit and an explicit preference.
 Launch-settings tests cover missing and out-of-range limits and unreadable native settings.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert

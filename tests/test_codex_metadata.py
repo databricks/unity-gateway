@@ -5,7 +5,7 @@ import copy
 import json
 import threading
 from contextlib import asynccontextmanager
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -212,7 +212,9 @@ class StreamingWire(Wire):
 @pytest.fixture
 def running_interposer(tmp_path, monkeypatch):
     @asynccontextmanager
-    async def run(*, controls_text="{}", log=lambda _: None):
+    async def run(
+        *, controls_text="{}", log=lambda _: None, auto_picker=False, validate_model_list=None
+    ):
         controls = tmp_path / "controls.json"
         if controls_text is not None:
             controls.write_text(controls_text)
@@ -228,7 +230,13 @@ def running_interposer(tmp_path, monkeypatch):
         monkeypatch.setattr(codex_interposer, "connect", connect)
         task = asyncio.create_task(
             codex_interposer._handle_tui(
-                tui, "ws://localhost", None, log, session_controls=controls
+                tui,
+                "ws://localhost",
+                None,
+                log,
+                session_controls=controls,
+                auto_picker=auto_picker,
+                validate_model_list=validate_model_list,
             )
         )
         try:
@@ -985,6 +993,305 @@ def test_native_selector_replies_stay_local_and_cancel_cleanly(
             tui.incoming.put_nowait(sentinel)
             assert await asyncio.wait_for(upstream.outgoing.get(), 2) == sentinel
             assert upstream.outgoing.empty()
+
+    asyncio.run(run())
+
+
+async def register_auto_picker(upstream, tui):
+    from ucode.smart_routing.codex_auto import AUTO_MODEL
+
+    tui.incoming.put_nowait({"id": "models", "method": "model/list", "params": {}})
+    assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["method"] == "model/list"
+    rows = [
+        {
+            "id": model,
+            "model": model,
+            "displayName": model,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": effort, "description": effort}
+                for effort in ("low", "medium", "high")
+            ],
+        }
+        for model in ("gpt-one", "gpt-two")
+    ]
+    upstream.incoming.put_nowait({"id": "models", "result": {"data": rows}})
+    catalog = await asyncio.wait_for(tui.outgoing.get(), 2)
+    assert [row["model"] for row in catalog["result"]["data"]] == [AUTO_MODEL, "gpt-one", "gpt-two"]
+    thread_id = "1cbd36a0-177f-4df1-a5c2-5495a86a04a7"
+    tui.incoming.put_nowait({"id": "auto-start", "method": "thread/start", "params": {}})
+    assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["params"]["dynamicTools"]
+    upstream.incoming.put_nowait(
+        {
+            "id": "auto-start",
+            "result": {
+                "thread": {"id": thread_id},
+                "model": "gpt-one",
+                "reasoningEffort": "medium",
+            },
+        }
+    )
+    assert (await asyncio.wait_for(tui.outgoing.get(), 2))["result"]["model"] == AUTO_MODEL
+    settings = dict.fromkeys(
+        ("approvalPolicy", "approvalsReviewer", "cwd", "modelProvider", "sandboxPolicy"), None
+    )
+    settings.update(model="gpt-one", effort="medium", collaborationMode={"mode": "default"})
+    upstream.incoming.put_nowait(
+        {
+            "method": "thread/settings/updated",
+            "params": {"threadId": thread_id, "threadSettings": settings},
+        }
+    )
+    assert (await asyncio.wait_for(tui.outgoing.get(), 2))["params"]["threadSettings"][
+        "model"
+    ] == AUTO_MODEL
+    return thread_id, settings
+
+
+async def open_auto_selection(upstream, tui, thread_id, model, effort=None):
+    message = {
+        "id": "pick",
+        "method": "thread/settings/update",
+        "params": {"threadId": thread_id, "model": model, "effort": effort},
+    }
+    tui.incoming.put_nowait(message)
+    forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
+    assert forwarded["params"] == {"threadId": thread_id, "model": "gpt-one"}
+    upstream.incoming.put_nowait({"id": "pick", "result": {}})
+    assert await asyncio.wait_for(tui.outgoing.get(), 2) == {"id": "pick", "result": {}}
+    prompt = await asyncio.wait_for(tui.outgoing.get(), 2)
+    assert prompt["method"] == "item/tool/requestUserInput"
+    return prompt
+
+
+async def answer_auto_prompt(upstream, tui, prompt, answers):
+    question = prompt["params"]["questions"][0]
+    tui.incoming.put_nowait(
+        {"id": prompt["id"], "result": {"answers": {question["id"]: {"answers": answers}}}}
+    )
+    assert await asyncio.wait_for(tui.outgoing.get(), 2) == {
+        "method": "serverRequest/resolved",
+        "params": {"threadId": prompt["params"]["threadId"], "requestId": prompt["id"]},
+    }
+    assert not any(message.get("id") == prompt["id"] for message in upstream.messages), (
+        "native question replies must stay local"
+    )
+
+
+@pytest.mark.parametrize("turn_id", [None, "previous-turn"])
+def test_auto_picker_interrupt_restores_input_and_can_reopen(running_interposer, turn_id):
+    from ucode.smart_routing.codex_auto import AUTO_MODEL
+
+    async def run():
+        async with running_interposer(auto_picker=True) as (task, upstream, tui, controls):
+            thread_id, _ = await register_auto_picker(upstream, tui)
+            for _ in range(2):
+                prompt = await open_auto_selection(upstream, tui, thread_id, AUTO_MODEL)
+                interrupt = {
+                    "id": "escape",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": thread_id, "turnId": turn_id},
+                }
+                tui.incoming.put_nowait(interrupt)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == interrupt
+                assert (await asyncio.wait_for(tui.outgoing.get(), 2))[
+                    "method"
+                ] == "serverRequest/resolved"
+                assert (await asyncio.wait_for(tui.outgoing.get(), 2))[
+                    "method"
+                ] == "thread/settings/updated"
+                tui.incoming.put_nowait({"id": prompt["id"], "result": {"answers": {}}})
+                tui.incoming.put_nowait(
+                    {
+                        "id": "next",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "model": AUTO_MODEL,
+                            "collaborationMode": {"settings": {"model": AUTO_MODEL}},
+                        },
+                    }
+                )
+                forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
+                assert forwarded["method"] == "turn/start"
+                assert forwarded["params"]["model"] == "gpt-one"
+                assert forwarded["params"]["collaborationMode"]["settings"]["model"] == "gpt-one"
+                assert json.loads(controls.read_text()) == {}
+            assert not task.done()
+
+    asyncio.run(run())
+
+
+def test_auto_mode_switch_preserves_collaboration_and_config_opens_picker(running_interposer):
+    from ucode.smart_routing.codex_auto import AUTO_MODEL
+
+    async def run():
+        async with running_interposer(auto_picker=True) as (_, upstream, tui, _):
+            thread_id, _ = await register_auto_picker(upstream, tui)
+            mode = {"mode": "plan", "settings": {"model": AUTO_MODEL, "reasoning_effort": "high"}}
+            tui.incoming.put_nowait(
+                {
+                    "id": "mode",
+                    "method": "thread/settings/update",
+                    "params": {"threadId": thread_id, "collaborationMode": mode},
+                }
+            )
+            forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert forwarded["params"] == {
+                "threadId": thread_id,
+                "collaborationMode": {
+                    **mode,
+                    "settings": {"model": "gpt-one", "reasoning_effort": "high"},
+                },
+            }
+            upstream.incoming.put_nowait({"id": "mode", "result": {}})
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == {"id": "mode", "result": {}}
+            tui.incoming.put_nowait(
+                {
+                    "id": "save",
+                    "method": "config/value/write",
+                    "params": {"keyPath": "model", "value": AUTO_MODEL},
+                }
+            )
+            assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["params"][
+                "value"
+            ] == "gpt-one"
+            upstream.incoming.put_nowait({"id": "save", "result": {}})
+            assert (await asyncio.wait_for(tui.outgoing.get(), 2))["id"] == "save"
+            prompt = await asyncio.wait_for(tui.outgoing.get(), 2)
+            await answer_auto_prompt(upstream, tui, prompt, [])
+            assert (await asyncio.wait_for(tui.outgoing.get(), 2))[
+                "method"
+            ] == "thread/settings/updated"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ending", ["save", "reject", "cancel", "unsupported"])
+def test_auto_effort_selection_applies_and_saves_or_rolls_back(running_interposer, ending):
+    reject = ending == "reject"
+    from ucode.smart_routing.codex_auto import AUTO_MODEL
+
+    validate = Mock(return_value={"routing_disabled": True}) if ending == "unsupported" else None
+
+    async def run():
+        async with running_interposer(auto_picker=True, validate_model_list=validate) as (
+            _,
+            upstream,
+            tui,
+            controls,
+        ):
+            thread_id, _ = await register_auto_picker(upstream, tui)
+            prompt = await open_auto_selection(upstream, tui, thread_id, AUTO_MODEL)
+            await answer_auto_prompt(upstream, tui, prompt, ["gpt-two"])
+            prompt = await asyncio.wait_for(tui.outgoing.get(), 2)
+            question = prompt["params"]["questions"][0]
+            assert question["id"] == "auto_effort"
+            assert [option["label"] for option in question["options"]] == ["medium", "low", "high"]
+            await answer_auto_prompt(upstream, tui, prompt, [] if ending == "cancel" else ["high"])
+            if ending == "cancel":
+                updated = await asyncio.wait_for(tui.outgoing.get(), 2)
+                assert updated["params"]["threadSettings"]["effort"] == "medium"
+                assert json.loads(controls.read_text()) == {}
+                assert upstream.outgoing.empty()
+                return
+            if ending == "unsupported":
+                assert (await asyncio.wait_for(tui.outgoing.get(), 2))["method"] == "warning"
+                updated = await asyncio.wait_for(tui.outgoing.get(), 2)
+                assert updated["params"]["threadSettings"]["model"] == "gpt-one"
+                assert json.loads(controls.read_text()) == dict.fromkeys(
+                    SMART_ROUTING_ENV_KEYS, "0"
+                )
+                assert upstream.outgoing.empty()
+                validate.assert_called_once_with()
+                return
+            update = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert update["params"] == {"threadId": thread_id, "model": "gpt-two", "effort": "high"}
+            upstream.incoming.put_nowait(
+                {"id": update["id"], **({"error": {"code": -32602}} if reject else {"result": {}})}
+            )
+            request = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            if reject:
+                assert request["params"] == {
+                    "threadId": thread_id,
+                    "model": "gpt-one",
+                    "effort": "medium",
+                }
+            else:
+                assert request["method"] == "config/batchWrite"
+                assert {edit["keyPath"]: edit["value"] for edit in request["params"]["edits"]} == {
+                    "model": "gpt-two",
+                    "model_reasoning_effort": "high",
+                }
+            upstream.incoming.put_nowait({"id": request["id"], "result": {}})
+            if reject:
+                assert (await asyncio.wait_for(tui.outgoing.get(), 2))["method"] == "warning"
+            updated = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert updated["params"]["threadSettings"]["model"] == AUTO_MODEL
+            assert updated["params"]["threadSettings"]["effort"] == ("medium" if reject else "high")
+            assert json.loads(controls.read_text()) == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("accept", [False, True])
+def test_auto_manual_selection_feedback_preserves_effort_and_monitors_delivery(
+    running_interposer, monkeypatch, accept
+):
+    from ucode.smart_routing import feedback
+
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "1")
+    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+    # Keep transcript inspection and network upload outside this in-memory wire test.
+    monkeypatch.setattr(feedback, "prepare_codex_feedback", Mock(return_value=None))
+    process = object()
+    submit = Mock(return_value=process)
+    delivery = AsyncMock(return_value=True)
+    monkeypatch.setattr(feedback, "submit_codex_feedback", submit)
+    monkeypatch.setattr(feedback, "wait_for_feedback", delivery)
+
+    async def run():
+        async with running_interposer(auto_picker=True) as (_, upstream, tui, controls):
+            thread_id, _ = await register_auto_picker(upstream, tui)
+            prompt = await open_auto_selection(upstream, tui, thread_id, "gpt-two", "high")
+            assert prompt["params"]["questions"][0]["id"] == "smart_router_feedback"
+            await answer_auto_prompt(
+                upstream,
+                tui,
+                prompt,
+                ["Provide a reason", "user_note: I want a fixed manual model."]
+                if accept
+                else ["Cancel"],
+            )
+            if not accept:
+                updated = await asyncio.wait_for(tui.outgoing.get(), 2)
+                assert updated["params"]["threadSettings"]["effort"] == "medium"
+                assert json.loads(controls.read_text()) == {}
+                submit.assert_not_called()
+                delivery.assert_not_called()
+                assert upstream.outgoing.empty()
+                return
+            update = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert update["params"] == {"threadId": thread_id, "model": "gpt-two", "effort": "high"}
+            upstream.incoming.put_nowait({"id": update["id"], "result": {}})
+            saved = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert {edit["keyPath"]: edit["value"] for edit in saved["params"]["edits"]} == {
+                "model": "gpt-two",
+                "model_reasoning_effort": "high",
+            }
+            upstream.incoming.put_nowait({"id": saved["id"], "result": {}})
+            messages = [await asyncio.wait_for(tui.outgoing.get(), 2) for _ in range(2)]
+            notice = next(message for message in messages if message["method"] == "warning")
+            report_id = submit.call_args.args[0]
+            assert "Feedback submitted successfully." in notice["params"]["message"]
+            assert report_id in notice["params"]["message"]
+            delivery.assert_awaited_once_with(process)
+            updated = next(
+                message for message in messages if message["method"] == "thread/settings/updated"
+            )
+            assert updated["params"]["threadSettings"]["model"] == "gpt-two"
+            assert updated["params"]["threadSettings"]["effort"] == "high"
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
 
     asyncio.run(run())
 

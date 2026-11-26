@@ -93,6 +93,13 @@
         "total": 120
       }
     },
+    "managed-quota-probe": {
+      "Managed quota probe (advisory)": {
+        "setup": 10,
+        "run": 60,
+        "total": 70
+      }
+    },
     "required-e2e": {
       "e2e": {
         "setup": 15,
@@ -804,7 +811,9 @@
         "setup": 40,
         "run": 200,
         "total": 230
-      },
+      }
+    },
+    "managed-smart": {
       "Managed config · Codex · Smart routing": {
         "setup": 35,
         "run": 1075,
@@ -1522,6 +1531,38 @@
           "total": 7.0
         },
         "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/managed-quota-probe/Managed quota probe (advisory)": {
+        "samples": 3,
+        "distinct_runs": 3,
+        "source_set": "C49",
+        "run_ids": [
+          45550115709,
+          45599332926,
+          45611592226
+        ],
+        "p50": {
+          "setup": 5,
+          "run": 29,
+          "total": 34
+        },
+        "p95": {
+          "setup": 5,
+          "run": 30,
+          "total": 34
+        },
+        "p99": {
+          "setup": 5,
+          "run": 30,
+          "total": 34
+        },
+        "observed_max": {
+          "setup": 5,
+          "run": 30,
+          "total": 34
+        },
+        "limited_sample": true,
         "total_only": 0
       },
       "ci/required-e2e/e2e": {
@@ -2739,6 +2780,33 @@
         "limited_sample": false,
         "total_only": 0
       },
+      "integration/managed-smart/Managed config · Codex · Smart routing": {
+        "samples": 87,
+        "distinct_runs": 85,
+        "source_set": "C39",
+        "p50": {
+          "setup": 12.0,
+          "run": 448.0,
+          "total": 460.0
+        },
+        "p95": {
+          "setup": 14.0,
+          "run": 536.0,
+          "total": 546.0
+        },
+        "p99": {
+          "setup": 21.0,
+          "run": 684.0,
+          "total": 697.0
+        },
+        "observed_max": {
+          "setup": 21.0,
+          "run": 684.0,
+          "total": 697.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
       "integration/managed/Managed config · Claude": {
         "samples": 108,
         "distinct_runs": 106,
@@ -2789,33 +2857,6 @@
           "setup": 20.0,
           "run": 118.0,
           "total": 136.0
-        },
-        "limited_sample": false,
-        "total_only": 0
-      },
-      "integration/managed/Managed config · Codex · Smart routing": {
-        "samples": 87,
-        "distinct_runs": 85,
-        "source_set": "C39",
-        "p50": {
-          "setup": 12.0,
-          "run": 448.0,
-          "total": 460.0
-        },
-        "p95": {
-          "setup": 14.0,
-          "run": 536.0,
-          "total": 546.0
-        },
-        "p99": {
-          "setup": 21.0,
-          "run": 684.0,
-          "total": 697.0
-        },
-        "observed_max": {
-          "setup": 21.0,
-          "run": 684.0,
-          "total": 697.0
         },
         "limited_sample": false,
         "total_only": 0

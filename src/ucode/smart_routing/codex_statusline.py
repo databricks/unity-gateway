@@ -10,7 +10,9 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
 from ucode.smart_routing.session_env import (
+    AUTO_MODEL,
     SESSION_ENV_VAR,
+    auto_state_path,
     read_validation_result,
     session_routing_enabled,
     validation_dismissed_path,
@@ -118,6 +120,7 @@ def _validation_indicator(path: Path, enabled: bool) -> dict:
 
 def render(state: dict[str, Any]) -> dict:
     controls = os.environ.get(SESSION_ENV_VAR)
+    enabled = False
     try:
         if not controls:
             raise ValueError("No session controls")
@@ -130,7 +133,19 @@ def render(state: dict[str, Any]) -> dict:
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
-    if model.get("reasoning_level"):
+    auto_active = False
+    if controls and enabled:
+        try:
+            auto_state = json.loads(auto_state_path(Path(controls)).read_text())
+            if isinstance(auto_state, dict):
+                auto_active = True
+                main = model.get("id")
+                if main == AUTO_MODEL:
+                    main = auto_state.get("model")
+                model_name = f"Auto ({main})" if isinstance(main, str) and main else "Auto"
+        except (OSError, ValueError):
+            pass
+    if model.get("reasoning_level") and not auto_active:
         model_name += " " + model["reasoning_level"]
     children = [indicator, _text(model_name, "status-model")]
     cwd = _object(thread.get("workspace")).get("cwd")
