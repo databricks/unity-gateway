@@ -520,6 +520,7 @@ class WindowsUIAProcess:
                 "click_ms",
                 "target_snapshot_ms",
                 "picker_new_window_count",
+                "picker_refocuses",
                 "composer_focus_before_wait",
                 "composer_focus_at_first_key",
                 "composer_focus_wait_ms",

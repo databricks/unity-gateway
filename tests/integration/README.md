@@ -446,6 +446,8 @@ visible Try again per sandbox-readiness error screen, within that screen's deadl
 already saved as elevated is accepted without its banner. It saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+The picker's Enter is sent only once the picker holds keyboard focus; the helper focuses it
+again, within 60 seconds, if the app took focus back while reloading models.
 The Windows inference-only journey explicitly completes sandbox setup and the same
 post-restart readiness check as the skill journey before sending its first prompt.
 Both inference cases wait for the rendered draft, click Send, and require the user prompt in

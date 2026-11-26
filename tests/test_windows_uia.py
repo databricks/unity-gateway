@@ -242,6 +242,30 @@ def test_powershell_uia_commands_use_one_live_helper_against_stub_controls(
     assert "ControlType.Button\tPress" in legacy.stdout
 
 
+def test_picker_enter_waits_until_the_picker_holds_keyboard_focus(tmp_path, monkeypatch):
+    pwsh, script, events = _stub_uia_script(tmp_path, monkeypatch)
+    helper = WindowsUIAProcess(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script), "session", "123"]
+    )
+    try:
+        # The stub's Text control has no Invoke pattern, so it is focused like the app's picker.
+        helper.request("click", "ControlType.Text", "Ready", "5", "picker")
+        assert helper.last_diagnostics["activation"] == "focus"
+        helper.request("type", "", "enter")
+        assert helper.last_metrics["picker_refocuses"] == 1
+    finally:
+        helper.close()
+    # The first focus check fails, so the picker is focused again and checked before any key.
+    assert events.read_text().splitlines() == [
+        "focus",
+        "focus-check",
+        "focus",
+        "focus-check",
+        "type",
+        "type",
+    ]
+
+
 @pytest.mark.parametrize(
     ("edit_name", "edit_value"),
     [("Alpha\tBeta\nGamma\rDelta", ""), ("", "Alpha\tBeta\nGamma\rDelta")],
