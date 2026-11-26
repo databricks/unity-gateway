@@ -1,0 +1,456 @@
+name: Integration advisory
+
+# The advisory half of the integration suite: the non-blocking lanes that used to
+# run in integration.yml under a mode guard. Each caller now
+# instantiates only the jobs that actually run, so PR runs list no mode-skipped
+# twin rows. The blocking lanes stay in integration.yml; both callers run behind
+# the same security gate, and PR/push callers start the advisory lanes only after
+# the blocking suite finishes (see ci.yml's integration-advisory job).
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to test; fork-integration.yml passes the PR head pinned by /integration-test
+        type: string
+        default: ''
+      dependency:
+        description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
+        type: string
+        default: ''
+        required: false
+      ug_version:
+        description: Exact ug release, or checkout
+        type: string
+        default: checkout
+      entry_point:
+        description: Console command, ug or ucode (older releases may only have ucode)
+        type: string
+        default: ug
+      claude_version:
+        description: Exact Claude Code version
+        type: string
+        default: 2.1.290
+      codex_version:
+        description: Exact Codex version
+        type: string
+        default: 0.156.0
+      opencode_version:
+        description: Exact OpenCode version (non-blocking lane)
+        type: string
+        default: 1.18.31
+      copilot_version:
+        description: Exact GitHub Copilot CLI version (non-blocking lane)
+        type: string
+        default: 1.0.91
+      vscode_version:
+        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux and Windows lane)
+        type: string
+        default: 1.147.0
+      default_index:
+        description: Python package index containing the requested ug version
+        type: string
+        default: https://pypi.org/simple
+  workflow_dispatch:
+    # Manual dispatch runs the advisory lanes; dispatch integration.yml for the
+    # blocking ones.
+    inputs:
+      ug_version:
+        description: Exact ug release, or checkout
+        default: checkout
+        required: true
+      entry_point:
+        description: Console command (older releases may only have ucode)
+        type: choice
+        options: [ug, ucode]
+        default: ug
+      claude_version:
+        description: Exact Claude Code version
+        default: 2.1.290
+        required: true
+      codex_version:
+        description: Exact Codex version
+        default: 0.156.0
+        required: true
+      opencode_version:
+        description: Exact OpenCode version (non-blocking lane)
+        default: 1.18.31
+        required: true
+      copilot_version:
+        description: Exact GitHub Copilot CLI version (non-blocking lane)
+        default: 1.0.91
+        required: true
+      vscode_version:
+        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux and Windows lane)
+        default: 1.147.0
+        required: true
+      dependency:
+        description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
+        default: ''
+        required: false
+      default_index:
+        description: Python package index containing the requested ug version
+        default: https://pypi.org/simple
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-advisory-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+env:
+  EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
+  UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
+  ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
+  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
+  CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}
+  OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
+  COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
+  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}
+  PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
+  NPM_REGISTRY: https://registry.npmjs.org
+
+jobs:
+  workspace:
+    name: Workspace validation
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Workspace validation
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - &budget-start
+        name: Start the budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: &budget-secret-free
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+          UG_COWORK_PAT: ''
+        run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - &budget-setup-done
+        name: Mark setup done
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: *budget-secret-free
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Verify the existing e2e workspace and credential are configured
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          python3 - <<'PY'
+          import os
+          expected = os.environ["EXPECTED_WORKSPACE"].rstrip("/")
+          actual = os.environ["UCODE_TEST_WORKSPACE"].strip().rstrip("/")
+          if actual != expected:
+              raise SystemExit("UCODE_TEST_WORKSPACE does not match the expected CI workspace.")
+          if not os.environ["DATABRICKS_BEARER"].strip():
+              raise SystemExit("The existing e2e DATABRICKS_BEARER secret is missing.")
+          print("CI workspace matches; the existing e2e credential is present.")
+          PY
+      - &budget-check
+        name: Check this job's time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+          UG_COWORK_PAT: ''
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \
+            --workflow "$BUDGET_WORKFLOW" --job "$GITHUB_JOB" --name "$BUDGET_JOB_NAME" \
+            --started "$BUDGET_JOB_STARTED" --run-started "${BUDGET_RUN_STARTED:-$BUDGET_JOB_STARTED}" \
+            --ended "$(date +%s)" --changed-files "$changed"
+
+  anthropic-mps:
+    name: Anthropic MPS - Staging workspace · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: true
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' || 'linux-ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # The advisory Copilot legs of the Anthropic MPS lane; the blocking Claude
+      # legs live in integration.yml.
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Anthropic MPS - Staging workspace · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
+      UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com
+      DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: copilot
+      TEST_MARKER: anthropic_mps and copilot
+      ARTIFACT_NAME: integration-anthropic-mps-copilot-${{ matrix.os }}
+      # The Cowork Desktop tasks run only in the blocking Windows Claude lane.
+      UG_COWORK_DESKTOP: false
+      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
+      UG_COWORK_MODEL: claude-haiku-4-5-20251001
+      UG_COWORK_RELAY: false
+      UG_COWORK_MCP: true
+      LIVE_SHARD: ''
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
+
+  # See tests/integration/README.md#soft-fail-tests for supported cases and restoration criteria.
+  soft-fail:
+    name: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+        agent: [claude]
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: ${{ matrix.agent }}
+      TEST_MARKER: live and ${{ matrix.agent }} and soft_fail
+      ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
+
+  # Non-blocking: continue-on-error and absent from the cujs `needs` in
+  # integration.yml, so a flaky OpenCode leg cannot block merges. Add it to the
+  # gate there once the lane is stable.
+  opencode:
+    name: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    timeout-minutes: 30
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: opencode
+      TEST_MARKER: live and opencode
+      ARTIFACT_NAME: integration-full-opencode-${{ matrix.os }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
+
+  # Non-blocking pending stabilization, like OpenCode: continue-on-error and absent from the
+  # cujs `needs` in integration.yml.
+  copilot:
+    name: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    timeout-minutes: 30
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: copilot
+      TEST_MARKER: live and copilot and not anthropic_mps
+      ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
+
+  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the
+  # cujs `needs` in integration.yml. On Linux the tests drive the VS Code window on a
+  # private Xvfb display.
+  vscode:
+    name: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    timeout-minutes: 30
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: vscode
+      TEST_MARKER: live and vscode
+      ARTIFACT_NAME: integration-full-vscode-${{ matrix.os }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
+
+  # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`
+  # in integration.yml. Runs on the managed e2e workspace with an injected config that
+  # enables Claude/Codex but not OpenCode (a service principal authenticates it, like the
+  # `managed` lane).
+  managed-opencode:
+    name: Managed OpenCode self-managed (non-blocking)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Managed OpenCode self-managed (non-blocking)
+      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      TEST_MARKER: managed_fixture and opencode
+      ARTIFACT_NAME: integration-managed-opencode
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+          enable-cache: ${{ inputs.ref == '' }}
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - *budget-setup-done
+      - name: Run the self-managed OpenCode journey against the managed workspace
+        shell: bash
+        run: |
+          # Bare `ug configure` applies the admin's Claude/Codex agents, and the journey launches
+          # OpenCode, so all three CLIs must be installed.
+          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" --opencode-version "$OPENCODE_VERSION")
+          if [[ -n "$DEPENDENCY" ]]; then
+            args+=(--dependency "$DEPENDENCY")
+          fi
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Upload managed OpenCode evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/
+            ${{ runner.temp }}/ug-integration/wheels/
+
+      - *budget-check

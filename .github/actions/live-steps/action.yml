@@ -1,0 +1,138 @@
+# The live-lane step list shared by .github/workflows/integration.yml and
+# .github/workflows/integration-advisory.yml: toolchain,
+# the live run, and the evidence upload. YAML anchors cannot cross files, so the
+# two workflows share this action. It deliberately stops before the Cowork
+# Desktop steps (their step-level timeouts are not valid in composite steps) and
+# before the budget check, which every live job ends with as its own step.
+name: Live integration steps
+description: Shared steps for the live integration lanes (both the blocking and advisory callers)
+
+inputs:
+  ref:
+    description: Commit to test; empty checks out the caller's own sha
+    default: ''
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Restore pinned Node toolcache
+      id: node-toolcache
+      if: ${{ env.UG_CACHE_PINNED_NODE == 'true' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/node/22.19.0
+        key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      with:
+        node-version: 22.19.0
+    - name: Save pinned Node toolcache
+      if: ${{ env.UG_CACHE_PINNED_NODE == 'true' && steps.node-toolcache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/node/22.19.0
+        key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
+    - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      with:
+        version: 0.13.5
+        enable-cache: ${{ inputs.ref == '' }}
+    - name: Bound Windows Databricks CLI download retries
+      if: ${{ runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        $curlHome = Join-Path $env:RUNNER_TEMP "databricks-cli-curl"
+        New-Item -ItemType Directory -Force -Path $curlHome | Out-Null
+        @(
+          "retry = 3"
+          "retry-all-errors"
+          "retry-max-time = 60"
+          "connect-timeout = 20"
+          "max-time = 120"
+        ) | Set-Content -Path (Join-Path $curlHome ".curlrc") -Encoding ascii
+    - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      env:
+        CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
+      with:
+        version: 1.17.0
+    - name: Expose the Databricks CLI on Windows
+      if: ${{ runner.os == 'Windows' }}
+      shell: bash
+      run: | # zizmor: ignore[github-env] runner-owned temporary path, not PR input
+        test -f "$RUNNER_TEMP/.bin/databricks.exe"
+        cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+    - name: Install a virtual display for VS Code
+      if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+    - name: Mark setup done
+      if: ${{ github.event_name == 'pull_request' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        UCODE_TEST_WORKSPACE: ''
+        UCODE_TEST_SECOND_WORKSPACE: ''
+        DATABRICKS_HOST: ''
+        DATABRICKS_BEARER: ''
+        DATABRICKS_SECOND_BEARER: ''
+        DATABRICKS_CLIENT_ID: ''
+        DATABRICKS_CLIENT_SECRET: ''
+        CLAUDE_CODE_OAUTH_TOKEN: ''
+        CODEX_ACCESS_TOKEN: ''
+        UG_CUJ1_WORKSPACE: ''
+        UG_CUJ_SP_CLIENT_ID: ''
+        UG_CUJ_SP_CLIENT_SECRET: ''
+        UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+        UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+        DATABRICKS_BEARER_COMMAND: ''
+        UG_COWORK_PAT: ''
+      run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV" # zizmor: ignore[github-env] numeric runner clock, not PR input
+    - name: Run the selected live cases against the e2e workspace
+      shell: bash
+      run: |
+        case "$AGENT" in
+          claude) args=(--claude-version "$CLAUDE_VERSION") ;;
+          codex) args=(--codex-version "$CODEX_VERSION") ;;
+          opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
+          copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
+          antigravity) args=(--antigravity-build "$ANTIGRAVITY_BUILD") ;;
+          vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;
+        esac
+        if [[ -n "$DEPENDENCY" ]]; then
+          args+=(--dependency "$DEPENDENCY")
+        fi
+        if [[ -n "$LIVE_SHARD" ]]; then
+          args+=(--test-shard "$LIVE_SHARD" --shard-lane "$LIVE_SHARD_LANE")
+        fi
+        uv run --no-project --python 3.12 python scripts/run_integration.py \
+          --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+          --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+          --npm-registry "$NPM_REGISTRY" \
+          "${args[@]}" -- -m "$TEST_MARKER"
+    - name: Record staging model usage
+      if: ${{ !cancelled() && env.UG_MODEL_LEDGER == 'staging' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/ug-integration"
+        uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
+          "$RUNNER_TEMP/ug-integration" --lane staging
+    - name: Inspect staging provider rate limits
+      if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py --provider-only \
+          > "$RUNNER_TEMP/ug-integration/staging-provider-quota.json"
+    - name: Upload live test evidence
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        include-hidden-files: true
+        path: |
+          ${{ runner.temp }}/ug-integration/*.json
+          ${{ runner.temp }}/ug-integration/*.txt
+          ${{ runner.temp }}/ug-integration/*.xml
+          ${{ runner.temp }}/ug-integration/*.log
+          ${{ runner.temp }}/ug-integration/artifacts/
+          ${{ runner.temp }}/ug-integration/wheels/

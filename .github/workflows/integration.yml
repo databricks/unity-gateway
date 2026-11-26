@@ -3,15 +3,12 @@ name: Integration
 on:
   workflow_call:
     inputs:
-      mode:
-        description: Run required, advisory, or all integration jobs
-        type: string
-        default: all
       ref:
         description: Commit to test; fork-integration.yml passes the PR head pinned by /integration-test
         type: string
         default: ''
   workflow_dispatch:
+    # Manual dispatch runs both the blocking and advisory lanes.
     inputs:
       ug_version:
         description: Exact ug release, or checkout
@@ -59,7 +56,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}-${{ inputs.mode || 'all' }}
+  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
@@ -68,10 +65,7 @@ env:
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}
-  OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
-  COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
-  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
   CLAUDE_DESKTOP_WINDOWS_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
   CLAUDE_DESKTOP_WINDOWS_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
@@ -80,9 +74,25 @@ env:
   NPM_REGISTRY: https://registry.npmjs.org
 
 jobs:
+  manual-advisory:
+    name: Manual advisory integration
+    needs: [full, managed]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}
+    uses: ./.github/workflows/integration-advisory.yml
+    with:
+      ug_version: ${{ inputs.ug_version }}
+      entry_point: ${{ inputs.entry_point }}
+      claude_version: ${{ inputs.claude_version }}
+      codex_version: ${{ inputs.codex_version }}
+      opencode_version: ${{ inputs.opencode_version }}
+      copilot_version: ${{ inputs.copilot_version }}
+      vscode_version: ${{ inputs.vscode_version }}
+      dependency: ${{ inputs.dependency }}
+      default_index: ${{ inputs.default_index }}
+    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
+
   installation:
-    if: ${{ inputs.mode != 'advisory' }}
-    name: ${{ inputs.mode == 'advisory' && 'Installation tests (runs in Integration)' || 'Installation tests' }}
+    name: Installation tests
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Installation tests
@@ -182,8 +192,7 @@ jobs:
             --ended "$(date +%s)" --changed-files "$changed"
 
   installation-windows:
-    if: ${{ inputs.mode != 'advisory' }}
-    name: ${{ inputs.mode == 'advisory' && 'Windows installation tests (runs in Integration)' || 'Windows installation tests' }}
+    name: Windows installation tests
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Windows installation tests
@@ -235,9 +244,9 @@ jobs:
       - *budget-check
 
   cowork-inference-windows:
-    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · Windows (runs in Integration)' || format('Cowork desktop tasks · Windows · {0}', matrix.source.name) }}
+    name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
-    if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -374,9 +383,9 @@ jobs:
       - *budget-check
 
   cowork-inference-macos:
-    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · macOS (runs in Integration)' || format('Cowork desktop tasks · macOS · {0}', matrix.source.name) }}
+    name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
-    if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 80
     strategy:
       fail-fast: false
@@ -519,8 +528,7 @@ jobs:
       - *budget-check
 
   smoke:
-    if: ${{ inputs.mode != 'advisory' }}
-    name: ${{ inputs.mode == 'advisory' && 'Smoke journeys (runs in Integration)' || format('Smoke journeys · {0} · {1}', matrix.agent == 'claude' && 'Claude' || 'Codex', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
+    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -538,112 +546,76 @@ jobs:
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and smoke and ${{ matrix.agent }} and not soft_fail
       ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ matrix.os }}
-    steps: &live-steps
+    steps:
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Restore pinned Node toolcache
-        id: node-toolcache
-        if: ${{ env.UG_CACHE_PINNED_NODE == 'true' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - uses: ./.github/actions/live-steps
         with:
-          path: ${{ runner.tool_cache }}/node/22.19.0
-          key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+          ref: ${{ inputs.ref }}
+      - *budget-check
+
+  anthropic-mps:
+    name: Anthropic MPS - Staging workspace · Claude · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' || 'linux-ubuntu-latest' }}
+    # The Windows lane also runs the Cowork Desktop tasks.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 85 || 40 }}
+    strategy:
+      fail-fast: false
+      # The Windows Claude journeys split across shards balanced from recorded case times
+      # (tests/live_shard.py); the Cowork Desktop steps run once, on the first shard.
+      # The advisory Copilot legs of this lane live in integration-advisory.yml.
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: windows-latest
+            shard: "1/3"
+            shard_index: 1
+          - os: windows-latest
+            shard: "2/3"
+            shard_index: 2
+          - os: windows-latest
+            shard: "3/3"
+            shard_index: 3
+
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Anthropic MPS - Staging workspace · Claude · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
+      UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com
+      DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: claude
+      TEST_MARKER: anthropic_mps and claude
+      UG_MODEL_LEDGER: staging
+      ARTIFACT_NAME: integration-anthropic-mps-claude-${{ matrix.os }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
+      # Desktop jobs skip merge-group runs, like the other Cowork lanes.
+      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.shard_index == 1 }}
+      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
+      UG_COWORK_MODEL: claude-haiku-4-5-20251001
+      UG_COWORK_RELAY: false
+      UG_COWORK_MCP: true
+      UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' }}
+      LIVE_SHARD: ${{ matrix.shard || '' }}
+      LIVE_SHARD_LANE: anthropic-mps-claude
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          node-version: 22.19.0
-      - name: Save pinned Node toolcache
-        if: ${{ env.UG_CACHE_PINNED_NODE == 'true' && steps.node-toolcache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
         with:
-          path: ${{ runner.tool_cache }}/node/22.19.0
-          key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          version: 0.13.5
-          enable-cache: ${{ inputs.ref == '' }}
-      - &windows-cli-download-retries
-        name: Bound Windows Databricks CLI download retries
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          $curlHome = Join-Path $env:RUNNER_TEMP "databricks-cli-curl"
-          New-Item -ItemType Directory -Force -Path $curlHome | Out-Null
-          @(
-            "retry = 3"
-            "retry-all-errors"
-            "retry-max-time = 60"
-            "connect-timeout = 20"
-            "max-time = 120"
-          ) | Set-Content -Path (Join-Path $curlHome ".curlrc") -Encoding ascii
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
-        env:
-          CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
-        with:
-          version: 1.17.0
-      - name: Expose the Databricks CLI on Windows
-        if: ${{ runner.os == 'Windows' }}
-        shell: bash
-        run: |
-          test -f "$RUNNER_TEMP/.bin/databricks.exe"
-          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
-      - name: Install a virtual display for VS Code
-        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
-      - *budget-setup-done
-      - name: Run the selected live cases against the e2e workspace
-        shell: bash
-        run: |
-          case "$AGENT" in
-            claude) args=(--claude-version "$CLAUDE_VERSION") ;;
-            codex) args=(--codex-version "$CODEX_VERSION") ;;
-            opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
-            copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
-            antigravity) args=(--antigravity-build "$ANTIGRAVITY_BUILD") ;;
-            vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;
-          esac
-          if [[ -n "$DEPENDENCY" ]]; then
-            args+=(--dependency "$DEPENDENCY")
-          fi
-          if [[ -n "$LIVE_SHARD" ]]; then
-            args+=(--test-shard "$LIVE_SHARD" --shard-lane "$LIVE_SHARD_LANE")
-          fi
-          uv run --no-project --python 3.12 python scripts/run_integration.py \
-            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
-            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            --npm-registry "$NPM_REGISTRY" \
-            "${args[@]}" -- -m "$TEST_MARKER"
-      - name: Record staging model usage
-        if: ${{ !cancelled() && env.UG_MODEL_LEDGER == 'staging' }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/ug-integration"
-          uv run --no-project --python 3.12 python tests/integration/utils/traffic_ledger.py \
-            "$RUNNER_TEMP/ug-integration" --lane staging
-      - name: Inspect staging provider rate limits
-        if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py --provider-only \
-            > "$RUNNER_TEMP/ug-integration/staging-provider-quota.json"
-      - name: Upload live test evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          include-hidden-files: true
-          path: |
-            ${{ runner.temp }}/ug-integration/*.json
-            ${{ runner.temp }}/ug-integration/*.txt
-            ${{ runner.temp }}/ug-integration/*.xml
-            ${{ runner.temp }}/ug-integration/*.log
-            ${{ runner.temp }}/ug-integration/artifacts/
-            ${{ runner.temp }}/ug-integration/wheels/
+          ref: ${{ inputs.ref }}
       # Claude Desktop runs only in the Windows Claude anthropic-mps lane; see scripts/cowork-inference/README.md.
       - name: Cache the pinned Claude installer
         if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
@@ -739,52 +711,8 @@ jobs:
           if-no-files-found: warn
       - *budget-check
 
-  anthropic-mps:
-    name: Anthropic MPS - Staging workspace · ${{ matrix.agent == 'claude' && 'Claude' || 'Copilot' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.agent == 'copilot' && ' (non-blocking)' || '' }}
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    continue-on-error: ${{ matrix.agent == 'copilot' }}
-    runs-on:
-      group: databricks-protected-runner-group
-      labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' || 'linux-ubuntu-latest' }}
-    # The Windows Claude lane also runs the Cowork Desktop tasks.
-    timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || matrix.os == 'windows-latest' && 85 || 40 }}
-    strategy:
-      fail-fast: false
-      # The Windows Claude journeys split across shards balanced from recorded case times
-      # (tests/live_shard.py); the Cowork Desktop steps run once, on the first shard.
-      # The blocking caller runs the Claude legs (the Windows ones as three shards balanced
-      # from recorded case times, tests/live_shard.py); the advisory caller runs the Copilot
-      # legs; a dispatch without a mode runs both.
-      matrix:
-        include: ${{ fromJSON(inputs.mode == 'required' && '[{"os":"ubuntu-22.04","agent":"claude"},{"os":"windows-latest","agent":"claude","shard":"1/3","shard_index":1},{"os":"windows-latest","agent":"claude","shard":"2/3","shard_index":2},{"os":"windows-latest","agent":"claude","shard":"3/3","shard_index":3}]' || inputs.mode == 'advisory' && '[{"os":"ubuntu-22.04","agent":"copilot"},{"os":"windows-latest","agent":"copilot"}]' || '[{"os":"ubuntu-22.04","agent":"claude"},{"os":"windows-latest","agent":"claude","shard":"1/3","shard_index":1},{"os":"windows-latest","agent":"claude","shard":"2/3","shard_index":2},{"os":"windows-latest","agent":"claude","shard":"3/3","shard_index":3},{"os":"ubuntu-22.04","agent":"copilot"},{"os":"windows-latest","agent":"copilot"}]') }}
-
-    env:
-      BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Anthropic MPS - Staging workspace · ${{ matrix.agent == 'claude' && 'Claude' || 'Copilot' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.agent == 'copilot' && ' (non-blocking)' || '' }}
-      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
-      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
-      UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com
-      DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba
-      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: ${{ matrix.agent }}
-      TEST_MARKER: anthropic_mps and ${{ matrix.agent }}
-      UG_MODEL_LEDGER: ${{ matrix.agent == 'claude' && 'staging' || '' }}
-      ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
-      # Desktop jobs skip merge-group runs, like the other Cowork lanes.
-      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}
-      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
-      UG_COWORK_MODEL: claude-haiku-4-5-20251001
-      UG_COWORK_RELAY: false
-      UG_COWORK_MCP: true
-      UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' && matrix.agent == 'claude' }}
-      LIVE_SHARD: ${{ matrix.shard || '' }}
-      LIVE_SHARD_LANE: anthropic-mps-claude
-    steps: *live-steps
-
   headless-windows:
-    if: ${{ inputs.mode != 'advisory' }}
-    name: ${{ inputs.mode == 'advisory' && 'Windows headless journey · Claude (runs in Integration)' || 'Windows headless journey · Claude' }}
+    name: Windows headless journey · Claude
     needs: workspace
     runs-on: windows-latest
     timeout-minutes: 20
@@ -806,7 +734,19 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
-      - *windows-cli-download-retries
+      - name: Bound Windows Databricks CLI download retries
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $curlHome = Join-Path $env:RUNNER_TEMP "databricks-cli-curl"
+          New-Item -ItemType Directory -Force -Path $curlHome | Out-Null
+          @(
+            "retry = 3"
+            "retry-all-errors"
+            "retry-max-time = 60"
+            "connect-timeout = 20"
+            "max-time = 120"
+          ) | Set-Content -Path (Join-Path $curlHome ".curlrc") -Encoding ascii
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         env:
           CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
@@ -859,8 +799,8 @@ jobs:
       - *budget-check
 
   full:
-    name: ${{ inputs.mode == 'advisory' && 'Full journeys (runs in Integration)' || format('Full journeys · {0} · {1}{2}', matrix.agent == 'claude' && 'Claude' || 'Codex', matrix.os == 'windows-latest' && 'Windows' || 'Linux', matrix.smart_routing && ' · Smart routing' || '') }}
-    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
+    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
     # The runner enforces its own 3600s pytest deadline; keep the job above it
@@ -915,11 +855,20 @@ jobs:
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
       LIVE_SHARD: ${{ matrix.shard || '' }}
       LIVE_SHARD_LANE: full-claude
-    steps: *live-steps
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
 
   codex-relay:
-    if: ${{ inputs.mode != 'advisory' }}
-    name: ${{ inputs.mode == 'advisory' && 'Codex relay login and inference (runs in Integration)' || 'Codex relay login and inference' }}
+    name: Codex relay login and inference
     needs: workspace
     runs-on:
       group: databricks-protected-runner-group
@@ -937,86 +886,22 @@ jobs:
       AGENT: codex
       TEST_MARKER: live and codex and codex_relay
       ARTIFACT_NAME: integration-codex-relay
-    steps: *live-steps
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/live-steps
+        with:
+          ref: ${{ inputs.ref }}
+      - *budget-check
 
   # See tests/integration/README.md#soft-fail-tests for supported cases and restoration criteria.
-  soft-fail:
-    name: ${{ inputs.mode == 'required' && 'Soft-fail journeys (runs in Integration advisory)' || format('Soft-fail journeys · {0} · {1} (non-blocking)', matrix.agent, matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
-    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
-    needs: [workspace, full, managed]
-    continue-on-error: true
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 70
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        os: [ubuntu-22.04, windows-latest]
-        agent: [claude]
-    env:
-      BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Soft-fail journeys · ${{ matrix.agent }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: ${{ matrix.agent }}
-      TEST_MARKER: live and ${{ matrix.agent }} and soft_fail
-      ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}
-    steps: *live-steps
-
-  # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
-  # leg cannot block merges. Add it to cujs once the lane is stable.
-  opencode:
-    name: ${{ inputs.mode == 'required' && 'Full journeys · OpenCode (runs in Integration advisory)' || format('Full journeys · OpenCode · {0} (non-blocking)', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
-    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
-    needs: workspace
-    continue-on-error: true
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-latest]
-    timeout-minutes: 30
-    env:
-      BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: opencode
-      TEST_MARKER: live and opencode
-      ARTIFACT_NAME: integration-full-opencode-${{ matrix.os }}
-    steps: *live-steps
-
-  # Non-blocking pending stabilization, like OpenCode: continue-on-error and absent from the
-  # cujs `needs`.
-  copilot:
-    name: ${{ inputs.mode == 'required' && 'Full journeys · Copilot (runs in Integration advisory)' || format('Full journeys · Copilot · {0} (non-blocking)', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
-    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
-    needs: workspace
-    continue-on-error: true
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-latest]
-    timeout-minutes: 30
-    env:
-      BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Full journeys · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: copilot
-      TEST_MARKER: live and copilot and not anthropic_mps
-      ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
-    steps: *live-steps
-
-  # Blocking: part of the cujs gate. Linux only: Antigravity CLI's gateway mode supports macOS
-  # and Linux, and ug installs no Windows build.
   antigravity:
-    name: ${{ inputs.mode == 'advisory' && 'Full journeys · Antigravity · Linux (runs in Integration)' || 'Full journeys · Antigravity · Linux' }}
-    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
+    name: Full journeys · Antigravity · Linux
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -1029,50 +914,6 @@ jobs:
       AGENT: antigravity
       TEST_MARKER: live and antigravity
       ARTIFACT_NAME: integration-full-antigravity-ubuntu-22.04
-    steps: *live-steps
-
-  # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the cujs
-  # `needs`. On Linux the tests drive the VS Code window on a private Xvfb display.
-  vscode:
-    name: ${{ inputs.mode == 'required' && 'Full journeys · VS Code Copilot Chat (runs in Integration advisory)' || format('Full journeys · VS Code Copilot Chat · {0} (non-blocking)', matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
-    if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
-    needs: workspace
-    continue-on-error: true
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-latest]
-    timeout-minutes: 30
-    env:
-      BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
-      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: vscode
-      TEST_MARKER: live and vscode
-      ARTIFACT_NAME: integration-full-vscode-${{ matrix.os }}
-    steps: *live-steps
-
-  # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
-  # Runs on the managed e2e workspace with an injected config that enables Claude/Codex but not
-  # OpenCode (a service principal authenticates it, like the `managed` lane).
-  managed-opencode:
-    name: ${{ inputs.mode == 'required' && 'Managed OpenCode self-managed (runs in Integration advisory)' || 'Managed OpenCode self-managed (non-blocking)' }}
-    if: ${{ inputs.mode != 'required' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    continue-on-error: true
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    env:
-      BUDGET_WORKFLOW: integration
-      BUDGET_JOB_NAME: Managed OpenCode self-managed (non-blocking)
-      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
-      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
-      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      TEST_MARKER: managed_fixture and opencode
-      ARTIFACT_NAME: integration-managed-opencode
     steps:
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -1080,52 +921,15 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - uses: ./.github/actions/live-steps
         with:
-          node-version: 22.19.0
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          version: 0.13.5
-          enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
-        with:
-          version: 1.17.0
-      - *budget-setup-done
-      - name: Run the self-managed OpenCode journey against the managed workspace
-        shell: bash
-        run: |
-          # Bare `ug configure` applies the admin's Claude/Codex agents, and the journey launches
-          # OpenCode, so all three CLIs must be installed.
-          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" --opencode-version "$OPENCODE_VERSION")
-          if [[ -n "$DEPENDENCY" ]]; then
-            args+=(--dependency "$DEPENDENCY")
-          fi
-          uv run --no-project --python 3.12 python scripts/run_integration.py \
-            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
-            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "$TEST_MARKER"
-      - name: Upload managed OpenCode evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          include-hidden-files: true
-          path: |
-            ${{ runner.temp }}/ug-integration/*.json
-            ${{ runner.temp }}/ug-integration/*.txt
-            ${{ runner.temp }}/ug-integration/*.xml
-            ${{ runner.temp }}/ug-integration/*.log
-            ${{ runner.temp }}/ug-integration/artifacts/
-            ${{ runner.temp }}/ug-integration/wheels/
-
+          ref: ${{ inputs.ref }}
       - *budget-check
 
-  # This general managed lane is Linux-only; anthropic-mps covers Claude MPS managed
-  # settings on Windows too. Dedicated CUJs require POSIX PTYs.
-
+  # The managed lane is Linux-only; anthropic-mps covers Claude MPS on Windows.
   managed:
-    name: ${{ inputs.mode == 'advisory' && 'Managed config (runs in Integration)' || format('Managed config · {0}', matrix.agent == 'claude' && 'Claude' || 'Codex') }}
-    if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
@@ -1219,8 +1023,8 @@ jobs:
       - *budget-check
 
   managed-smart:
-    name: ${{ inputs.mode == 'advisory' && 'Managed config · Codex · Smart routing (runs in Integration)' || 'Managed config · Codex · Smart routing' }}
-    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    name: Managed config · Codex · Smart routing
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -1235,11 +1039,11 @@ jobs:
     steps: *managed-steps
 
   dedicated-cuj-plan:
-    name: ${{ inputs.mode == 'advisory' && 'Plan E2E CUJs (runs in Integration)' || 'Plan E2E CUJs' }}
+    name: Plan E2E CUJs
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Plan E2E CUJs
-    if: ${{ inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -1274,8 +1078,7 @@ jobs:
       - *budget-check
 
   dedicated-cuj:
-    if: ${{ inputs.mode != 'advisory' }}
-    name: ${{ inputs.mode == 'advisory' && 'E2E CUJs (runs in Integration)' || format('E2E CUJs · {0}', matrix.name) }}
+    name: E2E CUJs · ${{ matrix.name }}
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     # One runner per file: CUJs own separate workspaces but share machine-wide /etc agent settings.
     needs: dedicated-cuj-plan
@@ -1351,7 +1154,7 @@ jobs:
   # Checks the live lanes' shards together ran every case exactly once, and records fresh
   # per-case timings so tests/live_test_times.json can rebalance the shards when they drift.
   live-shard-times:
-    name: ${{ inputs.mode == 'advisory' && 'Live shard coverage (runs in Integration)' || 'Live shard coverage' }}
+    name: Live shard coverage
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Live shard coverage
@@ -1415,11 +1218,11 @@ jobs:
       - *budget-check
 
   cujs:
-    name: ${{ inputs.mode == 'advisory' && 'All integration tests (runs in Integration)' || 'All integration tests' }}
+    name: All integration tests
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: All integration tests
-    if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, managed-smart, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1453,9 +1256,9 @@ jobs:
   # OpenAI's appcast keeps every versioned macOS build, so the desktop app can be pinned by hash.
 
   codex-desktop-macos:
-    name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · macOS (runs in Integration)' || 'Codex desktop inference · macOS' }}
+    name: Codex desktop inference · macOS
     # Model ledgers reject observed overlap with managed lanes.
-    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -1539,10 +1342,10 @@ jobs:
   # OpenAI keeps, so the Windows app can be pinned by hash too.
 
   codex-desktop-windows:
-    name: ${{ inputs.mode == 'advisory' && 'Codex desktop inference · Windows (runs in Integration)' || 'Codex desktop inference · Windows' }}
+    name: Codex desktop inference · Windows
     # Both desktop lanes use the same model and workspace, so keep them serialized.
     needs: codex-desktop-macos
-    if: ${{ !cancelled() && inputs.mode != 'advisory' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:

@@ -446,14 +446,20 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
     from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
-    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
-    setup_blocks = re.findall(
-        r"(?m)^      - uses: databricks/setup-cli@[^\n]+\n((?:        [^\n]*\n)*)",
-        workflow.read_text(),
-    )
+    setup_blocks = []
+    for path, step_indent, field_indent in (
+        (WORKFLOW, "      ", "        "),
+        (ADVISORY_WORKFLOW, "      ", "        "),
+        # The shared live steps install the CLI one indent shallower.
+        (LIVE_STEPS, "    ", "      "),
+    ):
+        setup_blocks += re.findall(
+            rf"(?m)^{step_indent}- uses: databricks/setup-cli@[^\n]+\n((?:{field_indent}[^\n]*\n)*)",
+            path.read_text(),
+        )
     assert setup_blocks, "Integration CI must install the Databricks CLI explicitly"
     for block in setup_blocks:
-        version = re.search(r"(?m)^          version: (\d+)\.(\d+)\.(\d+)\s*$", block)
+        version = re.search(r"(?m)^ +version: (\d+)\.(\d+)\.(\d+)\s*$", block)
         assert version, "Every integration setup-cli step must pin an exact CLI version"
         assert tuple(map(int, version.groups())) >= SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
@@ -496,8 +502,11 @@ def test_managed_smart_overlap_keeps_model_guard_and_required_rollup():
     assert "managed-smart" in re.search(r"(?m)^    needs: (.*)$", jobs["cujs"]).group(1)
     assert "UG_MODEL_LEDGER: smart" in jobs["managed-smart"]
     assert "steps: *managed-steps" in jobs["managed-smart"]
-    assert "Managed config · Codex · Smart routing'" in jobs["managed-smart"]
-    assert "format('Managed config · {0}'" in jobs["managed"]
+    assert "name: Managed config · Codex · Smart routing" in jobs["managed-smart"]
+    assert (
+        "name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}"
+        in jobs["managed"]
+    )
     for lane in ("codex-desktop-macos", "codex-desktop-windows"):
         assert "UG_MODEL_LEDGER: desktop" in jobs[lane]
         assert "--lane desktop" in jobs[lane]
@@ -512,7 +521,7 @@ def test_managed_integration_ci_is_blocking():
     assert needs is not None
     assert {"managed", "managed-smart"} <= {job.strip() for job in needs.group(1).split(",")}
     assert (
-        "if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || "
+        "if: ${{ always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     ) in gate
     baseline = _collect_integration_cases(_ci_marker_expression(managed, "codex"))
@@ -552,12 +561,30 @@ def test_managed_integration_ci_is_blocking():
 
 
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+ADVISORY_WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration-advisory.yml"
+LIVE_STEPS = Path(__file__).parent.parent / ".github/actions/live-steps/action.yml"
+# Every live lane runs these shared steps; the text workflows reference them by.
+LIVE_STEPS_USE = "- uses: ./.github/actions/live-steps"
 # The quarantined Claude Smart Router toggle journey, split into one test per toggle state.
 CLAUDE_TOGGLE_TESTS = (
     "test_smart_router_routes_claude_subagent_at_launch",
     "test_smart_router_skill_turns_claude_subagent_routing_off",
     "test_smart_router_skill_turns_claude_subagent_routing_back_on",
 )
+
+
+def _advisory_jobs():
+    workflow = ADVISORY_WORKFLOW.read_text()
+    body = workflow.split("\njobs:\n", 1)[1]
+    return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
+
+
+def _job_text(name):
+    """Return the job definition from whichever integration workflow holds it."""
+    for jobs in (_integration_jobs(), _advisory_jobs()):
+        if name in jobs:
+            return jobs[name]
+    raise AssertionError(f"no integration job named {name}")
 
 
 def _workflow_job(name, next_name):
@@ -639,19 +666,20 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
 
 
 def test_soft_fail_ci_is_non_blocking_on_both_platforms():
+    # The soft-fail lane lives in the advisory workflow, like every non-blocking lane.
     jobs = _integration_jobs()
-    job = jobs["soft-fail"]
+    job = _advisory_jobs()["soft-fail"]
     assert "continue-on-error: true" in job
     assert "os: [ubuntu-22.04, windows-latest]" in job
     assert "runs-on: ${{ matrix.os }}" in job
-    assert "needs: [workspace, full, managed]" in job
+    assert "needs: workspace" in job
     assert "!cancelled() && needs.workspace.result == 'success'" in job
     assert "fail-fast: false" in job
     assert "max-parallel: 1" in job
     assert "agent: [claude]" in job
     assert "AGENT: ${{ matrix.agent }}" in job
     assert "ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}" in job
-    assert "steps: *live-steps" in job
+    assert LIVE_STEPS_USE in job and "- *budget-check" in job
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
     assert "soft-fail" not in {name.strip() for name in needs.group(1).split(",")}
@@ -777,7 +805,7 @@ def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
     assert "CODEX_ACCESS_TOKEN" not in jobs["full"]
     assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in relay
     assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in relay
-    assert "steps: *live-steps" in relay
+    assert LIVE_STEPS_USE in relay and "- *budget-check" in relay
     assert "continue-on-error:" not in relay
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
@@ -787,46 +815,61 @@ def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
     monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
     jobs = _integration_jobs()
+    # The blocking Claude legs live in integration.yml; the advisory Copilot legs in
+    # integration-advisory.yml, so neither caller instantiates skipped twins.
     job = jobs["anthropic-mps"]
-    assert not re.search(r"(?m)^    needs:", job)
-    assert "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in job
-    assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
-    assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
-    assert "DATABRICKS_BEARER:" not in job
-    # The blocking caller runs the sharded Claude legs; the advisory caller the Copilot legs.
-    assert "inputs.mode == 'required' &&" in job
-    assert "inputs.mode == 'advisory' &&" in job
-    assert '"agent":"claude","shard":"1/3"' in job
-    assert '"agent":"copilot"' in job
-    assert "fail-fast: false" in job
-    assert "group: databricks-protected-runner-group" in job
+    advisory = _advisory_jobs()["anthropic-mps"]
+    for lane in (job, advisory):
+        assert not re.search(r"(?m)^    needs:", lane)
+        assert (
+            "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in lane
+        )
+        assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in lane
+        assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in lane
+        assert "DATABRICKS_BEARER:" not in lane
+        assert "fail-fast: false" in lane
+        assert "group: databricks-protected-runner-group" in lane
+        assert (
+            "labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' "
+            "|| 'linux-ubuntu-latest' }}"
+        ) in lane
+        assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in lane
+        assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in lane
+        assert LIVE_STEPS_USE in lane and "- *budget-check" in lane
+        assert "UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps" in lane
+        assert "UG_COWORK_MCP: true" in lane
+    # The blocking lane: sharded Claude legs on both OSes, no continue-on-error, and
+    # the Cowork Desktop steps it alone opts into.
+    assert not re.search(r"(?m)^    continue-on-error:", job)
+    assert job.count("continue-on-error:") == 1
+    assert "name: Record staging Desktop model usage" in job
     assert (
-        "labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' "
-        "|| 'linux-ubuntu-latest' }}"
+        "UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == "
+        "'windows-latest' && matrix.shard_index == 1 }}"
     ) in job
-    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in job
-    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in job
-    assert "steps: *live-steps" in job
-    assert "continue-on-error: ${{ matrix.agent == 'copilot' }}" in job
-    assert (
-        "timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || "
-        "matrix.os == 'windows-latest' && 85 || 40 }}"
-    ) in job
-    assert "AGENT: ${{ matrix.agent }}" in job
-    assert (
-        "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}"
-        "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in job
-    )
+    assert "timeout-minutes: ${{ matrix.os == 'windows-latest' && 85 || 40 }}" in job
+    assert 'shard: "1/3"' in job and 'shard: "3/3"' in job
+    assert "name: Install Claude Desktop" in job and "timeout-minutes: 15" in job
+    # The advisory lane: Copilot legs only, non-blocking.
+    assert "continue-on-error: true" in advisory
+    assert "os: [ubuntu-22.04, windows-latest]" in advisory
+    assert "TEST_MARKER: anthropic_mps and copilot" in advisory
+    assert "UG_COWORK_DESKTOP: false" in advisory
     selected = set()
-    for agent in ("claude", "copilot"):
-        cases = _collect_integration_cases(_ci_marker_expression(job, agent))
+    for lane, agent in ((job, "claude"), (advisory, "copilot")):
+        cases = _collect_integration_cases(_ci_marker_expression(lane, agent))
         assert not selected & cases
         selected |= cases
     assert selected == _collect_integration_cases("anthropic_mps")
-    assert '--npm-registry "$NPM_REGISTRY"' in jobs["smoke"]
-    for job_name, agent in (("full", "claude"), ("managed", "claude"), ("copilot", "copilot")):
+    assert LIVE_STEPS_USE in jobs["smoke"]
+    assert '--npm-registry "$NPM_REGISTRY"' in LIVE_STEPS.read_text()
+    for job_name, agent in (
+        ("full", "claude"),
+        ("managed", "claude"),
+        ("copilot", "copilot"),
+    ):
         assert not selected & _collect_integration_cases(
-            _ci_marker_expression(jobs[job_name], agent)
+            _ci_marker_expression(_job_text(job_name), agent)
         )
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
@@ -837,16 +880,18 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
 def test_staging_usage_and_provider_quota_are_collected_without_inference():
     jobs = _integration_jobs()
     staging = jobs["anthropic-mps"]
-    assert "UG_MODEL_LEDGER: ${{ matrix.agent == 'claude' && 'staging' || '' }}" in staging
-    steps = jobs["smoke"]
+    assert "UG_MODEL_LEDGER: staging" in staging
+    assert LIVE_STEPS_USE in staging
+    assert "UG_MODEL_LEDGER:" not in _advisory_jobs()["anthropic-mps"]
+    steps = LIVE_STEPS.read_text()
     assert "name: Record staging model usage" in steps
     assert "--lane staging" in steps
     assert "name: Inspect staging provider rate limits" in steps
     assert "scripts/managed_quota_diagnostics.py --provider-only" in steps
-    assert "name: Record staging Desktop model usage" in steps
-    assert "--lane staging-desktop" in steps
-    assert "configuration.json" in steps
-    assert steps.index("name: Record staging Desktop model usage") < steps.index(
+    assert "name: Record staging Desktop model usage" in staging
+    assert "--lane staging-desktop" in staging
+    assert "configuration.json" in staging
+    assert staging.index("name: Record staging Desktop model usage") < staging.index(
         "name: Upload Cowork evidence"
     )
 
@@ -855,10 +900,11 @@ def test_staging_windows_node_toolcache_is_restored_before_setup():
     jobs = _integration_jobs()
     staging = jobs["anthropic-mps"]
     assert (
-        "UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' "
-        "&& matrix.agent == 'claude' }}" in staging
+        "UG_CACHE_PINNED_NODE: ${{ inputs.ref == '' && matrix.os == 'windows-latest' }}" in staging
     )
-    live_steps = jobs["smoke"]
+    assert "UG_CACHE_PINNED_NODE:" not in _advisory_jobs()["anthropic-mps"]
+    assert LIVE_STEPS_USE in staging
+    live_steps = LIVE_STEPS.read_text()
     restore = live_steps.index("name: Restore pinned Node toolcache")
     setup = live_steps.index("uses: actions/setup-node@", restore)
     save = live_steps.index("name: Save pinned Node toolcache", setup)
@@ -932,7 +978,7 @@ def test_full_claude_lane_includes_both_desktop_journeys():
     ],
 )
 def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing, retained_test):
-    job = _integration_jobs()[job_name]
+    job = _job_text(job_name)
     cases = _collect_integration_cases(
         _ci_marker_expression(job, agent, smart_routing=smart_routing)
     )
@@ -977,7 +1023,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     job = _workflow_job("dedicated-cuj", "cujs")
 
     assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
-    assert "format('E2E CUJs · {0}', matrix.name)" in job
+    assert "name: E2E CUJs · ${{ matrix.name }}" in job
     assert "fail-fast: false" in job
     assert "include: ${{ fromJSON(needs.dedicated-cuj-plan.outputs.cujs) }}" in job
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
@@ -1220,14 +1266,17 @@ def _skips_fork_prs(jobs, name):
 
 
 def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
-    jobs = _integration_jobs()
-    skipped = {name for name in jobs if _skips_fork_prs(jobs, name)}
+    # Both halves of the integration suite must keep the fork guards: neither
+    # workflow may gain a job that runs fork PR code with credentials.
+    suites = (_integration_jobs(), _advisory_jobs())
+    skipped = {name for jobs in suites for name in jobs if _skips_fork_prs(jobs, name)}
 
     assert skipped == SKIPPED_ON_FORK_PRS
-    for name in set(jobs) - skipped:
-        assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
-            f"{name} runs on fork PRs, which get no secrets or OIDC token"
-        )
+    for jobs in suites:
+        for name in set(jobs) - skipped:
+            assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
+                f"{name} runs on fork PRs, which get no secrets or OIDC token"
+            )
 
 
 MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
@@ -1241,7 +1290,10 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     workflow = _workflow("fork-integration.yml")
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
-    integration = workflow.split("\n  integration:\n", 1)[1].split("\n  report:\n", 1)[0]
+    integration = workflow.split("\n  integration:\n", 1)[1].split(
+        "\n  integration-advisory:\n", 1
+    )[0]
+    advisory = workflow.split("\n  integration-advisory:\n", 1)[1].split("\n  report:\n", 1)[0]
     gate = workflow.split("\n  security-gate:\n", 1)[1].split("\n  integration:\n", 1)[0]
     report = workflow.split("\n  report:\n", 1)[1]
 
@@ -1268,8 +1320,21 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     assert "group: fork-integration-${{ github.event.issue.number }}" in integration
     assert "uses: ./.github/workflows/integration.yml" in integration
     assert "ref: ${{ needs.authorize.outputs.sha }}" in integration
+    # The fork call runs both halves, like it did as one mode=all call: the advisory
+    # lanes start after the blocking ones and never gate the reported result harder
+    # than a continue-on-error lane failing used to.
+    assert "uses: ./.github/workflows/integration-advisory.yml" in advisory
+    assert "ref: ${{ needs.authorize.outputs.sha }}" in advisory
+    assert "needs: [authorize, security-gate, integration]" in advisory
+    assert "!cancelled() && needs.security-gate.result == 'success'" in advisory
+    assert "group: fork-integration-advisory-${{ github.event.issue.number }}" in advisory
+    assert "secrets: inherit" in advisory
     assert "needs.authorize.result == 'success'" in report
-    assert "needs: [authorize, security-gate, integration]" in report
+    assert "needs: [authorize, security-gate, integration, integration-advisory]" in report
+    assert (
+        "RESULT: ${{ needs.integration.result == 'success' && "
+        "needs.integration-advisory.result == 'success' && 'success' || 'failure' }}"
+    ) in report
     assert "SCAN_RESULT: ${{ needs.security-gate.result }}" in report
     assert "repos/$GITHUB_REPOSITORY/statuses/$SHA" in report
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0], (
@@ -2211,9 +2276,22 @@ def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_check
 
 
 def test_integration_checkouts_and_caches_are_safe_for_fork_heads():
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
-    checkouts = re.findall(r"(?m)^      - uses: actions/checkout@.*\n((?:        .*\n)*)", workflow)
-    caches = re.findall(r"(?m)^      - uses: astral-sh/setup-uv@.*\n((?:        .*\n)*)", workflow)
+    # Both workflows and the shared live-steps action must pin the ref, keep
+    # checkout credentials out of PR hands, and skip the cache for pinned refs.
+    checkouts = []
+    caches = []
+    for source, step_indent, field_indent in (
+        (WORKFLOW.read_text(), "      ", "        "),
+        (ADVISORY_WORKFLOW.read_text(), "      ", "        "),
+        (LIVE_STEPS.read_text(), "    ", "      "),
+    ):
+        checkouts += re.findall(
+            rf"(?m)^{step_indent}- uses: actions/checkout@.*\n((?:{field_indent}.*\n)*)", source
+        )
+        caches += re.findall(
+            rf"(?m)^{step_indent}- uses: astral-sh/setup-uv@.*\n((?:{field_indent}.*\n)*)",
+            source,
+        )
 
     assert checkouts and caches
     for block in checkouts:
@@ -2224,10 +2302,12 @@ def test_integration_checkouts_and_caches_are_safe_for_fork_heads():
 
 
 def test_windows_integration_ci_uses_shared_claude_version():
-    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
-    contents = workflow.read_text()
+    contents = WORKFLOW.read_text()
 
     assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}" in contents
+    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}" in (
+        ADVISORY_WORKFLOW.read_text()
+    )
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
@@ -2496,7 +2576,7 @@ def test_cowork_ci_permissions_and_required_gate(job_name):
     condition = re.search(r"(?m)^    if: (.*)$", job)
     assert condition is not None
     assert condition.group(1) == (
-        "${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && "
+        "${{ github.event_name != 'merge_group' && "
         "(github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
     )
@@ -2567,20 +2647,23 @@ def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
 
 def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     jobs = _integration_jobs()
+    advisory_jobs = _advisory_jobs()
     job = jobs["anthropic-mps"]
     assert (
         "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
-        "matrix.os == 'windows-latest' && matrix.agent == 'claude' && matrix.shard_index == 1 }}\n"
+        "matrix.os == 'windows-latest' && matrix.shard_index == 1 }}\n"
     ) in job
     assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
     assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
     assert "      UG_COWORK_RELAY: false\n" in job
-    # The shared live steps reach every live job; only this lane opts in.
-    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_DESKTOP:" in body]
-    assert opted_in == ["anthropic-mps"]
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
-    live_steps = workflow.split("    steps: &live-steps\n", 1)[1].split("\n\n", 1)[0]
-    desktop = live_steps.split("      - name: Install Claude Desktop\n", 1)[1]
+    # Only the Anthropic MPS lanes carry the Desktop opt-in: the blocking one runs the
+    # tasks, the advisory Copilot one never does.
+    for suite, expected in ((jobs, ["anthropic-mps"]), (advisory_jobs, ["anthropic-mps"])):
+        opted_in = [name for name, body in suite.items() if "\n      UG_COWORK_DESKTOP:" in body]
+        assert opted_in == expected
+    # The Desktop steps live in the blocking lane itself, not the shared live-steps
+    # action: they are the only steps this lane runs beyond it.
+    desktop = job.split("      - name: Install Claude Desktop\n", 1)[1]
     gates = re.findall(r"(?m)^        if: (.*)$", desktop)
     # Every Desktop step is skipped unless the lane opts in through the install step.
     assert gates[0] == "${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}"
@@ -2588,6 +2671,7 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     assert len(gates) == desktop.count("      - name: ") + 1
     assert "DATABRICKS_BEARER_COMMAND=" in desktop
     assert "name: cowork-inference-anthropic\n" in desktop
+    assert "Install Claude Desktop" not in LIVE_STEPS.read_text()
     # The staging lane runs the same MCP web search; its PAT is minted with the bearer command.
     assert "      UG_COWORK_MCP: true\n" in job
     mcp = desktop.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
@@ -2611,6 +2695,8 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
         "cowork-inference-macos",
         "cowork-inference-windows",
     ]
+    opted_in = [name for name, body in advisory_jobs.items() if "\n      UG_COWORK_MCP:" in body]
+    assert opted_in == ["anthropic-mps"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
@@ -2647,13 +2733,16 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
 
 
 def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
-    workflow = WORKFLOW.read_text()
+    # The VS Code lane lives in the advisory workflow; its runner setup and the
+    # version plumbing it shares with every live lane moved to the action.
+    workflow = ADVISORY_WORKFLOW.read_text()
+    action = LIVE_STEPS.read_text()
     jobs = _integration_jobs()
-    job = jobs["vscode"]
+    job = _advisory_jobs()["vscode"]
     assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.147.0' }}" in workflow
     assert (
         'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
-        in workflow
+        in action
     )
     assert "runs-on: ${{ matrix.os }}" in job
     assert "os: [ubuntu-22.04, windows-latest]" in job
@@ -2661,10 +2750,11 @@ def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
     assert "AGENT: vscode" in job
     assert "TEST_MARKER: live and vscode" in job
     assert (
-        "      - name: Install a virtual display for VS Code\n"
-        "        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}\n"
-        "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
-    ) in workflow
+        "    - name: Install a virtual display for VS Code\n"
+        "      if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}\n"
+        "      shell: bash\n"
+        "      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
+    ) in action
     gate_needs = re.search(r"(?m)^    needs: \[(.*)\]$", jobs["cujs"]).group(1)
     assert "vscode" not in [need.strip() for need in gate_needs.split(",")]
 
@@ -3050,14 +3140,10 @@ def test_live_shard_matrix_matches_the_recorded_shard_count(lane, job_name):
     jobs = _integration_jobs()
     total = live_shard.lane_times(lane, "Windows")["shards"]
     legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', jobs[job_name])
-    if legs:  # full: the shard legs are plain matrix entries.
-        assert sorted(legs, key=lambda leg: int(leg[0])) == [
-            (str(index), str(total)) for index in range(1, total + 1)
-        ]
-    else:  # anthropic-mps: the mode input selects the legs, so the shards live in its JSON.
-        for index in range(1, total + 1):
-            assert f'"shard":"{index}/{total}"' in jobs[job_name]
-        assert "inputs.mode == 'advisory' &&" in jobs[job_name]
+    assert legs, job_name  # every sharded lane lists its legs as plain matrix entries
+    assert sorted(legs, key=lambda leg: int(leg[0])) == [
+        (str(index), str(total)) for index in range(1, total + 1)
+    ]
     # Sharded lanes feed the spec to the shared runner step; every leg uploads its own artifact.
     assert "LIVE_SHARD: ${{ matrix.shard || '' }}" in jobs[job_name]
     assert f"LIVE_SHARD_LANE: {lane}" in jobs[job_name]
@@ -3332,68 +3418,22 @@ def test_ci_splits_blocking_and_advisory_integration_after_security_gate():
     for job in (required, advisory):
         assert "needs.security-gate.result == 'success'" in job
         assert "github.event_name != 'merge_group'" in job
-        assert "uses: ./.github/workflows/integration.yml" in job
+        assert "secrets: inherit" in job
+    assert "uses: ./.github/workflows/integration.yml" in required
     assert "needs: security-gate" in required
-    assert "mode: required" in required
+    assert "uses: ./.github/workflows/integration-advisory.yml" in advisory
     assert "needs: [security-gate, integration]" in advisory
-    assert "mode: advisory" in advisory
     assert "needs: [security-gate, e2e, integration]" in jobs["required-e2e"]
 
 
-def test_integration_modes_explain_jobs_run_by_the_other_caller():
-    jobs = _integration_jobs()
-    for job_name, job in jobs.items():
-        condition = re.search(r"(?m)^    if: (.*)$", job)
-        condition = condition.group(1) if condition else ""
-        if "inputs.mode != 'advisory'" in condition or job_name == "live-shard-times":
-            mode, other = "advisory", "Integration"
-        elif "inputs.mode != 'required'" in condition:
-            mode, other = "required", "Integration advisory"
-        else:
-            continue
-        name = re.search(r"(?m)^    name: (.*)$", job).group(1)
-        prefix = f"${{{{ inputs.mode == '{mode}' && '"
-        assert name.startswith(prefix), (job_name, name)
-        assert f"(runs in {other})' ||" in name, (job_name, name)
+def test_integration_suites_hold_exactly_their_own_lanes():
+    """Every lane runs in exactly the caller that wants it.
 
-
-def test_integration_mode_union_covers_the_unsplit_workflow():
-    jobs = _integration_jobs()
-    executed = {"required": set(), "advisory": set()}
-    for name, job in jobs.items():
-        condition = re.search(r"(?m)^    if: (.*)$", job)
-        condition = condition.group(1) if condition else ""
-        if "inputs.mode != 'advisory'" in condition or name == "live-shard-times":
-            executed["required"].add(name)
-        elif "inputs.mode != 'required'" in condition:
-            executed["advisory"].add(name)
-        else:
-            assert "inputs.mode" not in condition, (name, condition)
-            executed["required"].add(name)
-            executed["advisory"].add(name)
-    assert executed["required"] | executed["advisory"] == (
-        SKIPPED_ON_FORK_PRS | {"installation", "installation-windows"}
-    )
-    assert {"full", "managed", "managed-smart", "live-shard-times", "cujs"} <= executed["required"]
-    assert {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"} <= executed[
-        "advisory"
-    ]
-
-    matrix = re.search(r"(?m)^        include: (.*)$", jobs["anthropic-mps"]).group(1)
-    required = re.search(r"inputs.mode == 'required' && '([^']+)'", matrix).group(1)
-    advisory = re.search(r"inputs.mode == 'advisory' && '([^']+)'", matrix).group(1)
-    all_modes = re.search(r"\|\| '([^']+)'\)\s*}}$", matrix).group(1)
-
-    def canonical(value):
-        return {json.dumps(item, sort_keys=True) for item in json.loads(value)}
-
-    assert canonical(required) | canonical(advisory) == canonical(all_modes)
-    assert not canonical(required) & canonical(advisory)
-
-
-def test_integration_modes_preserve_blocking_and_advisory_lanes():
-    jobs = _integration_jobs()
-    required = {
+    Each reusable workflow holds only the jobs that run in it, so a PR run
+    instantiates no mode-skipped twin rows, and `e2e` never waits on the
+    advisory lanes (#1829's contract).
+    """
+    blocking = {
         "installation",
         "installation-windows",
         "cowork-inference-windows",
@@ -3407,19 +3447,38 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "managed-smart",
         "dedicated-cuj-plan",
         "dedicated-cuj",
+        "live-shard-times",
         "cujs",
         "codex-desktop-macos",
         "codex-desktop-windows",
     }
+    # workspace and anthropic-mps ran in both callers before the split and keep
+    # doing so; every other lane belongs to exactly one workflow.
+    shared = {"workspace", "anthropic-mps"}
     advisory = {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"}
-    for name in required:
-        assert "inputs.mode != 'advisory'" in jobs[name], name
-    for name in advisory:
-        assert "inputs.mode != 'required'" in jobs[name], name
-    assert "inputs.mode == 'required'" in jobs["anthropic-mps"]
-    assert "inputs.mode == 'advisory'" in jobs["anthropic-mps"]
-    assert "needs: [workspace, full, managed]" in jobs["soft-fail"]
-    cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    integration = _integration_jobs()
+    advisory_jobs = _advisory_jobs()
+    assert set(integration) == blocking | shared | {"manual-advisory"}
+    assert set(advisory_jobs) == advisory | shared
+    # Nothing is mode-gated anymore: no job can appear as a skipped twin.
+    for path in (WORKFLOW, ADVISORY_WORKFLOW):
+        assert "inputs.mode" not in path.read_text()
+    # Both halves stay dispatchable, so every lane remains manually runnable.
+    for path in (WORKFLOW, ADVISORY_WORKFLOW):
+        assert "workflow_dispatch:" in path.read_text()
+    # The shared live steps are the one definition both workflows reference.
+    for jobs in (integration, advisory_jobs):
+        live = [name for name, job in jobs.items() if LIVE_STEPS_USE in job]
+        assert live and LIVE_STEPS.is_file()
+    # Fork guards keep their parenthesized form in both workflows.
+    for jobs in (integration, advisory_jobs):
+        for name, job in jobs.items():
+            condition = re.search(r"(?m)^    if: (.*)$", job)
+            if condition and FORK_GUARD in condition.group(1):
+                assert condition.group(1) == f"${{{{ {FORK_GUARD} }}}}" or (
+                    f"({FORK_GUARD})" in condition.group(1)
+                ), name
+    cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", integration["cujs"])
     assert cujs_needs is not None
     assert {name.strip() for name in cujs_needs.group(1).split(",")} == {
         "installation",
@@ -3441,8 +3500,46 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "dedicated-cuj",
         "live-shard-times",
     }
-    for name in required | advisory:
-        condition = re.search(r"(?m)^    if: (.*)$", jobs[name]).group(1)
-        if FORK_GUARD in condition:
-            assert f"({FORK_GUARD})" in condition, name
-    assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]
+
+
+def test_live_composite_action_is_checked_out_after_budget_clock_starts():
+    for jobs in (_integration_jobs(), _advisory_jobs()):
+        for name, job in jobs.items():
+            if LIVE_STEPS_USE not in job:
+                continue
+            assert (
+                job.index("- *budget-start")
+                < job.index("- uses: actions/checkout@")
+                < job.index(LIVE_STEPS_USE)
+            ), name
+            assert "ref: ${{ inputs.ref || github.sha }}" in job
+            assert "persist-credentials: false" in job
+            assert "fetch-depth: 0" in job
+
+
+def test_manual_integration_dispatch_keeps_both_suites_and_inputs():
+    workflow = WORKFLOW.read_text()
+    job = _integration_jobs()["manual-advisory"]
+    assert "needs: [full, managed]" in job
+    assert (
+        "if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.workflow == 'Integration' }}"
+        in job
+    )
+    assert "uses: ./.github/workflows/integration-advisory.yml" in job
+    assert "secrets: inherit" in job
+    for name in (
+        "ug_version",
+        "entry_point",
+        "claude_version",
+        "codex_version",
+        "opencode_version",
+        "copilot_version",
+        "vscode_version",
+        "dependency",
+        "default_index",
+    ):
+        assert f"{name}: ${{{{ inputs.{name} }}}}" in job
+        assert (
+            f"      {name}:\n"
+            in workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        )

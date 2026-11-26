@@ -112,9 +112,23 @@ jobs:
       ref: ${{ needs.authorize.outputs.sha }}
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
+  integration-advisory:
+    name: Integration advisory
+    # After the blocking call, like the PR callers, so lanes that share a model
+    # quota never overlap.
+    needs: [authorize, security-gate, integration]
+    if: ${{ !cancelled() && needs.security-gate.result == 'success' }}
+    concurrency:
+      group: fork-integration-advisory-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    uses: ./.github/workflows/integration-advisory.yml
+    with:
+      ref: ${{ needs.authorize.outputs.sha }}
+    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
+
   report:
     name: Report fork integration
-    needs: [authorize, security-gate, integration]
+    needs: [authorize, security-gate, integration, integration-advisory]
     if: ${{ always() && needs.authorize.result == 'success' }}
     runs-on:
       group: databricks-protected-runner-group
@@ -129,7 +143,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           SHA: ${{ needs.authorize.outputs.sha }}
-          RESULT: ${{ needs.integration.result }}
+          # The advisory lanes are continue-on-error, so combining both callers
+          # reports the same overall result the single mode=all call used to.
+          RESULT: ${{ needs.integration.result == 'success' && needs.integration-advisory.result == 'success' && 'success' || 'failure' }}
           SCAN_RESULT: ${{ needs.security-gate.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
