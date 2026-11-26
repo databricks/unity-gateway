@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import socket
+import ssl
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests import tls_ca
 from tests.conftest import metric_observations
 from ucode import databricks, metrics
 from ucode.constants import AGENT_CODEX, ROUTER_HARNESS_CLAUDE_CODE
@@ -27,6 +33,7 @@ class _Router:
     status = 200
     body = b'{"is_supported": true}'
     pace = 0
+    header_delay = 0
     url = None
     closed_url = None
 
@@ -42,8 +49,10 @@ def _handler(router):
         def do_POST(self):
             self.rfile.read(int(self.headers["Content-Length"]))
             router.requests.append((self.path, self.headers))
+            time.sleep(router.header_delay)
             self.send_response(router.status)
             self.send_header("Content-Length", str(len(router.body)))
+            self.send_header("x-request-id", "test-request-id")
             self.end_headers()
             for byte in router.body:
                 self.wfile.write(bytes([byte]))
@@ -250,6 +259,7 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     the deadline ends the wait and the late body completes afterwards."""
     monkeypatch.setattr(validation, "VALIDATION_TIMEOUT_SECONDS", 0.2)
     router.pace = 0.02
+    router.header_delay = 0.05
     router.body = b'{"is_supported": true}' + b" " * 30
     controls, result = _run_check(router.url, tmp_path)
     assert [
@@ -260,8 +270,287 @@ def test_a_check_past_the_deadline_publishes_a_timeout_that_a_late_result_cannot
     assert router.answered.wait(3)
     assert json.loads(validation_result_path(controls).read_text()) == result
     assert isinstance(result.pop("validation_ms"), int)
+    diagnostics = result.pop("validation_diagnostics")
     assert result == _failed("Smart Router didn't respond in time")
+    for detail in ("connect_dns_tcp=", "tls=", "ttfb=", "request_id="):
+        assert detail in diagnostics, diagnostics
     assert session_routing_enabled(controls) is False
+
+
+def test_router_verdict_keeps_untrusted_reason_separate_from_diagnostics():
+    reason = "network error: timed out; diagnostics: synthetic-secret"
+    result = validation._verdict(
+        None, reason, "stable", time.monotonic(), "codex", diagnostics="connect_dns_tcp=42ms"
+    )
+    assert result["validation_failure_reason"] == "Smart Router didn't respond in time"
+    assert result["validation_diagnostics"] == "connect_dns_tcp=42ms"
+    assert "synthetic-secret" not in json.dumps(result)
+
+
+def test_http_error_with_timeout_text_does_not_become_a_timeout_diagnostic():
+    result = validation._verdict(
+        None,
+        "HTTP 504: upstream timed out",
+        "stable",
+        time.monotonic(),
+        "codex",
+        diagnostics="connect_dns_tcp=42ms",
+    )
+    assert result["validation_failure_reason"] == "Smart Router returned an error (HTTP 504)"
+    assert "validation_diagnostics" not in result
+
+
+def test_timeout_diagnostics_exclude_untrusted_reason_text():
+    reason = (
+        "network error: timed out; diagnostics: synthetic-secret; diagnostics: connect_dns_tcp=42ms"
+    )
+    result = validation._verdict(None, reason, "stable", time.monotonic(), "codex")
+    assert result["validation_failure_reason"] == "Smart Router didn't respond in time"
+    assert "validation_diagnostics" not in result
+    assert "synthetic-secret" not in json.dumps(result)
+    plain = validation._verdict(
+        None, "network error: timed out", "stable", time.monotonic(), "codex"
+    )
+    assert "validation_diagnostics" not in plain
+
+
+def test_validation_probe_does_not_install_a_global_profiler(router, monkeypatch):
+    monkeypatch.setattr(
+        sys, "setprofile", lambda *_: pytest.fail("global profiling is not allowed")
+    )
+    timings = validation._NetworkTimings()
+    outcome = {}
+    validation._probe(router.url, "test-token", {"route_options": []}, None, outcome, timings)
+    assert outcome["response"] == ({"is_supported": True}, None)
+
+
+def test_validation_probe_preserves_response_when_diagnostics_raise(router, monkeypatch):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    timings = validation._NetworkTimings()
+
+    def broken_trace(_event, _info):
+        raise RuntimeError("synthetic diagnostic failure")
+
+    monkeypatch.setattr(timings, "trace", broken_trace)
+    outcome = {}
+    validation._probe(router.url, "test-token", {"route_options": []}, None, outcome, timings)
+    assert outcome["response"] == ({"is_supported": True}, None)
+
+
+def test_validation_probe_restores_request_trace_after_success_and_failure(router, monkeypatch):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    events = []
+
+    def previous(event, _info):
+        events.append(event)
+
+    token = databricks._HTTP_TRACE.set(previous)
+    try:
+        outcome = {}
+        validation._probe(
+            router.url,
+            "test-token",
+            {"route_options": []},
+            None,
+            outcome,
+            validation._NetworkTimings(),
+        )
+        assert outcome["response"] == ({"is_supported": True}, None)
+        assert databricks._HTTP_TRACE.get() is previous
+        assert events == []
+        payload, reason = databricks._http_post_json(
+            f"{router.url}/unrelated", "test-token", {}, timeout=4
+        )
+        assert payload == {"is_supported": True} and reason is None
+        assert events
+
+        def fail(*_args):
+            raise RuntimeError("synthetic transport failure")
+
+        monkeypatch.setattr(validation, "_validate_route_options", fail)
+        validation._probe(router.url, "test-token", {}, None, outcome, validation._NetworkTimings())
+        assert outcome["response"] == (None, validation.CHECK_FAILED_REASON)
+        assert databricks._HTTP_TRACE.get() is previous
+    finally:
+        databricks._HTTP_TRACE.reset(token)
+
+
+def test_network_trace_records_real_loopback_transport(router, monkeypatch):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    timings = validation._NetworkTimings()
+    token = databricks._HTTP_TRACE.set(timings.trace)
+    try:
+        payload, reason = databricks._http_post_json(
+            f"{router.url}/validate", "test-token", {"models": ["m"]}, timeout=4
+        )
+    finally:
+        databricks._HTTP_TRACE.reset(token)
+    assert payload == {"is_supported": True} and reason is None
+    summary = timings.summary()
+    for phase in ("connect_dns_tcp", "ttfb"):
+        assert re.search(rf"{phase}=\d+ms", summary), summary
+    assert "transport=pooled" in summary
+    assert "connection=new" in summary
+    assert "request_id=test-request-id" in summary
+
+
+@pytest.mark.parametrize("status", [400, 500])
+def test_urllib_error_response_preserves_request_id(router, monkeypatch, status):
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: False)
+    router.status = status
+    timings = validation._NetworkTimings()
+    token = databricks._HTTP_TRACE.set(timings.trace)
+    try:
+        payload, reason = databricks._http_post_json(
+            f"{router.url}/validate", "test-token", {}, timeout=4
+        )
+    finally:
+        databricks._HTTP_TRACE.reset(token)
+    assert payload is None and f"HTTP {status}" in reason
+    assert "request_id=test-request-id" in timings.summary()
+
+
+def test_network_trace_records_real_connection_closed_before_response(monkeypatch):
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.close_connection = True
+
+        def log_message(self, *_args):
+            pass
+
+    monkeypatch.setattr(databricks, "_use_pooled_client", lambda: True)
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        timings = validation._NetworkTimings()
+        token = databricks._HTTP_TRACE.set(timings.trace)
+        try:
+            payload, reason = databricks._http_post_json(
+                f"http://127.0.0.1:{server.server_port}/validate", "test-token", {}, timeout=4
+            )
+        finally:
+            databricks._HTTP_TRACE.reset(token)
+            server.shutdown()
+            thread.join()
+    assert payload is None and reason
+    assert "ttfb_source=headers-failed" in timings.summary()
+
+
+@pytest.mark.parametrize("disable_pool", [True, False], ids=["urllib", "httpcore"])
+def test_network_trace_records_https_transport(tmp_path, disable_pool):
+    ca = tmp_path / "ca"
+    tls_ca.write_ca(ca)
+    certificate = tmp_path / "localhost.pem"
+    tls_ca.write_localhost_certificate(ca, certificate)
+    router = _Router()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certificate)
+    script = """
+import json, sys
+from ucode import databricks
+from ucode.smart_routing.route_validation import _NetworkTimings
+trace = _NetworkTimings()
+token = databricks._HTTP_TRACE.set(trace.trace)
+try:
+    payload, reason = databricks._http_post_json(sys.argv[1], 'test-token', {}, timeout=4)
+finally:
+    databricks._HTTP_TRACE.reset(token)
+print(json.dumps({'payload': payload, 'reason': reason, 'summary': trace.summary()}))
+"""
+    with ThreadingHTTPServer(("127.0.0.1", 0), _handler(router)) as server:
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            env = {
+                **os.environ,
+                "HOME": str(tmp_path),
+                "USERPROFILE": str(tmp_path),
+                "UG_NO_POOLED_HTTP": "1" if disable_pool else "0",
+                "SSL_CERT_FILE": str(ca / tls_ca.CA_CERTIFICATE),
+                "NO_PROXY": "localhost,127.0.0.1",
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "http_proxy": "",
+                "https_proxy": "",
+            }
+            env.pop("UG_TLS_TRUST_STORE", None)
+            result = subprocess.run(
+                [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/validate"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+        finally:
+            server.shutdown()
+            worker.join(timeout=2)
+    output = json.loads(result.stdout)
+    assert output["payload"] == {"is_supported": True} and output["reason"] is None
+    summary = output["summary"]
+    if disable_pool:
+        assert "transport=urllib" in summary
+        assert "connect_dns_tcp=not-observed" in summary
+        assert "tls=not-observed" in summary
+        assert "ttfb=not-observed" in summary
+    else:
+        assert "transport=pooled" in summary
+        for phase in ("connect_dns_tcp", "tls", "ttfb"):
+            assert re.search(rf"{phase}=\d+ms", summary), summary
+    assert "request_id=test-request-id" in summary
+
+
+def test_network_trace_records_request_id_and_connection_reuse():
+    timings = validation._NetworkTimings()
+    timings.trace("transport.pooled", {})
+    timings.trace("http11.send_request_headers.started", {})
+    timings.trace("http11.receive_response_headers.started", {})
+    timings.trace(
+        "http11.receive_response_headers.complete",
+        {"return_value": (b"HTTP/1.1", 200, b"OK", [(b"x-request-id", b"test-request-id")])},
+    )
+    reason = timings.summary()
+    assert "transport=pooled" in reason
+    assert "connection=reused" in reason
+    assert "request_id=test-request-id" in reason
+    assert re.search(r"ttfb=\d+ms", reason)
+    assert "ttfb_source=headers-complete" in reason
+    timings.trace("response.headers", {"headers": [("request-id", "request-2")]})
+    assert "request_id=request-2" in timings.summary()
+    timings.trace("response.headers", {"headers": [("x-databricks-request-id", "request-3")]})
+    assert "request_id=request-3" in timings.summary()
+    timings.trace("response.headers", {"headers": [("x-request-id", "Bearer secret")]})
+    assert "Bearer secret" not in timings.summary()
+
+
+def test_network_trace_distinguishes_failed_response_headers():
+    timings = validation._NetworkTimings()
+    timings.trace("http11.receive_response_headers.started", {})
+    timings.trace("http11.receive_response_headers.failed", {})
+    summary = timings.summary()
+    assert re.search(r"ttfb=\d+ms", summary)
+    assert "ttfb_source=headers-failed" in summary
+    assert "ttfb_source=headers-complete" not in summary
+
+
+def test_network_trace_prefers_same_safe_request_id_as_forwarder():
+    timings = validation._NetworkTimings()
+    timings.trace(
+        "response.headers",
+        {"headers": [(b"x-request-id", b"preferred-id"), (b"request-id", b"secondary-id")]},
+    )
+    assert "request_id=preferred-id" in timings.summary()
+    invalid = validation._NetworkTimings()
+    invalid.trace("response.headers", {"headers": [(b"x-request-id", b"\xffsecret")]})
+    assert "request_id=unavailable" in invalid.summary()
+    invalid.trace(
+        "response.headers",
+        {"headers": [(b"x-request-id", b"\xffsecret"), (b"request-id", b"safe-id")]},
+    )
+    assert "request_id=safe-id" in invalid.summary()
+    assert "secret" not in invalid.summary()
 
 
 class _SynchronousThread:

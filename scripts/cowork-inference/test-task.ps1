@@ -8,12 +8,46 @@ if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Use a disposable GitHub runner' }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
 Add-Type @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class CapabilityWindow {
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll", EntryPoint = "RealGetWindowClassW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern uint RealGetWindowClass(IntPtr window, StringBuilder name, uint length);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr SendText(IntPtr window, uint message, IntPtr wParam, string text, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr ReadText(IntPtr window, uint message, IntPtr wParam, StringBuilder text, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr ReadLength(IntPtr window, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+    private static uint Remaining(DateTime deadline) {
+        double ms = (deadline.ToUniversalTime() - DateTime.UtcNow).TotalMilliseconds;
+        if (ms < 1) throw new TimeoutException("Folder field deadline expired");
+        return (uint)Math.Min(ms, UInt32.MaxValue);
+    }
+    public static string WindowClass(IntPtr window) {
+        var name = new StringBuilder(256);
+        if (RealGetWindowClass(window, name, (uint)name.Capacity) == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return name.ToString();
+    }
+    public static string SetAndReadFolder(IntPtr window, string value, DateTime deadline) {
+        IntPtr result;
+        const uint abortIfHung = 2;
+        if (SendText(window, 0x000C, IntPtr.Zero, value, abortIfHung, Remaining(deadline), out result) == IntPtr.Zero || result == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not set the folder field");
+        if (ReadLength(window, 0x000E, IntPtr.Zero, IntPtr.Zero, abortIfHung, Remaining(deadline), out result) == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the folder field length");
+        long length = result.ToInt64();
+        if (length < 0 || length > 32767) throw new InvalidOperationException("Invalid folder field length");
+        var text = new StringBuilder((int)length + 1);
+        if (ReadText(window, 0x000D, (IntPtr)text.Capacity, text, abortIfHung, Remaining(deadline), out result) == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the folder field");
+        return text.ToString();
+    }
 }
 '@
 . "$PSScriptRoot/diagnostics.ps1"
@@ -24,8 +58,18 @@ New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $report = [ordered]@{ capability = $Capability; passed = $false; submitted = $false }
 $taskPath = Join-Path $env:RUNNER_TEMP "cowork-$Capability-task.json"
 $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+$profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
+$policyBackup = Join-Path $env:RUNNER_TEMP ("cowork-desktop-profile-" + [Guid]::NewGuid().ToString('N') + '.backup')
 $script:window = $null
 $started = Get-Date
+$vmLog = Join-Path $env:LOCALAPPDATA 'Claude-3p/logs/cowork_vm_node.log'
+
+function Get-SessionEvidence {
+    $raw = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
+        --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
+    return $raw | ConvertFrom-Json
+}
 
 function Find-Control {
     param([string[]]$Names, $Root = $script:window)
@@ -70,7 +114,17 @@ function Save-UI {
     if (-not $Root) { return }
     $controls = $Root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
     $rows = @($controls | ForEach-Object {
-        @{ name = $_.Current.Name; type = $_.Current.ControlType.ProgrammaticName; id = $_.Current.AutomationId; enabled = $_.Current.IsEnabled; offscreen = $_.Current.IsOffscreen }
+        try {
+            $valuePattern = $null
+            $value = if ($_.Current.IsPassword) { '[REDACTED]' }
+                elseif ($_.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+                    Protect-DiagnosticText ([string]$valuePattern.Current.Value)
+                } else { $null }
+            Convert-CoworkUiControl -Current $_.Current -Value $value -GetClass {
+                param($Handle)
+                [CapabilityWindow]::WindowClass($Handle)
+            }
+        } catch [System.Windows.Automation.ElementNotAvailableException] { }
     })
     Protect-DiagnosticText ($rows | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $evidence "$Name.json")
 }
@@ -96,12 +150,56 @@ function Select-Folder {
     if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle)) {
         throw 'Could not activate the native folder picker'
     }
-    [Windows.Forms.Clipboard]::SetText($task.folder)
-    [Windows.Forms.SendKeys]::SendWait('^l')
-    [Windows.Forms.SendKeys]::SendWait('^v')
-    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Start-Sleep -Seconds 1
-    Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
+    $selectionDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    try {
+        $field = Set-CoworkFolderInput -Folder $task.folder -Deadline $selectionDeadline -ReadEdit {
+            $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, '1152')
+            $edit = $dialog.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+            if ($edit) {
+                $nativeHandle = $edit.Current.NativeWindowHandle
+                $handle = if ($null -ne $nativeHandle) { [IntPtr]$nativeHandle } else { [IntPtr]::Zero }
+                @{
+                    id = $edit.Current.AutomationId
+                    type = $edit.Current.ControlType.ProgrammaticName
+                    enabled = $edit.Current.IsEnabled -and -not $edit.Current.IsOffscreen
+                    handle = $handle
+                    class = if ($handle -ne [IntPtr]::Zero) { [CapabilityWindow]::WindowClass($handle) } else { '' }
+                }
+            }
+        } -WriteAndRead {
+            param($State, $Folder, $Deadline)
+            [CapabilityWindow]::SetAndReadFolder([IntPtr]$State.handle, $Folder, $Deadline)
+        }
+    } catch {
+        $failure = $_
+        try { Save-UI 'folder-input-failed' -Root $dialog }
+        catch { $report.captureError = $_.Exception.Message }
+        throw $failure
+    }
+    @{
+        id = $field.id
+        type = $field.type
+        class = $field.class
+        value = Protect-DiagnosticText $field.value
+    } | ConvertTo-Json | Set-Content (Join-Path $evidence 'folder-field.json')
+    Save-UI 'folder-input' -Root $dialog
+    $button = Wait-CoworkFolderSelect -Deadline $selectionDeadline -ReadPicker {
+        $addresses = $dialog.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+        $address = $addresses | Where-Object {
+            try {
+                $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane' -and
+                $_.Current.Name -like 'Address:*' -and -not $_.Current.IsOffscreen
+            } catch [System.Windows.Automation.ElementNotAvailableException] { $false }
+        } | Select-Object -First 1
+        $addressName = try { if ($address) { $address.Current.Name } else { '' } }
+            catch [System.Windows.Automation.ElementNotAvailableException] { '' }
+        @{
+            address = $addressName
+            button = Find-Control -Names @('Select Folder', 'Select folder', 'Open') -Root $dialog
+        }
+    }
+    if ([DateTime]::UtcNow -ge $selectionDeadline) { throw 'Folder selection deadline expired before the click' }
+    Invoke-Control $button
     $permission = Wait-Control -Names @(
         'Allow Claude to change files in “CoworkProbe”?',
         'Allow Claude to access “CoworkProbe”?',
@@ -113,6 +211,11 @@ function Select-Folder {
 }
 
 try {
+    $vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
+    if ($Capability -eq 'mcp') {
+        & $python "$PSScriptRoot/desktop-policy.py" apply $profilePath $policyBackup
+        if ($LASTEXITCODE -ne 0) { throw 'Could not restrict native web search for the MCP task' }
+    }
     $task = New-CoworkTask -Capability $Capability -EvidenceDirectory $evidence
     $task.startedAfter = $started.ToUniversalTime().ToString('o')
     $task | ConvertTo-Json | Set-Content -LiteralPath $taskPath
@@ -147,6 +250,10 @@ try {
     Invoke-Control (Wait-Control -Names @('Start task'))
     $report.submitted = $true
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    Wait-CoworkVmReady -Deadline $deadline -IsReady {
+        Test-CoworkVmReady -LogPath $vmLog -Offset $vmCheckpoint.offset -PrefixHash $vmCheckpoint.prefixHash
+    }
+    $report.vmReady = $true
     # Desktop may ask before a connector tool's first use; the prompt label is not pinned.
     $toolPermissionLabels = @('Allow once', 'Allow for this task', 'Allow for this chat', 'Always allow')
     do {
@@ -158,12 +265,9 @@ try {
                 Invoke-Control $allow
             }
         }
-        $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
-            --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
-        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
-        $sessionEvidence = $rawEvidence | ConvertFrom-Json
-        if ($sessionEvidence.status -eq 'pending') { continue }
+        $sessionEvidence = Get-SessionEvidence
         $report.session = $sessionEvidence
+        if ($sessionEvidence.status -eq 'pending') { continue }
         if ($sessionEvidence.status -ne 'passed') { throw $sessionEvidence.error }
         $report.passed = $true
         break
@@ -190,6 +294,18 @@ try {
     foreach ($process in $processes) {
         try { [void]$process.WaitForExit(10000) } catch { }
     }
+    if (Test-Path -LiteralPath $policyBackup) {
+        & $python "$PSScriptRoot/desktop-policy.py" restore $profilePath $policyBackup
+        if ($LASTEXITCODE -ne 0) {
+            $report.policyRestoreError = 'Could not restore the Desktop profile after the MCP task'
+            $report.passed = $false
+        }
+    }
+    if ($Capability -eq 'mcp' -and $report.submitted -and -not $report.session.transcript) {
+        try {
+            $report.session = Get-SessionEvidence
+        } catch { $report.captureError = $_.Exception.Message }
+    }
     if ($report.session.transcript) {
         try {
             $text = Get-Content $report.session.transcript -Raw
@@ -208,7 +324,12 @@ try {
                 Get-ChildItem $_.FullName -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue
             } | Where-Object { $_.FullName -match '[\\/]logs[\\/]' -and $_.LastWriteTime -ge $started })
             # UG's MCP proxy backend explains a connector that Desktop reports as closed.
-            $logs += @(Get-ChildItem (Join-Path $env:USERPROFILE '.ucode/mcp-proxy') -Recurse -File -Filter 'backend.log' -ErrorAction SilentlyContinue)
+            $backendRoot = Join-Path $env:USERPROFILE '.ucode/mcp-proxy'
+            $backendLogs = @(Get-CoworkProxyLogs -Root $backendRoot)
+            $report.mcpBackendRootExists = Test-Path -LiteralPath $backendRoot
+            $report.mcpBackendLogs = @($backendLogs | Where-Object { $_.Name -eq 'backend.log' }).Count
+            $report.mcpTransportLogs = @($backendLogs | Where-Object { $_.Name -in @('transport.log', 'transport.log.1') }).Count
+            $logs += $backendLogs
             $logDirectory = Join-Path $evidence 'desktop-logs'
             New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
             foreach ($log in $logs) {

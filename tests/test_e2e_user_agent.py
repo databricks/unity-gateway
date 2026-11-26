@@ -17,13 +17,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
+from tests.integration.utils.harness import process_group_options, redact_text, stop_process
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 
 
@@ -47,6 +54,9 @@ class _CaptureServer:
 
     def __init__(self):
         self.requests: list[_CapturedRequest] = []
+        self.timeout_output: tuple[str, str] | None = None
+        self.redaction_env: dict[str, str] = {}
+        self.condition = threading.Condition()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -61,6 +71,7 @@ class _CaptureServer:
 
     def start(self) -> None:
         captured = self.requests
+        condition = self.condition
 
         class Handler(BaseHTTPRequestHandler):
             def _record_and_reply(self):
@@ -86,6 +97,8 @@ class _CaptureServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                with condition:
+                    condition.notify_all()
 
             def do_GET(self):  # noqa: N802
                 self._record_and_reply()
@@ -118,12 +131,194 @@ class _CaptureServer:
         return None
 
 
+def _opencode_dependency_version(binary: str) -> str:
+    path = Path(binary)
+    manifests = (
+        path.resolve().parent.parent / "package.json",
+        path.parent / "node_modules/opencode-ai/package.json",
+    )
+    for manifest in manifests:
+        if manifest.is_file():
+            package = json.loads(manifest.read_text(encoding="utf-8"))
+            version = package.get("version")
+            if (
+                package.get("name") == "opencode-ai"
+                and isinstance(version, str)
+                and re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version)
+            ):
+                return version
+    return agent_version.__wrapped__(binary)
+
+
+@pytest.mark.parametrize("layout", ["package-bin", "global-shim"])
+@pytest.mark.parametrize("version", ["1.19.6", "1.19.6-beta.1+build.2"])
+def test_opencode_dependency_version_uses_npm_metadata(tmp_path, layout, version):
+    package = tmp_path / "node_modules" / "opencode-ai"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": "opencode-ai", "version": version}))
+    binary = package / "bin" / "opencode" if layout == "package-bin" else tmp_path / "opencode.cmd"
+    binary.touch()
+    assert _opencode_dependency_version(str(binary)) == version
+
+
+def test_opencode_dependency_version_uses_native_probe_without_npm_metadata(tmp_path, monkeypatch):
+    binary = tmp_path / "opencode"
+    binary.touch()
+    monkeypatch.setattr(
+        agent_version, "__wrapped__", lambda value: "2.0.0" if value == str(binary) else "unknown"
+    )
+    assert _opencode_dependency_version(str(binary)) == "2.0.0"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_code"),
+    [
+        ("npm ERR!", "E401"),
+        ("npm error", "E401"),
+        ("unexpected", "unavailable"),
+        ("timeout", "timed out"),
+    ],
+)
+def test_opencode_dependency_setup_reports_safe_npm_failure(
+    tmp_path, monkeypatch, prefix, expected_code
+):
+    package = tmp_path / "node_modules" / "opencode-ai"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": "opencode-ai", "version": "1.2.3"}))
+    opencode = package / "bin" / "opencode"
+    opencode.touch()
+    npm = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
+    if os.name == "nt":
+        npm.write_text(
+            f"@echo {prefix} code E401 1>&2\r\n@echo private-npm-value 1>&2\r\n@exit /b 1\r\n"
+        )
+    else:
+        npm.write_text(
+            f"#!/bin/sh\necho '{prefix} code E401' >&2\necho private-npm-value >&2\nexit 1\n"
+        )
+        npm.chmod(0o755)
+    original_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *args, **kwargs: (
+            str(npm)
+            if name == "npm"
+            else str(opencode)
+            if name == "opencode"
+            else original_which(name, *args, **kwargs)
+        ),
+    )
+    base = tmp_path / "worker"
+    base.mkdir()
+    if prefix == "timeout":
+
+        def timed_out(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess_cross_os, "run", timed_out)
+
+    class Factory:
+        def getbasetemp(self):
+            return base
+
+    with pytest.raises(RuntimeError, match=expected_code) as failure:
+        opencode_dependencies.__wrapped__(Factory(), "master")
+    detail = str(failure.value)
+    marker = (base / "opencode-dependencies" / "setup-result").read_text()
+    assert expected_code in detail and expected_code in marker
+    assert "private-npm-value" not in detail + marker
+    npm.unlink()
+    with pytest.raises(AssertionError, match=expected_code) as repeated:
+        opencode_dependencies.__wrapped__(Factory(), "master")
+    assert "private-npm-value" not in str(repeated.value)
+
+
+@pytest.fixture(scope="session")
+def opencode_dependencies(tmp_path_factory, worker_id):
+    _require_binary("opencode")
+    npm = shutil.which("npm")
+    assert npm, "npm is required to prepare OpenCode's plugin"
+    binary = shutil.which("opencode")
+    assert binary, "opencode is required to prepare its plugin"
+    version = _opencode_dependency_version(binary)
+    assert version != "unknown", "could not determine the installed OpenCode version"
+    base = tmp_path_factory.getbasetemp()
+    root = base if worker_id == "master" else base.parent
+    directory = root / "opencode-dependencies"
+    directory.mkdir(exist_ok=True)
+    marker = directory / "setup-result"
+    with (directory / "setup.lock").open("a+b") as lock:
+        acquire_exclusive_file_lock(lock)
+        try:
+            if not marker.exists():
+                marker.write_text("failed")
+                try:
+                    subprocess_cross_os.run(
+                        [
+                            npm,
+                            "install",
+                            "--prefix",
+                            str(directory),
+                            "--no-audit",
+                            "--no-fund",
+                            "--fetch-retries=0",
+                            f"@opencode-ai/plugin@{version}",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        stdin=subprocess.DEVNULL,
+                        timeout=20,
+                    )
+                except subprocess.TimeoutExpired as error:
+                    detail = f"OpenCode dependency setup timed out after {error.timeout}s"
+                    marker.write_text(detail)
+                    raise RuntimeError(detail) from None
+                except subprocess.CalledProcessError as error:
+                    stderr = (error.stderr or b"").decode("utf-8", errors="replace")
+                    code = re.search(r"(?m)^npm (?:ERR!|error) code ([A-Z0-9_]{1,40})\s*$", stderr)
+                    detail = f"OpenCode dependency setup failed: exit={error.returncode}, npm_code={code.group(1) if code else 'unavailable'}"
+                    marker.write_text(detail)
+                    raise RuntimeError(detail) from None
+                marker.write_text("ok")
+            result = marker.read_text()
+            assert result == "ok", f"OpenCode dependency setup failed in another worker: {result}"
+        finally:
+            release_file_lock(lock)
+    return directory
+
+
 @pytest.fixture
 def capture_server():
     server = _CaptureServer()
     server.start()
     yield server
     server.stop()
+
+
+@pytest.fixture
+def child_readiness(capture_server):
+    ready = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(204)
+            self.end_headers()
+            with capture_server.condition:
+                ready.set()
+                capture_server.condition.notify_all()
+
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}", ready
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 def _expected_ua(agent_name: str, binary: str) -> str:
@@ -143,30 +338,232 @@ def _header(req: _CapturedRequest, name: str) -> str | None:
     return None
 
 
+_CAPTURE_TIMEOUT_SECONDS = 20
+
+
 def _run_until_first_request(
-    cmd: list[str], env: dict[str, str], timeout: int = 20
+    cmd: list[str],
+    env: dict[str, str],
+    server: _CaptureServer,
+    prefix: str,
+    timeout: float = _CAPTURE_TIMEOUT_SECONDS,
+    *,
+    startup_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess | None:
-    """Spawn the agent. We only need it to fire its first HTTP request; some
-    agents retry on 401 indefinitely. Swallow timeouts — the capture server
-    has what we need by then. Returns the CompletedProcess (or None on
-    timeout) so callers can surface stderr on failure."""
-    try:
-        return subprocess.run(
+    """Stop the agent after the relevant wire request, or report an early exit or timeout."""
+    server.timeout_output = None
+    server.redaction_env = env
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        process = subprocess.Popen(
             cmd,
             env=env,
-            capture_output=True,
-            timeout=timeout,
+            stdout=stdout,
+            stderr=stderr,
             stdin=subprocess.DEVNULL,
+            **process_group_options(),
         )
-    except subprocess.TimeoutExpired:
-        return None
+
+        def notify_exit():
+            process.wait()
+            with server.condition:
+                server.condition.notify_all()
+
+        threading.Thread(target=notify_exit, daemon=True).start()
+        with server.condition:
+            started = startup_event is None or server.condition.wait_for(
+                lambda: startup_event.is_set() or process.poll() is not None,
+                timeout=_CAPTURE_TIMEOUT_SECONDS,
+            )
+            if started:
+                ready = server.condition.wait_for(
+                    lambda: (
+                        server.first_request_with_path_prefix(prefix) is not None
+                        or process.poll() is not None
+                    ),
+                    timeout=timeout,
+                )
+            else:
+                ready = False
+        stop_process(process)
+        stdout.seek(0)
+        stderr.seek(0)
+        out, err = stdout.read(), stderr.read()
+        if not ready:
+            server.timeout_output = (
+                redact_text(out.decode("utf-8", errors="replace"), env),
+                redact_text(err.decode("utf-8", errors="replace"), env),
+            )
+            return None
+        return subprocess.CompletedProcess(cmd, process.returncode, out, err)
+
+
+def test_capture_timeout_preserves_redacted_child_output(capture_server, child_readiness):
+    ready_url, ready = child_readiness
+    script = (
+        "import sys, time, urllib.request; "
+        "print('failure synthetic-secret', file=sys.stderr, flush=True); "
+        f"urllib.request.urlopen({ready_url!r}); "
+        "time.sleep(10)"
+    )
+    env = {**os.environ, "DATABRICKS_BEARER": "synthetic-secret"}
+    result = _run_until_first_request(
+        [sys.executable, "-c", script],
+        env,
+        capture_server,
+        "/wanted",
+        timeout=2,
+        startup_event=ready,
+    )
+    assert result is None
+    message = _no_request_msg(capture_server, result)
+    assert "failure <redacted>" in message
+    assert "synthetic-secret" not in message
+
+
+def test_capture_early_exit_redacts_child_output(capture_server):
+    script = "import sys; print('failure synthetic-secret', file=sys.stderr); sys.exit(1)"
+    env = {**os.environ, "DATABRICKS_BEARER": "synthetic-secret"}
+    result = _run_until_first_request(
+        [sys.executable, "-c", script], env, capture_server, "/wanted"
+    )
+    assert result is not None and result.returncode == 1
+    message = _no_request_msg(capture_server, result)
+    assert "failure <redacted>" in message
+    assert "synthetic-secret" not in message
+
+
+def test_capture_stops_agent_after_the_matching_request(capture_server, child_readiness):
+    ready_url, ready = child_readiness
+    script = (
+        "import time, urllib.error, urllib.request\n"
+        f"urllib.request.urlopen({ready_url!r})\n"
+        "for path in ('/other', '/wanted'):\n"
+        f"    url = {capture_server.base_url!r} + path\n"
+        "    try: urllib.request.urlopen(url)\n"
+        "    except urllib.error.HTTPError: pass\n"
+        "time.sleep(60)\n"
+    )
+    result = _run_until_first_request(
+        [sys.executable, "-c", script],
+        os.environ.copy(),
+        capture_server,
+        "/wanted",
+        timeout=2,
+        startup_event=ready,
+    )
+    assert result is not None, _no_request_msg(capture_server, result)
+    assert [request.path for request in capture_server.requests] == ["/other", "/wanted"]
+
+
+def test_capture_request_deadline_starts_after_child_readiness(capture_server, child_readiness):
+    ready_url, ready = child_readiness
+    script = (
+        "import time, urllib.error, urllib.request\n"
+        "time.sleep(2.2)\n"
+        f"urllib.request.urlopen({ready_url!r})\n"
+        f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
+        "except urllib.error.HTTPError: pass\n"
+        "time.sleep(60)\n"
+    )
+    result = _run_until_first_request(
+        [sys.executable, "-c", script],
+        os.environ.copy(),
+        capture_server,
+        "/wanted",
+        timeout=2,
+        startup_event=ready,
+    )
+    assert result is not None, _no_request_msg(capture_server, result)
+    assert [request.path for request in capture_server.requests] == ["/wanted"]
+
+
+def test_capture_does_not_wait_for_a_detached_child_holding_output(
+    tmp_path, capture_server, child_readiness
+):
+    ready_url, ready = child_readiness
+    release = threading.Event()
+    child_ready = tmp_path / "child-ready"
+
+    class HoldChild(BaseHTTPRequestHandler):
+        def do_GET(self):
+            release.wait(10)
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    completed = threading.Event()
+    result = []
+    with ThreadingHTTPServer(("127.0.0.1", 0), HoldChild) as hold_server:
+        hold_thread = threading.Thread(target=hold_server.serve_forever, daemon=True)
+        hold_thread.start()
+        child = (
+            "import pathlib, socket; "
+            f"s = socket.create_connection(('127.0.0.1', {hold_server.server_port}), timeout=2); "
+            "s.settimeout(None); s.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n'); "
+            f"pathlib.Path({str(child_ready)!r}).touch(); "
+            "s.recv(1)"
+        )
+        script = (
+            "import os, pathlib, subprocess, sys, time, urllib.error, urllib.request\n"
+            "options = {'start_new_session': True} if os.name == 'posix' else {'creationflags': 8}\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}], **options)\n"
+            f"while not pathlib.Path({str(child_ready)!r}).exists(): time.sleep(0.01)\n"
+            f"urllib.request.urlopen({ready_url!r})\n"
+            f"try: urllib.request.urlopen({(capture_server.base_url + '/wanted')!r})\n"
+            "except urllib.error.HTTPError: pass\n"
+            "time.sleep(60)\n"
+        )
+
+        def run():
+            try:
+                result.append(
+                    _run_until_first_request(
+                        [sys.executable, "-c", script],
+                        os.environ.copy(),
+                        capture_server,
+                        "/wanted",
+                        timeout=2,
+                        startup_event=ready,
+                    )
+                )
+            finally:
+                with capture_server.condition:
+                    completed.set()
+                    capture_server.condition.notify_all()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        try:
+            with capture_server.condition:
+                capture_server.condition.wait_for(
+                    lambda: ready.is_set() or completed.is_set(), timeout=_CAPTURE_TIMEOUT_SECONDS
+                )
+            finished_without_child = ready.is_set() and completed.wait(3)
+        finally:
+            release.set()
+            worker.join(timeout=5)
+            hold_server.shutdown()
+            hold_thread.join(timeout=2)
+    assert finished_without_child, "capture waited for detached child output handles"
+    assert result and result[0] is not None
+    assert capture_server.first_request_with_path_prefix("/wanted") is not None
 
 
 def _no_request_msg(server: _CaptureServer, result: subprocess.CompletedProcess | None) -> str:
     if result is None:
-        return "Agent timed out before any request reached the capture server."
-    stderr = (result.stderr or b"").decode(errors="replace")[:600]
-    stdout = (result.stdout or b"").decode(errors="replace")[:300]
+        stdout, stderr = server.timeout_output or ("", "")
+        return (
+            "Agent timed out before any request reached the capture server.\n"
+            f"  stderr: {stderr[:600]!r}\n  stdout: {stdout[:300]!r}"
+        )
+    stderr = redact_text((result.stderr or b"").decode(errors="replace"), server.redaction_env)[
+        :600
+    ]
+    stdout = redact_text((result.stdout or b"").decode(errors="replace"), server.redaction_env)[
+        :300
+    ]
     return (
         f"No request reached the capture server.\n"
         f"  paths: {[r.path for r in server.requests]}\n"
@@ -205,7 +602,9 @@ class TestClaudeUserAgent:
             **overlay["env"],
         }
 
-        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+        result = _run_until_first_request(
+            claude.validate_cmd("claude"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -235,7 +634,9 @@ class TestClaudeUserAgent:
             **overlay["env"],
         }
 
-        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+        result = _run_until_first_request(
+            claude.validate_cmd("claude"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -267,7 +668,9 @@ class TestCodexUserAgent:
             "OPENAI_API_KEY": "test-key-not-real",
             "DATABRICKS_BEARER": "test-key-not-real",
         }
-        result = _run_until_first_request(codex.validate_cmd("codex"), env)
+        result = _run_until_first_request(
+            codex.validate_cmd("codex"), env, capture_server, "/ai-gateway/codex"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -301,7 +704,9 @@ class TestCodexUserAgent:
             "OPENAI_API_KEY": "test-key-not-real",
             "DATABRICKS_BEARER": "test-key-not-real",
         }
-        result = _run_until_first_request(codex.validate_cmd("codex"), env)
+        result = _run_until_first_request(
+            codex.validate_cmd("codex"), env, capture_server, "/ai-gateway/codex"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -309,7 +714,9 @@ class TestCodexUserAgent:
 
 
 class TestOpencodeUserAgent:
-    def test_user_agent_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+    def test_user_agent_arrives_at_gateway(
+        self, tmp_path, monkeypatch, capture_server, opencode_dependencies
+    ):
         import ucode.config_io as config_io_mod
         from ucode.agents import opencode
 
@@ -319,6 +726,10 @@ class TestOpencodeUserAgent:
         xdg = tmp_path / "xdg"
         opencode_dir = xdg / "opencode"
         opencode_dir.mkdir(parents=True)
+        for name in ("package.json", "package-lock.json"):
+            shutil.copy2(opencode_dependencies / name, opencode_dir / name)
+        shutil.copytree(opencode_dependencies / "node_modules", opencode_dir / "node_modules")
+        monkeypatch.chdir(tmp_path)
         config_path = opencode_dir / "opencode.json"
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_path)
@@ -344,8 +755,18 @@ class TestOpencodeUserAgent:
             )
             opencode.write_tool_config(state, "test-claude-model", token="test-token")
 
-        env = {**os.environ, "OAUTH_TOKEN": "test-token", "XDG_CONFIG_HOME": str(xdg)}
-        result = _run_until_first_request(opencode.validate_cmd("opencode"), env)
+        env = {
+            **os.environ,
+            "OAUTH_TOKEN": "test-token",
+            "XDG_CONFIG_HOME": str(xdg),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "OPENCODE_DISABLE_MODELS_FETCH": "1",
+        }
+        result = _run_until_first_request(
+            opencode.validate_cmd("opencode"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -378,7 +799,9 @@ class TestGeminiUserAgent:
         monkeypatch.chdir(tmp_path)
 
         env = gemini.build_runtime_env(capture_server.base_url, "test-model", "test-token")
-        result = _run_until_first_request(gemini.validate_cmd("gemini"), env)
+        result = _run_until_first_request(
+            gemini.validate_cmd("gemini"), env, capture_server, "/ai-gateway/gemini"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/gemini")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -429,7 +852,9 @@ class TestPiUserAgent:
         # bearer short-circuit gives that command something to print without a
         # real workspace behind the capture server.
         env["DATABRICKS_BEARER"] = "test-token"
-        result = _run_until_first_request(pi.validate_cmd("pi"), env)
+        result = _run_until_first_request(
+            pi.validate_cmd("pi"), env, capture_server, "/ai-gateway/anthropic"
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)

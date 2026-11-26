@@ -481,6 +481,64 @@ def test_record_route_validation_lists_it_beside_decisions(log_dir, tmp_path, ch
     }
 
 
+def test_timeout_diagnostics_stay_out_of_user_facing_router_logs(log_dir):
+    session_log.append_route_validation(
+        "codex",
+        "s1",
+        {
+            "routing_disabled": True,
+            "validation_failed": True,
+            "validation_failure_reason": "Smart Router didn't respond in time",
+            "validation_diagnostics": "connect_dns_tcp=42ms, ttfb=4000ms+, request_id=test-id",
+            "eligible_route_options": [],
+            "ineligible_route_options": [],
+            "available_route_options": [],
+            "validation_ms": 4003,
+        },
+    )
+    [stored] = session_log.read_history("codex", "s1")
+    assert (
+        stored["validation_diagnostics"] == "connect_dns_tcp=42ms, ttfb=4000ms+, request_id=test-id"
+    )
+    for output_format in ("json", "table"):
+        result = runner.invoke(
+            cli.app,
+            [
+                "smart-router-logs",
+                "--session",
+                "s1",
+                "--harness",
+                "codex",
+                "--format",
+                output_format,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        if output_format == "json":
+            [row] = json.loads(result.output)["route_validations"]
+            assert row["validation_failure_reason"] == "Smart Router didn't respond in time"
+        assert "connect_dns_tcp" not in result.output
+        assert "test-id" not in result.output
+    detail = runner.invoke(
+        cli.app,
+        [
+            "smart-router-logs",
+            "--session",
+            "s1",
+            "--harness",
+            "codex",
+            "--format",
+            "table",
+            "--decision",
+            stored["validation_id"],
+        ],
+    )
+    assert detail.exit_code == 0, detail.output
+    assert "Smart Router didn't respond in time" in detail.output
+    assert "connect_dns_tcp" not in detail.output
+    assert "test-id" not in detail.output
+
+
 def test_codex_route_validation_is_listed_under_the_codex_harness_only(log_dir):
     session_log.append_route_validation(
         "codex",

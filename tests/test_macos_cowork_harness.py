@@ -34,6 +34,108 @@ def test_desktop_evidence_redacts_credentials_and_preserves_diagnostics(monkeypa
     assert redact("Claude responded: 48213") == "Claude responded: 48213"
 
 
+@pytest.mark.parametrize("existing", [None, ["Read(secret/**)"], ["WebSearch"]])
+def test_mcp_search_policy_restores_profile_bytes(tmp_path, existing):
+    profile = tmp_path / "profile.json"
+    backup = tmp_path / "profile.backup"
+    data = {
+        "inferenceProvider": "gateway",
+        "managedMcpServers": [
+            {"name": "web_search", "args": ["mcp-proxy"], "env": {"EXISTING": "preserved"}},
+            {"name": "other", "args": ["other-server"]},
+        ],
+    }
+    if existing is not None:
+        data["disabledBuiltinTools"] = existing
+    original = (json.dumps(data, indent=4) + "\n").encode()
+    profile.write_bytes(original)
+    script = SCRIPTS.parent / "desktop-policy.py"
+    args = [sys.executable, str(script), "apply", str(profile), str(backup)]
+    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(profile.read_text())
+    assert actual["managedMcpServers"] == [
+        {
+            "name": "web_search",
+            "args": ["mcp-proxy"],
+            "env": {"EXISTING": "preserved", "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1"},
+        },
+        {"name": "other", "args": ["other-server"]},
+    ]
+    assert actual["disabledBuiltinTools"] == list(dict.fromkeys([*(existing or []), "WebSearch"]))
+    assert backup.read_bytes() == original
+    result = subprocess.run(
+        [sys.executable, str(script), "restore", str(profile), str(backup)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert profile.read_bytes() == original
+    assert not backup.exists()
+
+
+def test_mcp_preflight_passes_connector_diagnostics_to_the_child():
+    check = runpy.run_path(str(SCRIPTS.parent / "mcp-connect-check.py"))["check"]
+    server = {
+        "command": sys.executable,
+        "args": [
+            "-c",
+            "import json,os; print(json.dumps({'id':1,'result':os.getenv('UCODE_RELAYED_PROXY_DIAGNOSTICS')}))",
+        ],
+        "env": {"UCODE_RELAYED_PROXY_DIAGNOSTICS": "1"},
+    }
+    result = check(server, {"PATH": os.environ.get("PATH", "")})
+    assert result["initialized"]
+    assert json.loads(result["stdout"])["result"] == "1"
+
+
+@pytest.mark.parametrize("invalid", ["WebSearch", ["Read", 42]])
+def test_mcp_search_policy_rejects_malformed_existing_rules(tmp_path, invalid):
+    profile = tmp_path / "profile.json"
+    backup = tmp_path / "profile.backup"
+    original = json.dumps({"disabledBuiltinTools": invalid}).encode()
+    profile.write_bytes(original)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS.parent / "desktop-policy.py"),
+            "apply",
+            str(profile),
+            str(backup),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert profile.read_bytes() == original
+    assert not backup.exists()
+
+
+def test_mcp_search_policy_refuses_to_overwrite_existing_backup(tmp_path):
+    profile = tmp_path / "profile.json"
+    backup = tmp_path / "profile.backup"
+    original = b'{"inferenceProvider":"gateway"}'
+    profile.write_bytes(original)
+    backup.write_bytes(b"earlier backup")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS.parent / "desktop-policy.py"),
+            "apply",
+            str(profile),
+            str(backup),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert profile.read_bytes() == original
+    assert backup.read_bytes() == b"earlier backup"
+
+
 @pytest.mark.parametrize(
     ("snapshot", "expected"),
     [
@@ -84,6 +186,32 @@ def harness(monkeypatch, tmp_path):
         modules[name] = module
     (tmp_path / "macos-cowork-evidence").mkdir()
     return SimpleNamespace(**modules, root=tmp_path)
+
+
+def test_configure_reads_profile_from_current_home(harness, monkeypatch):
+    monkeypatch.setattr(harness.probe.Path, "home", lambda: harness.root)
+    monkeypatch.setattr(harness.probe, "MCP_SERVICE", "")
+    monkeypatch.setattr(harness.probe, "RELAY", False)
+    monkeypatch.setattr(harness.probe, "PROVIDER", "")
+    profile = (
+        harness.root / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    )
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        json.dumps(
+            {"inferenceProvider": "gateway", "inferenceModels": [{"name": harness.probe.MODEL}]}
+        )
+    )
+    monkeypatch.setattr(
+        harness.probe,
+        "process",
+        SimpleNamespace(
+            run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        ),
+    )
+    assert harness.probe.configure() == harness.probe.MODEL
+    assert (harness.root / ".databrickscfg").is_file()
 
 
 @pytest.mark.parametrize(
@@ -642,6 +770,70 @@ def tasks(monkeypatch, tmp_path):
     return module
 
 
+def test_mcp_task_restricts_native_search_only_while_desktop_runs(harness, tasks, monkeypatch):
+    private = harness.root / "private"
+    private.mkdir(mode=0o700)
+    evidence = harness.probe.EVIDENCE
+    (evidence / "configuration.json").write_text(json.dumps({"label": harness.probe.MODEL}))
+    profile = (
+        harness.root / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    )
+    profile.parent.mkdir(parents=True)
+    original = b'{"disabledBuiltinTools":["Read(secret/**)"],"managedMcpServers":[{"name":"web_search","args":["mcp-proxy"]}]}\n'
+    profile.write_bytes(original)
+    observed = []
+
+    def prepare(*_):
+        connector = json.loads(profile.read_text())["managedMcpServers"][0]
+        assert connector["env"]["UCODE_RELAYED_PROXY_DIAGNOSTICS"] == "1"
+        return {"capability": "mcp"}
+
+    monkeypatch.setattr(tasks, "prepare_task", prepare)
+    monkeypatch.setattr(tasks, "capture_sessions", lambda *_: None)
+
+    def native_run(args, **kwargs):
+        if len(args) > 1 and str(args[1]).endswith("desktop-policy.py"):
+            return subprocess.run(args, **kwargs)
+        raise OSError("Accessibility unavailable")
+
+    def launch_native(*args, **kwargs):
+        observed.append(json.loads(profile.read_text())["disabledBuiltinTools"])
+        return SimpleNamespace(
+            terminate=lambda: observed.append(
+                json.loads(profile.read_text())["disabledBuiltinTools"]
+            ),
+            wait=lambda **kwargs: 0,
+            poll=lambda: 0,
+        )
+
+    monkeypatch.setattr(
+        harness.probe, "process", SimpleNamespace(run=native_run, popen=launch_native)
+    )
+    monkeypatch.setitem(sys.modules, "tasks", tasks)
+    monkeypatch.setitem(sys.modules, harness.probe.__name__, harness.probe)
+    monkeypatch.setattr(
+        harness.probe,
+        "sys",
+        SimpleNamespace(platform="darwin", modules=sys.modules, executable=sys.executable),
+    )
+    if os.name == "nt":
+        monkeypatch.setattr(
+            harness.probe,
+            "signal",
+            SimpleNamespace(
+                SIGTERM=signal.SIGTERM,
+                SIGALRM=999,
+                SIG_IGN=signal.SIG_IGN,
+                signal=lambda *_: None,
+                alarm=lambda *_: None,
+            ),
+        )
+    assert harness.probe.main(private, "mcp") == 1
+    assert observed == [["Read(secret/**)", "WebSearch"]] * 2
+    assert profile.read_bytes() == original
+
+
 @pytest.mark.skipif(os.name != "posix", reason="macOS probe uses POSIX signals and permissions")
 @pytest.mark.parametrize("capture_failure", [False, True])
 def test_task_diagnostics_preserve_report_and_independent_errors(
@@ -897,11 +1089,20 @@ def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
     old = logs / "main.log"
     old.write_text("stale")
     os.utime(old, (0, 0))
+    proxy = tmp_path / ".ucode/mcp-proxy/session"
+    proxy.mkdir(parents=True)
+    (proxy / "backend.log").write_text("backend error")
+    (proxy / "transport.log").write_text("current trace")
+    (proxy / "transport.log.1").write_text("previous trace")
+    (proxy / "transport.log.2").write_text("unrelated trace")
     saved = {}
     tasks.capture_desktop_logs(SimpleNamespace(save=saved.__setitem__), started=1)
     assert saved == {
         "desktop-log-Library-Logs-Claude-3p-mcp-server-web_search.log": "x" * 10
-        + "connector started"
+        + "connector started",
+        "desktop-log-.ucode-mcp-proxy-session-backend.log": "backend error",
+        "desktop-log-.ucode-mcp-proxy-session-transport.log": "current trace",
+        "desktop-log-.ucode-mcp-proxy-session-transport.log.1": "previous trace",
     }
 
 

@@ -420,6 +420,66 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
+def test_claude_launch_smoke_does_not_inherit_repo_instructions(tmp_path, monkeypatch):
+    from tests import test_e2e
+    from ucode.agents import claude
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "CLAUDE.md").write_text("repository instruction sentinel")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(repository)
+    monkeypatch.setattr(test_e2e, "_require_binary", lambda _name: None)
+    monkeypatch.setattr(claude, "write_tool_config", lambda *_args: None)
+    # A real child checks its working-directory ancestry; no live model or credentials are needed.
+    command = (
+        "from pathlib import Path; "
+        f"assert Path({str(repository)!r}) not in (Path.cwd(), *Path.cwd().parents); "
+        "print('isolated')"
+    )
+    monkeypatch.setattr(claude, "validate_cmd", lambda _binary: [sys.executable, "-c", command])
+    test_e2e.TestClaudeLaunch().test_launch_claude_per_model(
+        ("opus", "system.ai.claude-opus-5-5"),
+        scratch,
+        monkeypatch,
+        {},
+        "https://example.invalid",
+        "synthetic-token",
+    )
+
+
+def test_claude_gateway_cache_diagnostics_capture_missing_and_present_cache(tmp_path, monkeypatch):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    cache = session.home / ".claude/cache/gateway-models.json"
+    output = session.artifacts / "claude-gateway-cache-diagnostics.json"
+
+    session.record_claude_gateway_diagnostics(["model-a"])
+    missing = json.loads(output.read_text())
+    assert missing["path"] == str(cache)
+    assert missing["expected_ids"] == ["model-a"]
+    assert missing["contents"] is None
+    assert missing["mtime_ns"] is None
+
+    cache.parent.mkdir(parents=True)
+    cache.write_text('{"models": []}')
+    session.record_claude_gateway_diagnostics(["model-a"])
+    captured = json.loads(output.read_text())
+    assert captured["contents"] == '{"models": []}'
+    assert captured["mtime_ns"] == cache.stat().st_mtime_ns
+
+    secret = 'synthetic"credential\\with-escape'
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", secret)
+    cache.write_text(json.dumps({"models": [{"id": secret}]}))
+    session.record_claude_gateway_diagnostics(["model-a"])
+    contents = json.loads(output.read_text())["contents"]
+    assert json.loads(contents)["models"][0]["id"] == "<redacted>"
+    assert secret not in contents
+
+
 def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "0")
     root, project = tmp_path / "session", tmp_path / "project"
@@ -3446,3 +3506,53 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         if FORK_GUARD in condition:
             assert f"({FORK_GUARD})" in condition, name
     assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "DATABRICKS_CLIENT_SECRET",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "UG_CUJ_SP_CLIENT_SECRET",
+        "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
+        "UG_BENCH_CLIENT_SECRET",
+        "SLACK_WEBHOOK",
+        "UG_COWORK_PAT",
+        "UG_INTEGRATION_ISSUER_BEARER",
+        "CODEX_OAUTH_TOKEN",
+        "E2E_ADMIN_SP_CLIENT_SECRET",
+        "UG_ANTHROPIC_MPS_CLIENT_SECRET",
+        "UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET",
+        "SLACK_WEBHOOK_UG_CODING_AGENTS_POD",
+    ],
+)
+def test_session_artifacts_redact_workflow_credentials(tmp_path, monkeypatch, name):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    monkeypatch.setenv(name, "outer-fixture-credential")
+    session.env[name] = "session-fixture-credential"
+
+    session.record(
+        "evidence.json", {"message": "outer-fixture-credential session-fixture-credential"}
+    )
+    assert json.loads((session.artifacts / "evidence.json").read_text()) == {
+        "message": "<redacted> <redacted>"
+    }
+
+
+def test_session_artifacts_redact_overlapping_and_json_escaped_credentials(tmp_path, monkeypatch):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    monkeypatch.setenv("DATABRICKS_BEARER", "abc")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", 'abc"long\\value')
+    session.record("evidence.json", {"message": 'abc"long\\value abc'})
+    assert json.loads((session.artifacts / "evidence.json").read_text()) == {
+        "message": "<redacted> <redacted>"
+    }

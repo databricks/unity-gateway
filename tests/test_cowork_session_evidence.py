@@ -213,6 +213,35 @@ def test_transcript_rotation_preserves_pending_and_valid_sessions(
     assert result["status"] == ("passed" if remaining_session else "pending")
 
 
+def test_pending_matching_transcript_is_available_for_timeout_evidence(mcp_evidence, tmp_path):
+    records, task = mcp_evidence
+    task["startedAfter"] = datetime.fromtimestamp(0, tz=UTC).isoformat()
+    directory = tmp_path / "projects" / "session"
+    directory.mkdir(parents=True)
+    unrelated = directory / "other.jsonl"
+    unrelated.write_text(json.dumps({"message": {"role": "user", "content": "other"}}))
+    pending = directory / "pending.jsonl"
+    pending.write_text("\n".join(map(json.dumps, records[:2])) + "\n{partial")
+    result = inspect_sessions(tmp_path, task)
+    assert result == {"status": "pending", "transcript": str(pending)}
+
+
+@pytest.mark.parametrize("role", ["user", "assistant"])
+def test_pending_session_requires_the_task_prompt_from_the_user(mcp_evidence, tmp_path, role):
+    _, task = mcp_evidence
+    task["startedAfter"] = datetime.fromtimestamp(0, tz=UTC).isoformat()
+    directory = tmp_path / "projects" / "session"
+    directory.mkdir(parents=True)
+    transcript = directory / "pending.jsonl"
+    transcript.write_text(json.dumps({"message": {"role": role, "content": task["prompt"]}}))
+    result = inspect_sessions(tmp_path, task)
+    assert result == (
+        {"status": "pending", "transcript": str(transcript)}
+        if role == "user"
+        else {"status": "pending"}
+    )
+
+
 def test_transcript_permission_errors_are_not_hidden(tmp_path, monkeypatch):
     directory = tmp_path / "projects" / "session"
     directory.mkdir(parents=True)
@@ -327,6 +356,18 @@ def test_mcp_search_preserves_other_query_parameters_and_fragments(
     records[3]["message"]["content"][0]["text"] = answer_url
     result = evaluate(records, task)
     assert result["status"] == expected_status
+
+
+def test_mcp_search_requires_full_result_url_not_just_homepage(mcp_evidence):
+    records, task = mcp_evidence
+    result_url = "https://www.databricks.com/example/guide.pdf?source=search"
+    _search_result(records)["content"] = [{"type": "text", "text": result_url}]
+    records[3]["message"]["content"] = [{"type": "text", "text": "https://www.databricks.com"}]
+    assert evaluate(records, task)["status"] == "failed"
+    records[3]["message"]["content"] = [{"type": "text", "text": result_url}]
+    result = evaluate(records, task)
+    assert result["status"] == "passed"
+    assert result["url"] == result_url
 
 
 def test_mcp_search_ignores_malformed_urls_beside_an_official_one(mcp_evidence):

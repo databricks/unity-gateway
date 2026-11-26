@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections import defaultdict, deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, BinaryIO
@@ -42,6 +43,18 @@ DURATION_BOUNDS = (
     3600000,
 )
 BYTE_BOUNDS = (256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216)
+
+
+def _test_diagnostic(event: str, **values: int | bool) -> None:
+    directory = os.environ.get("UG_TEST_METRICS_DIAGNOSTICS")
+    if not directory:
+        return
+    with suppress(OSError):
+        path = os.path.join(directory, f"exporter-{os.getpid()}.jsonl")
+        with open(path, "a", encoding="utf-8") as output:
+            output.write(
+                json.dumps({"event": event, "monotonic_ns": time.monotonic_ns(), **values}) + "\n"
+            )
 
 
 def start_exporter():
@@ -82,6 +95,7 @@ class ExportBuffer:
         self.closed = threading.Event()
 
     def receive(self, message: dict) -> None:
+        diagnostics_enabled = bool(os.environ.get("UG_TEST_METRICS_DIAGNOSTICS"))
         with self.lock:
             if "credentials" in message:
                 self.credentials = message["credentials"]
@@ -101,18 +115,34 @@ class ExportBuffer:
                 self.context = context
             for workspace, name, value, labels in message.get("observations", []):
                 self.pending.append((workspace or self.workspace, name, value, labels))
+            if diagnostics_enabled:
+                pending_count = len(self.pending)
+                credential_count = len(self.credentials)
+        if diagnostics_enabled:
+            _test_diagnostic(
+                "frame",
+                pending=pending_count,
+                credentials=credential_count,
+                flush=bool(message.get("flush")),
+            )
         if message.get("flush"):
             self.wake.set()
 
     def read(self, stream: BinaryIO) -> None:
+        _test_diagnostic("reader-ready")
         try:
             while line := stream.readline(MAX_HANDOFF_BYTES + 1):
                 if len(line) > MAX_HANDOFF_BYTES or not line.endswith(b"\n"):
+                    _test_diagnostic("invalid-frame")
                     break
                 self.receive(json.loads(line))
+            else:
+                _test_diagnostic("eof")
         except Exception:
+            _test_diagnostic("read-error")
             return
         finally:
+            _test_diagnostic("closed")
             self.closed.set()
             self.wake.set()
 
@@ -126,7 +156,8 @@ class ExportBuffer:
                 else:
                     unbound.append((workspace, name, value, labels))
             self.pending = unbound
-            return [
+            pending_count = len(unbound)
+            batches = [
                 {
                     "workspace": workspace,
                     "token": self.credentials[workspace][0],
@@ -135,6 +166,10 @@ class ExportBuffer:
                 }
                 for workspace, points in grouped.items()
             ]
+        _test_diagnostic(
+            "drain", batches=len(batches), pending=pending_count, closed=self.closed.is_set()
+        )
+        return batches
 
     def run(self, stream: BinaryIO) -> None:
         # Keep draining the pipe while SDK initialization or an HTTP upload is in progress.
@@ -143,9 +178,12 @@ class ExportBuffer:
             self.wake.wait(EXPORT_INTERVAL_SECONDS)
             self.wake.clear()
             closed = self.closed.is_set()
-            for batch in self.drain():
-                with suppress(Exception):
+            batches = self.drain()
+            for batch in batches:
+                try:
                     export_batch(batch)
+                except Exception:
+                    _test_diagnostic("export-error")
             if closed:
                 return
 
@@ -241,6 +279,7 @@ def export_batch(batch: dict) -> None:
     session = NoRedirectSession()
     # Explicit auth prevents Requests from replacing the workspace bearer via .netrc.
     session.auth = WorkspaceBearerAuth()
+    _test_diagnostic("sdk-ready")
     exporter = OTLPMetricExporter(
         endpoint=endpoint,
         timeout=EXPORT_TIMEOUT_SECONDS,
@@ -254,16 +293,24 @@ def export_batch(batch: dict) -> None:
     try:
         observations = batch["observations"]
         for start in range(0, len(observations), MAX_POINTS_PER_REQUEST):
+            _test_diagnostic("aggregate-start")
             data = aggregate(observations[start : start + MAX_POINTS_PER_REQUEST])
-            if data is not None and exporter.export(data) != MetricExportResult.SUCCESS:
-                break
+            _test_diagnostic("aggregate-done", has_data=data is not None)
+            if data is not None:
+                _test_diagnostic("http-start")
+                success = exporter.export(data) == MetricExportResult.SUCCESS
+                _test_diagnostic("http-done", success=success)
+                if not success:
+                    break
     finally:
         exporter.shutdown()
 
 
 def main() -> None:
+    _test_diagnostic("started")
     with suppress(Exception):
         tls.apply()
+        _test_diagnostic("tls-ready")
         ExportBuffer().run(sys.stdin.buffer)
 
 

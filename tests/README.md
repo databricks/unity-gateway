@@ -14,6 +14,10 @@ Live shard coverage reports checkout and each
 artifact-download interval in the job summary without excluding them from the budget.
 Budget checks do not run in the merge queue.
 
+`test_integration_contract.py::test_claude_launch_smoke_does_not_inherit_repo_instructions`
+checks the smoke probe's working-directory isolation with a real child process. It does not
+exercise Claude or gateway inference.
+
 `test_codex_statusline.py` covers live control-file reads, Claude-style green ON/gray
 OFF badges, ON/OFF/UNKNOWN recovery, nullable snapshots, MCP advertisement and
 protocol errors, and two real stdio providers using Python's `-P` flag.
@@ -2016,8 +2020,13 @@ settings, accept explicit overrides, and report a missing workspace on stderr.
 HTTP MCP peer. It covers concurrent startup, colliding request IDs, independent
 sessions and headers, credential separation, one agent closing while another keeps
 working, backend crash/restart, EOF/reset reconnect diagnostics, local authentication,
-idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
-reach authentication worker threads without changing another session's headers.
+idle shutdown, and live login diagnostics with native line endings. With
+`UCODE_RELAYED_PROXY_DIAGNOSTICS=1`, timestamped transport diagnostics use generated proxy-connection
+and request IDs and record only phases, status and error type, never credentials or request contents.
+A bounded queue drops and counts excess events without blocking the relay; `transport.log` retains at
+most one size-capped backup while existing `backend.log` stderr is unchanged. Multi-workspace
+selectors use separate backends, and session headers reach authentication worker threads without
+changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
 check. On Windows, an observer uses the native console and window APIs to verify
 the actual backend has no visible console window, then the client completes a tool call.
@@ -2170,8 +2179,16 @@ check against a loopback Smart Router, so the real HTTP transport runs: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
 responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
-deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Only HTTP 404 (the
-flag-off answer) leaves routing on silently. Result-write failures are isolated. The `/smart-router on`
+deadline, and a late transport result cannot overwrite it. Each case checks its error metric. Local
+pooled HTTP/HTTPS tests check combined DNS/TCP, TLS and response-header timing plus request IDs;
+urllib HTTPS records transport and request ID without phase timings. These do not prove which phase
+caused a live timeout. The unchanged user-facing timeout reason is separate from safe diagnostics,
+which terminal artifacts retain before the temporary session is removed. Malformed records are
+reported without masking test failures.
+The Codex back-on journey also records upstream connection, TLS and response-header phase events
+from its forwarding recorder without recording request bodies or credentials.
+Only HTTP 404 (the flag-off answer) leaves routing on silently. Result-write failures are isolated.
+The `/smart-router on`
 check turns routing on only for a supported list or a 404; an unsupported list or a failed check
 keeps it off and records a logs row. The smart-routing launch tests cover the resolved Claude and
 Codex model/harness list and provider; the Codex test checks them at the HTTP call. The Codex toggle uses the same verdict and is covered in

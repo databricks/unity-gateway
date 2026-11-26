@@ -52,6 +52,96 @@ def test_terminal_preserves_redacted_proxy_diagnostics_outside_screen(tmp_path, 
     assert event == {"event": "request_start", "request_id": "<redacted>"}
 
 
+def test_terminal_preserves_redacted_mcp_transport_diagnostics_on_failure(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    session.env["DATABRICKS_BEARER"] = 'synthetic-"secret'
+    log_dir = session.home / ".ucode/mcp-proxy/component"
+    log_dir.mkdir(parents=True)
+    event = {
+        "timestamp_ms": 123,
+        "session_id": "session-one",
+        "event": "transport",
+        "phase": "connection.connect_tcp.failed",
+        "error_type": "ConnectTimeout",
+        "request_id": 'synthetic-"secret',
+        "private_data": "private-prompt",
+    }
+    dropped = {
+        "timestamp_ms": 124,
+        "session_id": "backend",
+        "event": "diagnostic_dropped",
+        "dropped_count": 3,
+    }
+    (log_dir / "backend.log").write_text(
+        "private backend message\n"
+        + "mcp-diagnostic "
+        + json.dumps(event)
+        + "\n"
+        + "mcp-diagnostic "
+        + json.dumps(dropped)
+        + "\n"
+    )
+    (log_dir / "transport.log").write_text("mcp-diagnostic " + json.dumps(event) + "\n")
+    (log_dir / "transport.log.1").write_text("mcp-diagnostic " + json.dumps(dropped) + "\n")
+    (log_dir / "transport.log.2").write_text("mcp-diagnostic " + json.dumps(dropped) + "\n")
+    command = [str(session.binary), "-c", "print('ready', flush=True); input()"]
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        with TerminalProcess(session, "ug", command, "mcp-diagnostics") as terminal:
+            terminal.wait_for(lambda screen: "ready" in screen, "prompt")
+            raise RuntimeError("simulated failure")
+    recorded = json.loads((session.artifacts / "mcp-diagnostics.json").read_text())
+    expected = {key: value for key, value in event.items() if key != "private_data"}
+    expected["request_id"] = "<redacted>"
+    assert recorded["mcp_transport_diagnostics"] == [
+        {"backend": "component", "file": "backend.log", "events": [expected, dropped]},
+        {"backend": "component", "file": "transport.log", "events": [expected]},
+        {"backend": "component", "file": "transport.log.1", "events": [dropped]},
+    ]
+    assert 'synthetic-\\"secret' not in json.dumps(recorded)
+    assert "private backend message" not in json.dumps(recorded)
+    assert "private-prompt" not in json.dumps(recorded)
+
+
+def test_terminal_preserves_redacted_router_validation_on_failure(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    session.env["DATABRICKS_BEARER"] = "synthetic-secret"
+    log_dir = session.home / ".ucode/smart-router/sessions"
+    log_dir.mkdir(parents=True)
+    record = {
+        "type": "route_validation",
+        "validation_failed": True,
+        "validation_failure_reason": "Smart Router didn't respond in time",
+        "validation_diagnostics": "connect_dns_tcp=1ms, ttfb=4000ms+, request_id=synthetic-secret",
+        "validation_ms": 4003,
+    }
+    other = {"type": "decision", "prompt": "private-prompt"}
+    (log_dir / "codex-test.jsonl").write_text(json.dumps(record) + "\n" + json.dumps(other) + "\n")
+    (log_dir / "broken.jsonl").write_text("{invalid}\n")
+    command = [str(session.binary), "-c", "print('ready', flush=True); input()"]
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        with TerminalProcess(session, "ug", command, "router-diagnostics") as terminal:
+            terminal.wait_for(lambda screen: "ready" in screen, "prompt")
+            raise RuntimeError("simulated failure")
+    recorded = json.loads((session.artifacts / "router-diagnostics.json").read_text())
+    assert recorded["route_validations"] == [
+        {"read_error": "JSONDecodeError"},
+        {
+            "validation_failed": True,
+            "validation_failure_reason": "Smart Router didn't respond in time",
+            "validation_diagnostics": "connect_dns_tcp=1ms, ttfb=4000ms+, request_id=<redacted>",
+            "validation_ms": 4003,
+        },
+    ]
+    assert "private-prompt" not in json.dumps(recorded)
+    assert "synthetic-secret" not in json.dumps(recorded)
+
+
 def _screen() -> TerminalScreen:
     return TerminalScreen(10, 2, lambda data: None)
 

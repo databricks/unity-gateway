@@ -393,6 +393,9 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
 _LAST_REDIRECT: contextvars.ContextVar[httpx.Response | None] = contextvars.ContextVar(
     "pooled_last_redirect", default=None
 )
+_HTTP_TRACE: contextvars.ContextVar[Callable[[str, dict[str, Any]], None] | None] = (
+    contextvars.ContextVar("http_trace", default=None)
+)
 
 
 def _remember_redirect(response: httpx.Response) -> None:
@@ -501,11 +504,25 @@ def _os_error_reason(exc: BaseException) -> BaseException:
 
 
 def _http_open(request: urllib_request.Request, *, timeout: float):
+    trace = _HTTP_TRACE.get()
     if not _use_pooled_client():
         # Not the default setup (python trust store, or an http/https proxy configured): keep
         # urllib's own path — its proxy handling and trust store — exactly as main ran it.
-        return urllib_request.urlopen(request, timeout=timeout)
+        if trace:
+            trace("transport.urllib", {})
+        try:
+            response = urllib_request.urlopen(request, timeout=timeout)
+        except urllib_error.HTTPError as error:
+            if trace and error.headers:
+                trace("response.headers", {"headers": list(error.headers.items())})
+            raise
+        if trace:
+            trace("response.headers", {"headers": list(response.headers.items())})
+        return response
     import httpx
+
+    if trace:
+        trace("transport.pooled", {})
 
     request_headers = dict(request.header_items())
     header_names = {name.casefold() for name in request_headers}
@@ -526,7 +543,10 @@ def _http_open(request: urllib_request.Request, *, timeout: float):
         ],
         # The only Request built with data is `_http_send_json`'s, which sends bytes or None.
         content=cast("bytes | None", request.data),
-        extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+        extensions={
+            "timeout": httpx.Timeout(timeout).as_dict(),
+            **({"trace": trace} if trace else {}),
+        },
     )
     try:
         # urllib's redirect_request re-issues GET/HEAD on any redirect, re-issues a POST

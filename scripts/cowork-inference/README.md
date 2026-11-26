@@ -72,7 +72,9 @@ in the job log and `native-launch.json`, instead of reporting a generic response
 After inference, three fresh Cowork tasks run through the same native UI:
 
 1. Create `Documents/CoworkProbe/input.txt` with a random value absent from the prompt.
-   Select that folder through the native picker and choose **Allow** for this task.
+   Select that folder through the native picker and choose **Allow** for this task. On Windows,
+   wait for native folder field 1152, verify its Win32 `Edit` class, set and read its path once,
+   then select the folder. Redacted UI snapshots capture the field class, value and focus.
    Require a successful native `Read` call on that exact file, its contents in the
    matching tool result, and an identical completed assistant answer.
 2. Install a local test skill through native `claude plugin ... --cowork` commands,
@@ -83,13 +85,14 @@ After inference, three fresh Cowork tasks run through the same native UI:
    `--mcp system.ai.web_search` (the service in `task-fixture.json`). The task requires the
    Desktop profile's `web_search` connector to be UG's stdio proxy for that
    service. Ask Cowork to search for Databricks' official website with that connector's
-   `mcp__web_search__web_search` tool, and not Desktop's native `WebSearch`; on Anthropic-direct
-   sources native search works and the model otherwise prefers it. Require a
+   `mcp__web_search__web_search` tool. For this task only, Desktop's managed
+   `disabledBuiltinTools` setting removes the competing native `WebSearch`; the original profile
+   is restored after the app stops. Require a
    successful `mcp__web_search__web_search` call with a nonempty query whose result contains a
    `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
-   URLs, ignoring Markdown, trailing slashes, and the `utm_source` attribution parameter.
-   Other query parameters and fragments must still match. Search ranking and wording are not
-   asserted; Desktop's native web search cannot satisfy it. Desktop asks before the connector's
+   URLs, including its path, ignoring Markdown, trailing slashes, and the `utm_source` attribution
+   parameter. Other query parameters and fragments must still match. Search ranking and wording are
+   not asserted; Desktop's native web search cannot satisfy it. Desktop asks before the connector's
    first use; the task approves it (**Allow for this task** on Windows 2.42304.2, **Allow once** on macOS
    4.23118.0) and records the label. This runs in every Desktop job, including the staging
    `anthropic-mps` lane.
@@ -128,7 +131,8 @@ Direct official Anthropic installer/runtime downloads were approved for these
 disposable CI tests.
 
 Python dependencies come from PyPI and Claude Code CLI 2.1.290 from public npm,
-matching the existing GitHub-hosted Windows CLI integration tests. These public
+matching the existing GitHub-hosted Windows CLI integration tests. The macOS lane
+installs Python dependencies at the versions and hashes in `uv.lock`. These public
 package sources are approved for this CI job. Python 3.12 is selected explicitly;
 Claude Code's native binary selection requires its npm postinstall script.
 Package installation needs no JFrog credentials or GitHub OIDC permission. The staging lane installs the same

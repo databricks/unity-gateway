@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from threading import Lock
 from types import ModuleType, TracebackType
@@ -691,6 +693,7 @@ async def _run(
     stdout: anyio.AsyncFile[str] | None = None,
     token_provider: Callable[[], str] | None = None,
     login_output: TextIO | None = None,
+    diagnostic: Callable[[str, dict], None] | None = None,
 ) -> None:
     httpx = _httpx()
     connection_login = _ConnectionLogin(
@@ -714,9 +717,66 @@ async def _run(
     # yields a (read, write) pair in both.
     extra_headers = ug_headers()
     explicit_user_agent = any(key.casefold() == "user-agent" for key in extra_headers)
+
+    async def record_request(request):
+        assert diagnostic is not None
+        previous_trace = request.extensions.get("trace")
+        if getattr(previous_trace, "_ucode_mcp_diagnostic", None) is diagnostic:
+            return
+        request_id = secrets.token_hex(8)
+        started = time.monotonic()
+        method = request.method if request.method in {"GET", "POST", "DELETE"} else "OTHER"
+        diagnostic("request_start", {"request_id": request_id, "method": method})
+
+        async def trace(phase, info):
+            if previous_trace is not None:
+                await previous_trace(phase, info)
+            if not phase.endswith(
+                (
+                    "connect_tcp.started",
+                    "connect_tcp.complete",
+                    "connect_tcp.failed",
+                    "start_tls.started",
+                    "start_tls.complete",
+                    "start_tls.failed",
+                    "send_request_headers.started",
+                    "send_request_headers.complete",
+                    "send_request_headers.failed",
+                    "send_request_body.started",
+                    "send_request_body.complete",
+                    "send_request_body.failed",
+                    "receive_response_headers.started",
+                    "receive_response_headers.complete",
+                    "receive_response_headers.failed",
+                    "receive_response_body.started",
+                    "receive_response_body.complete",
+                    "receive_response_body.failed",
+                    "response_closed.started",
+                    "response_closed.complete",
+                    "response_closed.failed",
+                )
+            ):
+                return
+            fields = {
+                "request_id": request_id,
+                "phase": phase,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            }
+            if phase.endswith(".failed") and isinstance(info.get("exception"), BaseException):
+                fields["error_type"] = type(info["exception"]).__name__
+            if phase.endswith("receive_response_headers.complete"):
+                response = info.get("return_value")
+                if isinstance(response, tuple) and len(response) > 1 and type(response[1]) is int:
+                    fields["status"] = response[1]
+            diagnostic("transport", fields)
+
+        trace.__dict__["_ucode_mcp_diagnostic"] = diagnostic
+        request.extensions["trace"] = trace
+
     async with httpx.AsyncClient(
         auth=auth,
         headers={**extra_headers, **workspace_headers(url)},
+        **({"event_hooks": {"request": [record_request]}} if diagnostic is not None else {}),
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,

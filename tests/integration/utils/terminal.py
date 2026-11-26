@@ -7,6 +7,7 @@ gateway, application function, configuration file, or model response.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import queue
 import re
@@ -21,7 +22,7 @@ import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
 from .agents import antigravity
-from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
+from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id, read_jsonl
 
 SELECTED = "[›❯>]"
 
@@ -329,6 +330,80 @@ class TerminalProcess:
             / ".ucode"
             / ("claude-v2-pty.log" if self.agent == "claude" else "codex-v2-interposer.log")
         )
+        route_validations = []
+        validation_dir = self.session.home / ".ucode/smart-router/sessions"
+        for path in sorted(validation_dir.glob("*.jsonl")):
+            try:
+                records = read_jsonl(path)
+            except (OSError, ValueError) as error:
+                route_validations.append({"read_error": type(error).__name__})
+                continue
+            for record in records:
+                if record.get("type") == "route_validation":
+                    route_validations.append(
+                        {
+                            key: record[key]
+                            for key in (
+                                "validation_id",
+                                "at",
+                                "harness",
+                                "validation_failed",
+                                "validation_failure_reason",
+                                "validation_diagnostics",
+                                "validation_ms",
+                            )
+                            if key in record
+                        }
+                    )
+        mcp_diagnostics = []
+        mcp_root = self.session.home / ".ucode/mcp-proxy"
+        paths = [
+            *mcp_root.glob("*/backend.log"),
+            *mcp_root.glob("*/transport.log"),
+            *mcp_root.glob("*/transport.log.1"),
+        ]
+        for path in sorted(paths):
+            try:
+                lines = self.session.redact(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError as error:
+                mcp_diagnostics.append(
+                    {
+                        "backend": path.parent.name,
+                        "file": path.name,
+                        "read_error": type(error).__name__,
+                    }
+                )
+                continue
+            events = []
+            for line in lines.splitlines():
+                if not line.startswith("mcp-diagnostic "):
+                    continue
+                try:
+                    record = json.loads(line.removeprefix("mcp-diagnostic "))
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    events.append(
+                        {
+                            key: record[key]
+                            for key in (
+                                "timestamp_ms",
+                                "session_id",
+                                "event",
+                                "request_id",
+                                "method",
+                                "phase",
+                                "elapsed_ms",
+                                "status",
+                                "error_type",
+                                "dropped_count",
+                            )
+                            if key in record
+                        }
+                    )
+            mcp_diagnostics.append(
+                {"backend": path.parent.name, "file": path.name, "events": events}
+            )
         self.session.record(
             f"{self.name}.json",
             {
@@ -341,6 +416,8 @@ class TerminalProcess:
                 "signalstatus": self.child.signalstatus,
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
+                "route_validations": route_validations,
+                "mcp_transport_diagnostics": mcp_diagnostics,
                 "proxy_diagnostics": self.proxy_diagnostics.read_text(encoding="utf-8")
                 if self.proxy_diagnostics.is_file()
                 else None,

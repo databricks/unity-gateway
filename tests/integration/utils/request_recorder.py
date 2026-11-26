@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Any, Self
@@ -38,6 +40,19 @@ _SECRET_HEADERS = {
 }
 # How long teardown waits for in-flight forwards before leaving their connections to them.
 _DRAIN_SECONDS = 10
+ROUTE_VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
+_TIMED_HTTP_EVENTS = (
+    "connect_tcp.started",
+    "connect_tcp.complete",
+    "connect_tcp.failed",
+    "start_tls.started",
+    "start_tls.complete",
+    "start_tls.failed",
+    "send_request_headers.started",
+    "receive_response_headers.started",
+    "receive_response_headers.complete",
+    "receive_response_headers.failed",
+)
 _CONTENT_BLOCK_TYPES = {"text", "tool_use", "server_tool_use", "thinking", "redacted_thinking"}
 _STOP_REASONS = {
     "end_turn",
@@ -52,6 +67,27 @@ _STOP_REASONS = {
 _OVERLOAD_STATUSES = {429, 503}
 
 
+def safe_request_id(headers: list[tuple[bytes, bytes]]) -> str | None:
+    values: dict[str, str] = {}
+    for key, value in headers:
+        try:
+            name, request_id = key.decode("ascii").lower(), value.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        if name in ("x-request-id", "request-id", "x-databricks-request-id") and re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,128}", request_id
+        ):
+            values.setdefault(name, request_id)
+    return next(
+        (
+            values[name]
+            for name in ("x-request-id", "request-id", "x-databricks-request-id")
+            if name in values
+        ),
+        None,
+    )
+
+
 @dataclass(frozen=True)
 class RecordedRequest:
     sequence: int
@@ -59,6 +95,7 @@ class RecordedRequest:
     path: str
     headers: dict[str, str]
     body: bytes
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
     def payload(self) -> Any:
@@ -93,6 +130,7 @@ class TuiRequestRecorder:
         self._condition = threading.Condition()
         self._requests: list[RecordedRequest] = []
         self._responses: dict[int, RecordedResponse] = {}
+        self._validation_timings: dict[int, dict[str, Any]] = {}
         self._in_flight = 0
         self._client: httpx.Client | None = None
         self._server: _Server | None = None
@@ -161,10 +199,49 @@ class TuiRequestRecorder:
         with self._condition:
             return len(self._requests)
 
+    def validation_timings(self) -> list[dict]:
+        """Return only validation transport timing, status and safe request IDs."""
+        with self._condition:
+            return json.loads(json.dumps(list(self._validation_timings.values())))
+
     def requests_after(self, checkpoint: int) -> tuple[RecordedRequest, ...]:
         """Return the requests recorded after a session boundary."""
         with self._condition:
             return tuple(request for request in self._requests if request.sequence > checkpoint)
+
+    def route_select_diagnostics(self) -> list[dict]:
+        """Describe every routing exchange without exposing its prompt or headers."""
+        with self._condition:
+            exchanges = [
+                (request, self._responses.get(request.sequence))
+                for request in self._requests
+                if request.method == "POST" and request.path.endswith("/routes:select")
+            ]
+        result = []
+        for request, response in exchanges:
+            try:
+                payload = request.payload
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            task = payload.get("task") if isinstance(payload, dict) else None
+            prompt = task.get("prompt") if isinstance(task, dict) else None
+            headers = (
+                [(key.encode(), value.encode()) for key, value in response.headers.items()]
+                if response
+                else []
+            )
+            result.append(
+                {
+                    "timestamp": request.timestamp,
+                    "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()
+                    if isinstance(prompt, str)
+                    else None,
+                    "prompt_length": len(prompt) if isinstance(prompt, str) else None,
+                    "status": response.status_code if response else None,
+                    "response_request_id": safe_request_id(headers),
+                }
+            )
+        return result
 
     def expect_request(
         self,
@@ -231,6 +308,7 @@ class TuiRequestRecorder:
             name.lower(): "<redacted>" if name.lower() in _SECRET_HEADERS else value
             for name, value in handler.headers.items()
         }
+        started = time.monotonic_ns()
         with self._condition:
             request = RecordedRequest(
                 sequence=len(self._requests) + 1,
@@ -240,7 +318,22 @@ class TuiRequestRecorder:
                 body=body,
             )
             self._requests.append(request)
+            if request.path == ROUTE_VALIDATION_PATH:
+                self._validation_timings[request.sequence] = {
+                    "sequence": request.sequence,
+                    "events": [],
+                }
             self._condition.notify_all()
+
+        def trace(event: str, _info: dict[str, Any]) -> None:
+            if event.endswith(_TIMED_HTTP_EVENTS):
+                with self._condition:
+                    self._validation_timings[request.sequence]["events"].append(
+                        {
+                            "name": event,
+                            "elapsed_ms": round((time.monotonic_ns() - started) / 1_000_000),
+                        }
+                    )
 
         forwarded_headers = {
             name: value
@@ -253,7 +346,14 @@ class TuiRequestRecorder:
                 f"{self.upstream}{handler.path}",
                 headers=forwarded_headers,
                 content=body,
+                extensions={"trace": trace} if request.path == ROUTE_VALIDATION_PATH else None,
             ) as response:
+                if request.path == ROUTE_VALIDATION_PATH:
+                    request_id = safe_request_id(response.headers.raw)
+                    with self._condition:
+                        self._validation_timings[request.sequence].update(
+                            status_code=response.status_code, request_id=request_id
+                        )
                 handler.send_response(response.status_code)
                 for name, value in response.headers.items():
                     if name.lower() not in _STRIPPED_HEADERS:
@@ -285,6 +385,10 @@ class TuiRequestRecorder:
             # Record the transport failure so a waiter sees the 502 the agent saw
             # instead of timing out for a response that can never arrive.
             with self._condition:
+                if request.path == ROUTE_VALIDATION_PATH:
+                    self._validation_timings[request.sequence]["transport_error"] = type(
+                        error
+                    ).__name__
                 self._responses.setdefault(
                     request.sequence,
                     RecordedResponse(

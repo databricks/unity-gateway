@@ -1,5 +1,7 @@
 import gzip
+import hashlib
 import json
+import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +20,7 @@ from tests.e2e_cuj.helpers.tui_request_recorder import (
 )
 from tests.integration.utils import request_recorder
 from tests.integration.utils.harness import UserSession
+from ucode.smart_routing import route_validation
 
 _MESSAGES_PATH = "/ai-gateway/anthropic/v1/messages"
 _PRIVATE = "PRIVATE-prompt-tool-name-argument-model-header-error"
@@ -35,6 +38,8 @@ def recorder():
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("x-request-id", "test-request-id")
+            self.send_header("request-id", "secondary-request-id")
             self.end_headers()
             self.wfile.write(body)
 
@@ -57,6 +62,22 @@ def assert_response(response: RecordedResponse):
     assert response.payload["result"] == "ok"
 
 
+def test_route_diagnostics_include_every_recorded_prompt_without_disclosing_it(recorder):
+    path = "/ai-gateway/routing/v1/routes:select"
+    prompts = ["first private prompt", "second private prompt"]
+    for prompt in prompts:
+        httpx.post(f"{recorder.url}{path}", json={"task": {"prompt": prompt}})
+    evidence = recorder.route_select_diagnostics()
+    assert len(evidence) == 2
+    for item, prompt in zip(evidence, prompts, strict=True):
+        assert item["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
+        assert item["prompt_length"] == len(prompt)
+        assert item["status"] == 200
+        assert item["response_request_id"] == "test-request-id"
+        assert item["timestamp"]
+        assert prompt not in json.dumps(item)
+
+
 def test_records_request_and_response(recorder):
     path = "/test/requests"
     checkpoint = recorder.checkpoint()
@@ -66,6 +87,72 @@ def test_records_request_and_response(recorder):
     assert recorder.requests_after(checkpoint) == (request,)
     assert_request(request)
     assert_response(recorder.response_for(request))
+
+
+def test_validation_forwarding_records_safe_upstream_timings(recorder):
+    path = request_recorder.ROUTE_VALIDATION_PATH
+    response = httpx.post(
+        f"{recorder.url}{path}",
+        headers={"Authorization": "Bearer synthetic-secret"},
+        json={"prompt": "private-prompt"},
+    )
+    assert response.status_code == 200
+    [row] = recorder.validation_timings()
+    assert row["status_code"] == 200
+    assert row["request_id"] == "test-request-id"
+    timings = route_validation._NetworkTimings()
+    timings.trace("response.headers", {"headers": response.headers.raw})
+    assert f"request_id={row['request_id']}" in timings.summary()
+    names = {event["name"] for event in row["events"]}
+    assert {
+        "connection.connect_tcp.started",
+        "connection.connect_tcp.complete",
+        "http11.receive_response_headers.complete",
+    } <= names
+    assert all(isinstance(event["elapsed_ms"], int) for event in row["events"])
+    assert "private-prompt" not in json.dumps(row)
+    assert "synthetic-secret" not in json.dumps(row)
+
+
+def test_validation_forwarding_preserves_safe_refused_upstream_evidence():
+    with socket.socket() as unavailable:
+        unavailable.bind(("127.0.0.1", 0))
+        upstream = f"http://127.0.0.1:{unavailable.getsockname()[1]}"
+        with TuiRequestRecorder(upstream) as recorder:
+            response = httpx.post(
+                f"{recorder.url}{request_recorder.ROUTE_VALIDATION_PATH}",
+                headers={"Authorization": "Bearer synthetic-secret"},
+                json={"prompt": "private-prompt"},
+            )
+            assert response.status_code == 502
+            request = recorder.expect_request(
+                method="POST", path=request_recorder.ROUTE_VALIDATION_PATH
+            )
+            assert recorder.response_for(request).status_code == 502
+            [timing] = recorder.validation_timings()
+            assert timing["sequence"] == request.sequence
+            assert timing["transport_error"] == "ConnectError"
+            assert any(
+                event["name"] == "connection.connect_tcp.failed" for event in timing["events"]
+            )
+            assert all(isinstance(event["elapsed_ms"], int) for event in timing["events"])
+            assert "private-prompt" not in json.dumps(timing)
+            assert "synthetic-secret" not in json.dumps(timing)
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ([(b"request-id", b"secondary"), (b"x-request-id", b"primary")], "primary"),
+        ([(b"x-request-id", b"\xffsecret"), (b"request-id", b"safe")], "safe"),
+        ([(b"x-request-id", b"Bearer secret")], None),
+        ([(b"x-request-id", b"a"), (b"x-request-id", b"b")], "a"),
+        ([(b"x-databricks-request-id", b"databricks-id")], "databricks-id"),
+    ],
+)
+def test_request_id_selectors_agree_across_process_boundary(headers, expected):
+    assert route_validation.safe_request_id(headers) == expected
+    assert request_recorder.safe_request_id(headers) == expected
 
 
 def test_rejected_inference_reports_tool_setup_without_conversation():

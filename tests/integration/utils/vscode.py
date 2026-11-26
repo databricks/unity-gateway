@@ -450,6 +450,8 @@ class VSCode:
                 STEP_TIMEOUT_S,
                 "the Copilot Chat notice to close",
             )
+        elif state == "dropdown blocking editor":
+            self._act("model picker: dismiss dropdown", lambda: page.keyboard.press("Escape"))
         elif state == "language models editor":
             self._wait(
                 self._close_models_editor(), STEP_TIMEOUT_S, "the Language Models editor to close"
@@ -493,29 +495,27 @@ class VSCode:
             raise UnknownScreen(f"Unknown screen while picking {label}: {screen}")
 
     def _close_models_editor(self):
-        """A check that is true once no Language Models editor is open, clicking Close on each.
-
-        "Add Models..." and ug's "Turn On Copilot Chat" each open one, so another can be there,
-        or open, right after one closes."""
+        """Close the current editor once and wait for it or an intervening dropdown to change."""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        # Its own close button: Escape only closes it while it has focus.
-        close = self.page.locator('.monaco-modal-editor-block:visible [aria-label^="Close"]').first
-        clicked = 0.0
-
-        def closed() -> bool:
-            nonlocal clicked
-            if not self.screen()["modelsEditor"]:
-                return True
-            if time.monotonic() - clicked >= SETTLE_S:
-                clicked = time.monotonic()
-                try:
-                    self._click("Language Models editor: Close", close)
-                except PlaywrightTimeoutError:
-                    self.actions.append("  (the Language Models editor closed before the click)")
-            return False
-
-        return closed
+        editor = (
+            self.page.locator(".monaco-modal-editor-block:visible")
+            .filter(has=self.page.locator(".models-widget"))
+            .first
+        )
+        try:
+            handle = editor.element_handle(timeout=CLICK_TIMEOUT_MS)
+            self._click(
+                "Language Models editor: Close", editor.locator('[aria-label^="Close"]').first
+            )
+        except PlaywrightTimeoutError:
+            current = self.screen()
+            if current["modelsEditor"] and not current["dropdown"]:
+                raise
+            observed = "dropdown appeared" if current["dropdown"] else "editor closed"
+            self.actions.append(f"  ({observed} before the click)")
+            return lambda: True
+        return lambda: not handle.is_visible() or self.screen()["dropdown"]
 
     def _search_picker(self, label: str) -> None:
         # Keys go to the search box itself, not to whatever has focus: a picker that closes
@@ -581,6 +581,7 @@ class VSCode:
                     "picker: signed out",
                     "dialog: trust folder",
                     "notice: Copilot Chat off",
+                    "dropdown blocking editor",
                     "language models editor",
                     "tour",
                 ):
@@ -625,6 +626,8 @@ class VSCode:
             return "tour"
         if screen["copilotChatOffNotice"] and not screen["dropdown"]:
             return "notice: Copilot Chat off"
+        if screen["modelsEditor"] and screen["dropdown"]:
+            return "dropdown blocking editor"
         if screen["modelsEditor"]:
             return "language models editor"
         text = screen["picker"]
