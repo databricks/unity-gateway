@@ -1,29 +1,85 @@
-# MDM / JAMF deployment for Unity Gateway
+# Deploy Unity Gateway with MDM
 
-MDM deployment runs `ug configure` as root on each machine.
+Use mobile device management (MDM) to install Unity Gateway on a pilot device, apply the
+workspace's coding-agent configuration, and let developers sign in with their own accounts.
 
-| Platform | Script | Setup guide |
+## 1. Publish the workspace configuration
+
+Enable Claude Code and Codex in your workspace's coding-agent configuration and select models
+that the provisioning service principal can access. Grant it the required access to configured
+MCP servers and skills as well. Use a dedicated OAuth secret with the `ai-gateway:read` and
+`unity-catalog:read` scopes for provisioning, not a developer's credentials.
+
+## 2. Choose your platform
+
+| Platform | Provisioning script | Deployment instructions |
 | --- | --- | --- |
-| macOS | `macos-provision.sh` | [macos-setup.md](macos-setup.md) |
+| macOS | [macos-provision.sh](macos-provision.sh) | [Jamf Pro setup](macos-setup.md) |
+| Windows | [windows-provision.ps1](windows-provision.ps1) | [Intune Win32 setup](windows-setup.md) |
 
-Linux and Windows scripts will follow.
+For Windows, follow the numbered Intune guide in order: prepare the package, create a one-device
+group, configure the app, assign it, and verify installation. Package preparation can use a
+separate Windows VM from the enrolled deployment device. Do not run the installer manually
+before checking Intune delivery.
 
-On macOS, `macos-provision.sh` is an MDM policy script (written for JAMF), run as root on each
-machine. It installs `ug` (with its own Python), the Databricks CLI and Node.js/npm under
-`/usr/local`, where every user can run them, then runs `ug configure --global --mdm` as root.
-Unity Gateway's built-in npm installer supplies missing Claude Code and Codex binaries in the same
-shared prefix. Configure installs the workspace policy and `mdm_os: Mac` at
-`/etc/unitygateway/managed-settings.json`. The script also adds `claude` and `codex`
-aliases (for `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex`) to `/etc/zshrc` and `/etc/bashrc`, so
-developers launch with `claude` or `codex` in a new terminal: no sudo, and inference uses their own
-OAuth.
+## 3. Prepare the provisioning inputs
 
-When the workspace publishes an agent configuration, the script's `ug configure --global` run is a
-managed run: it rebuilds each supported agent's machine-wide files from the configuration,
-including the admin's native settings. Developers then launch their agents through `ug` with no
-extra variable. See
-[Admin-managed agent settings reference](../../docs/admin-managed-settings-reference.md).
+| Input | macOS | Windows |
+| --- | --- | --- |
+| Workspace URL | Policy parameter 4 | `-Workspace` |
+| Service principal client ID | Policy parameter 5 | `-ClientId` |
+| Service principal secret | Policy parameter 6 | `-ClientSecret` or process environment |
+| Installation context | root | SYSTEM, 64-bit Windows PowerShell |
 
-The script authenticates `ug configure` with a short-lived token for a service principal whose
-client id and secret come in as policy parameters; neither the credentials nor the token are
-written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
+Intune install arguments can expose the secret through management or process logs; they are not
+secure secret injection. Review the [Windows credential requirements](windows-setup.md#before-you-start)
+before deployment. Do not embed credentials in the source script or package, and redact logs
+before sharing them.
+
+If your network requires PyPI or npm mirrors, configure approved registry endpoints in the
+installer's process environment before packaging it. A working interactive-user network
+connection does not establish that SYSTEM can download dependencies. The Windows guide has an
+[optional proxy example](windows-setup.md#1-prepare-the-package).
+
+## 4. Deploy to one device
+
+Use the platform guide to assign the policy or app only to a pilot device. The script installs
+shared dependencies, then runs `ug configure --global --mdm` to install the workspace policy and
+supported agents' machine-wide settings. The shared runtime must be readable/runnable by
+standard users, not installed under root's or SYSTEM's private profile.
+
+On Windows, monitor the app's **Device install status**, not just the device Sync pane. The initial
+pilot detects `C:\Program Files\UnityGateway\provisioned.json`, written after provisioning finishes.
+If the marker already exists, Intune may report Installed without running the new package.
+
+## 5. Verify as a developer
+
+After Windows installation, restart or sign out and back in so terminals inherit the machine PATH.
+On macOS, open a new terminal. Use a normal, non-administrator session:
+
+```text
+claude
+```
+
+Sign in to Databricks if prompted, complete a prompt, exit, and test Codex separately:
+
+```text
+codex
+```
+
+Confirm that requests use the expected workspace/models and that configured MCP servers and skills
+work. Native agent launches do not establish the MDM wrapper behavior; follow the platform guide's
+command-resolution checks too.
+
+## 6. Expand and maintain the deployment
+
+Expand the assignment only after the pilot succeeds. Rotate the provisioning secret after the
+rollout window; developers continue to authenticate with their own OAuth.
+
+Review the platform guide before software updates or removal. Windows marker-existence detection
+does not schedule recurring configuration refreshes. `ug revert` alone does not uninstall shared
+tools or restore execution policy; the Windows script's `-Uninstall` handles its deployment files
+and profile blocks, while leaving shared Git and execution policy unchanged.
+
+For which settings a managed configure run owns, see the
+[admin-managed agent settings reference](../../docs/admin-managed-settings-reference.md).
