@@ -47,7 +47,7 @@ def main() -> None:
     # The downloads fail open (an unmatched pattern downloads nothing), so the recorded shard
     # counts define the lanes this proof must see; a missing or renamed artifact fails it.
     expected = live_shard.expected_shards()
-    for lane, (system, total) in sorted(expected.items()):
+    for (lane, system), total in sorted(expected.items()):
         shard_reports = lanes.get((lane, system))
         if not shard_reports:
             problems.append(f"{lane}/{system}: no shard artifacts downloaded")
@@ -60,7 +60,7 @@ def main() -> None:
     times = {}
     for (lane, system), shard_reports in sorted(lanes.items()):
         label = f"{lane}/{system}"
-        total = expected.get(lane, (system, len(shard_reports)))[1]
+        total = expected.get((lane, system), len(shard_reports))
         specs = sorted(shard.parse(report["shard"]) for report, _ in shard_reports)
         if specs != [(index, total) for index in range(1, total + 1)]:
             problems.append(f"{label}: shard set is {[r['shard'] for r, _ in shard_reports]}")
@@ -111,16 +111,14 @@ def main() -> None:
             if seen != 1:
                 problems.append(f"{label}: case {test} ran {seen} times")
         print(f"{label}: {len(shard_reports)} shards, {sum(v[1] for v in by_file.values())} cases")
-        times[lane] = {
-            system: {
-                "shards": specs[0][1] if specs else 1,
-                "files": {path: [round(sec, 2), n] for path, (sec, n) in sorted(by_file.items())},
-                "slow": {
-                    test: round(by_case_seconds[test], 2)
-                    for test in sorted(by_case_seconds)
-                    if by_case_seconds[test] >= shard.SLOW_SECONDS
-                },
-            }
+        times.setdefault(lane, {})[system] = {
+            "shards": specs[0][1] if specs else 1,
+            "files": {path: [round(sec, 2), n] for path, (sec, n) in sorted(by_file.items())},
+            "slow": {
+                test: round(by_case_seconds[test], 2)
+                for test in sorted(by_case_seconds)
+                if by_case_seconds[test] >= shard.SLOW_SECONDS
+            },
         }
     if problems:
         raise SystemExit("::error::Live shards did not cover their lanes:\n" + "\n".join(problems))

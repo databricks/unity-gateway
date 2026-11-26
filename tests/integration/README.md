@@ -1975,7 +1975,8 @@ except ordinary Codex Windows: its own job balances all cases across three runne
 `tests/live_shard.py` and `tests/live_test_times.json`, with `max-parallel: 2` queueing the
 third shard without cancelling another run. Each shard has about 185 s of recorded tests;
 the two waves take about 370 s of tests plus setup, so this quota-limited plan does not claim
-a five-minute end-to-end result. The native-usage replay and its partial-coverage caveat
+a five-minute end-to-end result. The Full Claude legs split the same way from recorded
+case times (Windows four shards, Linux two) and stay fully parallel. The native-usage replay and its partial-coverage caveat
 are documented in the [test guide](../README.md).
 Cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,

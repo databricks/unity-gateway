@@ -37,10 +37,10 @@ def lane_times(lane: str, system: str | None = None) -> dict:
         ) from None
 
 
-def expected_shards() -> dict[str, tuple[str, int]]:
-    """``{lane: (os, shards)}`` for every lane CI splits, from the committed weights."""
+def expected_shards() -> dict[tuple[str, str], int]:
+    """``{(lane, os): shards}`` for every lane-and-OS pair CI splits, from the weights."""
     return {
-        lane: (system, times["shards"])
+        (lane, system): times["shards"]
         for lane, oses in json.loads(TIMES.read_text(encoding="utf-8")).items()
         for system, times in oses.items()
         if times.get("shards", 1) > 1

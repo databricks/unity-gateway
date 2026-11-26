@@ -869,7 +869,7 @@ jobs:
     strategy:
       fail-fast: false
       # Native Codex routing needs a newer binary; other journeys retain the baseline.
-      # Claude Windows shards are balanced from recorded case times (tests/live_shard.py).
+      # Claude shards are balanced from recorded case times (tests/live_shard.py).
       # Ordinary Codex Windows has its own queue below; other lanes remain fully parallel.
       matrix:
         include:
@@ -877,6 +877,12 @@ jobs:
             agent: codex
           - os: ubuntu-22.04
             agent: claude
+            shard: "1/2"
+            shard_index: 1
+          - os: ubuntu-22.04
+            agent: claude
+            shard: "2/2"
+            shard_index: 2
           - os: windows-latest
             agent: claude
             shard: "1/4"
@@ -1414,6 +1420,13 @@ jobs:
         run: echo "BUDGET_COVERAGE_FULL_DONE=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
+          pattern: integration-full-claude-ubuntu-22.04-shard*
+          path: ${{ runner.temp }}/shards
+      - name: Mark Linux-claude-shard download complete
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_COVERAGE_LINUX_CLAUDE_DONE=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
           pattern: integration-anthropic-mps-claude-windows-latest-shard*
           path: ${{ runner.temp }}/shards
       - name: Mark MPS-shard download complete
@@ -1437,7 +1450,8 @@ jobs:
             echo '| --- | ---: |'
             printf '| Checkout and clock start | %s |\n' "$((BUDGET_COVERAGE_CHECKOUT_DONE - BUDGET_JOB_STARTED))"
             printf '| Full-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_FULL_DONE - BUDGET_COVERAGE_CHECKOUT_DONE))"
-            printf '| MPS-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_MPS_DONE - BUDGET_COVERAGE_FULL_DONE))"
+            printf '| Linux-claude-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_LINUX_CLAUDE_DONE - BUDGET_COVERAGE_FULL_DONE))"
+            printf '| MPS-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_MPS_DONE - BUDGET_COVERAGE_LINUX_CLAUDE_DONE))"
             printf '| CUJ-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_CUJ_DONE - BUDGET_COVERAGE_MPS_DONE))"
             printf '| Other setup | %s |\n' "$((BUDGET_RUN_STARTED - BUDGET_COVERAGE_CUJ_DONE))"
             echo 'Intervals include runner scheduling and timing-marker overhead.'

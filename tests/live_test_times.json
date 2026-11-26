@@ -88,6 +88,87 @@
   }
  },
  "full-claude": {
+  "Linux": {
+   "files": {
+    "test_ug_claude_commands.py": [
+     12.28,
+     4
+    ],
+    "test_ug_claude_headless.py": [
+     111.46,
+     12
+    ],
+    "test_ug_claude_model_discovery.py": [
+     25.62,
+     3
+    ],
+    "test_ug_claude_relayed.py": [
+     11.48,
+     1
+    ],
+    "test_ug_claude_tracing.py": [
+     45.12,
+     1
+    ],
+    "test_ug_configure_claude.py": [
+     90.33,
+     4
+    ],
+    "test_ug_configure_claude_desktop.py": [
+     61.55,
+     2
+    ],
+    "test_ug_configure_claude_lifecycle.py": [
+     17.56,
+     3
+    ],
+    "test_ug_configure_scope.py": [
+     57.37,
+     4
+    ],
+    "test_ug_smart_routing_hooks.py": [
+     37.5,
+     6
+    ]
+   },
+   "shards": 2,
+   "slow": {
+    "test_ug_claude_commands.py::test_ug_claude_auth_help[routing-off]": 3.89,
+    "test_ug_claude_commands.py::test_ug_claude_auth_help[routing-on]": 2.74,
+    "test_ug_claude_commands.py::test_ug_claude_mcp_help[routing-off]": 2.99,
+    "test_ug_claude_commands.py::test_ug_claude_mcp_help[routing-on]": 2.66,
+    "test_ug_claude_headless.py::test_ug_claude_fresh_foundry_mps": 5.0,
+    "test_ug_claude_headless.py::test_ug_claude_headless_allow_all_bedrock_provider": 8.45,
+    "test_ug_claude_headless.py::test_ug_claude_headless_bedrock_runtime_opus": 8.63,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[claude-equals]": 11.64,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[claude-separate]": 11.39,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[ug-equals]": 12.2,
+    "test_ug_claude_headless.py::test_ug_claude_headless_explicit_model_bypasses_routing[ug-separate]": 11.93,
+    "test_ug_claude_headless.py::test_ug_claude_headless_fresh_workspace": 5.51,
+    "test_ug_claude_headless.py::test_ug_claude_headless_prompt_after_separator": 10.89,
+    "test_ug_claude_headless.py::test_ug_claude_headless_prompt_stdin": 11.67,
+    "test_ug_claude_headless.py::test_ug_claude_preserves_caller_settings_and_hook": 11.48,
+    "test_ug_claude_headless.py::test_ug_claude_reports_unsupported_short_model_option": 2.67,
+    "test_ug_claude_model_discovery.py::test_case_09_fresh_claude_discovers_system_models": 8.42,
+    "test_ug_claude_model_discovery.py::test_case_13_configured_claude_model_location_overrides_saved_setup": 8.91,
+    "test_ug_claude_model_discovery.py::test_case_13_fresh_claude_model_location_discovers_parent_models": 8.29,
+    "test_ug_claude_relayed.py::test_ug_claude_relayed_serves_subscription_and_databricks_models": 11.48,
+    "test_ug_claude_tracing.py::test_ug_claude_exports_trace_to_configured_table": 45.12,
+    "test_ug_configure_claude.py::test_ug_configure_claude_bedrock_mantle_mps": 21.75,
+    "test_ug_configure_claude.py::test_ug_configure_claude_bedrock_mps": 22.64,
+    "test_ug_configure_claude.py::test_ug_configure_claude_custom_foundry_mps": 22.06,
+    "test_ug_configure_claude.py::test_ug_configure_claude_foundry_mps": 23.89,
+    "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_profile_lifecycle": 18.77,
+    "test_ug_configure_claude_desktop.py::test_ug_configure_claude_desktop_subscription_relay": 42.78,
+    "test_ug_configure_claude_lifecycle.py::test_ug_configure_claude_repeat_and_revert": 14.67,
+    "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults": 2.35,
+    "test_ug_configure_scope.py::test_ug_configure_scope_claude[default]": 11.41,
+    "test_ug_configure_scope.py::test_ug_configure_scope_claude[global]": 24.07,
+    "test_ug_configure_scope.py::test_ug_configure_scope_claude[skip_os_settings]": 11.13,
+    "test_ug_configure_scope.py::test_ug_configure_scope_claude[user]": 10.76,
+    "test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message": 30.76
+   }
+  },
   "Windows": {
    "files": {
     "test_ug_claude_commands.py": [
