@@ -42,10 +42,15 @@ The non-relay service lives in the staging workspace that the CLI `anthropic-mps
 Staging rejects GitHub-hosted runners, so the Windows Desktop tasks run in their own
 `cowork-inference-staging` job on `databricks-protected-runner-group`, beside that lane's CLI
 shards instead of after them. The job splits the four checks into three parallel legs —
-inference with the skill task (the skill commands need the account directory of a completed
-inference task on the same runner), the file read, and the MCP web search — because the
-provider service serves the lane's concurrent Claude shards already, reports no configured
-rate limits, and each check issues only a handful of tiny requests. It skips merge-group
+inference with the skill task, the file read, and the MCP web search — because the provider
+service serves the lane's concurrent Claude shards already, reports no configured rate
+limits, and each check issues only a handful of tiny requests. Every leg runs the inference
+check first: it completes Desktop's first-launch gateway onboarding on a fresh runner, and
+the skill task's plugin commands reuse that task's Cowork account directory on the same
+runner. The Databricks CLI is installed and exposed on PATH before the checks, as in the
+CLI lanes: Desktop's credential helper and the connector proxy resolve the `desktop-ci` PAT
+profile through `databricks auth profiles`, and this lane carries no `DATABRICKS_BEARER` to
+short-circuit that resolution. It skips merge-group
 runs like the other Desktop lanes. The protected runner reaches packages only through the
 internal PyPI and npm proxies; the Claude installer still downloads directly. Desktop's
 credential helper authenticates with the lane's `ug-ci-sp` service principal through

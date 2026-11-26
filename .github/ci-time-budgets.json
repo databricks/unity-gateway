@@ -663,8 +663,8 @@
     "cowork-inference-staging": {
       "Cowork desktop tasks · Staging Anthropic MPS": {
         "setup": 460,
-        "run": 300,
-        "total": 740
+        "run": 330,
+        "total": 760
       }
     },
     "cowork-inference-windows": {
@@ -2065,23 +2065,23 @@
         "run_ids": [45532462528, 45550575204, 45672220380, 45723687331, 45772394151],
         "p50": {
           "setup": 212.0,
-          "run": 123.0,
-          "total": 327.0
+          "run": 143.0,
+          "total": 363.0
         },
         "p95": {
           "setup": 227.0,
-          "run": 146.0,
-          "total": 367.0
+          "run": 160.0,
+          "total": 372.0
         },
         "p99": {
           "setup": 227.0,
-          "run": 146.0,
-          "total": 367.0
+          "run": 160.0,
+          "total": 372.0
         },
         "observed_max": {
           "setup": 227.0,
-          "run": 146.0,
-          "total": 367.0
+          "run": 160.0,
+          "total": 372.0
         },
         "limited_sample": true,
         "total_only": 0

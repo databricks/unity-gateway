@@ -496,14 +496,14 @@ jobs:
       fail-fast: false
       # The four Cowork checks run as parallel legs. The provider service serves the lane's
       # concurrent Claude shards already (#1824), reports no configured rate limits, and each
-      # check issues only a handful of tiny requests, so the legs run side by side. The skill
-      # task needs the account directory of a completed inference task on the same runner, so
-      # it stays behind the inference check in its leg; the file and MCP tasks are standalone.
+      # check issues only a handful of tiny requests, so the legs run side by side. Every leg
+      # runs the inference check first: it completes Desktop's gateway onboarding on a fresh
+      # runner, and the skill task additionally needs the inference task's Cowork account
+      # directory on the same runner, so it keeps its original place behind inference.
       matrix:
         check:
           - id: inference-skill
             name: Inference and skill
-            inference: true
             task: skill
             task_name: skill execution
           - id: file
@@ -560,6 +560,34 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
+      # Desktop's credential helper and the connector proxy resolve the PAT profile through
+      # `databricks auth profiles`, so the CLI must be on PATH for them — not only configure,
+      # whose in-process winget bootstrap never reaches later step processes. The staging
+      # lane has no DATABRICKS_BEARER to short-circuit that resolution with. The curl
+      # config bounds setup-cli's download retries; the anchor lives in the live steps
+      # below this job, so the step is inlined here.
+      - name: Bound Windows Databricks CLI download retries
+        shell: pwsh
+        run: |
+          $curlHome = Join-Path $env:RUNNER_TEMP "databricks-cli-curl"
+          New-Item -ItemType Directory -Force -Path $curlHome | Out-Null
+          @(
+            "retry = 3"
+            "retry-all-errors"
+            "retry-max-time = 60"
+            "connect-timeout = 20"
+            "max-time = 120"
+          ) | Set-Content -Path (Join-Path $curlHome ".curlrc") -Encoding ascii
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        env:
+          CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
+        with:
+          version: 1.17.0
+      - name: Expose the Databricks CLI on Windows
+        shell: bash
+        run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
       - name: Validate Cowork test scripts
         shell: pwsh
         run: |
@@ -608,7 +636,7 @@ jobs:
         run: ./scripts/cowork-inference/configure.ps1
       - name: Assert Cowork inference through Windows UI Automation
         id: desktop-inference
-        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' && matrix.check.inference }}
+        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' }}
         timeout-minutes: 15
         shell: pwsh
         run: |
@@ -616,7 +644,7 @@ jobs:
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Assert Cowork ${{ matrix.check.task_name }}
-        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' && (matrix.check.inference != true || steps.desktop-inference.outcome == 'success') }}
+        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}
         timeout-minutes: 10
         shell: pwsh
         run: |

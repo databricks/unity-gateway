@@ -2591,23 +2591,33 @@ def test_staging_cowork_lane_runs_desktop_tasks_in_parallel_on_protected_runners
     assert "max-parallel" not in job
     assert "format('Cowork desktop tasks · Staging Anthropic MPS · {0}', matrix.check.name)" in job
     assert "UG_COWORK_TASK: ${{ matrix.check.task }}" in job
-    # Only the skill task needs another check first: its plugin commands use the account
-    # directory of a completed inference task, so that leg pairs the two on one runner.
-    assert "            inference: true\n            task: skill\n" in job
+    # The Databricks CLI is on PATH before the checks: Desktop's credential helper and
+    # the connector proxy resolve the PAT profile through `databricks auth profiles`, and
+    # this lane has no DATABRICKS_BEARER to short-circuit that resolution with. Configure's
+    # own winget bootstrap only fixes the configure process, never the later steps.
+    assert "uses: databricks/setup-cli@" in job
+    expose = job.split("      - name: Expose the Databricks CLI on Windows\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert "cygpath -w" in expose
+    assert job.index("uses: databricks/setup-cli@") < job.index(
+        "name: Assert Cowork inference through Windows UI Automation"
+    )
+    # Every leg runs the inference check first: it completes Desktop's gateway onboarding
+    # on a fresh runner, and the skill task's plugin commands reuse the inference task's
+    # Cowork account directory on the same runner.
     inference = job.split(
         "      - name: Assert Cowork inference through Windows UI Automation\n", 1
     )[1].split("      - name: ", 1)[0]
     assert (
-        "        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' "
-        "&& matrix.check.inference }}\n" in inference
+        "        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' }}\n"
+        in inference
     )
     task = job.split("      - name: Assert Cowork ${{ matrix.check.task_name }}\n", 1)[1].split(
         "      - name: ", 1
     )[0]
     assert (
-        "        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' "
-        "&& (matrix.check.inference != true || steps.desktop-inference.outcome == 'success') }}\n"
-        in task
+        "        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}\n" in task
     )
     assert '-Capability "$env:UG_COWORK_TASK"' in task
     assert task.count("test-task.ps1") == 1
