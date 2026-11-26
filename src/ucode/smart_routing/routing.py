@@ -15,12 +15,16 @@ import logging
 import math
 import os
 import re
+import socket
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -37,7 +41,10 @@ ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
 MAX_ROUTE_OPTIONS = 128
-REQUEST_TIMEOUT_S = 30.0
+# A slow router must never stall a prompt or subagent spawn; past this, the harness default wins.
+ROUTE_SELECTION_TIMEOUT_S = 10.0
+REQUEST_TIMEOUT_S = ROUTE_SELECTION_TIMEOUT_S
+HARNESS_DEFAULT_FALLBACK = "harness_default"
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
@@ -450,6 +457,69 @@ def attribution_headers(
     return dict(headers.values())
 
 
+_fallback_model: ContextVar[str | None] = ContextVar("ug_routing_fallback_model", default=None)
+
+
+@contextmanager
+def fallback_model(model: str | None) -> Iterator[None]:
+    """Name the model the harness keeps if the routing call inside this scope fails."""
+    token = _fallback_model.set(model)
+    try:
+        yield
+    finally:
+        _fallback_model.reset(token)
+
+
+class RouteSelectionTimeout(TimeoutError):
+    """The router did not answer within the routing deadline."""
+
+
+def _abort_response(response: Any) -> None:
+    # Shutting the socket down wakes a blocked recv, which closing the file object does not.
+    raw = getattr(getattr(response, "fp", None), "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if isinstance(sock, socket.socket):
+        with suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+    with suppress(Exception):
+        response.close()
+
+
+def _post_with_deadline(request: urllib.request.Request, timeout: float) -> dict[str, Any]:
+    """Run the request on a worker and abort it once ``timeout`` elapses.
+
+    urllib's own timeout is per socket operation, so a router that trickles bytes (or stalls
+    between connect, headers and body) could exceed the deadline. The worker is a daemon whose
+    socket timeouts also bound it, so an abandoned connect cannot outlive the deadline by much.
+    """
+    outcome: dict[str, Any] = {}
+    opened: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                opened["response"] = response
+                outcome["status"] = getattr(response, "status", None)
+                outcome["body"] = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            outcome["http_error"] = (exc.code, detail)
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, name="ug-routes-select", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        _abort_response(opened.get("response"))
+        raise RouteSelectionTimeout(f"timed out after {timeout:g}s")
+    return outcome
+
+
 @metrics.timed(
     metrics.ROUTING_DECISION_DURATION_MS, reason_result=True, continued_with_fallback=True
 )
@@ -493,29 +563,35 @@ def select_route(
         },
         method="POST",
     )
+    harness = offered_routes[0][1] if offered_routes else None
     request_started = time.perf_counter()
     status = None
+    failure: tuple[str, str, int | None] | None = None
+    payload: Any = None
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            status = getattr(response, "status", None)
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        status = exc.code
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except OSError:
-            pass
-        reason = f"router returned HTTP {exc.code}"
-        if detail:
-            reason = f"{reason}: {detail[:300]}"
-        return None, reason
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
-        return None, f"router request failed: {exc}"
+        outcome = _post_with_deadline(request, timeout)
+        if "http_error" in outcome:
+            status, detail = outcome["http_error"]
+            reason = f"router returned HTTP {status}"
+            failure = (f"{reason}: {detail[:300]}" if detail else reason, "HTTPError", status)
+        elif "error" in outcome:
+            exc = outcome["error"]
+            if not isinstance(exc, (urllib.error.URLError, OSError, TimeoutError, ValueError)):
+                raise exc
+            failure = (f"router request failed: {exc}", type(exc).__name__, None)
+        else:
+            status = outcome["status"]
+            try:
+                payload = json.loads(outcome["body"].decode("utf-8"))
+            except ValueError as exc:
+                failure = (f"router request failed: {exc}", type(exc).__name__, None)
+    except RouteSelectionTimeout as exc:
+        failure = (f"router request timed out: {exc}", "RouteSelectionTimeout", None)
     finally:
+        elapsed_ms = (time.perf_counter() - request_started) * 1000
         metrics.record(
             metrics.HTTP_REQUEST_DURATION_MS,
-            (time.perf_counter() - request_started) * 1000,
+            elapsed_ms,
             workspace=workspace,
             api_operation=metrics.api_operation(request.full_url),
             http_method="POST",
@@ -523,6 +599,24 @@ def select_route(
             attempt=1,
         )
         metrics.annotate(http_status_code=status)
+    if failure is not None:
+        reason, error_type, code = failure
+        context = {
+            "agent": harness,
+            "error_type": error_type,
+            "fallback_model": _fallback_model.get() or HARNESS_DEFAULT_FALLBACK,
+        }
+        # The duration sample carries the elapsed time; the error counter shares its context.
+        metrics.annotate(**context)
+        # Recorded here (not only by the decorator) so the error carries the fallback context.
+        metrics.failure(
+            "routing_decision",
+            reason,
+            continued_with_fallback=True,
+            http_status_code=code,
+            **context,
+        )
+        return None, reason
 
     model = _selected_model(payload)
     if model is None:

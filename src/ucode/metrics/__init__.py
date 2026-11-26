@@ -97,6 +97,8 @@ STRING_LABELS = frozenset(
         "phase",
         "operation",
         "error_code",
+        "error_type",
+        "fallback_model",
     }
 )
 BOOL_LABELS = frozenset(

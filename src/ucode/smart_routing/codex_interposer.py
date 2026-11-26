@@ -103,7 +103,9 @@ class _Session:
                 if prompt is None:
                     self.log("[ROUTE] first turn had no plaintext prompt; keeping current model")
                     return TuiFrameResult(raw, needs_settings_update=False)
-                decision, reason = self.route_decision(prompt)
+                # On failure Codex keeps the model it asked for, so that is the fallback to report.
+                with routing.fallback_model(params.get("model")):
+                    decision, reason = self.route_decision(prompt)
                 if decision is None:
                     self.log(f"[ROUTE] selection failed; keeping current model: {reason}")
                     return TuiFrameResult(raw, needs_settings_update=False)
