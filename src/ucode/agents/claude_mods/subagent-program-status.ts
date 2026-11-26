@@ -34,11 +34,14 @@ export function createSubagentProgramStatus() {
       const current = source!;
       const { sessionId, agents } = await current.read();
       if (sessionId === endedSession) return;
-      // Waiting also includes an agent held on its own background work. It
-      // does not prove a human is needed, so never invent a blocked report.
-      const activeTasks = agents.filter(agent =>
-        ['pending', 'running', 'waiting'].includes(agent.status)).length;
-      const snapshot = JSON.stringify({ sessionId, activeTasks });
+      // Keep each agent's identity and lifecycle state. The terminal, rather
+      // than this producer, decides how to combine siblings and the main turn.
+      const tasks = agents.map(agent => ({
+        id: agent.id,
+        status: agent.status,
+        title: agent.description || agent.name || agent.type,
+      })).sort((a, b) => a.id.localeCompare(b.id));
+      const snapshot = JSON.stringify({ sessionId, agents: tasks });
       if (snapshot !== lastSnapshot) {
         await current.write(current.path!, snapshot);
         lastSnapshot = snapshot;
@@ -64,7 +67,7 @@ export function createSubagentProgramStatus() {
     }
     await enqueue(async () => {
       lastSnapshot = '';
-      if (source?.path) await source.write(source.path, JSON.stringify({ sessionId: e.sessionId, activeTasks: null }));
+      if (source?.path) await source.write(source.path, JSON.stringify({ sessionId: e.sessionId, agents: null }));
     });
     // /clear starts another conversation without session.start. Keep sampling
     // until session.id changes, and leave the ended conversation cleared.

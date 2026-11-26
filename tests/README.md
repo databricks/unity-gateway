@@ -2,9 +2,10 @@
 
 `test_claude_program_status.py` and the native extension's
 `subagent-program-status.test.ts` cover OSC 7501 delegated-work reports independently
-of footer rendering. They check children outliving the main turn, partial completion,
+of footer rendering. They check individual agent identities and states, children
+outliving the main turn, independent completion and failure, cancellation, removal,
 held agents, failed reads and writes, reset ordering, late reads after shutdown,
-and headless launch isolation. These are component checks, not live inference or
+partial terminal writes, and headless launch isolation. These are component checks, not live inference or
 ArcaTerm integration coverage. See [the status contract](../docs/claude-program-status.md).
 
 CUJ4 covers Codex's native Auto row appearing first, main-model and reasoning-effort

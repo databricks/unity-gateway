@@ -1,6 +1,6 @@
 # Integration tests
 
-Claude delegated-work OSC 7501 reporting has native-extension and Python component
+Claude per-agent OSC 7501 reporting has native-extension and Python component
 coverage, described in the [main test guide](../README.md). A live routed-agent
 journey asserting the emitted reports and ArcaTerm's displayed status has not
 been run. Existing routing journeys do not establish that status behavior.

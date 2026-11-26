@@ -1,24 +1,37 @@
 # Claude delegated-work status
 
-An interactive smart-routed Claude launch reports outstanding delegated work through
-OSC 7501. This keeps a supporting terminal's tab Working when Claude's main turn
-has ended but its subagents are still working. No screen parsing is involved.
+An interactive smart-routed Claude launch reports each delegated agent through
+OSC 7501. Every agent has its own stable task ID, title, and status. A supporting
+terminal decides how to display those tasks and combine them with Claude's main
+turn. One child finishing or failing does not change another child's report.
 
-The Claude extension samples its agent registry once per second and writes a small
-conversation snapshot in the launch's temporary directory. The launcher owns one
-separate OSC task for this delegated work. Pending, running and waiting agents
-keep that task Working. Waiting can mean background work, so it does not by itself
-produce a Needs Input report. Claude's own reports continue to supply input requests
-and other task details.
+The Claude extension samples its agent registry once per second and writes an
+immutable conversation snapshot in the launch's temporary directory. One
+launcher-owned worker publishes the changed records in its own namespace. It
+starts after Claude is spawned and decodes the file only when it changes.
 
-The task reports Done after observed outstanding work reaches zero. Conversation
-replacement and launcher exit clear only UG's task. Failed reads retain the last
-known state and remain retryable. Headless launches, redirected output and
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE` do not publish reports. The bridge belongs to
-new launches and does not modify an agent that is already running.
+| Claude registry state | OSC 7501 report |
+| --- | --- |
+| Pending, Running, Waiting | Working |
+| Idle | Idle |
+| Completed | Done |
+| Failed | Error |
+| Killed, or removed from the registry | Clear that agent's record |
 
-This reports delegated work as one group. It does not claim separate subagent
-outcomes or permission reasons. Native-extension tests cover registry sampling,
-main-turn completion, resets and delayed replies. Python component tests cover the
-OSC bytes, transition rules, shutdown and launch isolation. These checks do not
-establish a live model or ArcaTerm integration pass.
+Waiting can mean background work, a nested Agent call, or approval. The registry
+does not distinguish them, so UG cannot infer a Blocked state or permission reason
+from Waiting alone. Claude's own reports remain intact. Agent IDs are encoded
+into valid, distinct OSC paths, and titles are encoded within the protocol's
+text limits.
+
+Conversation replacement and launcher exit clear only UG's namespace. Failed or
+incomplete reads retain the previous statuses and remain retryable. Headless
+launches, redirected output, and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` do not
+publish reports. This applies to new launches and does not modify an agent that
+is already running.
+
+Native-extension tests cover individual registry states, the main turn finishing
+before its children, resets and delayed replies. Python component tests cover
+independent completion, failure, cancellation and removal, stable identities,
+valid OSC bytes, shutdown and launch isolation. These checks do not establish a
+live model or ArcaTerm integration pass.
