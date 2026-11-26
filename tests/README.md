@@ -1675,7 +1675,8 @@ Required macOS and Windows jobs open the pinned ChatGPT desktop app after manage
 prompt through the GUI, and assert the exact answer, model, and completed turn from the app's rollout.
 Both also invoke a user-authored `$CODEX_HOME/skills` skill whose reference file supplies a hidden
 query and completion token, after registering `system.ai.web_search` with `ug mcp add`.
-The token must render in the GUI and complete on the managed model; native successful MCP receipts
+The token must render in the GUI's Conversation area (a chat title equal to the token does not
+count) and complete on the managed model; native successful MCP receipts
 must carry the query in that same Codex Desktop/Databricks turn. The pinned app versions are
 macOS `26.1103.31037` and Windows `26.1103.7773.0`; harness-latest also selects the macOS journey.
 `test_codex_desktop_evidence.py` rejects false positives from failed/missing calls, unrelated

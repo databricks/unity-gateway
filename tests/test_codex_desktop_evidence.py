@@ -828,7 +828,7 @@ def test_gui_approves_only_the_requested_search(monkeypatch, text_role, button_r
 
     def click(role, label):
         clicks.append((role, label))
-        tree[:] = [[text_role, "", MARKER]]
+        tree[:] = [["Group", "Conversation", ""], [text_role, "", MARKER]]
 
     app = SimpleNamespace(
         read_tree=lambda: tree,
@@ -843,6 +843,18 @@ def test_gui_approves_only_the_requested_search(monkeypatch, text_role, button_r
     else:
         codex_desktop.wait_for_skill_answer(app, QUERY, MARKER, text_role, button_role, 1)
         assert clicks == [(button_role, "Allow once")]
+
+
+def test_gui_skill_answer_ignores_a_chat_title_equal_to_the_token(monkeypatch):
+    # A failed Windows journey: the app titled the chat with the token before asking for approval.
+    tree = [["ControlType.Text", MARKER, ""], ["ControlType.Group", "Conversation", ""]]
+    app = SimpleNamespace(read_tree=lambda: tree, session=SimpleNamespace(record=lambda *a: None))
+    monkeypatch.setattr(codex_desktop.time, "sleep", lambda seconds: None)
+    args = (app, QUERY, MARKER, "ControlType.Text", "ControlType.Button")
+    with pytest.raises(AssertionError, match="never displayed the completed skill answer"):
+        codex_desktop.wait_for_skill_answer(*args, 0)
+    tree.append(["ControlType.Text", MARKER, ""])
+    codex_desktop.wait_for_skill_answer(*args, 0)
 
 
 @pytest.mark.parametrize(
