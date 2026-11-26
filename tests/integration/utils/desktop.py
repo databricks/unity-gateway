@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -74,17 +75,31 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str) -> Non
     ), registration
     parameters = StdioServerParameters(**registration)
     parameters.env = {**session.env, **(parameters.env or {})}
+    parameters.env["UCODE_WEB_SEARCH_DIAGNOSTICS"] = "1"
+    started_at = time.monotonic()
+    events = []
+
+    def record_event(phase: str, **details) -> None:
+        event = {"phase": phase, "elapsed_ms": int((time.monotonic() - started_at) * 1000)}
+        event.update(details)
+        events.append(event)
+
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
         try:
             with anyio.fail_after(60):
                 async with stdio_client(parameters, errlog=diagnostics) as streams:
+                    record_event("stdio_started")
                     async with ClientSession(*streams) as client:
                         await client.initialize()
+                        record_event("initialized")
                         tools = {tool.name for tool in (await client.list_tools()).tools}
+                        record_event("tools_listed", tools=sorted(tools))
                         assert "web_search" in tools, tools
+                        record_event("tool_call_started", tool="web_search")
                         result = await client.call_tool(
                             "web_search", {"query": "Databricks official website"}
                         )
+                        record_event("tool_call_finished")
                         # MCP 1.x and 2.x expose different Python attribute names.
                         response = result.model_dump(by_alias=True)
                         session.record("desktop-mcp.json", response)
@@ -101,5 +116,13 @@ async def assert_desktop_mcp(session, registration: dict, workspace: str) -> Non
         finally:
             diagnostics.seek(0)
             stderr = session.redact(diagnostics.read())
+            session.record(
+                "desktop-mcp-progress.json",
+                {
+                    "command": registration["command"],
+                    "args": arguments,
+                    "events": events,
+                },
+            )
             session.record("desktop-mcp-stderr.json", {"stderr": stderr})
         assert "Traceback" not in stderr, stderr

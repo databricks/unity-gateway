@@ -16,12 +16,14 @@ import json
 import os
 import sys
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from itertools import count
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from ucode.databricks import get_databricks_token
+from ucode.databricks import _network_error_reason, get_databricks_token
 from ucode.ug_headers import ug_headers
 from ucode.workspace import WORKSPACE_ID_ENV_VAR, pin, workspace_headers
 
@@ -32,7 +34,23 @@ PROVIDER_ENV = "UCODE_CLAUDE_WEB_SEARCH_PROVIDER"
 MANAGED_ENTRY_FLAG = "--managed-by-ucode"
 EXTERNAL_PROVIDER_OVERRIDE_FLAG = "--external-provider-override"
 AUTOMATIC_PROVIDER = "external-if-safe"
+DIAGNOSTICS_ENV = "UCODE_WEB_SEARCH_DIAGNOSTICS"
 _MAX_CONCURRENT_SEARCHES = 4
+_DIAGNOSTIC_COUNTER = count(1)
+
+
+def _diagnostic(
+    message: str, *, call_id: str | None = None, started_at: float | None = None
+) -> None:
+    if os.environ.get(DIAGNOSTICS_ENV) != "1":
+        return
+    prefix = "[ucode web_search]"
+    if call_id is not None:
+        prefix = f"[ucode web_search call={call_id}]"
+    suffix = ""
+    if started_at is not None:
+        suffix = f" elapsed_ms={int((time.monotonic() - started_at) * 1000)}"
+    print(f"{prefix} {message}{suffix}", file=sys.stderr, flush=True)
 
 
 def external_provider_selected() -> bool:
@@ -116,10 +134,12 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def _call_responses_api(query: str) -> dict[str, Any]:
+def _call_responses_api(query: str, *, call_id: str | None = None) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
     suitable for surfacing as a tool error."""
+    started_at = time.monotonic()
+    _diagnostic("responses api call started", call_id=call_id)
     workspace = os.environ.get("DATABRICKS_HOST", "").strip()
     model = os.environ.get("UCODE_WEB_SEARCH_MODEL", "").strip()
     profile = os.environ.get("DATABRICKS_CONFIG_PROFILE", "").strip() or None
@@ -132,9 +152,12 @@ def _call_responses_api(query: str) -> dict[str, Any]:
         raise RuntimeError("UCODE_WEB_SEARCH_MODEL env var is not set.")
 
     try:
+        _diagnostic("token lookup started", call_id=call_id, started_at=started_at)
         token = get_databricks_token(workspace, profile)
     except RuntimeError as exc:
+        _diagnostic("token lookup failed", call_id=call_id, started_at=started_at)
         raise RuntimeError(f"Failed to acquire Databricks token: {exc}") from exc
+    _diagnostic("token lookup completed", call_id=call_id, started_at=started_at)
 
     body = json.dumps(
         {
@@ -158,9 +181,20 @@ def _call_responses_api(query: str) -> dict[str, Any]:
         },
     )
     try:
+        _diagnostic("responses api request started", call_id=call_id, started_at=started_at)
         with urllib_request.urlopen(request, timeout=180) as response:
             raw = response.read().decode("utf-8")
+        _diagnostic(
+            f"responses api response read bytes={len(raw)}",
+            call_id=call_id,
+            started_at=started_at,
+        )
     except urllib_error.HTTPError as exc:
+        _diagnostic(
+            f"responses api http_error status={exc.code}",
+            call_id=call_id,
+            started_at=started_at,
+        )
         detail = ""
         try:
             detail = exc.read().decode("utf-8")[:500]
@@ -168,26 +202,54 @@ def _call_responses_api(query: str) -> dict[str, Any]:
             pass
         raise RuntimeError(f"Responses API returned HTTP {exc.code}: {detail}") from exc
     except urllib_error.URLError as exc:
-        raise RuntimeError(f"Responses API request failed: {exc.reason}") from exc
+        _diagnostic(
+            f"responses api url_error reason_type={type(exc.reason).__name__}",
+            call_id=call_id,
+            started_at=started_at,
+        )
+        raise RuntimeError(
+            f"Responses API request failed: {_network_error_reason(exc.reason)}"
+        ) from exc
+    except OSError as exc:
+        _diagnostic(
+            f"responses api network_error type={type(exc).__name__}",
+            call_id=call_id,
+            started_at=started_at,
+        )
+        raise RuntimeError(f"Responses API request failed: {_network_error_reason(exc)}") from exc
 
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
+        _diagnostic("responses api json decode failed", call_id=call_id, started_at=started_at)
         raise RuntimeError(f"Responses API returned non-JSON payload: {exc}") from exc
 
 
 def _handle_tools_call(arguments: dict[str, Any]) -> dict[str, Any]:
+    call_id = f"search-{next(_DIAGNOSTIC_COUNTER)}"
+    started_at = time.monotonic()
+    _diagnostic("tools/call web_search started", call_id=call_id)
     query = arguments.get("query")
     if not isinstance(query, str) or not query.strip():
+        _diagnostic(
+            "tools/call web_search rejected invalid query",
+            call_id=call_id,
+            started_at=started_at,
+        )
         return _tool_error("`query` must be a non-empty string.")
     try:
-        payload = _call_responses_api(query)
+        payload = _call_responses_api(query, call_id=call_id)
     except RuntimeError as exc:
+        _diagnostic("tools/call web_search failed", call_id=call_id, started_at=started_at)
         return _tool_error(str(exc))
 
     text = _extract_response_text(payload)
     if not text:
+        _diagnostic(
+            "tools/call web_search returned no text", call_id=call_id, started_at=started_at
+        )
         return _tool_error("Web search returned no text output.")
+    _diagnostic("tools/call web_search completed", call_id=call_id, started_at=started_at)
     return {"content": [{"type": "text", "text": text}]}
 
 
