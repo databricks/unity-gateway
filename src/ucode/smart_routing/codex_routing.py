@@ -27,7 +27,7 @@ from ucode.smart_routing.routing import RoutingDecision
 
 ROUTER_NAME = routing.ROUTER_NAME
 ROUTING_PATH = routing.ROUTING_PATH
-REQUEST_TIMEOUT_S = routing.REQUEST_TIMEOUT_S
+REQUEST_TIMEOUT_S = routing.ROUTE_SELECTION_TIMEOUT_S
 SPAWN_AGENT_TOOL_SUFFIX = "spawn_agent"
 CANARY_PATH = APP_DIR / "codex-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "codex-smart-routing-audit.jsonl"

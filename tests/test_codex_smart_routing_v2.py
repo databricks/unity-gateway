@@ -1515,6 +1515,20 @@ class TestInterposerSession:
             frame, needs_settings_update=False
         )
 
+    def test_router_failure_reports_codex_requested_model_as_fallback(self):
+        seen: list[str | None] = []
+
+        def fail(_prompt):
+            seen.append(codex_interposer.routing._fallback_model.get())
+            return None, "router request timed out"
+
+        sess = codex_interposer._Session(None, log=lambda _m: None, route_decision=fail)
+        frame = self._turn_start("gpt-start")
+
+        assert sess.on_tui_frame(frame).frame == frame
+        assert seen == ["gpt-start"]
+        assert codex_interposer.routing._fallback_model.get() is None
+
     def test_rewrites_nested_collaboration_mode_model(self):
         """The app-server re-derives the thread model from
         collaborationMode.settings.model on every turn/start, so the
