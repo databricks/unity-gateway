@@ -20,6 +20,7 @@ from tests.integration.utils import request_recorder
 from tests.integration.utils.harness import UserSession
 
 _MESSAGES_PATH = "/ai-gateway/anthropic/v1/messages"
+_ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 _PRIVATE = "PRIVATE-prompt-tool-name-argument-model-header-error"
 
 
@@ -613,6 +614,95 @@ def test_claude_protocol_keeps_history_and_pending_without_waiting():
 @pytest.fixture
 def protocol_session(tmp_path):
     return UserSession(tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts")
+
+
+def test_routing_context_retains_each_attempt_after_failure(protocol_session):
+    selection = {"route_selection": [{"route_option": {"model": "sonnet", "harness": "claude"}}]}
+    protocol_session.env["DATABRICKS_BEARER"] = "session-token"
+    payload = {"task": {"prompt": "calculate with session-token"}}
+    responses = [
+        (200, {}, b"{}"),  # A previous journey on the same recorder.
+        (200, {}, b"{}"),  # An unrelated inference request.
+        (
+            429,
+            {"Retry-After": "5", "X-Request-Id": "request-3", "Set-Cookie": _PRIVATE},
+            json.dumps({"error_code": "RATE_LIMITED", "message": _PRIVATE}).encode(),
+        ),
+        (200, {"Content-Encoding": "gzip"}, gzip.compress(json.dumps(selection).encode())),
+        (200, {}, _PRIVATE.encode()),  # Malformed JSON still needs an HTTP receipt.
+        (200, {"Content-Encoding": "gzip"}, b"not-gzip"),
+    ]
+    failure = AssertionError("routing display missing before decision assertions")
+    with _protocol_upstream(responses) as upstream:
+        with request_recorder.TuiRequestRecorder(upstream) as recorder:
+            httpx.post(recorder.url + _ROUTING_PATH, json={"task": {"prompt": "earlier"}})
+            with pytest.raises(AssertionError) as caught:
+                with request_recorder.record_routing_responses(protocol_session, recorder):
+                    for path in [_MESSAGES_PATH, *([_ROUTING_PATH] * 4)]:
+                        with httpx.stream(
+                            "POST",
+                            recorder.url + path,
+                            json=payload,
+                            headers={"Authorization": "Bearer session-token"},
+                        ) as response:
+                            list(response.iter_raw())
+                    raise failure
+            assert caught.value is failure
+            # A later scope retains its own empty history without overwriting this failure.
+            with request_recorder.record_routing_responses(protocol_session, recorder):
+                pass
+
+    artifact = (protocol_session.artifacts / "routing-responses-1.json").read_text()
+    rows = json.loads(artifact)
+    assert [row["sequence"] for row in rows] == [3, 4, 5, 6]
+    assert all(row["path"] == _ROUTING_PATH for row in rows)
+    assert all(row["request"] == {"task": {"prompt": "calculate with <redacted>"}} for row in rows)
+    assert rows[0]["response"] == {
+        "status": 429,
+        "headers": {"retry-after": "5", "x-request-id": "request-3"},
+        "body": json.dumps({"code": "RATE_LIMITED"}),
+    }
+    assert rows[1]["response"] == {"status": 200, "headers": {}, "body": selection}
+    assert all(
+        row["response"] == {"status": 200, "headers": {}, "body": "<invalid response omitted>"}
+        for row in rows[2:]
+    )
+    assert _PRIVATE not in artifact and "session-token" not in artifact
+    assert json.loads((protocol_session.artifacts / "routing-responses-6.json").read_text()) == []
+
+
+def test_routing_context_records_pending_validation_without_waiting(protocol_session):
+    release = threading.Event()
+    response = (200, {}, b'{"is_supported": true}')
+    path = "/ai-gateway/routing/v1/routes:validate"
+    with _protocol_upstream([response], release) as upstream, ThreadPoolExecutor() as pool:
+        with request_recorder.TuiRequestRecorder(upstream) as recorder:
+            try:
+                with request_recorder.record_routing_responses(protocol_session, recorder):
+                    pending = pool.submit(httpx.post, recorder.url + path, json={}, timeout=10)
+                    recorder.expect_request(path=path, timeout=5)
+                rows = json.loads(
+                    (protocol_session.artifacts / "routing-responses-0.json").read_text()
+                )
+                assert rows == [{"sequence": 1, "path": path, "request": {}, "response": None}]
+                assert not pending.done(), "Evidence capture waited for an unfinished response"
+            finally:
+                release.set()
+            assert pending.result(timeout=5).status_code == 200
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_routing_context_preserves_the_journey_failure_when_recording_fails(protocol_session, fail):
+    (protocol_session.artifacts / "routing-responses-0.json").mkdir()
+    recorder = request_recorder.TuiRequestRecorder("http://127.0.0.1:1")
+    failure = AssertionError("routing hook returned no decision")
+    with pytest.raises(AssertionError if fail else OSError) as caught:
+        with request_recorder.record_routing_responses(protocol_session, recorder):
+            if fail:
+                raise failure
+    if fail:
+        assert caught.value is failure
+        assert failure.__notes__ == ["Routing response evidence could not be recorded."]
 
 
 @pytest.mark.parametrize("fail", [False, True])

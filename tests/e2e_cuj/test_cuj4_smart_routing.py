@@ -16,6 +16,7 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from tests.integration.utils.request_recorder import record_routing_responses
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
@@ -114,9 +115,10 @@ def smart_router_preset(cuj, version):
     previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
     session.env["SMART_ROUTER_CONFIG_VERSION"] = version
     try:
-        configs = _assert_published_config_matches_expectations(workspace.config())
-        recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
-        yield session, workspace, recorder, configs
+        with record_routing_responses(session, recorder, name=f"{version}-routing-responses"):
+            configs = _assert_published_config_matches_expectations(workspace.config())
+            recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
+            yield session, workspace, recorder, configs
     finally:
         if previous is None:
             session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)

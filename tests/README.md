@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+`test_tui_request_recorder.py` covers routing-response artifacts when a journey fails
+before checking its decisions: every attempt is paired by sequence, previous journeys
+and inference traffic are excluded, and pending responses remain explicit without a wait.
+Cases retain non-200 error codes and malformed/compressed response outcomes, redact
+credentials, keep separate scopes' artifacts, and preserve the journey's original failure
+if artifact writing also fails. These component checks do not establish live routing success.
+
 CUJ4 covers Codex's native Auto row appearing first, main-model and reasoning-effort
 choices, and completed gateway inference on the selected model and effort. This live
 journey has not been run locally.

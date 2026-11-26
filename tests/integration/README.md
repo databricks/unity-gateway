@@ -1815,6 +1815,14 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
   identify a named tool or establish which service caused a protocol failure.
   It reports recorder status, including the existing synthetic 502 for interrupted upstreams,
   and cannot diagnose truncated protocol bodies because their partial structure is discarded.
+  The direct Claude routing hook, Codex back-on journey, and CUJ4 preset journeys retain
+  `routing-responses-<checkpoint>.json` (prefixed by the preset in CUJ4), even when a hook
+  returns no decision or the TUI times out before response assertions. Each scope records
+  every select/validate request and its paired response, not only successful decisions.
+  An empty list means no request was recorded; a null response means it was still pending.
+  Credentials are redacted, and non-200 bodies retain only safe error identifiers with
+  request/rate-limit headers. Malformed HTTP 200 bodies are marked without retaining raw text.
+  Capture does not wait, retry requests, or replace the original journey failure.
 - `wheels/`: the tested wheel when built from the checkout; replay it with
   `--ug-wheel`. For release installations, `installed.txt` records the resolution.
 
