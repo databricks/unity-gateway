@@ -48,6 +48,10 @@ CLEAR_LINE = b"\x15"
 # Ctrl-U and keeps Enter as text, so typed keys go out in smaller writes.
 KEYSTROKE_CHUNK_BYTES = 16
 KEYSTROKE_GAP_S = 0.02
+# A stalled Claude reads the clear's unread tail and the next keys as one burst, so the
+# next keys wait until Claude's output has been quiet this long after the clear.
+CLEAR_SETTLE_S = 0.25
+CLEAR_SETTLE_TIMEOUT_S = 1.0
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -425,12 +429,6 @@ def run_claude_pty(
             submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
 
-            def clear_keys() -> bytes:
-                # The box can still hold the blocked prompt and an unrun /model command.
-                return clear_input_keys(
-                    f"{routed_prompt}/model {routed_model}", terminal_columns(master_fd)
-                )
-
             def forward_output(chunk: bytes) -> None:
                 nonlocal last_output
                 os.write(1, chunk)
@@ -443,29 +441,48 @@ def run_claude_pty(
                 if phase == "switching" and switch_complete is not None:
                     switch_complete.observe(chunk)
 
+            def forward_output_until(deadline: float) -> bool:
+                """Forward Claude's output until *deadline*; return False once Claude exits."""
+                while (remaining := deadline - time.monotonic()) > 0:
+                    try:
+                        ready_fds, _, _ = select.select([master_fd], [], [], remaining)
+                    except InterruptedError:
+                        continue
+                    if not ready_fds:
+                        break
+                    try:
+                        chunk = os.read(master_fd, 8192)
+                    except OSError:
+                        return False
+                    if not chunk:
+                        return False
+                    forward_output(chunk)
+                return True
+
             def type_keys(keys: bytes) -> None:
                 # Forwarding output between writes keeps Claude's redraws from stalling it,
                 # which would merge the writes back into one paste.
                 for start in range(0, len(keys), KEYSTROKE_CHUNK_BYTES):
                     os.write(master_fd, keys[start : start + KEYSTROKE_CHUNK_BYTES])
-                    deadline = time.monotonic() + KEYSTROKE_GAP_S
-                    while (remaining := deadline - time.monotonic()) > 0:
-                        try:
-                            ready_fds, _, _ = select.select([master_fd], [], [], remaining)
-                        except InterruptedError:
-                            continue
-                        if not ready_fds:
-                            break
-                        try:
-                            chunk = os.read(master_fd, 8192)
-                        except OSError:
-                            return
-                        if not chunk:
-                            return
-                        forward_output(chunk)
+                    if not forward_output_until(time.monotonic() + KEYSTROKE_GAP_S):
+                        return
+
+            def clear_input() -> None:
+                # The box can still hold the blocked prompt and an unrun /model command.
+                type_keys(
+                    clear_input_keys(
+                        f"{routed_prompt}/model {routed_model}", terminal_columns(master_fd)
+                    )
+                )
+                cleared = time.monotonic()
+                settle_deadline = cleared + CLEAR_SETTLE_TIMEOUT_S
+                while True:
+                    quiet_at = min(max(cleared, last_output) + CLEAR_SETTLE_S, settle_deadline)
+                    if quiet_at <= time.monotonic() or not forward_output_until(quiet_at):
+                        return
 
             def paste_prompt() -> None:
-                type_keys(clear_keys())
+                clear_input()
                 inject_prompt(master_fd, routed_prompt, submit=False)
 
             while True:
@@ -506,7 +523,7 @@ def run_claude_pty(
                 idle = last_output > 0.0 and now - last_output >= READY_QUIET_S
                 if phase == "waiting_to_switch" and idle:
                     prepare_model_switch(routed_model)
-                    type_keys(clear_keys())
+                    clear_input()
                     confirm.arm(time.monotonic() + CONFIRM_TIMEOUT_S)
                     switch_complete = OutputMarkerDetector(("Set model to", "Model set to"))
                     phase = "switching"
