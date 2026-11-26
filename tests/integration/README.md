@@ -3,11 +3,11 @@
 Startup compatibility validation has component coverage in `../test_route_validation.py`,
 the smart-routing launch tests, and the native Claude mod suite. They control the validation
 response or transport. CUJ 4 adds one live supported journey for Claude and one for Codex: with
-`UG_ROUTE_VALIDATION=1` and the published model list, ug sends one recorded routes:validate
-request with that agent's route options, the Gateway answers with HTTP 200 and
-`is_supported: true`, and Smart Router shows ON without the unsupported warning (Claude's band
-and hint row, Codex's footer). The Claude and Codex back-on TUI journeys in
-`test_ug_smart_routing_hooks.py` also check the validate request that turning routing on sends:
+the published model list, ug sends one recorded routes:validate request with that agent's route
+options, the Gateway answers with HTTP 200 and `is_supported: true`, and Smart Router shows ON
+without the unsupported warning (Claude's band and hint row, Codex's footer). The Claude and Codex
+back-on TUI journeys in `test_ug_smart_routing_hooks.py` also check the validate request that
+turning routing on sends:
 exactly one, answered with HTTP 200 and `is_supported: true`.
 No live unsupported or classifier journey is claimed.
 
@@ -2099,7 +2099,8 @@ executable links recreated by version checks. The links can point to hundreds of
 are excluded before reading file contents. Persistent agent files stay compared byte for byte.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
-workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
+workspace on the valid default model `system.ai.gpt-5-6-terra`, with `system.ai.gpt-6-luna` as a
+second model so route validation has two supported options. With legacy smart routing off and
 on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
 to be listed. The fixture itself has no managed smart-routing setting.
 

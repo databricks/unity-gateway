@@ -7,7 +7,8 @@
       "config": {
         "models": {
           "model_services": [
-            "system.ai.glm-5-3-flash"
+            "system.ai.glm-5-3-flash",
+            "system.ai.glm-5-3"
           ]
         },
         "default_models": {

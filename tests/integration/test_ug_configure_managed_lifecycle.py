@@ -28,7 +28,7 @@ CLAUDE_A = [
 ]
 CLAUDE_B = ["system.ai.claude-sonnet-4-6", "system.ai.claude-haiku-4-5"]
 # Codex ids must survive the bundled-catalog build; both of these are used elsewhere in the suite.
-CODEX_A = ["system.ai.gpt-5-6-sol", "system.ai.gpt-6-luna"]
+CODEX_A = ["system.ai.gpt-5-6-terra", "system.ai.gpt-6-luna"]
 CODEX_B = ["system.ai.gpt-6-luna"]
 
 
@@ -119,7 +119,6 @@ def test_managed_fixture_codex_model_lifecycle(live_session, workspace):
     use_managed_config_fixture(session, "codex_lifecycle_b")
     _configure_managed(session, workspace)
     assert _codex_listed(session) == CODEX_B, _codex_listed(session)
-    assert "system.ai.gpt-5-6-sol" not in _codex_listed(session)
 
     # Model discovery via MPS: the header routes, so the static catalog is cleared.
     use_managed_config_fixture(session, "codex_mps")

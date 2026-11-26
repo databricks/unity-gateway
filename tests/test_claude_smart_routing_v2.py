@@ -14,12 +14,7 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
-from ucode.constants import (
-    AGENT_CLAUDE,
-    ISAAC_LAUNCH_MODE_ENV_VAR,
-    ISAAC_OMNI_LAUNCH_MODE,
-    UG_ROUTE_VALIDATION_ENV_VAR,
-)
+from ucode.constants import AGENT_CLAUDE, ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import (
     claude_hooks,
@@ -1196,13 +1191,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    @pytest.mark.parametrize("validation", [False, True])
+    @pytest.mark.parametrize("omnigent", [False, True])
     @pytest.mark.parametrize("auto_picker", [False, True])
     def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, auto_picker, validation
+        self, tmp_path, monkeypatch, auto_picker, omnigent
     ):
-        if validation:
-            monkeypatch.setenv(UG_ROUTE_VALIDATION_ENV_VAR, "1")
+        if omnigent:
+            monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         monkeypatch.setenv(
             "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
         )
@@ -1297,22 +1292,23 @@ class TestV2Launch:
             "--model",
             "system.ai.claude-opus-4-8",
         ]
+        validate_command = (
+            {}
+            if omnigent
+            else {
+                "validateCommand": [
+                    *route_argv[:2],
+                    claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                    *route_argv[3:],
+                ]
+            }
+        )
         assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": route_argv,
-                **(
-                    {
-                        "validateCommand": [
-                            *route_argv[:2],
-                            claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
-                            *route_argv[3:],
-                        ]
-                    }
-                    if validation
-                    else {}
-                ),
+                **validate_command,
             }
         }
         env = settings["env"]
@@ -1748,7 +1744,6 @@ class TestV2ModelPickerDiscovery:
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
         monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
-        monkeypatch.setenv(UG_ROUTE_VALIDATION_ENV_VAR, "1")
         catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
@@ -1762,15 +1757,10 @@ class TestV2ModelPickerDiscovery:
             provider=provider,
         )
 
-    @pytest.mark.parametrize(
-        "env",
-        [{}, {UG_ROUTE_VALIDATION_ENV_VAR: "1", ISAAC_LAUNCH_MODE_ENV_VAR: ISAAC_OMNI_LAUNCH_MODE}],
-    )
-    def test_startup_validation_is_skipped(self, tmp_path, monkeypatch, env):
+    def test_startup_validation_is_skipped_for_omnigent(self, tmp_path, monkeypatch):
         validation_start = Mock()
         monkeypatch.setattr(v2.route_validation, "start", validation_start)
-        for name, value in env.items():
-            monkeypatch.setenv(name, value)
+        monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
         catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
 
         assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0

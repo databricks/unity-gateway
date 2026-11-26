@@ -2160,10 +2160,13 @@ and `ug upgrade` is not run against one.
 
 ## Smart Router startup validation
 
-The check runs only with `UG_ROUTE_VALIDATION=1`; launch and mod tests cover the default
-without it (no request, band from the first paint). Launches with `ISAAC_LAUNCH_MODE=omni` skip both
-the startup check and the toggle check until Omnigent shows the result: the Claude and Codex launch
-tests check that no request is sent and the toggle check is not wired. `test_route_validation.py` covers the background check against a loopback Smart Router, so the real HTTP transport runs: an
+The check runs at every smart-routed Claude and Codex launch, except two. Launches with
+`ISAAC_LAUNCH_MODE=omni` skip both the startup check and the toggle check until Omnigent shows the
+result: the Claude and Codex launch tests check that no request is sent and the toggle check is not
+wired. A `ug codex app-server` launch on POSIX skips the startup check, because exec replaces ug
+before the background check can finish; on Windows ug waits on the app server and the check runs.
+The app-server launch test covers both platforms. `test_route_validation.py` covers the background
+check against a loopback Smart Router, so the real HTTP transport runs: an
 unsupported model list turns routing off for the session. Every other failure turns it off with a
 recorded reason: HTTP errors other than 404, timeouts, unreachable hosts, malformed or unexpected
 responses, and exceptions; a result past the 10 s deadline counts as a timeout, recorded at the
