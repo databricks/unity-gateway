@@ -200,7 +200,12 @@ class TestAvailableSkills:
     def _env(self, monkeypatch):
         self.notes: list[str] = []
         self.warnings: list[str] = []
-        self.printed: list[object] = []
+        self.rendered: list[list[sl.AvailableSkill]] = []
+
+        def render(rows, _width):
+            self.rendered.append(rows)
+            return ["HEADER"]
+
         monkeypatch.setattr(sl, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(sl, "load_state", lambda: {"workspace": WS, "profile": "p"})
         monkeypatch.setattr(sl, "list_downloaded", lambda: [])
@@ -208,13 +213,12 @@ class TestAvailableSkills:
         monkeypatch.setattr(sl, "print_note", self.notes.append)
         monkeypatch.setattr(sl, "print_warning", self.warnings.append)
         monkeypatch.setattr(sl, "print_heading", lambda _text: None)
-        monkeypatch.setattr(sl.console, "print", lambda *a, **k: self.printed.extend(a))
+        monkeypatch.setattr(sl.console, "print", lambda *a, **k: None)
+        monkeypatch.setattr(sl, "_render_available", render)
 
     def _rows(self):
-        tables = [item for item in self.printed if isinstance(item, sl.Table)]
-        assert len(tables) == 1
-        columns = tables[0].columns
-        return [tuple(column._cells[i] for column in columns) for i in range(tables[0].row_count)]
+        assert len(self.rendered) == 1
+        return [(r.name, r.location, r.configured, r.description) for r in self.rendered[0]]
 
     def test_without_location_walks_the_workspace(self, monkeypatch):
         calls: list[tuple[str, str]] = []
@@ -322,10 +326,48 @@ class TestAvailableSkills:
         assert sl.list_available_skills_command([]) == 0
 
         assert self.notes == ["No skills found in every schema you can read."]
-        assert not [item for item in self.printed if isinstance(item, sl.Table)]
+        assert self.rendered == []
 
     def test_requires_a_configured_workspace(self, monkeypatch):
         monkeypatch.setattr(sl, "load_state", lambda: {})
 
         with pytest.raises(RuntimeError, match="ug configure"):
             sl.list_available_skills_command([])
+
+
+class TestRenderAvailable:
+    """One line per skill: NAME and LOCATION whole, DESCRIPTION fitted to the terminal."""
+
+    LONG_LOCATION = "platform_tools.release_oncall_plugins_marketplace_experimental"
+    LONG_DESCRIPTION = "Shows unified release pipeline status for every pipeline. " * 4
+
+    def _rows(self):
+        return [
+            sl.AvailableSkill("release-status", self.LONG_LOCATION, "-", self.LONG_DESCRIPTION),
+            sl.AvailableSkill("alpha", "main.default", "local,mcp", ""),
+        ]
+
+    def test_wide_terminal_fits_the_description_to_the_width(self):
+        header, *lines = sl._render_available(self._rows(), 140)
+
+        assert header.split() == ["NAME", "LOCATION", "CONFIGURED", "DESCRIPTION"]
+        assert all(len(line) <= 140 for line in [header, *lines])
+        assert lines[0].endswith("…") and len(lines[0]) == 140
+        # Columns line up: every LOCATION starts where its header does.
+        start = header.index("LOCATION")
+        assert lines[0][start:].startswith(self.LONG_LOCATION)
+        assert lines[1][start:].startswith("main.default")
+        assert lines[1].endswith("local,mcp")  # empty description: no trailing padding
+
+    def test_narrow_terminal_keeps_name_and_location_whole(self):
+        _, *lines = sl._render_available(self._rows(), 60)
+
+        assert lines[0].startswith("release-status")
+        assert self.LONG_LOCATION in lines[0]
+        description = lines[0].rsplit("    ", 1)[1]
+        assert len(description) == sl._MIN_DESCRIPTION_WIDTH and description.endswith("…")
+
+    def test_piped_output_keeps_every_description_whole(self):
+        _, *lines = sl._render_available(self._rows(), None)
+
+        assert lines[0].endswith(self.LONG_DESCRIPTION.strip())

@@ -12,7 +12,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from rich.cells import cell_len, set_cell_size
 from rich.table import Table
+from rich.text import Text
 
 from ucode.databricks import get_databricks_token
 from ucode.mcp import configured_skill_workspace_and_mcp_locations
@@ -33,6 +35,8 @@ _BOTH = "local,mcp"
 _ALL_AGENTS = "all"
 _NOT_CONFIGURED = "-"
 _NO_SKILLS_FOUND = "no skills found"
+_COLUMN_GAP = "    "
+_MIN_DESCRIPTION_WIDTH = 20
 
 
 @dataclass(frozen=True)
@@ -199,6 +203,36 @@ def _available_skills(state: dict, refs: list[SkillRef]) -> list[AvailableSkill]
     return rows
 
 
+def _render_available(rows: list[AvailableSkill], width: int | None) -> list[str]:
+    """The available-skills table as a header line followed by one line per skill.
+
+    A workspace can offer thousands of skills, so each stays on one line that can be scanned or
+    grepped. NAME and LOCATION, which ``ug skills add`` needs, are never cut. On a terminal
+    (``width`` set), the description is truncated to the space left, keeping at least
+    ``_MIN_DESCRIPTION_WIDTH`` cells, so a line may overflow a very narrow terminal rather than
+    lose a column. Piped output (``width`` None) keeps every description whole.
+    """
+    headers = ("NAME", "LOCATION", "CONFIGURED", "DESCRIPTION")
+    cells = [(row.name, row.location, row.configured, row.description) for row in rows]
+    widths = [
+        max(cell_len(value) for value in column) for column in zip(headers, *cells, strict=True)
+    ]
+    if width is not None:
+        fixed = sum(widths[:3]) + len(_COLUMN_GAP) * 3
+        widths[3] = min(widths[3], max(width - fixed, _MIN_DESCRIPTION_WIDTH))
+
+    def line(values: tuple[str, str, str, str]) -> str:
+        *fixed_values, description = values
+        if cell_len(description) > widths[3]:
+            description = set_cell_size(description, widths[3] - 1) + "…"
+        padded = [
+            set_cell_size(value, size) for value, size in zip(fixed_values, widths[:3], strict=True)
+        ]
+        return _COLUMN_GAP.join([*padded, description]).rstrip()
+
+    return [line(headers), *(line(values) for values in cells)]
+
+
 def _list_available_refs(
     workspace: str, token: str, locations: list[str]
 ) -> tuple[list[SkillRef], str | None]:
@@ -252,12 +286,10 @@ def list_available_skills_command(locations: list[str]) -> int:
 
     print_heading("Available Skills")
     console.print()
-    table = Table(box=None, pad_edge=False, header_style="bold", padding=(0, 2))
-    for header in ("NAME", "LOCATION", "CONFIGURED", "DESCRIPTION"):
-        table.add_column(header)
-    for row in rows:
-        table.add_row(row.name, row.location, row.configured, row.description)
-    console.print(table)
+    header, *lines = _render_available(rows, console.width if console.is_terminal else None)
+    console.print(Text(header, style="bold"), soft_wrap=True)
+    for line in lines:
+        console.print(Text(line), soft_wrap=True)
 
     console.print()
     print_note(
