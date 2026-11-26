@@ -55,10 +55,11 @@ CLEAR_SETTLE_TIMEOUT_S = 1.0
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
-# Claude Code wraps pasted text in this marker pair and escapes any copy inside it.
+# Claude Code 2.1.325 wraps each paste in this marker pair, with one id per session,
+# and escapes any copy inside it.
 _PASTED_PROMPT_RE = re.compile(
     r'\s*<pasted_content id="(?P<id>[^"]*)">\n?(?P<body>.*?)\n?'
-    r'</pasted_content(?: id="(?P=id)")?>\s*',
+    r'</pasted_content id="(?P=id)">\s*',
     re.DOTALL,
 )
 
@@ -173,7 +174,10 @@ def model_switch_keys(model: str) -> bytes:
 
 
 def unwrap_pasted_prompt(prompt: str) -> str:
-    """Return the body of a prompt that is exactly one paste marker pair, else the prompt."""
+    """Return the body of a prompt that is exactly one paste marker pair, else the prompt.
+
+    Claude Code wraps the replay paste again, so a replayed wrapper would nest.
+    """
     match = _PASTED_PROMPT_RE.fullmatch(prompt)
     if match is None or "<pasted_content" in match["body"] or "</pasted_content" in match["body"]:
         return prompt
@@ -183,11 +187,10 @@ def unwrap_pasted_prompt(prompt: str) -> str:
 def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True) -> None:
     """Replay a captured prompt as one bracketed paste.
 
-    A prompt that was one paste is replayed without its markers, since Claude Code
-    wraps the replay again. The replay loop pastes with ``submit=False`` and sends
-    Enter after PASTE_SUBMIT_DELAY_S: a CR bundled with the paste close can be absorbed.
+    The replay loop pastes with ``submit=False`` and sends Enter after
+    PASTE_SUBMIT_DELAY_S: a CR bundled with the paste close can be absorbed.
     """
-    clean = unwrap_pasted_prompt(prompt).replace("\r\n", "\n").replace("\r", "\n")
+    clean = prompt.replace("\r\n", "\n").replace("\r", "\n")
     clean = clean.replace("\x00", "").replace("\x1b", "")
     suffix = b"\r" if submit else b""
     os.write(master_fd, b"\x1b[200~" + clean.encode() + b"\x1b[201~" + suffix)
@@ -498,7 +501,10 @@ def run_claude_pty(
 
             def paste_prompt() -> None:
                 clear_input()
-                inject_prompt(master_fd, routed_prompt, submit=False)
+                replay = unwrap_pasted_prompt(routed_prompt)
+                if replay != routed_prompt:
+                    log("[PASTE] held prompt was one paste; replaying its body")
+                inject_prompt(master_fd, replay, submit=False)
 
             while True:
                 readable = [master_fd, 0] if stdin_open else [master_fd]

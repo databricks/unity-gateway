@@ -705,24 +705,21 @@ class TestOnSubmittedPromptCallback:
 # ---------------------------------------------------------------------------
 
 _PASTE_BODY = "Review this diff:\n+ x = 1"
+_ESCAPED_MARKERS = 'quote <\\pasted_content id="a6aa">x<\\/pasted_content id="a6aa">'
+
+
+def _as_claude_paste(body: str) -> str:
+    return f'\n\n<pasted_content id="a6aa">\n{body}\n</pasted_content id="a6aa">\n'
 
 
 class TestPasteMarkersOnReplay:
     @pytest.mark.parametrize(
         ("prompt", "replayed"),
         [
-            (
-                f'\n\n<pasted_content id="a6aa">\n{_PASTE_BODY}\n</pasted_content id="a6aa">\n',
-                _PASTE_BODY,
-            ),
-            (f'<pasted_content id="a6aa">\n{_PASTE_BODY}\n</pasted_content>', _PASTE_BODY),
-            (
-                '<pasted_content id="a">\nquote <\\pasted_content id="b">x<\\/pasted_content id="b">\n'
-                '</pasted_content id="a">',
-                'quote <\\pasted_content id="b">x<\\/pasted_content id="b">',
-            ),
+            (_as_claude_paste(_PASTE_BODY), _PASTE_BODY),
+            (_as_claude_paste(_ESCAPED_MARKERS), _ESCAPED_MARKERS),
         ],
-        ids=["claude_paste", "close_without_id", "escaped_copy_kept"],
+        ids=["claude_paste", "escaped_copy_kept"],
     )
     def test_one_paste_is_unwrapped(self, prompt, replayed):
         assert claude_pty.unwrap_pasted_prompt(prompt) == replayed
@@ -731,12 +728,10 @@ class TestPasteMarkersOnReplay:
         "prompt",
         [
             _PASTE_BODY,
-            f'fix this: <pasted_content id="b1">\n{_PASTE_BODY}\n</pasted_content id="b1">',
-            '<pasted_content id="a">\nA\n</pasted_content id="a">\n<pasted_content id="b">\nB\n'
-            '</pasted_content id="b">',
-            f'<pasted_content id="a">\n{_PASTE_BODY}\n</pasted_content id="b">',
+            "fix this:" + _as_claude_paste(_PASTE_BODY),
+            _as_claude_paste("A") + _as_claude_paste("B"),
         ],
-        ids=["no_markers", "typed_and_pasted", "two_pastes", "mismatched_id"],
+        ids=["no_markers", "typed_and_pasted", "two_pastes"],
     )
     def test_anything_else_is_replayed_unchanged(self, prompt):
         assert claude_pty.unwrap_pasted_prompt(prompt) == prompt
@@ -748,7 +743,7 @@ class TestPasteMarkersOnReplay:
         socket_path = tmp_path / "first.sock"
         capture = tmp_path / "capture.json"
         fake_claude = tmp_path / "fc.py"
-        held = f'\n\n<pasted_content id="a6aa">\n{_PASTE_BODY}\n</pasted_content id="a6aa">\n'
+        held = _as_claude_paste(_PASTE_BODY)
         _write_fake_claude(
             fake_claude,
             f"""\
