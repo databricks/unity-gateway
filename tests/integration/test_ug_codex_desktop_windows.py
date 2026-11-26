@@ -64,8 +64,6 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.RadioButton", "Engineering")
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
-        # After a readiness recheck the app can run setup without its banner; count from here.
-        checkpoint = app.setup_event_checkpoint()
         app.click("ControlType.Button", "Go to ChatGPT")
         app.mark_setup_phase("banner-wait-start")
         if wait_for_windows_setup(app):
@@ -74,7 +72,7 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         deadline = time.monotonic() + 180
         wait_for_windows_sandbox(app, timeout=max(0, deadline - time.monotonic()))
         app.mark_setup_phase("sandbox-mode-observed")
-        app.wait_for_setup_restart(checkpoint, deadline)
+        app.wait_for_setup_restart(deadline)
         app.mark_setup_phase("first-interaction-start")
         # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
         app.click("ControlType.Button", MODEL_PICKER, trace_picker=True)
@@ -153,8 +151,6 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
         app.click("ControlType.RadioButton", "Engineering")
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
-        # After a readiness recheck the app can run setup without its banner; count from here.
-        checkpoint = app.setup_event_checkpoint()
         app.click("ControlType.Button", "Go to ChatGPT")
         try:
             app.mark_setup_phase("banner-wait-start")
@@ -164,7 +160,7 @@ def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
             deadline = time.monotonic() + 180
             wait_for_windows_sandbox(app, timeout=max(0, deadline - time.monotonic()))
             app.mark_setup_phase("sandbox-mode-observed")
-            app.wait_for_setup_restart(checkpoint, deadline)
+            app.wait_for_setup_restart(deadline)
             app.mark_setup_phase("first-interaction-start")
             app.click("ControlType.Edit", None)
             prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."

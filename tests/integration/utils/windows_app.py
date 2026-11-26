@@ -690,11 +690,9 @@ class WindowsApp:
             }
         )
 
-    def setup_event_checkpoint(self) -> int:
-        with self.setup_condition:
-            return len(self.setup_events)
-
-    def wait_for_setup_restart(self, checkpoint: int, deadline: float) -> None:
+    def wait_for_setup_restart(self, deadline: float) -> None:
+        # The app can start setup itself before any click, so every event since launch counts.
+        checkpoint = 0
         phase = 0
         with self.setup_condition:
             while True:
