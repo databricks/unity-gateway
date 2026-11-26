@@ -209,7 +209,11 @@ from ucode.skills_download import (
     refresh_downloaded_skills_on_launch,
     remove_downloaded_skills_command,
 )
-from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
+from ucode.skills_list import (
+    configured_skill_counts_by_agent,
+    list_available_skills_command,
+    list_configured_skills_command,
+)
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import config as smart_routing_config
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -2816,11 +2820,38 @@ def skills(ctx: typer.Context) -> None:
 
 
 @skill_app.command("list")
-def skills_list() -> None:
-    """List the skills configured for your coding tools and how each was configured."""
+def skills_list(
+    available: Annotated[
+        bool,
+        typer.Option(
+            "--available",
+            help="List the skills you can add from the workspace's Unity Catalog, configured "
+            "or not, instead of only the configured ones.",
+        ),
+    ] = False,
+    location: Annotated[
+        str | None,
+        typer.Option(
+            "--location",
+            help="(with --available) Comma-separated `<catalog>.<schema>` schemas to list. "
+            "Without it, every schema you can read is searched.",
+        ),
+    ] = None,
+) -> None:
+    """List the skills configured for your coding tools and how each was configured.
+
+    With `--available`, lists the skills in Unity Catalog you can add instead, and marks the
+    ones already configured.
+    """
     try:
+        if location is not None and not available:
+            raise RuntimeError("--location requires --available.")
+        locations = _parse_skill_locations(location)
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-        list_configured_skills_command()
+        if available:
+            list_available_skills_command(locations)
+        else:
+            list_configured_skills_command()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

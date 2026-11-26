@@ -191,3 +191,141 @@ class TestConfiguredSkillCountsByAgent:
         self._mcp(monkeypatch, {}, {})
 
         assert sl.configured_skill_counts_by_agent({}, ["claude"]) == {"claude": 0}
+
+
+class TestAvailableSkills:
+    """`ug skills list --available` lists what UC offers and marks what is configured."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        self.notes: list[str] = []
+        self.warnings: list[str] = []
+        self.printed: list[object] = []
+        monkeypatch.setattr(sl, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(sl, "load_state", lambda: {"workspace": WS, "profile": "p"})
+        monkeypatch.setattr(sl, "list_downloaded", lambda: [])
+        monkeypatch.setattr(sl, "configured_skill_workspace_and_mcp_locations", lambda _s: None)
+        monkeypatch.setattr(sl, "print_note", self.notes.append)
+        monkeypatch.setattr(sl, "print_warning", self.warnings.append)
+        monkeypatch.setattr(sl, "print_heading", lambda _text: None)
+        monkeypatch.setattr(sl.console, "print", lambda *a, **k: self.printed.extend(a))
+
+    def _rows(self):
+        tables = [item for item in self.printed if isinstance(item, sl.Table)]
+        assert len(tables) == 1
+        columns = tables[0].columns
+        return [tuple(column._cells[i] for column in columns) for i in range(tables[0].row_count)]
+
+    def test_without_location_walks_the_workspace(self, monkeypatch):
+        calls: list[tuple[str, str]] = []
+
+        def list_all(ws, tok):
+            calls.append((ws, tok))
+            return [ref("alpha")], None
+
+        monkeypatch.setattr(sl, "list_all_skills", list_all)
+        monkeypatch.setattr(
+            sl, "list_schema_skills", lambda *a: pytest.fail("must walk, not list one schema")
+        )
+
+        assert sl.list_available_skills_command([]) == 0
+
+        assert calls == [(WS, "token")]
+        assert self._rows() == [("alpha", "main.default", "-", "")]
+
+    def test_location_lists_only_those_schemas(self, monkeypatch):
+        listed: list[str] = []
+
+        def list_schema(ws, tok, catalog, schema):
+            listed.append(f"{catalog}.{schema}")
+            return [ref("beta", catalog=catalog, schema=schema)], None
+
+        monkeypatch.setattr(sl, "list_schema_skills", list_schema)
+        monkeypatch.setattr(sl, "list_all_skills", lambda *a: pytest.fail("must not walk"))
+
+        sl.list_available_skills_command(["ml.prod", "main.default"])
+
+        assert listed == ["ml.prod", "main.default"]
+        assert [row[:2] for row in self._rows()] == [
+            ("beta", "main.default"),
+            ("beta", "ml.prod"),
+        ]
+
+    def test_marks_how_each_skill_is_configured(self, monkeypatch):
+        monkeypatch.setattr(
+            sl, "list_downloaded", lambda: [{"fqn": "main.default.alpha"}, {"fqn": "ml.prod.gamma"}]
+        )
+        monkeypatch.setattr(
+            sl,
+            "configured_skill_workspace_and_mcp_locations",
+            lambda _s: (WS, {"claude": ["main.default"], "codex": []}),
+        )
+        refs = [
+            ref("alpha"),
+            ref("beta"),
+            ref("gamma", catalog="ml", schema="prod"),
+            ref("delta", catalog="x", schema="y"),
+        ]
+        monkeypatch.setattr(sl, "list_all_skills", lambda *a: (refs, None))
+
+        sl.list_available_skills_command([])
+
+        assert [(row[0], row[2]) for row in self._rows()] == [
+            ("alpha", "local,mcp"),
+            ("beta", "mcp"),
+            ("gamma", "local"),
+            ("delta", "-"),
+        ]
+
+    def test_description_is_collapsed_to_one_line(self, monkeypatch):
+        skill = SkillRef(
+            catalog="main",
+            schema="default",
+            securable_name="alpha",
+            bundle_name="alpha",
+            description="Use for SQL.\n  Covers   joins.",
+        )
+        monkeypatch.setattr(sl, "list_all_skills", lambda *a: ([skill], None))
+
+        sl.list_available_skills_command([])
+
+        assert self._rows()[0][3] == "Use for SQL. Covers joins."
+
+    def test_unreadable_schema_is_warned_and_skipped(self, monkeypatch):
+        by_schema = {"main.default": ([ref("alpha")], None), "ml.prod": ([], "HTTP 403 Forbidden")}
+        monkeypatch.setattr(sl, "list_schema_skills", lambda ws, tok, c, s: by_schema[f"{c}.{s}"])
+
+        sl.list_available_skills_command(["main.default", "ml.prod"])
+
+        assert [row[0] for row in self._rows()] == ["alpha"]
+        assert len(self.warnings) == 1 and "ml.prod" in self.warnings[0]
+
+    def test_walk_timeout_shows_partial_results(self, monkeypatch):
+        monkeypatch.setattr(
+            sl, "list_all_skills", lambda *a: ([ref("alpha")], sl._SKILLS_WALK_TIMEOUT_REASON)
+        )
+
+        sl.list_available_skills_command([])
+
+        assert [row[0] for row in self._rows()] == ["alpha"]
+        assert len(self.warnings) == 1 and "--location" in self.warnings[0]
+
+    def test_walk_error_raises(self, monkeypatch):
+        monkeypatch.setattr(sl, "list_all_skills", lambda *a: ([], "HTTP 401 Unauthorized"))
+
+        with pytest.raises(RuntimeError, match="HTTP 401"):
+            sl.list_available_skills_command([])
+
+    def test_no_skills_prints_a_note(self, monkeypatch):
+        monkeypatch.setattr(sl, "list_all_skills", lambda *a: ([], "no skills found"))
+
+        assert sl.list_available_skills_command([]) == 0
+
+        assert self.notes == ["No skills found in every schema you can read."]
+        assert not [item for item in self.printed if isinstance(item, sl.Table)]
+
+    def test_requires_a_configured_workspace(self, monkeypatch):
+        monkeypatch.setattr(sl, "load_state", lambda: {})
+
+        with pytest.raises(RuntimeError, match="ug configure"):
+            sl.list_available_skills_command([])

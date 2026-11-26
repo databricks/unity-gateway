@@ -3793,6 +3793,63 @@ class TestSkillsEntrypoint:
         mock_conf.assert_not_called()
 
 
+class TestSkillsListCommand:
+    """`ug skills list` shows configured skills; `--available` lists what UC offers."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_install_cli(self):
+        with patch("ucode.cli.install_databricks_cli") as mock_install:
+            yield mock_install
+
+    def test_default_lists_configured_skills(self):
+        with (
+            patch("ucode.cli.list_configured_skills_command") as configured,
+            patch("ucode.cli.list_available_skills_command") as available,
+        ):
+            result = runner.invoke(app, ["skills", "list"])
+
+        assert result.exit_code == 0, result.output
+        configured.assert_called_once_with()
+        available.assert_not_called()
+
+    def test_available_walks_every_schema(self):
+        with (
+            patch("ucode.cli.list_configured_skills_command") as configured,
+            patch("ucode.cli.list_available_skills_command") as available,
+        ):
+            result = runner.invoke(app, ["skills", "list", "--available"])
+
+        assert result.exit_code == 0, result.output
+        available.assert_called_once_with([])
+        configured.assert_not_called()
+
+    def test_available_with_locations(self):
+        with patch("ucode.cli.list_available_skills_command") as available:
+            result = runner.invoke(
+                app, ["skills", "list", "--available", "--location", "a.b, c.d,a.b"]
+            )
+
+        assert result.exit_code == 0, result.output
+        available.assert_called_once_with(["a.b", "c.d"])
+
+    def test_location_requires_available(self, _stub_install_cli):
+        with patch("ucode.cli.list_configured_skills_command") as configured:
+            result = runner.invoke(app, ["skills", "list", "--location", "a.b"])
+
+        assert result.exit_code == 1
+        assert "--location requires --available" in _strip_ansi(result.output)
+        configured.assert_not_called()
+        _stub_install_cli.assert_not_called()
+
+    def test_invalid_location_is_rejected(self):
+        with patch("ucode.cli.list_available_skills_command") as available:
+            result = runner.invoke(app, ["skills", "list", "--available", "--location", "a.b.c"])
+
+        assert result.exit_code == 1
+        assert "<catalog>.<schema>" in _strip_ansi(result.output)
+        available.assert_not_called()
+
+
 class TestSkillsAddCommand:
     """`ucode skills add` is purely additive: `--via mcp` unions schemas into the
     connection scope, the default mode downloads."""
