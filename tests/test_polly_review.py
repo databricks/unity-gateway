@@ -130,6 +130,8 @@ def test_workflow_prompt_uses_trusted_policy_and_marks_pr_content_untrusted():
     assert "ug-review-instructions.md" in workflow
     assert 'policy_dir / "AGENTS.md"' in workflow
     assert "untrusted data" in workflow
+    assert "Recent human feedback themes" in workflow
+    assert "Apply rubric priorities 1, 6, 7, 8," in workflow
     assert "<!-- POLLY_REVIEW_START -->" in workflow
     for omnigent_only in (
         "DATABASE_BEST_PRACTICES",

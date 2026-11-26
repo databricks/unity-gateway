@@ -20,8 +20,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    unnecessary branches, duplicated helpers, agent-specific logic in shared orchestration, and
    private helpers called across module boundaries. Prefer an existing helper or module boundary.
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
-   settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
-   debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
+   settings, hooks, and existing launch controls. Be especially skeptical of a gateway proxy added
+   only for language, header, or request-shaping behavior: name a concrete native alternative and
+   the debugging, auth, or startup cost it avoids; do not ban proxies when the native path cannot work.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
@@ -71,20 +72,30 @@ the reviewed changes. The review is advisory and limited to findings on changed 
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
-   edits for every instrumented call site.
+   edits for every instrumented call site. If metrics helpers grow beyond a small file, prefer
+   the existing metrics package boundary over a large catch-all module.
 7. **Account for latency and visible UX.** Check new startup requests, proxies, locks, retries,
    polling gates, and per-turn hooks for added waiting. Ask for before/after timing when latency
    changes are material or performance is claimed. Separate local/component timing from real
    agent readiness and CI queue time. An optimization must preserve submitted prompts and avoid
-   confusing hook messages; explain the user-visible tradeoff as well as the saved work.
+   confusing hook messages; explain the user-visible tradeoff as well as the saved work. For CI
+   and merge-queue changes, account for critical-path time, runner queues, live-service flakiness,
+   quota pressure, and retry/rate-limit bounds instead of assuming more coverage is free.
 8. **Preserve supply-chain and CI trust boundaries.** Use internal package sources per
    [go/registry-access](https://go/registry-access). The trusted default-branch
    `.github/workflows/polly-review.yml` records the npm and PyPI proxy endpoints in
    `NPM_CONFIG_REGISTRY` and `PYPI_INDEX`; do not infer approval for other sources.
    Use the narrowest credential scopes needed. Check which revision supplies workflow code and
    policy, who can authorize privileged runs, and whether required checks cover the intended head
-   and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
+   and merge-queue events. Secret-bearing CI decisions should fail closed when PR identity,
+   fork status, or selector output cannot be trusted, and selection logic should come from a
+   trusted base/default-branch revision. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+9. **Check background helpers and persisted optional state.** A helper launched outside the main
+   process must preserve the selected workspace headers, TLS setup, auth mode, and non-interactive
+   contract. It should not silently re-authenticate, cache empty or malformed discovery results, or
+   let one interrupted UI turn cancel a later one. Malformed optional config, sidecar files, or model
+   catalogs should usually warn, skip, or retry rather than break startup.
 
 ## Voice and tone
 
@@ -103,6 +114,8 @@ Historical examples from Lilly's reviews:
 - `can you see if this is done elswhere in the codebase alr? i think we already do it for normal setting. can you reuse that func?`
 - `can u put a pic of the before + after in the PR description so we can see what has changed?`
 - `do we need to hard fail on boot up for malformed mcp servers? why don't we just skip them ? this means a dev needs to reach out to admin to unblock themselves for an admin misconfiguration`
+- `i dont think we want to do this. the merge queue will get so SLOW and flaky`
+- `we should not be starting a gateway proxy for claude to handle the language situation.`
 
 ## Finding quality
 
