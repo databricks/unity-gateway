@@ -1064,11 +1064,7 @@ def run_claude_pty(
                 if user_input.pending:
                     continue  # Do not inject keystrokes into an incomplete terminal reply.
                 switch_prepared = False
-                if (
-                    phase == "waiting_to_switch"
-                    and idle
-                    and now >= next_prepare_check
-                ):
+                if phase == "waiting_to_switch" and idle and now >= next_prepare_check:
                     switch_prepared = prepare_model_switch(routed_model) is not False
                     next_prepare_check = time.monotonic() + MODEL_PREPARE_INTERVAL_S
                 if switch_prepared:
