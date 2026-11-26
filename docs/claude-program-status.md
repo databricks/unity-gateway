@@ -12,17 +12,19 @@ starts after Claude is spawned and decodes the file only when it changes.
 
 | Claude registry state | OSC 7501 report |
 | --- | --- |
-| Pending, Running, Waiting | Working |
+| Pending, Running | Working |
+| Waiting | Blocked |
 | Idle | Idle |
 | Completed | Done |
 | Failed | Error |
 | Killed, or removed from the registry | Clear that agent's record |
 
-Waiting can mean background work, a nested Agent call, or approval. The registry
-does not distinguish them, so UG cannot infer a Blocked state or permission reason
-from Waiting alone. Claude's own reports remain intact. Agent IDs are encoded
-into valid, distinct OSC paths, and titles are encoded within the protocol's
-text limits.
+Waiting is reported as Blocked because that agent cannot currently proceed. It
+can be waiting for background work, a nested Agent call, or approval. The registry
+does not supply that distinction, so the optional reason is left unspecified.
+The terminal decides how to present Blocked and combine it with other agents'
+states. Claude's own reports remain intact. Agent IDs are encoded into valid,
+distinct OSC paths, and titles are encoded within the protocol's text limits.
 
 Conversation replacement and launcher exit clear only UG's namespace. Failed or
 incomplete reads retain the previous statuses and remain retryable. Headless

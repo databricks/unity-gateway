@@ -30,12 +30,12 @@ class Publication:
     start: Callable[[], None]
 
 
-# Waiting includes an agent's own background work or a nested Agent call. The
-# registry does not distinguish those from approval, so it cannot prove Blocked.
+# The registry's Waiting state is Blocked. Its reason may be another task or
+# approval, so leave the optional reason unspecified rather than guessing one.
 _OSC_STATES = {
     "pending": "working",
     "running": "working",
-    "waiting": "working",
+    "waiting": "blocked",
     "idle": "idle",
     "completed": "done",
     "failed": "error",

@@ -41,7 +41,7 @@ def updates(before, after):
     [
         ("pending", "working"),
         ("running", "working"),
-        ("waiting", "working"),
+        ("waiting", "blocked"),
         ("idle", "idle"),
         ("completed", "done"),
         ("failed", "error"),
@@ -53,12 +53,18 @@ def test_each_agent_state_is_reported_without_aggregating_it(native, expected):
     assert len(emitted) == 1
     assert emitted[0]["state"] == expected
     assert emitted[0]["id"].startswith(NAMESPACE + "/")
-    assert "kind" not in emitted[0]  # Waiting does not identify a permission request.
+    assert "kind" not in emitted[0]  # The registry supplies no specific input reason.
 
 
 @pytest.mark.parametrize(
     "finished,outcome",
-    [("completed", "done"), ("failed", "error"), ("killed", "clear"), ("idle", "idle")],
+    [
+        ("completed", "done"),
+        ("failed", "error"),
+        ("killed", "clear"),
+        ("idle", "idle"),
+        ("waiting", "blocked"),
+    ],
 )
 def test_one_agent_finishing_failing_or_cancelling_does_not_replace_its_working_sibling(
     finished, outcome
@@ -117,7 +123,7 @@ def test_replacement_clears_old_children_before_reporting_the_new_conversation()
 
 
 def test_reorder_and_equivalent_working_states_emit_no_extra_updates():
-    before = snapshot(("a", "pending", "Research"), ("b", "waiting", "Explore"))
+    before = snapshot(("a", "pending", "Research"), ("b", "running", "Explore"))
     after = snapshot(("b", "running", "Explore"), ("a", "running", "Research"))
     assert updates(before, after) == []
 
@@ -129,6 +135,17 @@ def test_names_and_resumed_work_keep_the_same_task_identity():
     assert len(emitted) == 1
     assert emitted[0]["id"] == initial[0]["id"]
     assert (emitted[0]["state"], emitted[0]["title"]) == ("working", "New title")
+
+
+def test_a_blocked_agent_resumes_working_under_the_same_identity():
+    before = snapshot(("a", "waiting", "Research"), ("b", "running", "Explore"))
+    initial = updates(None, before)
+    assert [row["state"] for row in initial] == ["blocked", "working"]
+    emitted = updates(before, snapshot(("a", "running", "Research"), ("b", "running", "Explore")))
+    assert len(emitted) == 1
+    assert emitted[0]["state"] == "working"
+    assert emitted[0]["id"] == initial[0]["id"]
+    assert "kind" not in initial[0]
 
 
 def test_provider_ids_cannot_alias_another_agent_or_inject_terminal_controls():
