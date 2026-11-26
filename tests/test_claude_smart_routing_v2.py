@@ -1931,7 +1931,52 @@ class TestSubagentRouting:
         assert json.dumps(payload) == original
         assert not decisions_path.exists()
 
-    def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("excluded_models", "expected_models"),
+        [
+            (
+                [],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                    "team.models.claude-opus-4-8",
+                    "team.models.claude-opus-4-8[1m]",
+                ],
+            ),
+            (
+                ["anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]"],
+                [
+                    "system.ai.claude-sonnet-5",
+                    "team.models.claude-opus-4-8",
+                    "team.models.claude-opus-4-8[1m]",
+                ],
+            ),
+            (
+                ["team.models.claude-opus-4-8"],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                ],
+            ),
+            (
+                ["team.models.claude-opus-4-8[1m]"],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                ],
+            ),
+            (
+                ["claude-opus-4-8", "databricks-claude-sonnet-5", "team.models.claude-opus-4-8"],
+                [],
+            ),
+        ],
+    )
+    def test_decision_log_keeps_the_filtered_request_menu_and_router(
+        self, tmp_path, monkeypatch, excluded_models, expected_models
+    ):
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
@@ -1945,10 +1990,18 @@ class TestSubagentRouting:
             )
 
         monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
-        v2.route_claude_subagent(
+        available = [
+            "system.ai.claude-opus-4-8",
+            "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+            "databricks-claude-sonnet-5",
+            "team.models.claude-opus-4-8",
+            "team.models.claude-opus-4-8[1m]",
+        ]
+        output = v2.route_claude_subagent(
             {
                 "session_id": "s1",
                 "tool_name": "Agent",
+                "excluded_models": excluded_models,
                 "tool_input": {
                     "subagent_type": "Explore",
                     "prompt": "find all Python entry points",
@@ -1957,20 +2010,87 @@ class TestSubagentRouting:
             },
             workspace="https://example.com",
             token="token",
-            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+            available_models=available,
             audit_decision=True,
         )
 
+        if not expected_models:
+            assert output == {
+                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent.",
+                "rate_limit_cooldown": True,
+            }
+            assert captured == {}
+            assert not decisions_path.exists()
+            return
         body = captured["body"]
         assert body["route_options"] == [
-            {"model": "system.ai.claude-opus-4-8", "harness": "claude"},
-            {"model": "system.ai.claude-sonnet-5", "harness": "claude"},
+            {"model": model, "harness": "claude"} for model in expected_models
         ]
+        assert output["model"] == expected_models[0]
         assert body["task"] == {"prompt": "find all Python entry points"}
         record = json.loads(decisions_path.read_text())
         assert record["route_options"] == body["route_options"]
         assert record["router_name"] == body["route_selector"]["router_name"]
         assert record["router_name"] == routing.ROUTER_NAME
+
+    @pytest.mark.parametrize("excluded_models", ["claude-opus-4-8", [None]])
+    def test_malformed_exclusions_do_not_request_a_route(self, monkeypatch, excluded_models):
+        # A transport guard proves validation rejects the input before any request.
+        def unexpected_request(*args, **kwargs):
+            pytest.fail("Malformed exclusions reached the routing service")
+
+        monkeypatch.setattr(routing.urllib.request, "urlopen", unexpected_request)
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"prompt": "Inspect the parser"},
+                "excluded_models": excluded_models,
+            },
+            workspace="https://example.com",
+            token="fixture-token",
+            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+        )
+        assert output == {"deny": "Invalid rate-limit exclusions; no subagent was started."}
+
+    @pytest.mark.parametrize(
+        ("excluded_models", "expected_output", "requested_models"),
+        [
+            ([], None, [["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]]),
+            (
+                ["system.ai.claude-opus-4-8"],
+                {
+                    "deny": "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                    "rate_limit_cooldown": True,
+                },
+                [["system.ai.claude-sonnet-5"]],
+            ),
+        ],
+    )
+    def test_missing_route_respects_exclusions(
+        self, monkeypatch, excluded_models, expected_output, requested_models
+    ):
+        # Control only the transport; the real router client handles the empty response.
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            body = json.loads(request.data)
+            requests.append([option["model"] for option in body["route_options"]])
+            return io.BytesIO(b"{}")
+
+        monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"prompt": "Inspect the parser"},
+                "excluded_models": excluded_models,
+            },
+            workspace="https://example.com",
+            token="fixture-token",
+            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+        )
+
+        assert output == expected_output
+        assert requests == requested_models
 
     def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch):
         gateway_model = "anthropic-aigw-77df06ea-system.ai.glm-5-3"

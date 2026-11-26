@@ -5,6 +5,7 @@ import {
   VALIDATION_FAILED_WARNING,
 } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
+import { recordSubagentRateLimit } from './subagent-routing.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -96,6 +97,10 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
+    // The native client permits one unmatched prompt handler, shared with routing recovery.
+    if (e.origin?.kind === 'task-notification') {
+      recordSubagentRateLimit(e.text, (delay, expire) => $.clock.after(delay, expire))
+    }
     if (band.isVisible) band.isHideArmed = true
     return next(e)
   })
