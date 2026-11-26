@@ -3446,3 +3446,35 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         if FORK_GUARD in condition:
             assert f"({FORK_GUARD})" in condition, name
     assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]
+
+
+def test_macos_cowork_caches_only_dependency_state_before_checkout_install():
+    job = _integration_jobs()["cowork-inference-macos"]
+    cli_restore = job.index("      - name: Restore pinned Claude CLI\n")
+    cli_install = job.index("      - name: Install pinned Claude CLI\n")
+    cli_save = job.index("      - name: Save pinned Claude CLI\n")
+    runtime_restore = job.index("      - name: Restore desktop runtime dependencies\n")
+    runtime_install = job.index("      - name: Install desktop runtime dependencies\n")
+    runtime_save = job.index("      - name: Save desktop runtime dependencies\n")
+    checkout_install = job.index("      - name: Install UG checkout\n")
+    inference = job.index("      - name: Configure and assert Cowork inference")
+    assert cli_restore < cli_install < cli_save < inference
+    assert runtime_restore < runtime_install < runtime_save < checkout_install < inference
+    for name in ("Restore pinned Claude CLI", "Restore desktop runtime dependencies"):
+        step = job.split(f"      - name: {name}\n", 1)[1].split("      - name: ", 1)[0]
+        assert "inputs.ref == ''" in step
+        assert "actions/cache/restore@" in step
+    for name in ("Save pinned Claude CLI", "Save desktop runtime dependencies"):
+        step = job.split(f"      - name: {name}\n", 1)[1].split("      - name: ", 1)[0]
+        assert "github.event_name == 'push'" in step
+        assert "github.ref == 'refs/heads/main'" in step
+        assert "inputs.ref == ''" in step
+        assert "actions/cache/save@" in step
+    assert "hashFiles('pyproject.toml', 'uv.lock')" in job
+    assert "steps.python.outputs.python-version" in job
+    assert "runner.os" in job and "runner.arch" in job
+    desktop = (
+        Path(__file__).parent.parent / "scripts/cowork-inference/macos/install-desktop.sh"
+    ).read_text()
+    assert "/usr/bin/codesign --verify --deep --strict" in desktop
+    assert "/usr/sbin/spctl --assess" in desktop

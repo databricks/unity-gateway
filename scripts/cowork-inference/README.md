@@ -165,6 +165,9 @@ The macOS installer is Claude Desktop 4.23118.0, downloaded from Anthropic's off
 universal ZIP. `macos/install-desktop.sh` pins its URL and SHA256, verifies its
 code signature and Anthropic team ID, runs Gatekeeper assessment, and checks the
 installed version. Dependencies use the same approved public npm/PyPI path as Windows.
+The macOS CLI and Python dependency caches are saved only by main, before installing the
+checkout or exposing credentials; explicit-ref fork runs do not use them. Every run installs
+its own checkout into the runtime.
 
 `macos/ui.swift` drives the installed app through native macOS Accessibility APIs.
 The Python harness runs through Terminal to inherit the hosted image's existing

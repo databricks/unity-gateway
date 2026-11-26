@@ -413,6 +413,7 @@ jobs:
           persist-credentials: false
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        id: python
         with:
           python-version: '3.12'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
@@ -426,7 +427,46 @@ jobs:
           key: claude-desktop-macos-${{ env.CLAUDE_DESKTOP_MACOS_SHA256 }}
       - name: Install and verify Claude Desktop
         run: bash scripts/cowork-inference/macos/install-desktop.sh
-      - name: Install UG checkout and pinned Claude CLI
+      # Save only on trusted main, before installing the checkout or exposing test credentials.
+      - name: Restore pinned Claude CLI
+        if: ${{ inputs.ref == '' }}
+        id: cowork-cli-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cowork-claude-2.1.290
+          key: cowork-claude-${{ runner.os }}-${{ runner.arch }}-node-22.19.0-2.1.290
+      - name: Install pinned Claude CLI
+        if: ${{ steps.cowork-cli-cache.outputs.cache-hit != 'true' }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/cowork-claude-2.1.290" --save-exact --no-audit --fund=false \
+            --registry https://registry.npmjs.org --fetch-retries=0 --fetch-timeout=30000 '@anthropic-ai/claude-code@2.1.290'
+      - name: Save pinned Claude CLI
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ref == '' && steps.cowork-cli-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cowork-claude-2.1.290
+          key: cowork-claude-${{ runner.os }}-${{ runner.arch }}-node-22.19.0-2.1.290
+      - name: Restore desktop runtime dependencies
+        if: ${{ inputs.ref == '' }}
+        id: cowork-runtime-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/macos-desktop-runtime
+          key: cowork-runtime-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+      - name: Install desktop runtime dependencies
+        if: ${{ steps.cowork-runtime-cache.outputs.cache-hit != 'true' }}
+        run: |
+          python -m venv "$RUNNER_TEMP/macos-desktop-runtime"
+          python -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]))' > "$RUNNER_TEMP/cowork-requirements.txt"
+          PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL='' "$RUNNER_TEMP/macos-desktop-runtime/bin/python" -m pip install \
+            --disable-pip-version-check --index-url https://pypi.org/simple -r "$RUNNER_TEMP/cowork-requirements.txt"
+      - name: Save desktop runtime dependencies
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ref == '' && steps.cowork-runtime-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/macos-desktop-runtime
+          key: cowork-runtime-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+      - name: Install UG checkout
         run: bash scripts/cowork-inference/macos/install-dependencies.sh
       - *budget-setup-done
       - name: Configure and assert Cowork inference through macOS Accessibility
