@@ -20,7 +20,7 @@ and the proxy swaps it for a fresh Databricks token on allowlisted gateway paths
 
 Security invariants (mirroring `databricks.py` token handling):
   - Binds 127.0.0.1 only; never exposed off-host.
-  - Never logs header values or bodies. The Databricks token lives in memory,
+  - Logs only allowlisted opaque upstream response IDs, never credentials or bodies. The Databricks token lives in memory,
     refreshed off the request path; the Anthropic OAuth in `Authorization` is
     passed through untouched in relayed mode and never logged.
 """
@@ -32,6 +32,7 @@ import binascii
 import hmac
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -438,6 +439,17 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
         extensions = {"trace": trace_transport} if _diagnostics_enabled() else None
 
+        def response_ids(resp: httpx.Response) -> dict[str, str]:
+            # Keep only opaque correlation IDs useful for finding a slow request in gateway logs.
+            names = ("x-databricks-request-id", "x-databricks-trace-id", "x-request-id")
+            return {
+                name: value
+                for name in names
+                if (value := resp.headers.get(name))
+                and len(value) <= 128
+                and re.fullmatch(r"[A-Za-z0-9._:-]+", value)
+            }
+
         try:
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
@@ -459,6 +471,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
+                    response_ids=response_ids(resp),
                 )
                 if resp.status_code not in (401, 403):
                     self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
@@ -513,6 +526,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
+                    response_ids=response_ids(resp),
                 )
                 self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
         except (BrokenPipeError, ConnectionResetError):
