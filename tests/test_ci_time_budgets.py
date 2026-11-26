@@ -95,7 +95,7 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
         "*budget-start",
         "actions/checkout@",
         "Mark live-shard checkout complete",
-        "pattern: integration-full-claude-windows-latest-shard*",
+        "pattern: integration-full-*-windows-latest-shard*",
         "Mark full-shard download complete",
         "pattern: integration-anthropic-mps-claude-windows-latest-shard*",
         "Mark MPS-shard download complete",
@@ -443,16 +443,17 @@ def test_every_integration_matrix_variant_has_a_budget():
             for os in values("smoke", "os")
         }
     }
-    full_matrix = jobs["full"].split("      matrix:\n", 1)[1].split("\n    env:", 1)[0]
-    full_entries = []
-    for block in re.split(r"(?m)^          - ", full_matrix)[1:]:
-        fields = dict(line.strip().split(":", 1) for line in block.splitlines() if ":" in line)
-        full_entries.append({key: value.strip().strip('"') for key, value in fields.items()})
-    expected["full"] = {
-        f"Full journeys · {entry['agent'].capitalize()} · {os_name(entry['os'])}"
-        + (" · Smart routing" if entry.get("smart_routing") == "true" else "")
-        for entry in full_entries
-    }
+    for job_id in ("full", "full-codex-windows"):
+        full_matrix = jobs[job_id].split("      matrix:\n", 1)[1].split("\n    env:", 1)[0]
+        full_entries = []
+        for block in re.split(r"(?m)^          - ", full_matrix)[1:]:
+            fields = dict(line.strip().split(":", 1) for line in block.splitlines() if ":" in line)
+            full_entries.append({key: value.strip().strip('"') for key, value in fields.items()})
+        expected[job_id] = {
+            f"Full journeys · {entry['agent'].capitalize()} · {os_name(entry['os'])}"
+            + (" · Smart routing" if entry.get("smart_routing") == "true" else "")
+            for entry in full_entries
+        }
     matrix_line = re.search(r"(?m)^        include: (.+)$", jobs["anthropic-mps"]).group(1)
     choices = re.findall(r"'(\[[^']+\])'", matrix_line)
     assert choices, matrix_line
