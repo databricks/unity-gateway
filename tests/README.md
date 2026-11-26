@@ -1757,7 +1757,9 @@ settings — except a file recorded with several shards in `tests/live_test_time
 The slowest blocking live lanes shard the same way, balanced by `tests/live_shard.py`
 from per-case times in `tests/live_test_times.json` (measured on hosted runners, like
 the unit shards): `Full journeys · Claude · Windows` runs four shards,
-`Full journeys · Codex · Windows` three, and `Anthropic MPS ... · Claude · Windows`
+`Full journeys · Claude · Linux` two (its 40 recorded cases total 470 s, run
+45863967776, balanced at about 235 s per shard), `Full journeys · Codex · Windows`
+three, and `Anthropic MPS ... · Claude · Windows`
 three (its Cowork Desktop steps stay on the first shard). Ordinary Codex Windows
 uses a separate job with at most two active shards, leaving other Full lanes parallel.
 Its 43 recorded cases total 554 s (run 45672220380, artifact 15050747212), balanced

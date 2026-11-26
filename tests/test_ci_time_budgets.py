@@ -97,6 +97,8 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
         "Mark live-shard checkout complete",
         "pattern: integration-full-*-windows-latest-shard*",
         "Mark full-shard download complete",
+        "pattern: integration-full-claude-ubuntu-22.04-shard*",
+        "Mark Linux-claude-shard download complete",
         "pattern: integration-anthropic-mps-claude-windows-latest-shard*",
         "Mark MPS-shard download complete",
         "pattern: e2e-cujs-*shard*",
@@ -116,9 +118,10 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
         "BUDGET_JOB_STARTED": "100",
         "BUDGET_COVERAGE_CHECKOUT_DONE": "104",
         "BUDGET_COVERAGE_FULL_DONE": "234",
-        "BUDGET_COVERAGE_MPS_DONE": "235",
-        "BUDGET_COVERAGE_CUJ_DONE": "236",
-        "BUDGET_RUN_STARTED": "237",
+        "BUDGET_COVERAGE_LINUX_CLAUDE_DONE": "235",
+        "BUDGET_COVERAGE_MPS_DONE": "236",
+        "BUDGET_COVERAGE_CUJ_DONE": "237",
+        "BUDGET_RUN_STARTED": "238",
     }
     bash = shutil.which("bash")
     assert bash is not None
@@ -127,6 +130,7 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
     for row in (
         "| Checkout and clock start | 4 |",
         "| Full-shard artifacts | 130 |",
+        "| Linux-claude-shard artifacts | 1 |",
         "| MPS-shard artifacts | 1 |",
         "| CUJ-shard artifacts | 1 |",
         "| Other setup | 1 |",
@@ -153,16 +157,16 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
             "--started",
             "100",
             "--run-started",
-            "237",
-            "--ended",
             "238",
+            "--ended",
+            "239",
         ],
         text=True,
         capture_output=True,
         check=False,
     )
     assert result.returncode != 0
-    assert "setup 137s > 20s" in result.stdout
+    assert "setup 138s > 20s" in result.stdout
 
 
 def test_job_within_budget_passes(tmp_path):

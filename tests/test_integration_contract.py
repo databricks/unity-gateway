@@ -3018,41 +3018,49 @@ def test_unit_test_times_rejects_incomplete_shard_runs(defect, tmp_path):
 
 
 LIVE_SHARD_LANES = (
-    # (job, lane, agent) for the integration lanes CI splits by test file and case.
-    ("full", "full-claude", "claude"),
-    ("full-codex-windows", "full-codex", "codex"),
-    ("anthropic-mps", "anthropic-mps-claude", "claude"),
+    # (job, lane, agent, matrix os) for the integration lanes CI splits by test file and case.
+    ("full", "full-claude", "claude", "windows-latest"),
+    ("full", "full-claude", "claude", "ubuntu-22.04"),
+    ("full-codex-windows", "full-codex", "codex", "windows-latest"),
+    ("anthropic-mps", "anthropic-mps-claude", "claude", "windows-latest"),
 )
 
 
-@pytest.mark.parametrize(("job_name", "lane", "agent"), LIVE_SHARD_LANES)
-def test_live_shards_run_every_case_exactly_once(job_name, lane, agent):
+def _times_os(os_value):
+    """The live_test_times.json system key for a workflow matrix ``os`` value."""
+    return "Windows" if os_value == "windows-latest" else "Linux"
+
+
+@pytest.mark.parametrize(("job_name", "lane", "agent", "os_value"), LIVE_SHARD_LANES)
+def test_live_shards_run_every_case_exactly_once(job_name, lane, agent, os_value):
     from tests import live_shard, shard
 
+    system = _times_os(os_value)
     jobs = _integration_jobs()
-    times = live_shard.lane_times(lane, "Windows")
+    times = live_shard.lane_times(lane, system)
     cases = sorted(_collect_integration_cases(_ci_marker_expression(jobs[job_name], agent)))
     assert cases
     files = sorted({shard.file_of(case) for case in cases})
     owners = []
     for index in range(1, times["shards"] + 1):
-        units = live_shard.units_for(lane, f"{index}/{times['shards']}", files, "Windows")
+        units = live_shard.units_for(lane, f"{index}/{times['shards']}", files, system)
         owned = shard.owned_tests(units, cases, set(times["slow"]))
         owners.append([case for case, mine in zip(cases, owned, strict=True) if mine])
     # Every case of the lane runs in exactly one shard, whatever files CI collects on the lane.
     assert sorted(case for owned in owners for case in owned) == cases
 
 
-@pytest.mark.parametrize("lane", [entry[1] for entry in LIVE_SHARD_LANES])
-def test_live_shard_loads_stay_balanced(lane):
+@pytest.mark.parametrize(("lane", "os_value"), [(entry[1], entry[3]) for entry in LIVE_SHARD_LANES])
+def test_live_shard_loads_stay_balanced(lane, os_value):
     from tests import live_shard, shard
 
-    times = live_shard.lane_times(lane, "Windows")
+    system = _times_os(os_value)
+    times = live_shard.lane_times(lane, system)
     assert times["files"], "record fresh times from the live-test-times artifact"
     files = sorted(times["files"])
     total = times["shards"]
     plan = [
-        live_shard.units_for(lane, f"{index}/{total}", files, "Windows")
+        live_shard.units_for(lane, f"{index}/{total}", files, system)
         for index in range(1, total + 1)
     ]
     units = sorted(unit for owned in plan for unit in owned)
@@ -3070,16 +3078,16 @@ def test_live_shard_loads_stay_balanced(lane):
     assert max(weights) - min(weights) <= max(times["slow"].values()), weights
 
 
-@pytest.mark.parametrize(("job_name", "lane", "agent"), LIVE_SHARD_LANES)
-def test_live_shard_matrix_matches_the_recorded_shard_count(job_name, lane, agent):
+@pytest.mark.parametrize(("job_name", "lane", "agent", "os_value"), LIVE_SHARD_LANES)
+def test_live_shard_matrix_matches_the_recorded_shard_count(job_name, lane, agent, os_value):
     from tests import live_shard
 
     jobs = _integration_jobs()
-    total = live_shard.lane_times(lane, "Windows")["shards"]
+    total = live_shard.lane_times(lane, _times_os(os_value))["shards"]
     matrix = "\n".join(
         leg
         for leg in jobs[job_name].split("          - os: ")[1:]
-        if f"            agent: {agent}\n" in leg
+        if leg.startswith(f"{os_value}\n            agent: {agent}\n")
     )
     legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', matrix)
     if job_name != "anthropic-mps":  # Full shards are plain matrix entries.
@@ -3220,6 +3228,7 @@ def test_live_shard_coverage_gate_downloads_every_shard_artifact():
     job = _workflow_job("live-shard-times", "cujs")
     for pattern in (
         "integration-full-*-windows-latest-shard*",
+        "integration-full-claude-ubuntu-22.04-shard*",
         "integration-anthropic-mps-claude-windows-latest-shard*",
         "e2e-cujs-*shard*",
     ):
@@ -3268,7 +3277,7 @@ def test_live_shard_times_verifies_coverage_and_records(tmp_path):
     from tests import live_shard
 
     lanes = live_shard.expected_shards()
-    for lane, (system, total) in sorted(lanes.items()):
+    for (lane, system), total in sorted(lanes.items()):
         _fake_lane_artifacts(tmp_path, lane, system, total)
     recorded = tmp_path / "recorded.json"
     result = subprocess.run(
@@ -3280,17 +3289,20 @@ def test_live_shard_times_verifies_coverage_and_records(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     output = json.loads(recorded.read_text())
-    assert set(output) == set(lanes)
-    total = lanes["full-claude"][1]
-    assert output["full-claude"] == {
-        "Windows": {
+    assert set(output) == {lane for lane, _ in lanes}
+
+    def fake_record(total):
+        return {
             "shards": total,
             "files": {"test_x.py": [round(3.0 * total, 2), total]},
             "slow": {f"test_x.py::c{index}": 3.0 for index in range(1, total + 1)},
         }
+
+    assert output["full-claude"] == {
+        system: fake_record(lanes[("full-claude", system)]) for system in ("Linux", "Windows")
     }
     # A shard that never uploaded its artifact fails the proof for its whole lane.
-    shutil.rmtree(tmp_path / f"full-claude-Windows-shard{total}")
+    shutil.rmtree(tmp_path / f"full-claude-Windows-shard{lanes[('full-claude', 'Windows')]}")
     result = subprocess.run(
         [sys.executable, "scripts/live_shard_times.py", str(tmp_path), str(recorded)],
         cwd=Path(__file__).parent.parent,
