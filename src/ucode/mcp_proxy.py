@@ -720,11 +720,13 @@ async def _run(
 
     async def record_request(request):
         assert diagnostic is not None
+        previous_trace = request.extensions.get("trace")
+        if getattr(previous_trace, "_ucode_mcp_diagnostic", None) is diagnostic:
+            return
         request_id = secrets.token_hex(8)
         started = time.monotonic()
         method = request.method if request.method in {"GET", "POST", "DELETE"} else "OTHER"
         diagnostic("request_start", {"request_id": request_id, "method": method})
-        previous_trace = request.extensions.get("trace")
 
         async def trace(phase, info):
             if previous_trace is not None:
@@ -768,6 +770,7 @@ async def _run(
                     fields["status"] = response[1]
             diagnostic("transport", fields)
 
+        trace.__dict__["_ucode_mcp_diagnostic"] = diagnostic
         request.extensions["trace"] = trace
 
     async with httpx.AsyncClient(

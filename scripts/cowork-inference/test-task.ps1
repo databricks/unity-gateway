@@ -262,7 +262,7 @@ try {
             $allow = Find-Control -Names $toolPermissionLabels
             if ($allow) {
                 $report.toolPermission = $allow.Current.Name
-                Invoke-CoworkToolPermission -VmReady $report.vmReady -Approve { Invoke-Control $allow }
+                Invoke-Control $allow
             }
         }
         $sessionEvidence = Get-SessionEvidence

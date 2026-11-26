@@ -92,12 +92,6 @@ function Wait-CoworkVmReady {
     } while ($true)
 }
 
-function Invoke-CoworkToolPermission {
-    param([bool]$VmReady, [scriptblock]$Approve)
-    if (-not $VmReady) { throw 'Cowork VM must be ready before granting tool permission' }
-    & $Approve
-}
-
 function Convert-CoworkUiControl {
     param($Current, $Value, [scriptblock]$GetClass)
     $id = [string]$Current.AutomationId

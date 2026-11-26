@@ -1879,6 +1879,57 @@ def test_run_chains_existing_request_trace(monkeypatch):
     assert [event for event, _ in diagnostics] == ["request_start", "transport"]
 
 
+def test_run_traces_one_logical_request_across_401_login_retry(monkeypatch):
+    httpx_module = mcp_proxy._httpx()
+    real_client = httpx_module.AsyncClient
+    diagnostics = []
+    requests = []
+
+    async def upstream(request):
+        requests.append(request)
+        await request.extensions["trace"]("connection.connect_tcp.started", {})
+        return httpx_module.Response(401 if len(requests) == 1 else 200, request=request)
+
+    class LocalClient(real_client):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx_module.MockTransport(upstream), **kwargs)
+
+    class StopBridge(Exception):
+        pass
+
+    @asynccontextmanager
+    async def exercise_retry(url, *, http_client):
+        response = await http_client.post(
+            url, json={"jsonrpc": "2.0", "id": 7, "method": "tools/call"}
+        )
+        assert response.status_code == 200
+        raise StopBridge
+        yield
+
+    monkeypatch.setattr(httpx_module, "AsyncClient", LocalClient)
+    monkeypatch.setattr(mcp_proxy._ConnectionLogin, "run_if_needed", lambda _self: True)
+    monkeypatch.setattr(mcp_proxy, "streamable_http_client", exercise_retry)
+
+    async def scenario():
+        with pytest.raises(StopBridge):
+            await mcp_proxy._run(
+                URL,
+                WS,
+                None,
+                token_provider=lambda: "test-token",
+                diagnostic=lambda event, data: diagnostics.append((event, data)),
+            )
+
+    anyio.run(scenario)
+    assert len(requests) == 2 and requests[0] is requests[1]
+    starts = [data for event, data in diagnostics if event == "request_start"]
+    phases = [data for event, data in diagnostics if event == "transport"]
+    assert len(starts) == 1
+    assert len(phases) == 2
+    assert {phase["request_id"] for phase in phases} == {starts[0]["request_id"]}
+    assert all(phase["phase"] == "connection.connect_tcp.started" for phase in phases)
+
+
 class TestServe:
     def test_runs_the_bridge_with_parsed_args(self, monkeypatch):
         captured: dict = {}

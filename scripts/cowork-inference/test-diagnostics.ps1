@@ -14,6 +14,11 @@ $taskSource = Get-Content -LiteralPath "$PSScriptRoot/test-task.ps1" -Raw
 if (($diagnosticsSource + $taskSource) -match '\[Windows\.Automation\.ElementNotAvailableException\]') {
     throw 'UI Automation exception catches must use the fully qualified type'
 }
+$readyIndex = $taskSource.IndexOf('Wait-CoworkVmReady -Deadline $deadline')
+$approvalIndex = $taskSource.IndexOf('Invoke-Control $allow')
+if ($readyIndex -lt 0 -or $approvalIndex -le $readyIndex) {
+    throw 'Tool permission must follow the VM readiness wait'
+}
 . "$PSScriptRoot/diagnostics.ps1"
 $savedBearer = $env:DATABRICKS_BEARER
 $savedOAuthToken = $env:CLAUDE_CODE_OAUTH_TOKEN
@@ -159,18 +164,6 @@ try {
         if ($_.Exception.Message -notmatch 'task deadline') { throw }
     }
     if ($expiredReleased) { throw 'VM readiness cannot release an expired task deadline' }
-    $script:approvalCount = 0
-    try {
-        Invoke-CoworkToolPermission -VmReady $false -Approve { $script:approvalCount++ }
-        throw 'Permission approval before readiness must fail'
-    } catch {
-        if ($_.Exception.Message -notmatch 'VM.*ready') { throw }
-    }
-    if ($script:approvalCount -ne 0) { throw 'An early prompt must never be approved' }
-    $script:readyObserved = $false
-    Wait-CoworkVmReady -Deadline ([DateTime]::UtcNow.AddSeconds(3)) -IsReady { $script:readyObserved = $true; return $true }
-    Invoke-CoworkToolPermission -VmReady $script:readyObserved -Approve { $script:approvalCount++ }
-    if ($script:approvalCount -ne 1) { throw 'A ready VM must permit exactly one approval' }
     $script:classReads = 0
     $controls = @(
         [pscustomobject]@{ Name = 'Project'; AutomationId = ''; NativeWindowHandle = $null; ControlType = [pscustomobject]@{ ProgrammaticName = 'ControlType.Pane' }; IsEnabled = $true; IsOffscreen = $false; HasKeyboardFocus = $false },
