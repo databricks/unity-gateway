@@ -85,6 +85,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import (
+    SUBAGENT_AUTO_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     apply_config,
     apply_enabled_version,
@@ -409,7 +410,7 @@ def _claude_mod_launch_options(
     source = resolve_environment(env, agent=AGENT_CLAUDE)
     version = selected_version(env) if config_version is None else config_version
     source[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] = (
-        "1" if version == SUBAGENT_AUTO_V0_CLAUDE_ONLY else "0"
+        "1" if version in (SUBAGENT_AUTO_V0, SUBAGENT_AUTO_V0_CLAUDE_ONLY) else "0"
     )
     isaac = shutil.which("isaac")
     return {
@@ -1258,6 +1259,15 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    auto_picker = selected_version() == SUBAGENT_AUTO_V0 and not app_server_launch
+    try:
+        if auto_picker and (has_explicit_model_arg(tool_args) or tool_args[:1] == ["resume"]):
+            from ucode.smart_routing.session_env import set_session_environment
+
+            set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+    except (OSError, RuntimeError, ValueError) as exc:
+        print_warning(f"Could not initialize Codex Auto session routing: {exc}")
+        auto_picker = False
     try:
         catalog_path = overlay.get("model_catalog_json") or custom_catalog_path()
         if catalog_path is not None:
@@ -1335,6 +1345,7 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            **({"auto_picker": True} if auto_picker else {}),
             validate_model_list=(
                 (
                     lambda: codex_routing.validate_codex_model_list(

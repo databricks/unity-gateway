@@ -71,6 +71,7 @@ _EXPECTED_PRESETS = {
 # Versions whose mapping hides subagent model details in the main TUI, per agent.
 _HIDDEN_MODEL_DETAIL_AGENTS = {
     config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {AGENT_CLAUDE},
+    config.SUBAGENT_AUTO_V0: {AGENT_CLAUDE, AGENT_CODEX},
     config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {AGENT_CLAUDE, AGENT_CODEX},
     config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {AGENT_CLAUDE},
 }
@@ -323,7 +324,14 @@ def test_enabled_version_keeps_a_known_version(agent, version):
 
     assert applied == config.resolve_environment(inherited, agent=agent)
     assert applied[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] == (
-        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE else "0"
+        "1"
+        if (version, agent)
+        in {
+            (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, AGENT_CLAUDE),
+            (config.SUBAGENT_AUTO_V0, AGENT_CLAUDE),
+            (config.SUBAGENT_AUTO_V0, AGENT_CODEX),
+        }
+        else "0"
     )
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
@@ -340,6 +348,7 @@ def test_enabled_version_keeps_a_known_version(agent, version):
             {AGENT_CLAUDE: True, AGENT_CODEX: False},
         ),
         (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (config.SUBAGENT_AUTO_V0, {AGENT_CLAUDE: True, AGENT_CODEX: True}),
         (
             config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
             {AGENT_CLAUDE: True, AGENT_CODEX: False},
@@ -352,6 +361,7 @@ def test_enabled_version_keeps_a_known_version(agent, version):
                     config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                     config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
                     config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+                    config.SUBAGENT_AUTO_V0,
                     config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 }
             )
@@ -520,7 +530,9 @@ def test_auto_requires_exact_version(version, legacy_flag):
     env = {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: legacy_flag}
     if version is not None:
         env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = version
-    assert config.auto_mode_enabled(env) is (version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    assert config.auto_mode_enabled(env) is (
+        version in (config.SUBAGENT_AUTO_V0, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    )
 
 
 def test_version_scope_retains_identity_without_reapplying_flags(monkeypatch):

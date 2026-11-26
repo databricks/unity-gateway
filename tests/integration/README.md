@@ -40,7 +40,11 @@ fixtures have small catalogs; allow-all startup and catalogs over 128 entries re
 validation, not automated CUJ coverage. These cases do not exercise resume or explicit-model
 overrides. Collection alone does not establish a live pass.
 
-Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
+Auto picker coverage lives in the read-only workspace CUJs 4 and 7. CUJ4 includes
+Codex's native Auto selection, explicit reasoning-effort choice, and a completed
+main-model task with the chosen effort on the wire. Offline Auto cancellation, mode-switch,
+feedback, and rollback cases use `../test_codex_metadata.py`'s interposer harness, not a
+real TUI or gateway. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
 `../test_agent_claude.py`; live configure-to-launch validation remains a gap.
@@ -2389,9 +2393,11 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
 The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the prompt
-hint after a main-model switch and verifies that the selected model serves a file task
-both before and after restart. Native component tests open a saved custom alias and check the
-window displayed by `/context` with a catalog limit and an explicit preference.
+hint after a Claude main-model switch and verifies that the selected model serves a file task
+both before and after restart. Its Codex case chooses Auto and a main model in the native
+picker, then verifies completed gateway inference on that model. Native component tests
+open a saved custom alias and check the window displayed by `/context` with a catalog
+limit and an explicit preference.
 Launch-settings tests cover missing and out-of-range limits and unreadable native settings.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert

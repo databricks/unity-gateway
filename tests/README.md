@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+CUJ4 covers Codex's native Auto row appearing first, main-model and reasoning-effort
+choices, and completed gateway inference on the selected model and effort. This live
+journey has not been run locally.
+`test_codex_metadata.py` enables Auto in the existing interposer wire harness to cover
+interrupt/reopen and effort cancellation, Shift+Tab collaboration updates, synthetic-ID
+sanitization, model/effort saves, rejected-update rollback, validation-denied activation,
+and manual-model feedback cancellation and delivery monitoring. These component checks
+do not exercise a real TUI or contact the gateway.
+
 `test_ci_live_contract.py` checks draft and ready scheduling, conversion cancellation,
 unchanged fork and merge-group conditions, security-gate dependencies, and the required
 `e2e` rollup's response to passing, failed, skipped, and cancelled results. These are

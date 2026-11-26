@@ -190,6 +190,11 @@ cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journe
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+Its Codex Auto case uses the shared `subagent_auto_v0` selector, checks Auto above
+the regular models in one native picker, chooses an alternate main model by its display
+name and one of its supported reasoning efforts, and requires a completed file task
+with paired gateway inference on that model and effort and no first-prompt routing request.
+It then switches to a manual model and back to Auto, requiring both choosers to reopen.
 An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns

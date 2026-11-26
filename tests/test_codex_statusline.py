@@ -381,3 +381,27 @@ def test_real_stdio_process_keeps_sessions_separate_and_polls_live_controls():
             process.communicate(timeout=5)
             controls.unlink()
             controls.parent.rmdir()
+
+
+def test_footer_names_auto_main_model_only_for_auto_session(tmp_path, monkeypatch):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{}")
+    controls.with_suffix(".auto.json").write_text('{"model":"gpt-two"}')
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    state = {
+        "thread": {
+            "model": {"id": "ug-auto-codex", "display_name": "Auto", "reasoning_level": "low"}
+        }
+    }
+    assert "Auto (gpt-two)" in _labels(statusline.render(state))
+    assert "low" not in _labels(statusline.render(state))
+    state["thread"]["model"] = {"id": "gpt-one"}
+    assert "Auto (gpt-one)" in _labels(statusline.render(state))
+    controls.with_suffix(".auto.json").unlink()
+    assert "Auto" not in _labels(statusline.render(state))
+    controls.with_suffix(".auto.json").write_text("{")
+    assert "Auto" not in _labels(statusline.render(state))
+    set_session_environment(
+        {ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"}
+    )
+    assert "Auto" not in _labels(statusline.render(state))

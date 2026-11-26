@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
+from ucode.smart_routing.codex_auto import CodexAutoPicker
 from ucode.smart_routing.codex_feedback import (
     CodexFeedbackInput,
     CodexSmartRouter,
@@ -220,6 +221,7 @@ async def _handle_tui(
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
     provider: str | None = None,
+    auto_picker: bool = False,
     validate_model_list: ValidateModelList | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
@@ -260,6 +262,11 @@ async def _handle_tui(
             else None
         )
         feedback_input = CodexFeedbackInput(tui.send)
+        picker = (
+            CodexAutoPicker(smart_router, feedback_input, upstream.send, tui.send)
+            if auto_picker and smart_router is not None
+            else None
+        )
         tool_tasks: set[asyncio.Task] = set()
         tool_turns: dict[tuple[str, str], asyncio.Event] = {}
         queued_frames: asyncio.Queue = asyncio.Queue()
@@ -286,7 +293,15 @@ async def _handle_tui(
                         and isinstance(params.get("threadId"), str)
                         and (params.get("turnId") is None or isinstance(params.get("turnId"), str))
                     ):
-                        feedback_input.cancel(params["threadId"], params.get("turnId"))
+                        turn_id = params.get("turnId")
+                        if (
+                            picker is not None
+                            and picker.busy
+                            and params["threadId"] == picker.thread_id
+                        ):
+                            # Auto prompts have private turn IDs, not the TUI's last inference ID.
+                            turn_id = None
+                        feedback_input.cancel(params["threadId"], turn_id)
                 if message is not None and message.get("method") in (None, "turn/interrupt"):
                     await upstream.send(frame)
                 else:
@@ -307,6 +322,8 @@ async def _handle_tui(
                     message = parse(frame)
                     if controller is not None and message is not None:
                         assert smart_router is not None
+                        if picker is not None and await picker.before_tui(message):
+                            continue
                         smart_router.before_tui(message)
                         message = await controller.before_tui(message)
                         frame = json.dumps(message)
@@ -410,7 +427,17 @@ async def _handle_tui(
                         continue
                 if controller is not None and message is not None:
                     controller.observe(message)
+                selection = None
+                if picker is not None and message is not None:
+                    consumed, selection = await picker.observe(message)
+                    if consumed:
+                        continue
+                    frame = json.dumps(message)
                 await tui.send(frame)
+                if selection is not None and picker is not None:
+                    task = asyncio.create_task(picker.choose(selection))
+                    tool_tasks.add(task)
+                    task.add_done_callback(tool_done)
                 if message is not None and message.get("method") == "turn/completed":
                     params = message.get("params")
                     turn = params.get("turn") if isinstance(params, dict) else None
@@ -443,6 +470,11 @@ async def _handle_tui(
             for task in tool_tasks:
                 task.cancel()
             await asyncio.gather(*tool_tasks, return_exceptions=True)
+            if picker is not None:
+                upload_tasks = list(picker.upload_tasks)
+                for task in upload_tasks:
+                    task.cancel()
+                await asyncio.gather(*upload_tasks, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -462,6 +494,7 @@ async def _serve(
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
     provider: str | None = None,
+    auto_picker: bool = False,
     validate_model_list: ValidateModelList | None = None,
 ):
     async def handler(tui):
@@ -478,6 +511,7 @@ async def _serve(
                 switch_message_fn,
                 session_controls,
                 provider,
+                auto_picker,
                 validate_model_list,
             )
         except Exception as exc:  # noqa: BLE001
@@ -503,6 +537,7 @@ def start_interposer_thread(
     ready_timeout: float = 10.0,
     session_controls: Path | None = None,
     provider: str | None = None,
+    auto_picker: bool = False,
     validate_model_list: ValidateModelList | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
@@ -536,6 +571,7 @@ def start_interposer_thread(
                     switch_message_fn,
                     session_controls,
                     provider,
+                    auto_picker,
                     validate_model_list,
                 )
             )

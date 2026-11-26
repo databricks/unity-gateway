@@ -19,6 +19,7 @@ from tests.integration.utils.evidence import (
 from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_AUTO_V0,
     SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
@@ -32,7 +33,7 @@ from ucode.smart_routing.config import (
 )
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS, CodingAgent
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS, CodingAgent
 from .helpers.evidence import (
     SessionEvidence,
     SessionObservation,
@@ -257,6 +258,104 @@ def completed_smart_routing_runs(cuj):
 
 class TestCujAutoModelPicker(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    def test_codex_auto_picker_selects_main_model_for_completed_task(self, cuj):
+        """Scenario: select Auto in Codex's native picker and choose a main model and effort.
+
+        Expected: the chosen model and effort complete a file task while subagent routing stays on.
+        After switching to a manual model, selecting Auto opens the main-model chooser again.
+        The synthetic Auto ID never reaches gateway inference.
+        """
+        with smart_router_preset(cuj, SUBAGENT_AUTO_V0) as (session, _, recorder, configs):
+            default = configs[CODEX]["default_models"]["default_model"]
+            alternate = next(
+                model for model in configs[CODEX]["models"]["model_services"] if model != default
+            )
+            catalog = session.app_server_handshake(
+                ["app-server", "--listen", "stdio://"],
+                request=("model/list", {"cursor": None, "limit": 1000, "includeHidden": False}),
+                name="codex-auto-model-labels",
+            )["result"]["data"]
+            alternate_row = next(row for row in catalog if row["model"] == alternate)
+            alternate_label = alternate_row["displayName"]
+            alternate_effort = alternate_row["supportedReasoningEfforts"][-1]["reasoningEffort"]
+            assert alternate_label != alternate
+            evidence = SessionEvidence(session.home, CODEX)
+            recorder.prepare_launch()
+            with Terminal(session, "codex-auto-picker", [CODEX]) as tui:
+                tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({default})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto selected at launch",
+                )
+                tui.submit("/model")
+                tui.wait_for(
+                    lambda screen: (
+                        "select model" in screen.lower()
+                        and re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+(\S+)", screen)[:1]
+                        == ["Auto"]
+                        and "All models" not in screen
+                        and len(re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+\S", screen))
+                        >= len(configs[CODEX]["models"]["model_services"]) + 1
+                    ),
+                    "Auto above all regular models in Codex's picker",
+                )
+                tui.choose("Select", "Auto")
+                tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({alternate})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto footer with routing on and the selected main model",
+                )
+                task = _file_task(session, CODEX)
+                checkpoint = recorder.checkpoint()
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                assert_inference_evidence(recorder, checkpoint, CODEX, task, alternate)
+                model_requests = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.path == INFERENCE_PATHS[CODEX]
+                    and request.payload.get("model") == alternate
+                ]
+                assert model_requests
+                assert all(
+                    request.payload.get("reasoning", {}).get("effort") == alternate_effort
+                    for request in model_requests
+                )
+                assert not any(
+                    request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+                tui.submit("/model")
+                tui.choose("Select", alternate_label)
+                tui.wait_for(
+                    lambda screen: (
+                        "Select Reasoning Level" in screen or "smart router off" in screen.lower()
+                    ),
+                    "manual model selection",
+                )
+                if "Select Reasoning Level" in tui.visible:
+                    tui.send("\r", "accept the default reasoning level")
+                tui.wait_for(
+                    lambda screen: "smart router off" in screen.lower(),
+                    "manual model with routing off",
+                )
+                tui.submit("/model")
+                tui.choose("Select", "Auto")
+                tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
+                tui.wait_for(
+                    lambda screen: (
+                        "smart router on" in screen.lower()
+                        and "Select Reasoning Level" not in screen
+                    ),
+                    "Auto selected again with routing on",
+                )
+                tui.exit_normally()
 
     def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
         """Scenario: select the Auto preset, launch Claude, switch to manual, then back.

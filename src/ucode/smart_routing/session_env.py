@@ -21,6 +21,7 @@ from ucode.constants import (
 )
 from ucode.smart_routing.config import resolve_environment
 
+AUTO_MODEL = "ug-auto-codex"
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 CONTROLS_READ_ATTEMPTS = 10
@@ -48,6 +49,10 @@ def session_env_path(env: Mapping[str, str] | None = None) -> Path:
     raise RuntimeError(
         "Smart Router controls are available only inside a smart-routed Claude or Codex session."
     )
+
+
+def auto_state_path(controls: Path) -> Path:
+    return controls.with_suffix(".auto.json")
 
 
 def _validate(values: object) -> dict[str, str]:
