@@ -19,12 +19,11 @@ from ucode.smart_routing.codex_feedback import (
     collect_feedback,
 )
 from ucode.smart_routing.session_env import (
+    AUTO_MODEL,
     auto_state_path,
     session_routing_enabled,
     set_session_environment,
 )
-
-AUTO_MODEL = "ug-auto-codex"
 
 
 class CodexAutoPicker:

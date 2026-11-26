@@ -9,8 +9,8 @@ import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
-from ucode.smart_routing.codex_auto import AUTO_MODEL
 from ucode.smart_routing.session_env import (
+    AUTO_MODEL,
     SESSION_ENV_VAR,
     auto_state_path,
     read_validation_result,

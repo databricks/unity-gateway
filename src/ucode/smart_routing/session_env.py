@@ -21,6 +21,7 @@ from ucode.constants import (
 )
 from ucode.smart_routing.config import resolve_environment
 
+AUTO_MODEL = "ug-auto-codex"
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 CONTROLS_READ_ATTEMPTS = 10
