@@ -176,6 +176,28 @@ class TestRenderOverlayAuthAndModels:
         ids = {m["id"] for m in overlay["providers"]["databricks-claude"]["models"]}
         assert ids == {"claude-opus", "claude-sonnet"}
 
+    @pytest.mark.parametrize(
+        ("model", "context", "output"),
+        [
+            ("system.ai.claude-opus-4-8", 1_000_000, 128_000),
+            ("system.ai.claude-sonnet-4-6", 1_000_000, 128_000),
+            ("system.ai.claude-haiku-5-5", 1_000_000, 128_000),
+            ("system.ai.claude-sonnet-4-5", 200_000, 32_000),
+            ("databricks-claude-haiku-4-5", 200_000, 32_000),
+            ("claude-sonnet", 200_000, 32_000),
+        ],
+    )
+    def test_claude_models_declare_token_limits(self, model, context, output):
+        # Pi's custom-model defaults (128K context, 16K output) would truncate 1M-window models.
+        overlay, _ = _overlay(model, claude_models={"sonnet": model})
+        (entry,) = overlay["providers"]["databricks-claude"]["models"]
+        assert entry == {"id": model, "contextWindow": context, "maxTokens": output}
+
+    def test_openai_and_gemini_models_stay_bare(self):
+        overlay, _ = _overlay("gpt-5", codex_models=["gpt-5"], gemini_models=["gemini-2"])
+        assert overlay["providers"]["databricks-openai"]["models"] == [{"id": "gpt-5"}]
+        assert overlay["providers"]["databricks-gemini"]["models"] == [{"id": "gemini-2"}]
+
     def test_openai_models_listed(self):
         overlay, _ = _overlay("gpt-5", codex_models=["gpt-5", "gpt-5-mini"])
         ids = {m["id"] for m in overlay["providers"]["databricks-openai"]["models"]}
