@@ -328,7 +328,19 @@ class FileTask:
                 for row in payloads
                 if row.get("type") == "assistant.message"
             ]
-            assert any(self.value in answer for answer in answers), result.stdout
+            diagnostics = {
+                "selected_models": [
+                    (row.get("data") or {}).get("selectedModel")
+                    for row in payloads
+                    if row.get("type") == "session.start"
+                ][:3],
+                "tool_starts": sum(row.get("type") == "tool.execution_start" for row in payloads),
+                "tool_completions": sum(
+                    row.get("type") == "tool.execution_complete" for row in payloads
+                ),
+                "assistant_messages": len(answers),
+            }
+            assert any(self.value in answer for answer in answers), diagnostics
         else:
             raise AssertionError(f"Unknown agent: {agent}")
 
