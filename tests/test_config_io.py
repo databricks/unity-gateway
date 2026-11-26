@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 import tomlkit
@@ -205,6 +206,50 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
         assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX file permissions",
+    )
+    @pytest.mark.parametrize("mode, expected_mode", [(None, 0o600), (0o640, 0o640)])
+    def test_atomic_write_json_replaces_file_with_requested_mode(
+        self, tmp_path, mode, expected_mode
+    ):
+        path = tmp_path / "settings.json"
+        original = '{"model": "original"}'
+        path.write_text(original, encoding="utf-8")
+        path.chmod(0o664)
+
+        with path.open(encoding="utf-8") as original_reader:
+            if mode is None:
+                config_io.atomic_write_json(path, {"model": "updated"})
+            else:
+                config_io.atomic_write_json(path, {"model": "updated"}, mode=mode)
+
+            assert original_reader.read() == original
+            assert json.loads(path.read_text()) == {"model": "updated"}
+            assert path.stat().st_mode & 0o777 == expected_mode
+        assert not list(tmp_path.glob(".settings.json.*"))
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX file permissions",
+    )
+    def test_atomic_write_json_preserves_original_when_directory_is_read_only(self, tmp_path):
+        path = tmp_path / "settings.json"
+        original = b'{"model": "original"}'
+        path.write_bytes(original)
+        path.chmod(0o664)
+        directory_mode = tmp_path.stat().st_mode & 0o777
+        tmp_path.chmod(0o555)
+        try:
+            with pytest.raises(PermissionError):
+                config_io.atomic_write_json(path, {"model": "updated"}, mode=0o640)
+            assert path.read_bytes() == original
+            assert path.stat().st_mode & 0o777 == 0o664
+            assert not list(tmp_path.glob(".settings.json.*"))
+        finally:
+            tmp_path.chmod(directory_mode)
 
 
 # ---------------------------------------------------------------------------
