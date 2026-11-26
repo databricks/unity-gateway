@@ -157,5 +157,88 @@
     "test_ug_smart_routing_hooks.py::test_smart_routing_claude_route_subagent_hook[legacy-env]": 2.42
    }
   }
+ },
+ "full-codex": {
+  "Windows": {
+   "files": {
+    "test_ug_codex_app_server.py": [
+     21.9,
+     3
+    ],
+    "test_ug_codex_commands.py": [
+     45.49,
+     9
+    ],
+    "test_ug_codex_headless.py": [
+     140.88,
+     12
+    ],
+    "test_ug_codex_model_discovery.py": [
+     27.24,
+     5
+    ],
+    "test_ug_codex_tracing.py": [
+     53.99,
+     1
+    ],
+    "test_ug_configure_codex.py": [
+     221.07,
+     6
+    ],
+    "test_ug_configure_codex_lifecycle.py": [
+     32.67,
+     2
+    ],
+    "test_ug_smart_routing_hooks.py": [
+     10.83,
+     5
+    ]
+   },
+   "shards": 3,
+   "slow": {
+    "test_ug_codex_app_server.py::test_ug_codex_app_server_client_initializes[routing-off-direct]": 9.12,
+    "test_ug_codex_app_server.py::test_ug_codex_app_server_client_initializes[routing-off-launcher-separator]": 6.68,
+    "test_ug_codex_app_server.py::test_ug_codex_app_server_runs_unrouted_below_routing_floor": 6.1,
+    "test_ug_codex_commands.py::test_ug_codex_app_help[routing-off]": 5.09,
+    "test_ug_codex_commands.py::test_ug_codex_app_help[routing-on]": 5.01,
+    "test_ug_codex_commands.py::test_ug_codex_app_reports_unknown_argument[routing-off]": 5.13,
+    "test_ug_codex_commands.py::test_ug_codex_app_reports_unknown_argument[routing-on]": 5.11,
+    "test_ug_codex_commands.py::test_ug_codex_app_server_help[routing-off]": 5.01,
+    "test_ug_codex_commands.py::test_ug_codex_exec_help[routing-off]": 4.98,
+    "test_ug_codex_commands.py::test_ug_codex_exec_help[routing-on]": 5.05,
+    "test_ug_codex_commands.py::test_ug_codex_mcp_help[routing-off]": 5.02,
+    "test_ug_codex_commands.py::test_ug_codex_mcp_help[routing-on]": 5.08,
+    "test_ug_codex_headless.py::test_ug_codex_fresh_provider_launch": 4.05,
+    "test_ug_codex_headless.py::test_ug_codex_headless_bedrock_mantle": 11.97,
+    "test_ug_codex_headless.py::test_ug_codex_headless_bedrock_runtime": 13.39,
+    "test_ug_codex_headless.py::test_ug_codex_headless_explicit_model_bypasses_routing[before_separator-equals]": 12.45,
+    "test_ug_codex_headless.py::test_ug_codex_headless_explicit_model_bypasses_routing[before_separator-separate]": 12.06,
+    "test_ug_codex_headless.py::test_ug_codex_headless_explicit_model_bypasses_routing[before_separator-short]": 13.08,
+    "test_ug_codex_headless.py::test_ug_codex_headless_explicit_model_bypasses_routing[exec-equals]": 12.33,
+    "test_ug_codex_headless.py::test_ug_codex_headless_explicit_model_bypasses_routing[exec-separate]": 12.22,
+    "test_ug_codex_headless.py::test_ug_codex_headless_explicit_model_bypasses_routing[exec-short]": 13.26,
+    "test_ug_codex_headless.py::test_ug_codex_headless_fresh_workspace": 11.63,
+    "test_ug_codex_headless.py::test_ug_codex_headless_prompt_after_separator": 12.05,
+    "test_ug_codex_headless.py::test_ug_codex_headless_prompt_stdin": 12.38,
+    "test_ug_codex_model_discovery.py::test_case_10_fresh_codex_uses_default_models": 5.41,
+    "test_ug_codex_model_discovery.py::test_case_12_configured_codex_provider_discovers_models_by_default": 6.6,
+    "test_ug_codex_model_discovery.py::test_case_12_fresh_codex_provider_discovers_models_by_default": 4.68,
+    "test_ug_codex_model_discovery.py::test_case_14_configured_codex_model_location_overrides_saved_setup": 6.37,
+    "test_ug_codex_model_discovery.py::test_case_14_fresh_codex_model_location_overrides_saved_setup": 4.19,
+    "test_ug_codex_tracing.py::test_ug_codex_exports_trace_to_configured_table": 53.99,
+    "test_ug_configure_codex.py::test_ug_configure_codex_azure_openai_mps": 33.8,
+    "test_ug_configure_codex.py::test_ug_configure_codex_bedrock_mantle_mps": 35.71,
+    "test_ug_configure_codex.py::test_ug_configure_codex_bedrock_runtime_mps": 39.68,
+    "test_ug_configure_codex.py::test_ug_configure_codex_custom_azure_openai_mps": 36.56,
+    "test_ug_configure_codex.py::test_ug_configure_codex_foundry_mps": 37.79,
+    "test_ug_configure_codex.py::test_ug_configure_codex_openai_mps": 37.52,
+    "test_ug_configure_codex_lifecycle.py::test_ug_configure_codex_repeat_and_revert": 30.93,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_codex_route_subagent_hook[first_prompt_and_subagent_no_orch_v0]": 2.14,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_codex_route_subagent_hook[legacy-env]": 2.3,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_codex_route_subagent_hook[subagent_only_v0]": 2.18,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_codex_route_subagent_hook[subagent_only_v1]": 2.18,
+    "test_ug_smart_routing_hooks.py::test_smart_routing_codex_route_subagent_hook[subagent_orch_v0]": 2.04
+   }
+  }
  }
 }

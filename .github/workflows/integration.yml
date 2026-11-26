@@ -869,13 +869,11 @@ jobs:
     strategy:
       fail-fast: false
       # Native Codex routing needs a newer binary; other journeys retain the baseline.
-      # Every leg starts at once: the Claude Windows ones are shards balanced from recorded case
-      # times (tests/live_shard.py), so no lane waits on another (#1829 removed the waits).
+      # Claude Windows shards are balanced from recorded case times (tests/live_shard.py).
+      # Ordinary Codex Windows has its own queue below; other lanes remain fully parallel.
       matrix:
         include:
           - os: ubuntu-22.04
-            agent: codex
-          - os: windows-latest
             agent: codex
           - os: ubuntu-22.04
             agent: claude
@@ -917,6 +915,44 @@ jobs:
       LIVE_SHARD_LANE: full-claude
     steps: *live-steps
 
+  full-codex-windows:
+    name: ${{ inputs.mode == 'advisory' && 'Full journeys (runs in Integration)' || 'Full journeys · Codex · Windows' }}
+    if: ${{ inputs.mode != 'advisory' && !cancelled() && needs.workspace.result == 'success' }}
+    needs: workspace
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      # Queue only these shards: Luna's replayed peak is 447k/500k with two active, 492k with three.
+      max-parallel: 2
+      matrix:
+        include:
+          - os: windows-latest
+            agent: codex
+            shard: "1/3"
+            shard_index: 1
+          - os: windows-latest
+            agent: codex
+            shard: "2/3"
+            shard_index: 2
+          - os: windows-latest
+            agent: codex
+            shard: "3/3"
+            shard_index: 3
+    env:
+      BUDGET_WORKFLOW: integration
+      BUDGET_JOB_NAME: Full journeys · Codex · Windows
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: ${{ matrix.agent }}
+      CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and not codex_relay and not codex_smart_routing
+      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}
+      LIVE_SHARD: ${{ matrix.shard || '' }}
+      LIVE_SHARD_LANE: full-codex
+    steps: *live-steps
+
   codex-relay:
     if: ${{ inputs.mode != 'advisory' }}
     name: ${{ inputs.mode == 'advisory' && 'Codex relay login and inference (runs in Integration)' || 'Codex relay login and inference' }}
@@ -943,7 +979,7 @@ jobs:
   soft-fail:
     name: ${{ inputs.mode == 'required' && 'Soft-fail journeys (runs in Integration advisory)' || format('Soft-fail journeys · {0} · {1} (non-blocking)', matrix.agent, matrix.os == 'windows-latest' && 'Windows' || 'Linux') }}
     if: ${{ inputs.mode != 'required' && !cancelled() && needs.workspace.result == 'success' }}
-    needs: [workspace, full, managed]
+    needs: [workspace, full, full-codex-windows, managed]
     continue-on-error: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 70
@@ -1355,8 +1391,8 @@ jobs:
     env:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: Live shard coverage
-    if: ${{ !cancelled() && needs.full.result == 'success' && needs.anthropic-mps.result == 'success' && needs.dedicated-cuj.result == 'success' }}
-    needs: [full, anthropic-mps, dedicated-cuj]
+    if: ${{ !cancelled() && needs.full.result == 'success' && needs.full-codex-windows.result == 'success' && needs.anthropic-mps.result == 'success' && needs.dedicated-cuj.result == 'success' }}
+    needs: [full, full-codex-windows, anthropic-mps, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1371,7 +1407,7 @@ jobs:
         run: echo "BUDGET_COVERAGE_CHECKOUT_DONE=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          pattern: integration-full-claude-windows-latest-shard*
+          pattern: integration-full-*-windows-latest-shard*
           path: ${{ runner.temp }}/shards
       - name: Mark full-shard download complete
         if: ${{ github.event_name == 'pull_request' }}
@@ -1420,7 +1456,7 @@ jobs:
       BUDGET_WORKFLOW: integration
       BUDGET_JOB_NAME: All integration tests
     if: ${{ inputs.mode != 'advisory' && always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, managed-smart, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, full-codex-windows, codex-relay, anthropic-mps, antigravity, managed, managed-smart, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj, live-shard-times]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

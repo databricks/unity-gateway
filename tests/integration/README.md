@@ -1970,8 +1970,14 @@ Each lane installs only the agent CLIs it needs (one, except the managed OpenCod
 three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. Full matrix rows run in parallel:
-cases share no workspace state, only inference capacity.
+separate runners isolate those writes as well as the PTYs. Full matrix rows run in parallel,
+except ordinary Codex Windows: its own job balances all cases across three runners using
+`tests/live_shard.py` and `tests/live_test_times.json`, with `max-parallel: 2` queueing the
+third shard without cancelling another run. Each shard has about 185 s of recorded tests;
+the two waves take about 370 s of tests plus setup, so this quota-limited plan does not claim
+a five-minute end-to-end result. The native-usage replay and its partial-coverage caveat
+are documented in the [test guide](../README.md).
+Cases share no workspace state, only inference capacity.
 They share that capacity with each other, the concurrently running agent e2e shards,
 and other PRs, so rate limits remain possible.
 No test retries or assertion changes

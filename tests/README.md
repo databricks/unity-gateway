@@ -1756,9 +1756,16 @@ settings — except a file recorded with several shards in `tests/live_test_time
 (`CUJ 4` runs three), which runs that many runners, each keeping only its cases.
 The slowest blocking live lanes shard the same way, balanced by `tests/live_shard.py`
 from per-case times in `tests/live_test_times.json` (measured on hosted runners, like
-the unit shards): `Full journeys · Claude · Windows` runs four shards and
-`Anthropic MPS ... · Claude · Windows` three (its Cowork Desktop steps stay on the
-first shard). `scripts/run_integration.py --test-shard i/n --shard-lane <lane>` splits
+the unit shards): `Full journeys · Claude · Windows` runs four shards,
+`Full journeys · Codex · Windows` three, and `Anthropic MPS ... · Claude · Windows`
+three (its Cowork Desktop steps stay on the first shard). Ordinary Codex Windows
+uses a separate job with at most two active shards, leaving other Full lanes parallel.
+Its 43 recorded cases total 554 s (run 45672220380, artifact 15050747212), balanced
+at about 185/184/185 s. Replaying their native input-token usage with the same run's
+other Codex lanes gives a worst Luna window of 447,395 tokens/60 s with two active
+shards, versus 492,113 with all three (500,000 comparison limit). These partial
+ledgers estimate load, not a quota guarantee; other PRs still share capacity.
+`scripts/run_integration.py --test-shard i/n --shard-lane <lane>` splits
 the lane; the suite's conftest keeps only the shard's cases, pytest stays serial inside
 each VM (configure and revert touch machine-wide settings), and every shard uploads
 its JUnit XML and shard report. `Live shard coverage` fails unless the shards together

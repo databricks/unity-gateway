@@ -769,15 +769,17 @@
         "run": 1035,
         "total": 1050
       },
-      "Full journeys · Codex · Windows": {
-        "setup": 65,
-        "run": 1250,
-        "total": 1305
-      },
       "Full journeys · Codex · Windows · Smart routing": {
         "setup": 70,
         "run": 490,
         "total": 540
+      }
+    },
+    "full-codex-windows": {
+      "Full journeys · Codex · Windows": {
+        "setup": 65,
+        "run": 1250,
+        "total": 1305
       }
     },
     "headless-windows": {
@@ -2591,7 +2593,7 @@
         "limited_sample": false,
         "total_only": 0
       },
-      "integration/full/Full journeys · Codex · Windows": {
+      "integration/full-codex-windows/Full journeys · Codex · Windows": {
         "samples": 89,
         "distinct_runs": 87,
         "source_set": "C34",

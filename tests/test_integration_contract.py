@@ -644,7 +644,7 @@ def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     assert "continue-on-error: true" in job
     assert "os: [ubuntu-22.04, windows-latest]" in job
     assert "runs-on: ${{ matrix.os }}" in job
-    assert "needs: [workspace, full, managed]" in job
+    assert "needs: [workspace, full, full-codex-windows, managed]" in job
     assert "!cancelled() && needs.workspace.result == 'success'" in job
     assert "fail-fast: false" in job
     assert "max-parallel: 1" in job
@@ -898,6 +898,29 @@ def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in jobs["full"]
     assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in jobs["full"]
     assert "E2E_ADMIN_SP_CLIENT_ID" not in jobs["full"]
+
+
+def test_full_codex_windows_queues_only_its_balanced_shards():
+    jobs = _integration_jobs()
+    job = jobs["full-codex-windows"]
+    assert "max-parallel: 2" in job
+    assert "fail-fast: false" in job
+    assert "concurrency:" not in job
+    assert "needs: workspace" in job
+    assert "continue-on-error:" not in job
+    assert "steps: *live-steps" in job
+    assert _ci_marker_expression(job, "codex") == _ci_marker_expression(jobs["full"], "codex")
+    full_legs = jobs["full"].split("          - os: ")[1:]
+    windows_codex = [
+        leg for leg in full_legs if leg.startswith("windows-latest\n            agent: codex\n")
+    ]
+    assert len(windows_codex) == 1
+    assert windows_codex[0].startswith(
+        "windows-latest\n            agent: codex\n            smart_routing: true\n"
+    )
+    for gate in ("cujs", "live-shard-times"):
+        needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs[gate]).group(1)
+        assert "full-codex-windows" in {name.strip() for name in needs.split(",")}
 
 
 def test_full_claude_lane_includes_both_desktop_journeys():
@@ -1180,6 +1203,7 @@ SKIPPED_ON_FORK_PRS = {
     "smoke",
     "headless-windows",
     "full",
+    "full-codex-windows",
     "soft-fail",
     "opencode",
     "copilot",
@@ -2242,6 +2266,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "full-codex-windows",
         "codex-relay",
         "antigravity",
         "managed",
@@ -2269,6 +2294,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "full-codex-windows",
             "codex-relay",
             "antigravity",
             "managed",
@@ -2994,6 +3020,7 @@ def test_unit_test_times_rejects_incomplete_shard_runs(defect, tmp_path):
 LIVE_SHARD_LANES = (
     # (job, lane, agent) for the integration lanes CI splits by test file and case.
     ("full", "full-claude", "claude"),
+    ("full-codex-windows", "full-codex", "codex"),
     ("anthropic-mps", "anthropic-mps-claude", "claude"),
 )
 
@@ -3043,14 +3070,19 @@ def test_live_shard_loads_stay_balanced(lane):
     assert max(weights) - min(weights) <= max(times["slow"].values()), weights
 
 
-@pytest.mark.parametrize(("lane", "job_name"), [(entry[1], entry[0]) for entry in LIVE_SHARD_LANES])
-def test_live_shard_matrix_matches_the_recorded_shard_count(lane, job_name):
+@pytest.mark.parametrize(("job_name", "lane", "agent"), LIVE_SHARD_LANES)
+def test_live_shard_matrix_matches_the_recorded_shard_count(job_name, lane, agent):
     from tests import live_shard
 
     jobs = _integration_jobs()
     total = live_shard.lane_times(lane, "Windows")["shards"]
-    legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', jobs[job_name])
-    if legs:  # full: the shard legs are plain matrix entries.
+    matrix = "\n".join(
+        leg
+        for leg in jobs[job_name].split("          - os: ")[1:]
+        if f"            agent: {agent}\n" in leg
+    )
+    legs = re.findall(r'(?m)^            shard: "(\d+)/(\d+)"$', matrix)
+    if job_name != "anthropic-mps":  # Full shards are plain matrix entries.
         assert sorted(legs, key=lambda leg: int(leg[0])) == [
             (str(index), str(total)) for index in range(1, total + 1)
         ]
@@ -3187,7 +3219,7 @@ def test_run_integration_accepts_both_shard_flags():
 def test_live_shard_coverage_gate_downloads_every_shard_artifact():
     job = _workflow_job("live-shard-times", "cujs")
     for pattern in (
-        "integration-full-claude-windows-latest-shard*",
+        "integration-full-*-windows-latest-shard*",
         "integration-anthropic-mps-claude-windows-latest-shard*",
         "e2e-cujs-*shard*",
     ):
@@ -3374,7 +3406,14 @@ def test_integration_mode_union_covers_the_unsplit_workflow():
     assert executed["required"] | executed["advisory"] == (
         SKIPPED_ON_FORK_PRS | {"installation", "installation-windows"}
     )
-    assert {"full", "managed", "managed-smart", "live-shard-times", "cujs"} <= executed["required"]
+    assert {
+        "full",
+        "full-codex-windows",
+        "managed",
+        "managed-smart",
+        "live-shard-times",
+        "cujs",
+    } <= executed["required"]
     assert {"soft-fail", "opencode", "copilot", "vscode", "managed-opencode"} <= executed[
         "advisory"
     ]
@@ -3401,6 +3440,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "smoke",
         "headless-windows",
         "full",
+        "full-codex-windows",
         "codex-relay",
         "antigravity",
         "managed",
@@ -3418,7 +3458,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         assert "inputs.mode != 'required'" in jobs[name], name
     assert "inputs.mode == 'required'" in jobs["anthropic-mps"]
     assert "inputs.mode == 'advisory'" in jobs["anthropic-mps"]
-    assert "needs: [workspace, full, managed]" in jobs["soft-fail"]
+    assert "needs: [workspace, full, full-codex-windows, managed]" in jobs["soft-fail"]
     cujs_needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert cujs_needs is not None
     assert {name.strip() for name in cujs_needs.group(1).split(",")} == {
@@ -3430,6 +3470,7 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         "workspace",
         "smoke",
         "full",
+        "full-codex-windows",
         "codex-relay",
         "anthropic-mps",
         "antigravity",
