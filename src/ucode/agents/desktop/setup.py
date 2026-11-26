@@ -40,6 +40,8 @@ from ucode.ui import print_kv, print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
 
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
+# An Anthropic model ID as Claude Desktop's model catalog spells it, e.g. claude-opus-5-5.
+_CLAUDE_CATALOG_ID_PATTERN = re.compile(r"claude-(?:fable|opus|sonnet|haiku)-\d+(?:-\d{1,2})?")
 
 
 def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
@@ -224,6 +226,15 @@ def resolve_gateway_profile(
         model_id: model_id if label_counts[label] > 1 else label
         for model_id, label in display_names.items()
     }
+    # Desktop only shows a model's effort levels when it recognizes the model, and it does
+    # not recognize gateway IDs such as system.ai.claude-opus-5-5. Name the Claude model
+    # behind each such ID; use the ID rather than the label, which can fall back to the ID.
+    behaves_as = {
+        model_id: name
+        for model_id in model_ids
+        if (name := claude_model_name(model_id)) != model_id
+        and _CLAUDE_CATALOG_ID_PATTERN.fullmatch(name)
+    }
 
     headers = {"x-databricks-use-coding-agent-mode": "true"}
     if provider:
@@ -242,6 +253,7 @@ def resolve_gateway_profile(
     return {
         "model_ids": model_ids,
         "model_id_to_display_name": display_names,
+        "model_id_to_behaves_as": behaves_as,
         "base_url": build_tool_base_url("claude", workspace.rstrip("/")),
         "custom_headers": headers,
         "otel_endpoint": (

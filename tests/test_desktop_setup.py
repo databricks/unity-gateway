@@ -77,7 +77,11 @@ def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, ca
     ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"},
+        {
+            "name": "system.ai.claude-haiku-4-5",
+            "labelOverride": "Claude Haiku 4.5",
+            "behavesAs": "claude-haiku-4-5",
+        },
     ]
     assert profile["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert profile["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
@@ -513,7 +517,7 @@ def test_managed_static_catalog_uses_discovery_only_for_labels(desktop, monkeypa
     ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5", "behavesAs": "claude-haiku-4-5"},
     ]
     assert profile["inferenceCustomHeaders"]["X-Admin"] == "configured"
 
@@ -537,7 +541,7 @@ def test_managed_static_catalog_keeps_ids_when_label_discovery_fails(desktop, mo
     )
 
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": haiku, "labelOverride": "Claude Haiku 4.5"}
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5", "behavesAs": "claude-haiku-4-5"}
     ]
 
 
@@ -560,10 +564,10 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
     desktop_setup.configure_claude_desktop(state)
 
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
-        {"name": opus, "labelOverride": "Claude Opus 5"},
-        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
-        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5", "behavesAs": "claude-sonnet-5"},
+        {"name": opus, "labelOverride": "Claude Opus 5", "behavesAs": "claude-opus-5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5", "behavesAs": "claude-haiku-4-5"},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5", "behavesAs": "claude-sonnet-5"},
     ]
     assert model_ids == original_ids
     assert display_names == original_names
@@ -572,42 +576,47 @@ def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
     display_names[opus] = "Claude Opus 5"
     desktop_setup.configure_claude_desktop(state)
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
-        {"name": opus, "labelOverride": "Claude Opus 5"},
-        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
-        {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
+        {"name": sonnet, "labelOverride": "Sonnet — Updated label", "behavesAs": "claude-sonnet-5"},
+        {"name": opus, "labelOverride": "Claude Opus 5", "behavesAs": "claude-opus-5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5", "behavesAs": "claude-haiku-4-5"},
+        {"name": sonnet, "labelOverride": "Sonnet — Updated label", "behavesAs": "claude-sonnet-5"},
     ]
 
     del display_names[sonnet]
     display_names[opus] = ""
     desktop_setup.configure_claude_desktop(state)
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
-        {"name": opus, "labelOverride": "Claude Opus 5"},
-        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
-        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5", "behavesAs": "claude-sonnet-5"},
+        {"name": opus, "labelOverride": "Claude Opus 5", "behavesAs": "claude-opus-5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5", "behavesAs": "claude-haiku-4-5"},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5", "behavesAs": "claude-sonnet-5"},
     ]
     assert model_ids == original_ids
 
 
 @pytest.mark.parametrize(
-    "model_id,label",
+    "model_id,label,behaves_as",
     [
-        ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
-        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
-        ("anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
-        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
-        ("eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
-        ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5"),
-        ("anthropic.claude-opus-4-8", "Claude Opus 4.8"),
-        ("system.ai.claude-haiku-4-5", "Claude Haiku 4.5"),
-        ("databricks-claude-haiku-4-5", "Claude Haiku 4.5"),
-        ("main.models.claude-sonnet-5-desktop", "Claude Sonnet 5 Desktop"),
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5", None),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5", "claude-sonnet-4-5"),
+        ("anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5", "claude-sonnet-4-5"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5", "claude-sonnet-4-5"),
+        ("eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5", "claude-sonnet-4-5"),
+        (
+            "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "Claude Sonnet 4.5",
+            "claude-sonnet-4-5",
+        ),
+        ("anthropic.claude-opus-4-8", "Claude Opus 4.8", "claude-opus-4-8"),
+        ("system.ai.claude-haiku-4-5", "Claude Haiku 4.5", "claude-haiku-4-5"),
+        ("system.ai.claude-opus-4-8[1m]", "Claude Opus 4.8", "claude-opus-4-8"),
+        ("databricks-claude-haiku-4-5", "Claude Haiku 4.5", "claude-haiku-4-5"),
+        ("main.models.claude-sonnet-5-desktop", "Claude Sonnet 5 Desktop", None),
     ],
 )
 @pytest.mark.parametrize("echoed_id", [False, True])
 def test_provider_models_get_readable_labels_when_discovery_names_are_missing_or_ids(
-    desktop, monkeypatch, model_id, label, echoed_id
+    desktop, monkeypatch, model_id, label, behaves_as, echoed_id
 ):
     monkeypatch.setattr(
         desktop_setup,
@@ -626,7 +635,10 @@ def test_provider_models_get_readable_labels_when_discovery_names_are_missing_or
     )
 
     profile = configured_profile(desktop)
-    assert profile["inferenceModels"] == [{"name": model_id, "labelOverride": label}]
+    expected = {"name": model_id, "labelOverride": label}
+    if behaves_as:
+        expected["behavesAs"] = behaves_as
+    assert profile["inferenceModels"] == [expected]
     assert (
         profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == "main.models.provider"
     )
@@ -650,10 +662,10 @@ def test_model_label_collisions_keep_distinct_routes_visible(desktop, monkeypatc
     )
 
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": us, "labelOverride": us},
+        {"name": us, "labelOverride": us, "behavesAs": "claude-sonnet-4-5"},
         {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
-        {"name": eu, "labelOverride": eu},
-        {"name": us, "labelOverride": us},
+        {"name": eu, "labelOverride": eu, "behavesAs": "claude-sonnet-4-5"},
+        {"name": us, "labelOverride": us, "behavesAs": "claude-sonnet-4-5"},
     ]
 
 
@@ -693,7 +705,11 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
     else:
         assert headers[MODEL_PROVIDER_SERVICE_HEADER] == expected_provider
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": "us.anthropic.claude-sonnet-4-5-v1:0", "labelOverride": "Claude Sonnet 4.5"}
+        {
+            "name": "us.anthropic.claude-sonnet-4-5-v1:0",
+            "labelOverride": "Claude Sonnet 4.5",
+            "behavesAs": "claude-sonnet-4-5",
+        }
     ]
 
 
@@ -988,7 +1004,11 @@ def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
 
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"},
+        {
+            "name": "system.ai.claude-haiku-4-5",
+            "labelOverride": "Claude Haiku 4.5",
+            "behavesAs": "claude-haiku-4-5",
+        },
     ]
     assert {path.name for path in desktop.glob("*.json")} == {
         "_meta.json",
@@ -1071,7 +1091,11 @@ def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, ca
         profile = configured_profile(desktop)
         assert profile["inferenceProvider"] == "gateway"
         assert profile["inferenceModels"] == [
-            {"name": "system.ai.claude-haiku-4-5", "labelOverride": "Claude Haiku 4.5"}
+            {
+                "name": "system.ai.claude-haiku-4-5",
+                "labelOverride": "Claude Haiku 4.5",
+                "behavesAs": "claude-haiku-4-5",
+            }
         ]
         return
     output = " ".join(capsys.readouterr().out.split())

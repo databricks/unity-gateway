@@ -1031,6 +1031,9 @@ and Databricks/UC names. Distinct IDs with colliding labels show full IDs, inclu
 collisions between catalog and fallback labels. Static managed lists retain their model
 selection and get fallback labels even when discovery fails. Repeat configure refreshes
 catalog labels or restores fallback labels. Source lists/maps remain unchanged.
+Gateway, regional, dated, `databricks-`, and `[1m]` IDs also get `behavesAs` with
+their Claude model ID, including when colliding labels show full IDs; plain Claude
+IDs and names with extra words get none. Machine-wide MDM policies carry the same field.
 These checks use temporary files on simulated platforms, not the native model picker.
 
 Workspace-backed assertions also read the generated Desktop profile in the existing

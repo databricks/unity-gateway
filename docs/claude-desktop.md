@@ -375,6 +375,14 @@ fallback labels also work when discovery is unavailable. The admin's model IDs a
 order remain authoritative. Labels refresh on `ug configure` alongside the
 model list.
 
+Desktop shows a model's effort levels only when it recognizes the model, and it
+does not recognize gateway IDs such as `system.ai.claude-opus-5-5`. UG therefore
+also writes [`behavesAs`](https://claude.com/docs/third-party/claude-desktop/configuration#param-behaves-as)
+with the Claude model ID inside the routing ID, such as `claude-opus-5-5`. It is
+taken from the ID, not the label, so it stays set when colliding labels show full IDs.
+IDs that already are Claude model IDs, and names with extra words such as
+`main.models.claude-sonnet-5-desktop`, get no `behavesAs`.
+
 The profile uses a credential helper bound to the Python installation running UG.
 It stores only the workspace/profile name and command arguments, never a bearer
 token. The helper asks the Databricks CLI for a cached or silently refreshed token.

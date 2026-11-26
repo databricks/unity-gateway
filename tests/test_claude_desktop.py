@@ -306,6 +306,27 @@ def test_render_profile_uses_catalog_labels_without_changing_routing_ids(tmp_pat
     assert profile["inferenceModels"][0]["labelOverride"] == "Claude Sonnet 5 — Fast"
 
 
+def test_render_profile_names_the_claude_model_behind_gateway_ids(tmp_path):
+    model_ids = ["system.ai.claude-opus-5-5", "custom-model", "system.ai.claude-opus-5-5"]
+    behaviors = {model_ids[0]: "claude-opus-5-5", "not-in-catalog": "claude-haiku-4-5"}
+
+    profile = desktop.render_profile(
+        model_ids=model_ids,
+        model_id_to_display_name={model_ids[0]: "Claude Opus 5.5"},
+        model_id_to_behaves_as=behaviors,
+        base_url="https://workspace.example/ai-gateway/anthropic",
+        helper_command=tmp_path / "ug",
+        helper_args=("auth-helper",),
+    )
+
+    opus = {
+        "name": model_ids[0],
+        "labelOverride": "Claude Opus 5.5",
+        "behavesAs": "claude-opus-5-5",
+    }
+    assert profile["inferenceModels"] == [opus, {"name": "custom-model"}, opus]
+
+
 def test_render_profile_preserves_model_order_duplicates_and_literal_helper_args(tmp_path):
     model_ids = ["model-b", "model-a", "model-b"]
     helper_args = ["auth-helper", "--profile", "profile with spaces"]
