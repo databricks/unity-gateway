@@ -411,6 +411,47 @@ class TestKiloMcpClient:
         ) == mcp.kilo.build_mcp_server_entry(argv)
 
 
+class TestOmpMcpClient:
+    def test_omp_registered_without_list_command(self):
+        # omp exposes no `mcp list` subcommand; status output skips the
+        # list row when the key is absent.
+        assert "omp" in mcp.MCP_CLIENTS
+        assert mcp.MCP_CLIENTS["omp"]["binary"] == "omp"
+        assert "list_command" not in mcp.MCP_CLIENTS["omp"]
+
+    def test_configure_dispatches_proxy_argv_to_omp_writer(self, monkeypatch):
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp.omp,
+            "write_mcp_server_config",
+            lambda name, argv: calls.append((name, argv)) or False,
+        )
+        removed_scopes = mcp.configure_client_mcp_server("omp", "github", GH_URL, WS, "p")
+
+        assert removed_scopes == []
+        assert calls == [("github", _proxy_argv())]
+
+    def test_configure_reports_user_scope_on_replace(self, monkeypatch):
+        monkeypatch.setattr(mcp.omp, "write_mcp_server_config", lambda name, argv: True)
+        assert mcp.configure_client_mcp_server("omp", "github", GH_URL, WS, "p") == [
+            mcp.MCP_USER_SCOPE
+        ]
+
+    def test_remove_dispatches_to_omp_writer(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            mcp.omp, "remove_mcp_server_config", lambda name: calls.append(name) or True
+        )
+        assert mcp.remove_client_mcp_server("omp", "github-mcp") == [mcp.MCP_USER_SCOPE]
+        assert calls == ["github-mcp"]
+
+    def test_list_run_is_skipped_instead_of_raising(self):
+        # The status/probe paths call `_run_mcp_list` for every registered client;
+        # a client without a listing subcommand must report "no live status".
+        assert mcp._run_mcp_list("omp") is None
+        assert mcp.query_live_mcp_status("omp") == {}
+
+
 class TestConfigureClientMcpServer:
     def test_claude_uses_pinned_client_when_cimd_is_advertised(self, monkeypatch):
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
@@ -3330,7 +3371,7 @@ class TestRevertMcpConfigs:
                 "mcp_servers": [
                     {
                         "name": "github-mcp",
-                        "clients": ["claude", "codex", "gemini", "opencode", "copilot"],
+                        "clients": ["claude", "codex", "gemini", "opencode", "copilot", "omp"],
                     }
                 ]
             }
@@ -3342,6 +3383,7 @@ class TestRevertMcpConfigs:
             ("gemini", "github-mcp"),
             ("opencode", "github-mcp"),
             ("copilot", "github-mcp"),
+            ("omp", "github-mcp"),
         ]
         assert result == {
             "claude": True,
@@ -3349,6 +3391,7 @@ class TestRevertMcpConfigs:
             "gemini": True,
             "opencode": True,
             "copilot": True,
+            "omp": True,
         }
 
     def test_one_agents_failed_removal_does_not_stop_the_others(self, monkeypatch, capsys):

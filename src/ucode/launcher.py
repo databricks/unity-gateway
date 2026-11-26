@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 import signal
 import sys
+from collections.abc import Mapping
 
 from ucode import metrics
 from ucode.os_compatibility import subprocess_cross_os
 
 
-def exec_or_spawn(argv: list[str]) -> None:
+def exec_or_spawn(argv: list[str], *, env: Mapping[str, str] | None = None) -> None:
     """Hand the terminal to ``argv``, then exit with its status.
 
     On POSIX we ``os.execvp`` — the agent process *replaces* ucode, inheriting
@@ -25,10 +26,17 @@ def exec_or_spawn(argv: list[str]) -> None:
     """
     metrics.agent_handoff()
     if os.name != "nt":
-        os.execvp(argv[0], argv)
+        if env is None:
+            os.execvp(argv[0], argv)
+        else:
+            os.execvpe(argv[0], argv, env)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess_cross_os.popen(argv)
+    proc = (
+        subprocess_cross_os.popen(argv, env=env)
+        if env is not None
+        else subprocess_cross_os.popen(argv)
+    )
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

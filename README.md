@@ -1,9 +1,8 @@
 # Unity Gateway (`ug`)
 
 Unity Gateway runs coding agents through your Databricks workspace. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, and Google
-Antigravity CLI, and can
-register Databricks MCP servers for Cursor Agent.
+Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, Oh My Pi,
+and Google Antigravity CLI, and can register Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
 package is still named `ucode` for compatibility.
@@ -58,6 +57,7 @@ ug opencode
 ug kilo
 ug copilot
 ug pi
+ug omp
 ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
 ug cursor   # Cursor Agent, MCP-only
 ```
@@ -350,10 +350,10 @@ attributes the session from ug's `User-Agent`. To name the coding agent yourself
   date, the launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
-Cursor models still run through your Cursor account. `vscode` can be included in `--agents` to
-install ug's extension for Copilot Chat in VS Code; it is configure-only, with no `ug vscode`
-launch command.
+`kilo`, `copilot`, `pi`, `omp`, and `antigravity`. `cursor` can be included in `--agents` for
+MCP-only setup; Cursor models still run through your Cursor account. `vscode` can be included in
+`--agents` to install ug's extension for Copilot Chat in VS Code; it is configure-only, with no
+`ug vscode` launch command.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
@@ -939,6 +939,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Kilo | `~/.ucode/kilo-xdg/kilo/kilo.json`, `~/.ucode/kilo-xdg/kilo/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
+| Oh My Pi | `~/.ucode/omp-home/.omp/agent/models.yml`, `~/.ucode/omp-home/.omp/agent/config.yml`, `~/.ucode/omp-home/.omp/agent/mcp.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents vscode`, uninstalled by `ug revert`; your `settings.json` is never edited |

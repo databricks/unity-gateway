@@ -67,6 +67,7 @@ from ucode.agents.model_sources import (
     is_model_source_wildcard,
     resolve_model_sources,
 )
+from ucode.agents.omp import OMP_CONFIG_BACKUP_PATH, OMP_CONFIG_PATH
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.codex_config import is_codex_app_server_launch, is_codex_interactive_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
@@ -288,9 +289,9 @@ from ucode.workspace import (
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
-    "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
+    "claude": ("claude", "opencode", "kilo", "copilot", "pi", "omp"),
+    "codex": ("codex", "copilot", "pi", "omp"),
+    "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity", "omp"),
     "oss": ("opencode", "kilo"),
 }
 
@@ -800,6 +801,7 @@ def configure_shared_state(
         or "kilo" in tools
         or "copilot" in tools
         or "pi" in tools
+        or "omp" in tools
     )
     want_gemini = (
         fetch_all
@@ -808,10 +810,16 @@ def configure_shared_state(
         or "kilo" in tools
         or "pi" in tools
         or "antigravity" in tools
+        or "omp" in tools
     )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
-        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "codex" in tools
+        or "claude" in tools
+        or "copilot" in tools
+        or "pi" in tools
+        or "omp" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
@@ -1812,8 +1820,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
         models = _model_values(state.get("opencode_models"))
     elif tool == "antigravity":
         models = list(antigravity_agent.model_catalog(state).values())
-    elif tool == "pi":
-        models = _model_values(state.get("pi_models")) or (
+    elif tool in ("pi", "omp"):
+        models = _model_values(state.get(f"{tool}_models")) or (
             _model_values(state.get("claude_models"))
             + _model_values(state.get("codex_models"))
             + _model_values(state.get("gemini_models"))
@@ -1833,7 +1841,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
     # config pins one. The other clients write the first resolved model into their ug config.
     return (
         models[0]
-        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity")
+        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity", "omp")
         else None
     )
 
@@ -2160,6 +2168,9 @@ def revert() -> int:
     pi_settings_restored = restore_file(
         PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
     )
+    omp_config_restored = restore_file(
+        OMP_CONFIG_PATH, OMP_CONFIG_BACKUP_PATH, bool(managed_configs.get("omp"))
+    )
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
@@ -2180,6 +2191,7 @@ def revert() -> int:
     if published_agent_config_result is not None:
         print_kv("Published agent configuration settings", published_agent_config_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    print_kv("Oh My Pi config", "restored" if omp_config_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
     print_kv("GitHub Copilot app", copilot_app_result)
     for client, spec in MCP_CLIENTS.items():
@@ -2206,6 +2218,7 @@ _HELP_COMMAND_ORDER = (
     "copilot",
     "cursor",
     "gemini",
+    "omp",
     "opencode",
     "kilo",
     "pi",
@@ -5529,6 +5542,19 @@ def pi_cmd(
 
 
 @app.command(
+    "omp",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def omp_cmd(
+    ctx: typer.Context,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Oh My Pi coding agent via Databricks."""
+    _launch_tool("omp", ctx, skip_preflight=skip_preflight)
+
+
+@app.command(
     "antigravity",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     rich_help_panel="Launch",
@@ -5616,7 +5642,7 @@ def configure(
         typer.Option(
             "--agent",
             help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, "
-            "copilot, pi, antigravity).",
+            "copilot, pi, antigravity, omp).",
         ),
     ] = None,
     agents: Annotated[
