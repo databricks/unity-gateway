@@ -450,6 +450,13 @@ model and check the installed version: the exact error messages, Kilo's configur
 ignoring `opencode_default_model`. The installed version is patched on each wrapper module, so these
 are component checks and do not establish live OpenCode or Kilo behavior.
 
+`test_opencode_family_write.py` covers how both agents write their config file and `mcp` table:
+the tool name and keys recorded as managed, the one state save, when a token is fetched, the
+backup, the stale provider list (OpenCode also removes `databricks-openai`, Kilo does not), and
+the MCP writers' return values and untouched files. The version, token, state and path names are
+patched on each wrapper module, so these are component checks and do not establish live
+OpenCode or Kilo behavior.
+
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only

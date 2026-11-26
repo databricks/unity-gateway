@@ -1,9 +1,9 @@
 """Code shared by the OpenCode and Kilo agents.
 
 Kilo is a fork of OpenCode and reads the same config schema and plugin files, so the Databricks
-auth plugin, the provider ids ug manages and the model and version checks are defined once here.
-`opencode.py` and `kilo.py` call these functions and keep the values that tests patch (versions,
-paths and tokens).
+auth plugin, the provider ids ug manages, the model and version checks and the writing of the
+config file and its `mcp` table are defined once here. `opencode.py` and `kilo.py` call these
+functions and keep the values that tests patch (versions, paths, tokens and state saving).
 
 The auth prelude is built once at import from `PROVIDER_IDS`."""
 
@@ -11,9 +11,19 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
+from ucode.config_io import (
+    apply_json_mcp_diff,
+    backup_existing_file,
+    deep_merge_dict,
+    read_json_safe,
+    write_json_file,
+)
 from ucode.databricks import build_auth_token_argv
+from ucode.state import mark_tool_managed
 
 # The providers ug writes into the config, and the ones the auth plugin refreshes tokens for.
 PROVIDER_IDS = ("databricks-anthropic", "databricks-google", "databricks-oss")
@@ -164,6 +174,11 @@ class FamilySettings:
     default_model_state_key: str | None
     # Replaces the plain hint when `opencode_models` is empty.
     empty_models_hint: str | None
+    # Key under which the agent is recorded as managed in state.
+    tool: str
+    # Providers removed from the existing config before the overlay is merged in. OpenCode
+    # also removes `databricks-openai`; Kilo's list does not include it.
+    stale_provider_ids: tuple[str, ...]
 
 
 def parse_version(value: str) -> tuple[int, int, int] | None:
@@ -265,3 +280,93 @@ def default_model(settings: FamilySettings, state: dict) -> str | None:
         return gemini[0]
     oss = opencode_models.get("oss") or []
     return oss[0] if oss else None
+
+
+def write_tool_config(
+    settings: FamilySettings,
+    state: dict,
+    model: str,
+    token: str | None,
+    *,
+    config_path: Path,
+    backup_path: Path,
+    get_token: Callable[[str, str | None], str],
+    render_overlay: Callable[[str, str, dict, dict], tuple[dict, list[list[str]]]],
+    write_auth_plugin: Callable[[dict], None],
+    save_state: Callable[[dict], None],
+    build_base_urls: Callable[[str], dict],
+) -> tuple[dict, str]:
+    """Write the agent's config file and record it as managed. Returns the new state and token.
+
+    The callables and paths are the wrapper module's own names, looked up when the wrapper
+    calls this, so a test that patches them on `opencode.py` or `kilo.py` still reaches them.
+    """
+    backup_existing_file(config_path, backup_path)
+    if token is None:
+        token = get_token(state["workspace"], state.get("profile"))
+    opencode_base_urls = state.get("base_urls", {}).get("opencode") or build_base_urls(
+        state["workspace"]
+    )
+    overlay, managed_keys = render_overlay(
+        model,
+        token,
+        opencode_base_urls,
+        state.get("opencode_models") or {},
+    )
+    existing = read_json_safe(config_path)
+    write_auth_plugin(state)
+    providers = existing.get("provider")
+    if isinstance(providers, dict):
+        for stale in settings.stale_provider_ids:
+            providers.pop(stale, None)
+    merged = deep_merge_dict(existing, overlay)
+    write_json_file(config_path, merged)
+    state = mark_tool_managed(state, settings.tool, managed_keys)
+    save_state(state)
+    return state, token
+
+
+def build_mcp_server_entry(argv: list[str]) -> dict:
+    # A `local` MCP server runs a command over stdio; `command` is the full
+    # argv. ug registers the `ug mcp-proxy ...` bridge here so the agent
+    # never speaks HTTP+bearer directly; the proxy mints fresh tokens itself.
+    return {
+        "type": "local",
+        "command": list(argv),
+        "enabled": True,
+    }
+
+
+def write_mcp_server_config(
+    name: str, argv: list[str], *, config_path: Path, backup_path: Path
+) -> bool:
+    """Add or replace one `mcp` entry. Returns True when the name was already there."""
+    backup_existing_file(config_path, backup_path)
+    existing = read_json_safe(config_path)
+    mcp_servers = existing.get("mcp")
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+    removed = name in mcp_servers
+    mcp_servers[name] = build_mcp_server_entry(argv)
+    existing["mcp"] = mcp_servers
+    write_json_file(config_path, existing)
+    return removed
+
+
+def remove_mcp_server_config(name: str, *, config_path: Path) -> bool:
+    existing = read_json_safe(config_path)
+    mcp_servers = existing.get("mcp")
+    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
+        return False
+    mcp_servers.pop(name)
+    existing["mcp"] = mcp_servers
+    write_json_file(config_path, existing)
+    return True
+
+
+def write_user_mcp_servers(
+    add: dict[str, dict], remove: set[str], *, config_path: Path, backup_path: Path
+) -> set[str]:
+    """Apply ``add``/``remove`` to the agent's `mcp` table in a single read-modify-write.
+    Returns the names actually removed."""
+    return apply_json_mcp_diff(config_path, "mcp", add, remove, backup_path=backup_path)
