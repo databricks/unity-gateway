@@ -1,0 +1,40 @@
+amends "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Config.pkl"
+
+min_hk_version = "2.13.0"
+
+// Hooks check the commit; they must not re-resolve or rewrite uv.lock.
+env {
+  ["UV_FROZEN"] = "1"
+}
+
+// Commit checks use CI's paths and pinned Ruff; pre-push runs the full lint gate.
+local python = new Mapping<String, Step> {
+  ["ruff_format"] {
+    glob = List("src/**/*.py", "tests/**/*.py")
+    check = "uv run ruff format --check {{files}}"
+  }
+  // Keep both checks read-only: fixing partially staged files can damage unstaged edits.
+  // Run `just fix` explicitly to apply formatting and lint fixes.
+  ["ruff"] {
+    glob = List("src/**/*.py", "tests/**/*.py")
+    depends = List("ruff_format")
+    check = "uv run ruff check {{files}}"
+  }
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = false
+    stash = "git"
+    timeout = "9s"
+    steps = python
+  }
+  ["pre-push"] {
+    timeout = "9s"
+    steps {
+      ["lint"] {
+        check = "just lint"
+      }
+    }
+  }
+}

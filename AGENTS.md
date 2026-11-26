@@ -14,6 +14,7 @@ Tests live in `tests/`.
 - Run focused tests with `uv run pytest tests/<file>.py`.
 - Run e2e tests with `UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v`.
 - Run the lint gate (ruff check + ruff format check + ty) with `just lint`; `just fix` autofixes. These are the same checks CI's `Checks` job runs. Without `just` installed, use `uvx --from rust-just just lint`, or run the underlying `uv run ruff ...` / `uv run ty ...` commands directly.
+- Install the Git hooks once per clone with `hk install` (install hk with `brew install hk` or `mise use -g hk`). `hk.pkl` checks formatting and lint on staged Python files without fixing or re-staging them on commit and runs `just lint` on push, so the push hook also needs `just` on PATH (`brew install just`); each hook fails past 9 seconds.
 - Run the CLI from the current checkout with `uv run ug ...`.
 - Reinstall the local checkout as the Unity Gateway tool with `uv tool install --reinstall .`.
 

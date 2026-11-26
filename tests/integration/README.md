@@ -1,5 +1,11 @@
 # Integration tests
 
+Git-hook preservation and timeout checks are local, offline tests in
+`../hk_hooks.py`; see the [test guide](../README.md) for prerequisites and the
+explicit command. Offline applies once the first run has cached the fixture's
+pinned dependencies and hk's Pkl package. They do not run agents or consume the
+live workspace quota.
+
 Startup compatibility validation has component coverage in `../test_route_validation.py`,
 the smart-routing launch tests, and the native Claude mod suite. They control the validation
 response or transport. CUJ 4 adds one live supported journey for Claude and one for Codex: with
