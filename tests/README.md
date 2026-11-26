@@ -291,6 +291,10 @@ external MCP calls, and file writes remain outside this native coverage. CI cont
 verify workspace-credential event guards, installation without OIDC permissions,
 and required Cowork success in the integration gate. Desktop jobs always test the checkout
 with pinned dependencies; manual CLI version/dependency inputs apply to CLI jobs only.
+The macOS job restores the pinned CLI and a dependencies-only runtime from trusted main caches;
+it installs the current checkout after restoring, and saves caches before installing the checkout
+or exposing test credentials. Explicit-ref fork runs do not use these caches. Contract tests
+check the cache ordering and trusted-writer guard.
 Failure, cancellation, and skips fail the integration gate.
 
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
