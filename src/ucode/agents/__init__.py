@@ -868,7 +868,13 @@ def _configure_one(
             tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
         )
     if tool == "codex":
-        return configure_tool("codex", state)
+        return configure_tool(
+            "codex",
+            state,
+            relayed=codex.use_model_service_relay(
+                state, configuring=True, selected_model=None, selected_only=False
+            ).relayed,
+        )
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:
         # `ug configure` writes the managed model keys a plain launch would. A static list that

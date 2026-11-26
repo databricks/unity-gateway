@@ -2368,6 +2368,189 @@ class TestManagedConfigLaunchSourceGuard:
         calls["launch"].assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("args", "services", "old_codex", "expected"),
+    [
+        (
+            [],
+            ["main.team.chatgpt", "main.team.foundry"],
+            False,
+            {"relay", "login_checked", "lookup"},
+        ),
+        ([], ["main.team.foundry"], False, {"lookup"}),
+        (["--enable-smart-routing"], ["main.team.chatgpt"], False, {"routing"}),
+        (
+            ["--enable-smart-routing", "--model", "main.team.chatgpt"],
+            ["main.team.chatgpt"],
+            False,
+            {"lookup", "relay", "warning"},
+        ),
+        (
+            ["--enable-smart-routing", "--model", "main.team.foundry"],
+            ["main.team.chatgpt"],
+            False,
+            {"lookup", "routing"},
+        ),
+        (
+            ["--enable-smart-routing", "--", "exec", "-m", "main.team.chatgpt", "hi"],
+            ["main.team.chatgpt"],
+            False,
+            {"lookup", "relay"},
+        ),
+        (
+            [],
+            ["main.team.chatgpt"],
+            True,
+            {"lookup", "relay", "login_checked", "upgrade", "warning"},
+        ),
+        (
+            ["--model", "main.team.chatgpt"],
+            ["main.team.chatgpt"],
+            True,
+            {"lookup", "relay", "warning"},
+        ),
+        (
+            ["--model", "main.team.foundry"],
+            ["main.team.chatgpt"],
+            True,
+            {"lookup", "relay", "login_checked", "upgrade", "warning"},
+        ),
+    ],
+)
+def test_codex_managed_model_service_launch(monkeypatch, args, services, old_codex, expected):
+    managed = {
+        "enabled_agents": {
+            "codex": {
+                "smart_routing_enabled": old_codex,
+                "model_config": {"model_services": services},
+            }
+        }
+    }
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+
+    def get_service(name, *_args, **_kwargs):
+        return {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "traffic_percentage": 100,
+                            "external_model_config": {
+                                "model_provider_service": f"model-provider-services/{name}-mps"
+                            },
+                        }
+                    ]
+                }
+            }
+        }, None
+
+    with (
+        _launch_policy_patches(managed) as calls,
+        patch("ucode.cli.redirect_output_to_stderr"),
+        patch.object(cli_mod.codex_agent, "_launch_token", return_value="token"),
+        patch.object(cli_mod.codex_agent, "codex_managed_config_path", return_value=None),
+        patch.object(db_mod, "get_model_service", side_effect=get_service) as lookup,
+        patch.object(
+            db_mod,
+            "get_model_provider_service",
+            side_effect=lambda name, *_a, **_kw: (
+                {"provider_type": "openai", "relayed": name == "main.team.chatgpt-mps"},
+                None,
+            ),
+        ),
+        patch.object(
+            cli_mod.codex_agent,
+            "minimum_version_error",
+            return_value="old Codex" if old_codex else None,
+        ),
+        patch(
+            "ucode.agents.ensure_minimum_version",
+            side_effect=RuntimeError("upgrade declined") if old_codex else None,
+        ) as upgrade,
+    ):
+        result = runner.invoke(app, ["codex", *args])
+
+    assert result.exit_code == 0, result.output
+    assert calls["configure"].call_args.kwargs["provider"] is None
+    assert calls["configure"].call_args.kwargs["relayed"] is ("relay" in expected)
+    launch = calls["launch"].call_args
+    assert bool(launch.args[1].get("_codex_launch_login_checked")) is ("login_checked" in expected)
+    assert launch.kwargs["options"].launch_smart_routing is ("routing" in expected)
+    assert lookup.called is ("lookup" in expected)
+    assert upgrade.called is ("upgrade" in expected)
+    output = " ".join(_strip_ansi(result.output).split())
+    assert ("Running without smart routing." in output) is ("warning" in expected)
+
+
+@pytest.mark.parametrize(
+    ("provider_source", "relay_services"),
+    [("saved", ["main.team.mixed"]), ("saved", []), ("explicit", []), ("managed", [])],
+)
+def test_codex_explicit_model_with_configured_provider(provider_source, relay_services):
+    provider = "main.team.seat"
+    service = "main.team.mixed"
+    managed = (
+        {"enabled_agents": {"codex": {"model_config": {"model_provider_service": provider}}}}
+        if provider_source == "managed"
+        else None
+    )
+    args = ["--provider", provider] if provider_source == "explicit" else []
+    with (
+        _launch_policy_patches(managed, persisted_provider=provider) as calls,
+        patch.object(
+            cli_mod.codex_agent, "relay_model_services", return_value=relay_services
+        ) as lookup,
+        patch.object(
+            cli_mod.codex_agent,
+            "use_model_service_relay",
+            return_value=cli_mod.codex_agent.LaunchAuth(True, False, None),
+        ),
+    ):
+        result = runner.invoke(app, ["codex", *args, "--disable-smart-routing", "--model", service])
+
+    assert result.exit_code == 0, result.output
+    expected = None if relay_services else provider
+    assert calls["configure"].call_args.kwargs["provider"] == expected
+    launch_state = calls["launch"].call_args.args[1]
+    if provider_source == "saved":
+        assert "_codex_launch_provider" not in launch_state
+        assert launch_state.get("_codex_launch_model_service") == (
+            service if relay_services else None
+        )
+    else:
+        assert launch_state["_codex_launch_provider"] == expected
+    assert lookup.called == (provider_source == "saved")
+
+
+@pytest.mark.parametrize("location", ["main.team", "system.ai"])
+@pytest.mark.parametrize("saved_location", [False, True])
+def test_codex_location_uses_explicitly_selected_seat_service(location, saved_location):
+    with (
+        _launch_policy_patches(None) as calls,
+        patch.object(
+            cli_mod.codex_agent,
+            "use_model_service_relay",
+            return_value=cli_mod.codex_agent.LaunchAuth(True, False, None),
+        ) as detect,
+    ):
+        if saved_location:
+            calls["state"]["model_locations"] = {"codex": location}
+        result = runner.invoke(
+            app,
+            [
+                "codex",
+                *([] if saved_location else ["--model-location", location]),
+                "--model",
+                "main.team.seat",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert detect.call_args.args[1] == "main.team.seat"
+    assert detect.call_args.kwargs["selected_only"]
+    assert calls["configure"].call_args.kwargs["relayed"] is True
+
+
 class TestManagedClaudeModelDiscovery:
     @pytest.mark.parametrize("with_defaults", [False, True])
     def test_managed_static_models_do_not_enable_discovery(self, with_defaults):

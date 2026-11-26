@@ -1500,9 +1500,19 @@ remains uncovered.
 
 The Codex relay check (`test_ug_codex_relayed.py`) uses a fresh home to run
 `codex login --with-access-token`, passing the credential on stdin. It then launches
-`ug codex --provider <relayed OpenAI MPS>` with the same access token and asks `gpt-6-luna`
+`ug codex --provider <relayed OpenAI MPS>` using the saved token, with `CODEX_ACCESS_TOKEN`
+removed from its environment, and asks `gpt-6-luna`
 for a short random reply without tools. It requires a completed turn with exactly that answer
 and a forwarded `/v1/responses` request that completes with HTTP 200.
+
+Set `UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE` to run the same check through a UC model
+service. Set `UG_INTEGRATION_LITESWAP_ID` to route it to a staging LiteSwap.
+
+Component tests in `../test_agent_codex.py` cover native browser sign-in for an explicitly
+selected seat service, reuse of a saved ChatGPT login or personal access token, and rejection
+of conflicting managed authentication. A signed-out user with a seat service only in the
+static model list stays on Databricks authentication. Tests in `../test_cli.py` cover
+selecting a relay service outside the saved discovery schema.
 
 This deliberately covers only token login and relay inference. File-tool execution, desktop
 configure/revert, desktop inference, managed-file conflict refusal, and browser sign-in are

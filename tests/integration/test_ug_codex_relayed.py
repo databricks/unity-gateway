@@ -1,6 +1,7 @@
 """Codex access-token login and a simple inference request through the ChatGPT relay."""
 
 import json
+import os
 
 import pytest
 from utils.constants import CODEX_RELAYED_MODEL
@@ -14,7 +15,8 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
 ):
     """Scenario: log in with an access token and ask Codex for a short reply through a relay MPS.
 
-    Expected: native login succeeds, Codex completes a turn with the requested answer, and
+    Expected: native login succeeds, its saved token works without CODEX_ACCESS_TOKEN,
+    Codex completes a turn with the requested answer, and
     the loopback proxy forwards /v1/responses with HTTP 200. File tools, desktop configuration,
     and browser sign-in are outside this check.
     """
@@ -31,20 +33,26 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
         timeout=60,
     )
     assert "Successfully logged in" in login.stdout + login.stderr
-    session.record("model.json", {"model": CODEX_RELAYED_MODEL})
+    session.env.pop("CODEX_ACCESS_TOKEN")
+    status = session.run("login", "status", binary=session.which("codex"), timeout=30)
+    assert "access token" in status.stdout + status.stderr
+    model_service = os.getenv("UG_INTEGRATION_CODEX_RELAY_MODEL_SERVICE")
+    model = model_service or CODEX_RELAYED_MODEL
+    session.record("model.json", {"model": model})
+    if swap := os.getenv("UG_INTEGRATION_LITESWAP_ID"):
+        session.env["UG_HEADERS"] = f"x-databricks-traffic-id: testenv://liteswap/{swap}"
     answer = fresh_id()
     result = session.run(
         "codex",
         "--workspace",
         workspace,
-        "--provider",
-        codex_relayed_provider,
+        *(["--disable-smart-routing"] if model_service else ["--provider", codex_relayed_provider]),
         "--",
         "exec",
         "--skip-git-repo-check",
         "--json",
         "-m",
-        CODEX_RELAYED_MODEL,
+        model,
         f"Reply with exactly {answer} and nothing else. Do not use tools.",
         timeout=180,
     )
@@ -67,7 +75,7 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
         for event in diagnostics
         if event.get("event") == "request_start"
         and event.get("path") == "/v1/responses"
-        and event.get("route") == "forward"
+        and event.get("route") == ("relay-model-service" if model_service else "forward")
     }
     assert any(
         event.get("event") == "response_complete"

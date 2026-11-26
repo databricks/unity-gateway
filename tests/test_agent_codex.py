@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import custom_oauth, gateway_proxy, managed_files
+from ucode import custom_oauth, databricks, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -1119,6 +1119,14 @@ class TestCodexLaunch:
         ("launch_state", "provider_env", "parent_env"),
         [
             ({"_codex_launch_provider": "main.default.openai"}, "main.default.openai", None),
+            (
+                {
+                    "_codex_launch_model_service": "main.default.seat",
+                    "provider_services": {"codex": "main.saved.seat"},
+                },
+                None,
+                None,
+            ),
             ({"_codex_launch_parent_schema": "main.default"}, None, "main.default"),
             ({}, None, None),
         ],
@@ -1853,8 +1861,114 @@ class TestCodexLaunch:
         assert "Authorization" not in otel  # no credential in argv; the proxy injects it
         assert argv[-2:] == ["exec", "hi"]
 
+    @pytest.mark.parametrize("signed_in", [True, False])
+    @pytest.mark.parametrize("selection", [None, "system.ai.gpt"])
+    def test_static_relay_uses_developers_chatgpt_login(
+        self, tmp_path, monkeypatch, signed_in, selection
+    ):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: signed_in)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        detect = Mock(return_value=databricks.RelayLookup.RELAYED)
+        monkeypatch.setattr(databricks, "model_service_relay_lookup", detect)
+        state = {"workspace": WS, "codex_static_models": ["system.ai.gpt", "cat.s.seat"]}
+        assert (
+            codex.use_model_service_relay(
+                state, selection, configuring=False, selected_only=False
+            ).relayed
+            is signed_in
+        )
+        cached = codex.use_model_service_relay(
+            state, selection, configuring=False, selected_only=False
+        )
+        assert cached.relayed is signed_in
+        detect.assert_called_once_with(
+            WS, "tok", "cat.s.seat", provider_type="openai", include_fallbacks=True, use_cache=True
+        )
+
+    @pytest.mark.parametrize("configuring", [False, True])
+    def test_signed_out_explicit_relay_selects_browser_login_at_launch(
+        self, tmp_path, monkeypatch, configuring
+    ):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", lambda _: False)
+        monkeypatch.setattr(
+            databricks,
+            "model_service_relay_lookup",
+            lambda *args, **kwargs: databricks.RelayLookup.RELAYED,
+        )
+
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        assert codex.use_model_service_relay(
+            {"workspace": WS}, "cat.s.seat", configuring=configuring, selected_only=False
+        ).relayed is (not configuring)
+
+    @pytest.mark.parametrize("selected", [False, True])
+    def test_model_service_relay_when_managed_config_cannot_be_read(
+        self, tmp_path, monkeypatch, selected
+    ):
+        self._patch(tmp_path, monkeypatch)
+        policy = tmp_path / "managed_config.toml"
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+        monkeypatch.setattr(codex, "relay_model_services", lambda *_a, **_kw: ["cat.s.seat"])
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: policy)
+        monkeypatch.setattr(
+            codex,
+            "_managed_relayed_conflicts",
+            Mock(side_effect=RuntimeError("cannot read policy")),
+        )
+        state = {"workspace": WS, "codex_static_models": ["cat.s.seat"]}
+        if selected:
+            with pytest.raises(RuntimeError, match="cannot read policy"):
+                codex.use_model_service_relay(
+                    state, "cat.s.seat", configuring=False, selected_only=False
+                )
+        else:
+            assert not codex.use_model_service_relay(
+                state, selected_model=None, configuring=False, selected_only=False
+            ).relayed
+
+    @pytest.mark.parametrize("selected", [False, True])
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_enforced_auth_keeps_gateway_even_when_writes_are_skipped(
+        self, tmp_path, monkeypatch, filename, selected
+    ):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "seat")
+        monkeypatch.setattr(codex, "managed_settings_skipped", lambda: True)
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: tmp_path / "managed_config.toml"
+        )
+        (tmp_path / filename).write_text('model_provider = "Databricks"')
+        monkeypatch.setattr(
+            databricks,
+            "model_service_relay_lookup",
+            lambda *args, **kwargs: databricks.RelayLookup.RELAYED,
+        )
+        state = {"workspace": WS, "codex_static_models": ["cat.s.seat"]}
+        if selected:
+            with pytest.raises(RuntimeError, match="model_provider.*" + re.escape(str(tmp_path))):
+                codex.use_model_service_relay(
+                    state, "cat.s.seat", configuring=False, selected_only=False
+                )
+        else:
+            assert not codex.use_model_service_relay(
+                state, selected_model=None, configuring=False, selected_only=False
+            ).relayed
+
+    @pytest.mark.parametrize(
+        ("provider", "checked", "saved"),
+        [
+            (None, True, False),
+            (None, False, False),
+            ("cat.s.mps", False, False),
+            ("cat.s.mps", False, True),
+        ],
+    )
     def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, provider, checked, saved
     ):
         self._patch(tmp_path, monkeypatch)
         server = Mock(server_address=("127.0.0.1", 54321))
@@ -1862,15 +1976,17 @@ class TestCodexLaunch:
         process = Mock()
         process.wait.return_value = 0
         popen = Mock(return_value=process)
-        started = {}
-
-        def start_relay_proxy(workspace, token_provider, port, *, agent="claude"):
-            started.update(workspace=workspace, token=token_provider(False), agent=agent)
-            return server, cache, client
-
-        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        start = Mock(return_value=(server, cache, client))
+        monkeypatch.setattr(
+            gateway_proxy,
+            "start_relay_proxy" if provider and not saved else "start_codex_model_service_proxy",
+            start,
+        )
+        monkeypatch.delenv("UG_CODEX_SESSION_SECRET", raising=False)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
-        login_status = Mock(return_value=True)
+        login_status = Mock(return_value=bool(provider))
+        login = Mock()
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", login)
         monkeypatch.setattr(codex, "_has_chatgpt_login", login_status)
         monkeypatch.setattr(
             codex, "_fetch_codex_model_catalog", Mock(side_effect=AssertionError("no catalog"))
@@ -1883,16 +1999,37 @@ class TestCodexLaunch:
                 {
                     "workspace": WS,
                     "codex_relayed": True,
-                    "_codex_launch_provider": "cat.s.mps",
+                    "_codex_launch_login_checked": checked,
+                    **(
+                        {"provider_services": {"codex": provider}}
+                        if saved
+                        else {"_codex_launch_provider": provider}
+                    ),
                 },
                 ["exec", "hi"],
                 options=LaunchOptions(),
             )
 
-        login_status.assert_called_once()
-        assert started == {"workspace": WS, "token": "tok", "agent": "codex"}
+        assert login_status.call_count == (0 if checked else 1)
+        if not checked and not provider:
+            assert login.call_args.args[0][1:] == ["login"]
+        else:
+            login.assert_not_called()
+        assert start.call_args.args[0] == WS
+        assert start.call_args.args[1](False) == "tok"
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
+        if provider and not saved:
+            assert start.call_args.kwargs == {"agent": "codex"}
+        else:
+            assert "UG_CODEX_SESSION_SECRET" not in os.environ
+            secret = popen.call_args.kwargs["env"]["UG_CODEX_SESSION_SECRET"]
+            assert start.call_args.kwargs == {
+                "session_secret": secret,
+                "default_provider": provider,
+            }
+            assert any("UG_CODEX_SESSION_SECRET" in arg for arg in argv)
+            assert all(secret not in arg for arg in argv)
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
         assert argv[-2:] == ["exec", "hi"]
         cache.stop.assert_called_once_with()
@@ -1904,6 +2041,14 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
         assert codex._has_chatgpt_login("codex") is False
         run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using ChatGPT")
+        assert codex._has_chatgpt_login("codex") is True
+        run.return_value = Mock(
+            returncode=0, stdout="", stderr="Logged in using personal access token"
+        )
+        assert codex._has_chatgpt_login("codex") is True
+        codex._ensure_chatgpt_login("codex")
+        assert run.call_args.args[0][1:] == ["login", "status"]
+        run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using access token")
         assert codex._has_chatgpt_login("codex") is True
         run.side_effect = [Mock(returncode=1, stdout="", stderr="Not logged in"), Mock()]
         codex._ensure_chatgpt_login("codex")
@@ -3040,6 +3185,38 @@ class TestCodexManagedConfig:
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
 
+    def test_providerless_relay_configure_keeps_desktop_on_workspace_auth(
+        self, tmp_path, monkeypatch
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+        state = {"workspace": WS, "profile": "ws-profile"}
+        codex.write_tool_config(state, relayed=True)
+        app = read_toml_safe(codex._legacy_config_path())
+        provider = app["model_providers"][app["model_provider"]]
+        assert provider["base_url"] == codex.build_tool_base_url("codex", WS)
+        assert "ws-profile" in provider["auth"]["args"]
+        assert "requires_openai_auth" not in provider
+        cli = read_toml_safe(codex.CODEX_CONFIG_PATH)
+        assert cli["model_providers"]["Databricks"]["requires_openai_auth"]
+        assert state["codex_relayed"]
+
+    def test_providerless_relay_retries_listener_cleanup_after_config_write(
+        self, tmp_path, monkeypatch
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "_service_port", lambda _flag: 43198)
+        cleanup = Mock(side_effect=[OSError("busy"), None])
+        monkeypatch.setattr(codex, "_remove_otel_service", cleanup)
+        state = {"workspace": WS}
+        codex._sync_desktop_relay(state, WS, None, tracing=False, model_service_relay=True)
+        assert read_toml_safe(codex._legacy_config_path())["model_provider"] == "DatabricksRelay"
+        write = Mock()
+        monkeypatch.setattr(codex, "write_toml_file", write)
+        codex._sync_desktop_relay(state, WS, None, tracing=False, model_service_relay=True)
+        assert cleanup.call_count == 2
+        write.assert_not_called()
+
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
     def test_desktop_relay_lifecycle(self, tmp_path, monkeypatch):
         managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
@@ -3109,7 +3286,10 @@ class TestCodexManagedConfig:
 
         # Removal writes the config first, so a failed write keeps the relay served.
         monkeypatch.setattr(codex, "write_toml_file", Mock(side_effect=OSError("denied")))
-        assert codex._sync_desktop_relay({}, WS, None) is False
+        assert (
+            codex._sync_desktop_relay({}, WS, None, tracing=False, model_service_relay=False)
+            is False
+        )
         assert f"--relay-port {port} " in unit_path.read_text()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
@@ -3130,7 +3310,10 @@ class TestCodexManagedConfig:
 
         app_path.write_text("")
         monkeypatch.setattr(codex, "is_dry_run", lambda: True)
-        assert codex._sync_desktop_relay({}, WS, "cat.s.mps") is False
+        assert (
+            codex._sync_desktop_relay({}, WS, "cat.s.mps", tracing=False, model_service_relay=False)
+            is False
+        )
         assert app_path.read_text() == ""
 
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
@@ -3539,7 +3722,7 @@ class TestOtelTokenProvider:
     def test_token_provider_uses_default_profile(self, monkeypatch):
         get_token = Mock(return_value="token")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
-        provider = codex._otel_token_provider({"profile": "myprof"}, WS)
+        provider = codex.proxy_token_provider({"profile": "myprof"}, WS)
         assert provider(True) == "token"
         get_token.assert_called_once_with(WS, "myprof", force_refresh=True)
 
@@ -3555,7 +3738,7 @@ class TestOtelTokenProvider:
                 "scopes": ["offline_access", "model-serving"],
             }
         }
-        provider = codex._otel_token_provider(state, WS)
+        provider = codex.proxy_token_provider(state, WS)
         assert provider(True) == "custom-token"
         assert get_custom_token.call_args.kwargs["force_refresh"] is True
         get_default_token.assert_not_called()

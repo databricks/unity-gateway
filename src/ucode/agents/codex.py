@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -15,7 +16,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
@@ -63,6 +64,7 @@ from ucode.custom_oauth import (
     launch_token,
 )
 from ucode.databricks import (
+    OPENAI_PROVIDER_TYPE,
     CodexCatalogSource,
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
@@ -70,7 +72,9 @@ from ucode.databricks import (
     build_mcp_proxy_argv,
     build_mcp_service_url,
     build_tool_base_url,
+    custom_model_services,
     get_model_provider_service,
+    relay_backed_model_services,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -478,7 +482,9 @@ def revert_legacy_shared_config() -> bool:
     # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
     for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
         path.unlink(missing_ok=True)
-    desktop_changed = _sync_desktop_tracing(None) | _sync_desktop_relay({}, None, None)
+    desktop_changed = _sync_desktop_tracing(None) | _sync_desktop_relay(
+        {}, None, None, tracing=False, model_service_relay=False
+    )
     return legacy_changed or app_catalog_changed or desktop_changed
 
 
@@ -689,7 +695,13 @@ def write_tool_config(
         # The Codex app settings in ~/.codex/config.toml are per-user.
         return state
     if _explicit_configure:  # like Claude Desktop, only `ug configure` changes the app
-        _sync_desktop_relay(state, workspace, provider if relayed else None, tracing=tracing)
+        _sync_desktop_relay(
+            state,
+            workspace,
+            provider if relayed else None,
+            tracing=tracing,
+            model_service_relay=relayed and provider is None,
+        )
     _sync_desktop_tracing(workspace if tracing else None)
     return state
 
@@ -1084,13 +1096,19 @@ def request_explicit_configure(requested: bool = True) -> None:
 
 
 def _sync_desktop_relay(
-    state: dict, workspace: str | None, provider: str | None, *, tracing: bool = False
+    state: dict,
+    workspace: str | None,
+    provider: str | None,
+    *,
+    tracing: bool,
+    model_service_relay: bool,
 ) -> bool:
     """Point the Codex app at ug's login service as a ChatGPT relay for ``provider``; None removes.
 
     It goes in the Codex App settings (``ug codex`` sessions' own ``-c`` provider outranks it and
     keeps a per-session proxy). Its own provider name is ug's, like Claude Desktop's reserved
     profile, so a managed ``Databricks`` provider never merges into it.
+    A CLI model-service relay has a session-local URL, so Desktop gets its own gateway credential helper.
     Returns whether that file changed; setup problems only warn.
     """
     if current_os() == OS.OTHER or is_dry_run():
@@ -1102,7 +1120,7 @@ def _sync_desktop_relay(
             providers.get(CODEX_APP_RELAY_PROVIDER_NAME) if isinstance(providers, dict) else None
         )
         relay_port = _service_port("relay-port")
-        if provider is None or workspace is None:
+        if workspace is None or (provider is None and not model_service_relay):
             # Config first, so a failed write leaves the app's relay still served.
             if isinstance(current, dict) and isinstance(providers, dict):
                 del providers[CODEX_APP_RELAY_PROVIDER_NAME]
@@ -1125,28 +1143,37 @@ def _sync_desktop_relay(
                 "ChatGPT relay."
             )
             return False
-        relay_port = relay_port or _allocate_otel_port()
-        port = _service_port("port")
-        # Each allocation releases its port, so a second one can repeat the first; retry it.
-        while not port or port == relay_port:
-            port = _allocate_otel_port()
-        # Before the config, so a missing systemd user manager leaves Codex settings untouched.
-        _ensure_otel_service(workspace, port, relay_port)
         block = _provider_block(
             workspace,
             state.get("profile"),
+            use_pat=bool(state.get("use_pat")),
+            custom_oauth=state.get("custom_oauth"),
             provider=provider,
             managed_http_headers=state.get("codex_http_headers"),
-            relayed=True,
+            relayed=provider is not None,
         )
-        block["base_url"] = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
-        if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME and current == block:
-            return False
-        doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
-        doc.setdefault("model_providers", {})[CODEX_APP_RELAY_PROVIDER_NAME] = block
-        write_toml_file(_legacy_config_path(), doc)
-        print_warning_err("Restart the Codex app and sign in with ChatGPT to use the relay.")
-        return True
+        if provider:
+            relay_port = relay_port or _allocate_otel_port()
+            port = _service_port("port")
+            while not port or port == relay_port:
+                port = _allocate_otel_port()
+            _ensure_otel_service(workspace, port, relay_port)
+            block["base_url"] = f"http://{LOOPBACK_HOST}:{relay_port}/v1"
+        changed = doc.get("model_provider") != CODEX_APP_RELAY_PROVIDER_NAME or current != block
+        if changed:
+            doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
+            doc.setdefault("model_providers", {})[CODEX_APP_RELAY_PROVIDER_NAME] = block
+            write_toml_file(_legacy_config_path(), doc)
+            if provider:
+                print_warning_err(
+                    "Restart the Codex app and sign in with ChatGPT to use the relay."
+                )
+        if not provider and relay_port:
+            if tracing:
+                _ensure_otel_service(workspace, _service_port("port") or _allocate_otel_port())
+            else:
+                _remove_otel_service()
+        return changed
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning_err(f"Could not update the Codex app ChatGPT relay: {exc}")
         return False
@@ -1814,7 +1841,7 @@ def sync_app_model_catalog(catalog: dict) -> None:
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
     """The token Codex authenticates with: a custom-OAuth client token when configured,
     else the CLI profile. The single auth-selection point — the OTLP proxy's token
-    provider (_otel_token_provider) delegates here so both mint the same principal."""
+    provider (proxy_token_provider) delegates here so both mint the same principal."""
     return launch_token(state, workspace, force_refresh=force_refresh)
 
 
@@ -1856,7 +1883,7 @@ def _otel_proxy_overlay(endpoint: str) -> dict:
     }
 
 
-def _otel_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
+def proxy_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
     """The proxy's token_provider: mints from the same source Codex uses for inference
     (via _launch_token) so exported traces are attributed to the same principal."""
     return lambda force: _launch_token(state, workspace, force_refresh=force)
@@ -1868,8 +1895,9 @@ def _launch_codex_with_otel_proxy(
     tool_args: list[str],
     workspace: str,
     *,
-    otel_tracing: bool = True,
-    relay: tuple | None = None,
+    otel_tracing: bool,
+    relay: tuple | None,
+    child_env: dict[str, str] | None,
 ) -> None:
     """Run the loopback proxies for the session (OTLP refresh and/or the started ChatGPT
     ``relay``), with Codex as a child.
@@ -1885,13 +1913,13 @@ def _launch_codex_with_otel_proxy(
             # Only tracing launches need the proxy (and its `httpx` import).
             from ucode import gateway_proxy
 
-            otel = gateway_proxy.start_otel_proxy(workspace, _otel_token_provider(state, workspace))
+            otel = gateway_proxy.start_otel_proxy(workspace, proxy_token_provider(state, workspace))
             proxies.append(otel)
             threading.Thread(target=otel[0].serve_forever, daemon=True).start()
             endpoint = f"http://{LOOPBACK_HOST}:{otel[0].server_address[1]}/v1/traces"
             otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
         metrics.agent_handoff()
-        proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
+        proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args], env=child_env)
         try:
             returncode = proc.wait()
         except KeyboardInterrupt:
@@ -1906,7 +1934,7 @@ def _launch_codex_with_otel_proxy(
 
 
 def _has_chatgpt_login(binary: str) -> bool:
-    """True when Codex holds a ChatGPT login (not an API key) that a relayed launch will use."""
+    """True when Codex holds a ChatGPT login or personal access token for the relay."""
     try:
         result = subprocess_cross_os.run(
             [shutil.which(binary) or binary, "login", "status"],
@@ -1917,7 +1945,148 @@ def _has_chatgpt_login(binary: str) -> bool:
         )
     except (OSError, TimeoutExpired):
         return False
-    return result.returncode == 0 and "ChatGPT" in f"{result.stdout}{result.stderr}"
+    status = f"{result.stdout}{result.stderr}"
+    return result.returncode == 0 and any(mode in status for mode in ("ChatGPT", "access token"))
+
+
+def relay_model_services(state: dict, models: list[str], *, configuring: bool) -> list[str]:
+    """Return the selected UC services with a ChatGPT relay destination."""
+    if machine_wide_only():
+        return []
+    return relay_backed_model_services(
+        state,
+        custom_model_services(models),
+        agent=AGENT_CODEX,
+        provider_type=OPENAI_PROVIDER_TYPE,
+        include_fallbacks=True,
+        configuring=configuring,
+        token_provider=lambda: _launch_token(state, state["workspace"]),
+    )
+
+
+def selected_service_overrides_saved_provider(
+    state: dict, selected_service: str | None, provider: str | None, explicit_provider: str | None
+) -> bool:
+    """A verified relay service can displace a saved MPS for this launch."""
+    return bool(
+        provider
+        and not explicit_provider
+        and selected_service
+        and relay_model_services(state, [selected_service], configuring=False)
+    )
+
+
+@dataclass(frozen=True)
+class LaunchAuth:
+    relayed: bool
+    login_checked: bool
+    routing_unavailable: str | None
+
+
+def use_model_service_relay(
+    state: dict,
+    selected_model: str | None,
+    *,
+    configuring: bool,
+    selected_only: bool,
+) -> LaunchAuth:
+    """Select per-user relay auth for a static list or an explicitly selected model service."""
+    models = [] if selected_only else state.get("codex_static_models")
+    candidates = list(models) if isinstance(models, list) else []
+    selection = selected_model or state.get("codex_default_model")
+    if isinstance(selection, str) and selection not in candidates:
+        candidates.append(selection)
+    relay_backed = relay_model_services(state, candidates, configuring=configuring)
+    if not relay_backed:
+        return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
+    selected_relay = selected_model in relay_backed and not configuring
+    # An explicitly selected seat uses the same browser login at launch as a direct relay provider.
+    if not selected_relay and not (
+        os.environ.get("CODEX_ACCESS_TOKEN") or _has_chatgpt_login(SPEC["binary"])
+    ):
+        print_note("Sign in with `codex login` to use the ChatGPT subscription model service.")
+        return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
+    path = codex_managed_config_path()
+    if path:
+        for policy in dict.fromkeys((path, path.with_name(CODEX_REQUIREMENTS_FILE))):
+            try:
+                conflicts = _managed_relayed_conflicts(policy)
+            except RuntimeError as exc:
+                if selected_relay:
+                    raise
+                print_note(f"Using Databricks authentication for this model list: {exc}")
+                return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
+            if conflicts:
+                if selected_relay:
+                    raise RuntimeError(
+                        f"Model service {selected_model} needs your ChatGPT subscription, but "
+                        f"Codex managed settings define {', '.join(conflicts)} at {policy}. "
+                        "If ug created these settings, run `ug revert` before configuring the "
+                        "relay. Otherwise ask your administrator to update the authentication policy."
+                    )
+                print_note(
+                    f"Codex managed authentication at {policy} takes precedence over your ChatGPT seat."
+                )
+                return LaunchAuth(relayed=False, login_checked=False, routing_unavailable=None)
+    return LaunchAuth(relayed=True, login_checked=not selected_relay, routing_unavailable=None)
+
+
+def launch_relay_and_routing(
+    state: dict,
+    selected_model: str | None,
+    *,
+    provider: str | None,
+    parent_schema: str | None,
+    relayed: bool,
+    routed: bool,
+    managed_routing: bool,
+) -> LaunchAuth:
+    """Choose the launch credentials and report why smart routing must be disabled."""
+    auth = LaunchAuth(relayed=relayed, login_checked=False, routing_unavailable=None)
+    check_static_list = not routed and not parent_schema
+    if not provider and (selected_model or check_static_list):
+        auth = use_model_service_relay(
+            state, selected_model, configuring=False, selected_only=not check_static_list
+        )
+    if auth.relayed and (managed_routing or (routed and not provider)):
+        return replace(
+            auth,
+            routing_unavailable="Smart routing is unavailable with a ChatGPT subscription relay.",
+        )
+    if managed_routing:
+        try:
+            agents.ensure_minimum_version(
+                AGENT_CODEX, lambda: minimum_version_error(smart_routing_enabled=True)
+            )
+        except RuntimeError as exc:
+            if routed and not provider and not parent_schema:
+                # The ordinary launch may use seats from the managed static list.
+                auth = use_model_service_relay(
+                    state, selected_model, configuring=False, selected_only=False
+                )
+            return replace(auth, routing_unavailable=str(exc))
+    return auth
+
+
+def with_launch_source(
+    state: dict,
+    *,
+    pinned_provider: str | None,
+    model_service: str | None,
+    parent_schema: str | None,
+    login_checked: bool,
+) -> dict:
+    """Apply the session's resolved source after configure has saved the workspace state."""
+    state = state.copy()
+    if parent_schema:
+        state["_codex_launch_parent_schema"] = parent_schema
+    elif model_service:
+        state["_codex_launch_model_service"] = model_service
+    elif pinned_provider:
+        state["_codex_launch_provider"] = pinned_provider
+    if login_checked:
+        state["_codex_launch_login_checked"] = True
+    return state
 
 
 def _ensure_chatgpt_login(binary: str) -> None:
@@ -1945,7 +2114,8 @@ def _run_codex(
     *,
     otel_tracing: bool,
     workspace: str | None,
-    relay: tuple | None = None,
+    relay: tuple | None,
+    child_env: dict[str, str] | None,
 ) -> None:
     """Launch Codex — via loopback proxies when OTLP tracing or a relay is on, else exec-replace."""
     if tool_args[:1] == ["update"]:
@@ -1953,7 +2123,13 @@ def _run_codex(
         detach_app_model_catalog()
     if (otel_tracing or relay) and workspace:
         _launch_codex_with_otel_proxy(
-            state, base_argv, tool_args, workspace, otel_tracing=otel_tracing, relay=relay
+            state,
+            base_argv,
+            tool_args,
+            workspace,
+            otel_tracing=otel_tracing,
+            relay=relay,
+            child_env=child_env,
         )
     else:
         exec_or_spawn([*base_argv, *tool_args])
@@ -1996,23 +2172,17 @@ def launch(
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    launch_provider = state.get("_codex_launch_provider")
-    transient_provider = (
-        launch_provider.strip()
-        if isinstance(launch_provider, str) and launch_provider.strip()
-        else None
-    )
     launch_parent_schema = state.get("_codex_launch_parent_schema")
     parent_schema = (
         launch_parent_schema.strip()
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
-    # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
-    # is most specific; otherwise a transient UC parent must suppress a saved provider.
-    provider = transient_provider or (
-        None if parent_schema else get_provider_service(state, "codex")
-    )
+    launch_provider = state.get("_codex_launch_provider")
+    pinned_provider = launch_provider.strip() if isinstance(launch_provider, str) else None
+    provider = pinned_provider
+    if not (provider or parent_schema or state.get("_codex_launch_model_service")):
+        provider = get_provider_service(state, AGENT_CODEX)
     if options.launch_smart_routing and not (provider or parent_schema):
         _launch_smart_routing(state, tool_args)
         return
@@ -2036,6 +2206,8 @@ def launch(
             tool_args,
             otel_tracing=otel_tracing,
             workspace=workspace,
+            relay=None,
+            child_env=None,
         )
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
@@ -2112,22 +2284,29 @@ def launch(
         )
         return
     relay = None
+    child_env = None
     if relayed and workspace and not updating:
-        _ensure_chatgpt_login(binary)
+        if not state.get("_codex_launch_login_checked"):
+            _ensure_chatgpt_login(binary)
         # Only relayed launches need the proxy (and its `httpx` import).
         from ucode import gateway_proxy
 
-        relay = gateway_proxy.start_relay_proxy(
-            workspace,
-            lambda force: _launch_token(state, workspace, force_refresh=force),
-            0,
-            agent=AGENT_CODEX,
-        )
+        provider_config = profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]
+        token_provider = proxy_token_provider(state, workspace)
+        if pinned_provider:
+            relay = gateway_proxy.start_relay_proxy(workspace, token_provider, 0, agent=AGENT_CODEX)
+        else:
+            secret = secrets.token_urlsafe(32)
+            child_env = {**os.environ, "UG_CODEX_SESSION_SECRET": secret}
+            provider_config.setdefault("env_http_headers", {})[
+                gateway_proxy.CODEX_SESSION_HEADER
+            ] = "UG_CODEX_SESSION_SECRET"
+            relay = gateway_proxy.start_codex_model_service_proxy(
+                workspace, token_provider, session_secret=secret, default_provider=provider
+            )
         threading.Thread(target=relay[0].serve_forever, daemon=True).start()
         port = relay[0].server_address[1]
-        profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["base_url"] = (
-            f"http://{LOOPBACK_HOST}:{port}/v1"
-        )
+        provider_config["base_url"] = f"http://{LOOPBACK_HOST}:{port}/v1"
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],
@@ -2135,6 +2314,7 @@ def launch(
         otel_tracing=otel_tracing,
         workspace=workspace,
         relay=relay,
+        child_env=child_env,
     )
 
 

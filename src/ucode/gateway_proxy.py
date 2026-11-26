@@ -280,6 +280,13 @@ def is_uc_model_service(model: str | None) -> bool:
     return model.count(".") >= 2
 
 
+def _uses_openai_provider_model(model: str | None) -> bool:
+    """A missing model uses the provider default. Native OpenAI IDs may contain a version dot."""
+    return not model or not (
+        is_uc_model_service(model) or model.startswith(("system.", "databricks-"))
+    )
+
+
 def _request_model(body: bytes | None) -> str | None:
     """The ``model`` field of a JSON request body, or None when absent/unparseable."""
     if not body:
@@ -632,9 +639,14 @@ _MODEL_SERVICE_ROUTE_STRIP = frozenset({MODEL_PROVIDER_SERVICE_HEADER.lower()})
 
 class _RelayProxyHandler(_ProxyHandler):
     # Set by the server factory: ``(model, databricks_token)`` -> True when the UC model service
-    # routes to a subscription-relay MPS. The gateway rejects relayed requests to any other MPS,
-    # so only those services may keep the relay credentials.
+    # includes a subscription-relay destination for this agent.
     routes_to_subscription_relay: Callable[[str, str], bool] | None = None
+
+    relay_strip: frozenset[str] = frozenset()
+    gateway_strip = _DATABRICKS_ROUTE_STRIP
+
+    def _use_provider_relay(self, model: str | None) -> bool:
+        return not is_databricks_routed_model(model)
 
     def _is_relay_backed_model_service(self, model: str | None) -> bool:
         if not model or not is_uc_model_service(model) or self.routes_to_subscription_relay is None:
@@ -644,10 +656,43 @@ class _RelayProxyHandler(_ProxyHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         model = _request_model(body)
         if self._is_relay_backed_model_service(model):
-            return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
-        if is_databricks_routed_model(model):
-            return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
-        return self.token_header, frozenset(), "relay"
+            return (
+                self.token_header,
+                self.relay_strip | _MODEL_SERVICE_ROUTE_STRIP,
+                "relay-model-service",
+            )
+        if self._use_provider_relay(model):
+            return self.token_header, self.relay_strip, "relay"
+        return AUTHORIZATION_HEADER, self.gateway_strip, "databricks"
+
+
+CODEX_SESSION_HEADER = "X-UG-Codex-Session"
+
+
+class _CodexModelServiceProxyHandler(_RelayProxyHandler):
+    relay_strip = frozenset({CODEX_SESSION_HEADER.lower()})
+    gateway_strip = _DATABRICKS_ROUTE_STRIP | relay_strip | {"chatgpt-account-id"}
+    session_secret: str
+    default_provider: str | None = None
+
+    def _handle(self) -> None:
+        # This proxy can attach workspace Authorization. Keep it on the Codex API surface.
+        if not _is_allowed_gateway_path(self.path, ("/v1/",)):
+            self._safe_send_error(404, "Not found")
+            return
+        presented = self.headers.get(CODEX_SESSION_HEADER, "")
+        if not hmac.compare_digest(presented.encode(), self.session_secret.encode()):
+            self._safe_send_error(401, "Invalid Codex session credential")
+            return
+        super()._handle()
+
+    def _use_provider_relay(self, model: str | None) -> bool:
+        if (
+            not self.default_provider
+            or self.headers.get(MODEL_PROVIDER_SERVICE_HEADER) != self.default_provider
+        ):
+            return False
+        return _uses_openai_provider_model(model)
 
 
 # Gateway model routes a gateway-auth proxy session may reach. Everything else
@@ -950,7 +995,7 @@ def _start_proxy(
 # provider (e.g. Copilot's) adds an entry here.
 _RELAY_ROUTES: dict[str, tuple[str, type[_ProxyHandler]]] = {
     AGENT_CLAUDE: ("ai-gateway/anthropic/", _RelayProxyHandler),
-    # Plain forwarding: the Anthropic hybrid reroute doesn't apply.
+    # Direct Codex CLI and Desktop provider launches pin one provider.
     AGENT_CODEX: ("ai-gateway/codex/", _ProxyHandler),
 }
 
@@ -967,7 +1012,7 @@ def start_relay_proxy(
     """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``).
 
     ``routes_to_subscription_relay(model, databricks_token)`` tells Claude's proxy which UC model
-    services keep the relay credentials; without it they all take the gateway-auth path."""
+    services keep the relay credentials."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
     handler_attrs = (
         {"routes_to_subscription_relay": staticmethod(routes_to_subscription_relay)}
@@ -984,6 +1029,45 @@ def start_relay_proxy(
         force_refresh_near_expiry=False,
         fallback_on_bind_error=fallback_on_bind_error,
         handler_attrs=handler_attrs,
+        metrics_proxy_mode="relay",
+    )
+
+
+def start_codex_model_service_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    *,
+    session_secret: str,
+    default_provider: str | None,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    from ucode.databricks import OPENAI_PROVIDER_TYPE, RelayLookup, model_service_relay_lookup
+
+    def relayed(model: str, token: str) -> bool:
+        return (
+            model_service_relay_lookup(
+                workspace,
+                token,
+                model,
+                provider_type=OPENAI_PROVIDER_TYPE,
+                include_fallbacks=True,
+                use_cache=True,
+            )
+            is RelayLookup.RELAYED
+        )
+
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path=_RELAY_ROUTES[AGENT_CODEX][0],
+        token_header=AI_GATEWAY_TOKEN_HEADER,
+        handler_type=_CodexModelServiceProxyHandler,
+        force_refresh_near_expiry=False,
+        handler_attrs={
+            "session_secret": session_secret,
+            "routes_to_subscription_relay": staticmethod(relayed),
+            "default_provider": default_provider,
+        },
         metrics_proxy_mode="relay",
     )
 

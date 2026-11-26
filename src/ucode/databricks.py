@@ -2807,7 +2807,6 @@ def clear_model_services_cache() -> None:
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
     _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
-    _RELAY_LOOKUP_FAILED_AT.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -3712,14 +3711,20 @@ def model_service_backing_model(service: dict) -> str | None:
     return None
 
 
-def model_service_primary_providers(service: dict) -> list[str]:
-    """The Model Provider Services behind ``service``'s live primary destinations."""
+def model_service_providers(service: dict, *, include_fallbacks: bool) -> list[str]:
+    """Model providers that can receive traffic from this service."""
     providers: list[str] = []
-    for destination in _model_service_primary_destinations(service, strict=False) or []:
-        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
+    destinations = _model_service_primary_destinations(service, strict=False) or []
+    if include_fallbacks:
+        destinations.extend(_model_service_fallback_destinations(service) or [])
+    for destination in destinations:
+        if not isinstance(destination, dict) or destination.get("is_deleted"):
+            continue
+        external = destination.get("external_model_config")
+        provider = external.get("model_provider_service") if isinstance(external, dict) else None
         if isinstance(provider, str) and provider:
             providers.append(provider.removeprefix("model-provider-services/"))
-    return providers
+    return list(dict.fromkeys(providers))
 
 
 def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
@@ -3750,16 +3755,15 @@ def _model_service_primary_destinations(service: dict, *, strict: bool = True) -
     return destinations
 
 
-def model_service_destination_models(service: dict) -> list[str] | None:
-    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
-    destinations = _model_service_primary_destinations(service)
-    if destinations is None:
+def _model_service_fallback_destinations(service: dict) -> list | None:
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
         return None
-    routing = service["config"]["routing"]
     fallback = routing.get("fallback") or {}
     if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
         return None
-    destinations.extend(fallback.get("destinations", []))
+    destinations = list(fallback.get("destinations", []))
     budget_fallbacks = routing.get("budget_fallbacks") or []
     if not isinstance(budget_fallbacks, list):
         return None
@@ -3767,6 +3771,16 @@ def model_service_destination_models(service: dict) -> list[str] | None:
         if not isinstance(entry, dict):
             return None
         destinations.append(entry.get("destination"))
+    return destinations
+
+
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    destinations = _model_service_primary_destinations(service)
+    fallbacks = _model_service_fallback_destinations(service)
+    if destinations is None or fallbacks is None:
+        return None
+    destinations.extend(fallbacks)
     models = []
     for destination in destinations:
         if not isinstance(destination, dict):
@@ -3794,7 +3808,7 @@ def model_service_destination_models(service: dict) -> list[str] | None:
 
 
 class RelayLookup(Enum):
-    """Whether a model service routes to a Claude subscription relay."""
+    """Whether a model service routes to the requested subscription provider."""
 
     RELAYED = "relayed"
     NOT_RELAYED = "not_relayed"
@@ -3805,9 +3819,18 @@ class RelayLookup(Enum):
 _RELAY_LOOKUP_TIMEOUT_S = 5
 _RELAY_LOOKUP_RETRY_AFTER_S = 60
 
-# Per-process memos keyed by (workspace, service): confirmed answers, and when a lookup last failed.
-_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
-_RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
+_RELAY_LOOKUP_MAX_AGE_S = 24 * 60 * 60
+# Codex must notice when a stored-auth service gains a ChatGPT fallback between launches.
+_OPENAI_NOT_RELAYED_TTL_S = 5 * 60
+_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str, str, bool], tuple[RelayLookup, float]] = {}
+
+
+def _relay_lookup_ttl(result: RelayLookup, provider_type: str) -> int:
+    if result is RelayLookup.UNKNOWN:
+        return _RELAY_LOOKUP_RETRY_AFTER_S
+    if result is RelayLookup.NOT_RELAYED and provider_type == OPENAI_PROVIDER_TYPE:
+        return _OPENAI_NOT_RELAYED_TTL_S
+    return _RELAY_LOOKUP_MAX_AGE_S
 
 
 def custom_model_services(models: list[str]) -> list[str]:
@@ -3823,60 +3846,127 @@ def custom_model_services(models: list[str]) -> list[str]:
     return candidates
 
 
-def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayLookup:
-    """Whether ``model`` routes to a Claude subscription relay: a live primary destination on an
-    Anthropic MPS with relayed auth.
+def relay_backed_model_services(
+    state: dict,
+    candidates: list[str],
+    *,
+    agent: str,
+    provider_type: str,
+    include_fallbacks: bool,
+    configuring: bool,
+    token_provider: Callable[[], str],
+) -> list[str]:
+    """Reuse fresh per-service results across launches in this workspace."""
+    key = f"{agent}_relay_detection"
+    saved = state.get(key)
+    now = time.time()
+    entries = {
+        name: entry
+        for name, entry in (saved.items() if isinstance(saved, dict) else ())
+        if isinstance(entry, dict)
+        and isinstance(entry.get("relayed"), bool)
+        and isinstance(entry.get("expires_at"), (float, int))
+        and now < entry["expires_at"] <= now + _RELAY_LOOKUP_MAX_AGE_S
+    }
+    pending = [name for name in dict.fromkeys(candidates) if configuring or name not in entries]
+    if pending:
+        try:
+            token = token_provider()
+        except RuntimeError:
+            token = None
+        unknown = []
+        for name in pending:
+            entries.pop(name, None)
+            if token is None:
+                unknown.append(name)
+                continue
+            result = model_service_relay_lookup(
+                state["workspace"],
+                token,
+                name,
+                provider_type=provider_type,
+                include_fallbacks=include_fallbacks,
+                use_cache=not configuring,
+            )
+            if result is RelayLookup.UNKNOWN:
+                unknown.append(name)
+            else:
+                entries[name] = {
+                    "relayed": result is RelayLookup.RELAYED,
+                    "expires_at": now + _relay_lookup_ttl(result, provider_type),
+                }
+        if unknown:
+            print_warning(
+                f"Couldn't check whether {', '.join(unknown)} need your subscription, so they "
+                f"use Databricks authentication this time. Run `ug {agent}` again to retry."
+            )
+    if entries:
+        state[key] = entries
+    else:
+        state.pop(key, None)
+    return [name for name in candidates if entries.get(name, {}).get("relayed")]
 
-    Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
-    the Databricks token in the swap header). A relayed OpenAI (ChatGPT) MPS needs a different
-    credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
-    lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
-    """
+
+def model_service_relay_lookup(
+    workspace: str,
+    token: str,
+    model: str,
+    *,
+    provider_type: str,
+    include_fallbacks: bool,
+    use_cache: bool,
+) -> RelayLookup:
+    """Check the eligible destinations for the selected subscription provider."""
     if not custom_model_services([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
-    key = (workspace, name)
-    if key in _RELAY_BACKED_MODEL_SERVICES_CACHE:
-        return (
-            RelayLookup.RELAYED
-            if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]
-            else RelayLookup.NOT_RELAYED
-        )
-    failed_at = _RELAY_LOOKUP_FAILED_AT.get(key)
-    if failed_at is not None and time.monotonic() - failed_at < _RELAY_LOOKUP_RETRY_AFTER_S:
-        return RelayLookup.UNKNOWN
-    lookup = _fetch_model_service_relay_lookup(name, workspace, token)
-    if lookup is RelayLookup.UNKNOWN:
-        _RELAY_LOOKUP_FAILED_AT[key] = time.monotonic()
-    else:
-        _RELAY_LOOKUP_FAILED_AT.pop(key, None)
-        _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = lookup is RelayLookup.RELAYED
-    return lookup
+    key = (workspace, name, provider_type, include_fallbacks)
+    cached = _RELAY_BACKED_MODEL_SERVICES_CACHE.get(key)
+    if use_cache and cached and time.monotonic() < cached[1]:
+        return cached[0]
+    result = _fetch_model_service_relay_lookup(
+        name, workspace, token, provider_type, include_fallbacks
+    )
+    _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = (
+        result,
+        time.monotonic() + _relay_lookup_ttl(result, provider_type),
+    )
+    return result
 
 
 def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
     """True when any model in ``models`` routes to a Claude subscription relay. An unknown answer
     counts as not relayed, which keeps the gateway-auth behavior."""
     return any(
-        model_service_relay_lookup(workspace, token, model) is RelayLookup.RELAYED
+        model_service_relay_lookup(
+            workspace,
+            token,
+            model,
+            provider_type=ANTHROPIC_PROVIDER_TYPE,
+            include_fallbacks=False,
+            use_cache=True,
+        )
+        is RelayLookup.RELAYED
         for model in models
     )
 
 
-def _fetch_model_service_relay_lookup(name: str, workspace: str, token: str) -> RelayLookup:
+def _fetch_model_service_relay_lookup(
+    name: str, workspace: str, token: str, provider_type: str, include_fallbacks: bool
+) -> RelayLookup:
     service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
     if service is None:
         _debug("relay detection", f"{name}: {reason}")
         return RelayLookup.UNKNOWN
     lookup = RelayLookup.NOT_RELAYED
-    for provider in model_service_primary_providers(service):
+    for provider in model_service_providers(service, include_fallbacks=include_fallbacks):
         entry, reason = get_model_provider_service(
             provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
         )
         if entry is None:
             _debug("relay detection", f"{provider}: {reason}")
             lookup = RelayLookup.UNKNOWN
-        elif entry.get("relayed") and entry.get("provider_type") == "anthropic":
+        elif entry.get("relayed") and entry.get("provider_type") == provider_type:
             return RelayLookup.RELAYED
     return lookup
 
