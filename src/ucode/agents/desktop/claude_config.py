@@ -62,6 +62,7 @@ def render_profile(
     helper_command: str | Path,
     helper_args: Sequence[str],
     model_id_to_display_name: Mapping[str, str] | None = None,
+    model_id_to_behaves_as: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
     otel_endpoint: str | None = None,
     otel_headers_helper: Path | None = None,
@@ -69,11 +70,16 @@ def render_profile(
     """Render resolved models, headers, and literal helper arguments in Desktop's schema."""
 
     display_names = model_id_to_display_name or {}
+    behaviors = model_id_to_behaves_as or {}
     models = []
     for model_id in model_ids:
         model = {"name": model_id}
         if label := display_names.get(model_id):
             model["labelOverride"] = label
+        # Desktop takes a model's effort levels and other capabilities from its own catalog,
+        # keyed by Anthropic model IDs; behavesAs names the catalog model behind a gateway ID.
+        if behaves_as := behaviors.get(model_id):
+            model["behavesAs"] = behaves_as
         models.append(model)
 
     profile: dict[str, object] = {

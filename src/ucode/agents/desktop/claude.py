@@ -112,6 +112,7 @@ def configure_claude_desktop(
     helper_command: str | Path,
     helper_args: Sequence[str],
     model_id_to_display_name: Mapping[str, str] | None = None,
+    model_id_to_behaves_as: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
     otel_endpoint: str | None = None,
     otel_headers_command: Sequence[str] = (),
@@ -124,6 +125,7 @@ def configure_claude_desktop(
     rendered = render_profile(
         model_ids=model_ids,
         model_id_to_display_name=model_id_to_display_name,
+        model_id_to_behaves_as=model_id_to_behaves_as,
         base_url=base_url,
         helper_command=helper_command,
         helper_args=helper_args,
