@@ -2,6 +2,8 @@
   "include": [
     ".github/**",
     "tests/**/*.py",
-    "**/test_*.py"
+    "**/test_*.py",
+    "tests/native_claude/**/*.ts",
+    "docs/claude-mod.md"
   ]
 }
