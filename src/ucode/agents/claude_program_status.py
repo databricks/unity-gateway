@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 SNAPSHOT_ENV = "UG_CLAUDE_PROGRAM_STATUS_FILE"
@@ -30,8 +31,8 @@ class Publication:
     start: Callable[[], None]
 
 
-# The registry's Waiting state is Blocked. Its reason may be another task or
-# approval, so leave the optional reason unspecified rather than guessing one.
+# Waiting means Blocked. A separate, confirmed input request can supply a reason;
+# the registry alone cannot distinguish approval from waiting for another task.
 _OSC_STATES = {
     "pending": "working",
     "running": "working",
@@ -43,8 +44,15 @@ _OSC_STATES = {
 }
 
 
-def _report(state: str, task_id: str, title: str | None = None) -> bytes:
+def _report(
+    state: str,
+    task_id: str,
+    title: str | None = None,
+    kind: Literal["question"] | None = None,
+) -> bytes:
     fields = f"state={state}:id={task_id}:app=unity-gateway"
+    if state == "blocked" and kind is not None:
+        fields += f":kind={kind}"
     if title is not None:
         # OSC titles are base64 text with a 192-byte decoded limit. Do not let
         # agent-written names inject terminal controls or invalidate the report.
@@ -56,11 +64,12 @@ def _report(state: str, task_id: str, title: str | None = None) -> bytes:
 
 @dataclass(frozen=True)
 class SubagentTask:
-    """One agent's stable registry identity, lifecycle state, and display title."""
+    """One agent's identity, status, title, and any confirmed input reason."""
 
     agent_id: str
     status: str
     title: str
+    kind: Literal["question"] | None = None
 
     @classmethod
     def parse(cls, value: object) -> SubagentTask | None:
@@ -71,11 +80,14 @@ class SubagentTask:
             return None
         if not isinstance(state, str) or state not in _OSC_STATES:
             return None
+        kind = value.get("kind")
+        if kind is not None and (kind != "question" or state != "waiting"):
+            return None
         try:
             agent_id.encode("utf-8")
         except UnicodeError:
             return None
-        return cls(agent_id, state, title)
+        return cls(agent_id, state, title, kind)
 
     def task_id(self, namespace: str) -> str:
         # Provider ids can contain slashes or exceed OSC's segment limits. A
@@ -84,7 +96,9 @@ class SubagentTask:
 
     def report(self, namespace: str) -> bytes:
         state = _OSC_STATES[self.status]
-        return _report(state, self.task_id(namespace), None if state == "clear" else self.title)
+        return _report(
+            state, self.task_id(namespace), None if state == "clear" else self.title, self.kind
+        )
 
 
 @dataclass(frozen=True)

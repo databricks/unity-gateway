@@ -21,7 +21,18 @@ starts after Claude is spawned and decodes the file only when it changes.
 
 Waiting is reported as Blocked because that agent cannot currently proceed. It
 can be waiting for background work, a nested Agent call, or approval. The registry
-does not supply that distinction, so the optional reason is left unspecified.
+does not supply that distinction, so Waiting alone leaves the reason unspecified.
+When Claude displays an `AskUserQuestion` dialog for a subagent, its record instead
+includes `state=blocked:kind=question`. This lets a terminal distinguish a known
+request for an answer from a task that is blocked for an unspecified reason.
+The question is matched by its tool-call ID, and answering, cancelling, or ending
+the conversation clears that reason. Automatically answered calls do not acquire
+it. The regular one-second sampler publishes these changes without doing I/O in
+the renderer or altering the question's behavior.
+
+Permission prompts remain unspecified: Claude's permission hook can be answered
+automatically and does not expose the lifetime of the user's approval dialog.
+This bridge therefore does not label a permission check as confirmed user input.
 The terminal decides how to present Blocked and combine it with other agents'
 states. Claude's own reports remain intact. Agent IDs are encoded into valid,
 distinct OSC paths, and titles are encoded within the protocol's text limits.
@@ -33,7 +44,8 @@ publish reports. This applies to new launches and does not modify an agent that
 is already running.
 
 Native-extension tests cover individual registry states, the main turn finishing
-before its children, resets and delayed replies. Python component tests cover
+before its children, simultaneous questions, automatic answers, cancellation,
+resets and delayed replies. Python component tests cover input-reason changes,
 independent completion, failure, cancellation and removal, stable identities,
 valid OSC bytes, shutdown and launch isolation. These checks do not establish a
 live model or ArcaTerm integration pass.

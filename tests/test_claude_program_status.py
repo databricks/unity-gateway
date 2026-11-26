@@ -148,6 +148,69 @@ def test_a_blocked_agent_resumes_working_under_the_same_identity():
     assert "kind" not in initial[0]
 
 
+def test_a_confirmed_question_adds_and_clears_its_reason_without_changing_identity(tmp_path):
+    path = tmp_path / "snapshot.json"
+
+    def read(kind=None):
+        row = {"id": "a", "status": "waiting", "title": "Research"}
+        if kind is not None:
+            row["kind"] = kind
+        path.write_text(json.dumps({"sessionId": "session-1", "agents": [row]}))
+        return status.SubagentSnapshot.read(path)
+
+    before = read()
+    asking = read("question")
+    emitted = updates(before, asking)
+    assert len(emitted) == 1
+    assert emitted[0] == {**updates(None, before)[0], "kind": "question"}
+    assert updates(asking, read()) == updates(None, before)
+
+
+@pytest.mark.parametrize("kind", ["permission", "auth", "unknown", "question:state=done", [], 1])
+def test_unrecognized_or_malformed_input_reasons_cannot_inject_terminal_fields(tmp_path, kind):
+    path = tmp_path / "snapshot.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sessionId": "a",
+                "agents": [{"id": "a", "status": "waiting", "title": "Task", "kind": kind}],
+            }
+        )
+    )
+    assert status.SubagentSnapshot.read(path) is None
+
+
+@pytest.mark.parametrize("native", ["pending", "running", "idle", "completed", "failed", "killed"])
+def test_an_input_reason_requires_a_blocked_state(tmp_path, native):
+    path = tmp_path / "snapshot.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sessionId": "a",
+                "agents": [{"id": "a", "status": native, "title": "Task", "kind": "question"}],
+            }
+        )
+    )
+    assert status.SubagentSnapshot.read(path) is None
+
+
+@pytest.mark.parametrize(
+    "next_state,expected",
+    [("running", "working"), ("completed", "done"), ("failed", "error"), ("killed", "clear")],
+)
+def test_a_question_resolving_only_updates_its_own_record(next_state, expected):
+    before = snapshot(("a", "waiting", "Question", "question"), ("b", "running", "Research"))
+    asking = updates(None, before)
+    emitted = updates(before, snapshot(("a", next_state, "Question"), ("b", "running", "Research")))
+    assert len(emitted) == 1
+    assert emitted[0]["id"] == asking[0]["id"]
+    assert emitted[0]["state"] == expected
+    assert "kind" not in emitted[0]
+    assert before.agents[0].kind == "question"
+    with pytest.raises(FrozenInstanceError):
+        before.agents[0].kind = None
+
+
 def test_provider_ids_cannot_alias_another_agent_or_inject_terminal_controls():
     ids = ["a/b", "a_b", "a", "Research 💠" * 30, "bad\x1b]7501;state=error\x07"]
     emitted = updates(None, snapshot(*((agent_id, "running", "Task") for agent_id in ids)))

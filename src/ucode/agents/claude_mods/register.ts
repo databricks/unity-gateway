@@ -480,6 +480,25 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (!e.agentId) return next(e);
+    const finish = programStatus.beginQuestion(
+      await $.session.id().catch(() => undefined), e.tool_use_id, e.agentId,
+    );
+    try {
+      return await next(e);
+    } finally {
+      // Answering, cancelling, or failing ends only this question. Other
+      // questions from the same agent can still need the user's attention.
+      finish();
+    }
+  });
+
+  on('ui.render', { component: 'AskUserQuestion', plugin: '*' }, ($, e, next) => {
+    programStatus.questionShown(e.requestId);
+    return next(e);
+  });
+
   on('turn.step', async function* ($, e, next) {
     if (auto && !e.agentId && !switchingAuto && !manualOffRequest) await syncAutoRouting($, options, auto, routingSync);
     const active = await readOrchestratorState($, options);
