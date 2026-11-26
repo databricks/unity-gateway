@@ -603,8 +603,9 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-validation checks session-start and saved-model receipt hooks independently of
-registration order, and launch options include an empty `modelSettingCommand`
+validation extracts event names from matcher-qualified hook summaries and checks
+session-start and saved-model receipt hooks independently of registration order.
+Launch options include an empty `modelSettingCommand`
 when first-prompt recovery is absent. These remain native component checks. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's native off-feedback selector has component coverage in

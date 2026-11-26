@@ -372,8 +372,9 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI.
-Native validation requires the session-start and saved-model receipt hooks without
-depending on their registration order; launch-option checks include the empty
+Native validation extracts event names from matcher-qualified hook summaries and
+requires the session-start and saved-model receipt hooks without depending on their
+registration order; launch-option checks include the empty
 `modelSettingCommand` default when first-prompt recovery is absent.
 Auto picker tests cover selecting the last model in a large catalog, silent saves,
 and restoring a kept per-model alias.

@@ -54,7 +54,11 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
             hook_line = next(
                 (line for line in result.stdout.splitlines() if hook_prefix in line), ""
             )
-            hooks = {hook.strip() for hook in hook_line.partition(hook_prefix)[2].split(",")}
+            # Native summaries qualify filtered hooks, e.g. config.set{key=model}.
+            hooks = {
+                hook.strip().partition("{")[0]
+                for hook in hook_line.partition(hook_prefix)[2].split(",")
+            }
             assert {"session.start", "command.run", "config.set"} <= hooks, result.stdout
 
 
