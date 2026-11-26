@@ -7,6 +7,7 @@ import http
 import json
 import os
 import threading
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -617,6 +618,12 @@ def test_a_rejected_token_is_an_app_error(app):
 
 def test_status_waits_only_briefly_for_a_hung_app(app, monkeypatch):
     waits = []
+    real_time = copilot_app.time
+    monkeypatch.setattr(
+        copilot_app,
+        "time",
+        SimpleNamespace(monotonic=lambda: 1_000.0, sleep=real_time.sleep),
+    )
     real_next = copilot_app._AppConnection._next
 
     def next_message(self, deadline):

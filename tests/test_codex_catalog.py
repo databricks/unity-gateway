@@ -419,6 +419,8 @@ def test_prepare_catalog_resolves_custom_destinations_with_selected_credentials(
 
     monkeypatch.setattr(db_mod, "_http_get_json", get_json)
     monkeypatch.setattr(catalog, "_run_catalog_command", run)
+    # Keep deadline arithmetic exact rather than depending on the platform clock resolution.
+    monkeypatch.setattr(catalog, "monotonic", lambda: 1_000.0)
 
     result = catalog.prepare_codex_catalog(
         "/selected/codex", names + names[:1], workspace="https://selected", get_token=get_token
