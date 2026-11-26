@@ -9,6 +9,8 @@ These tests cover:
 - waiting_to_switch timeout submits without /model (Bug D fix).
 - Every write into the input box first clears the blocked prompt that Claude Code
   keeps there, so /model runs as a command and the replay is not mangled (Bug E fix).
+- A prompt that was one paste is replayed without Claude Code's paste markers, so it
+  is not wrapped twice.
 """
 
 from __future__ import annotations
@@ -696,3 +698,80 @@ class TestOnSubmittedPromptCallback:
             stop.set()
 
         assert submitted == [], "on_submitted_prompt must not fire for the initial block"
+
+
+# ---------------------------------------------------------------------------
+# Paste markers: a prompt that was one paste is replayed without them
+# ---------------------------------------------------------------------------
+
+_PASTE_BODY = "Review this diff:\n+ x = 1"
+
+
+class TestPasteMarkersOnReplay:
+    @pytest.mark.parametrize(
+        ("prompt", "replayed"),
+        [
+            (
+                f'\n\n<pasted_content id="a6aa">\n{_PASTE_BODY}\n</pasted_content id="a6aa">\n',
+                _PASTE_BODY,
+            ),
+            (f'<pasted_content id="a6aa">\n{_PASTE_BODY}\n</pasted_content>', _PASTE_BODY),
+            (
+                '<pasted_content id="a">\nquote <\\pasted_content id="b">x<\\/pasted_content id="b">\n'
+                '</pasted_content id="a">',
+                'quote <\\pasted_content id="b">x<\\/pasted_content id="b">',
+            ),
+        ],
+        ids=["claude_paste", "close_without_id", "escaped_copy_kept"],
+    )
+    def test_one_paste_is_unwrapped(self, prompt, replayed):
+        assert claude_pty.unwrap_pasted_prompt(prompt) == replayed
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            _PASTE_BODY,
+            f'fix this: <pasted_content id="b1">\n{_PASTE_BODY}\n</pasted_content id="b1">',
+            '<pasted_content id="a">\nA\n</pasted_content id="a">\n<pasted_content id="b">\nB\n'
+            '</pasted_content id="b">',
+            f'<pasted_content id="a">\n{_PASTE_BODY}\n</pasted_content id="b">',
+        ],
+        ids=["no_markers", "typed_and_pasted", "two_pastes", "mismatched_id"],
+    )
+    def test_anything_else_is_replayed_unchanged(self, prompt):
+        assert claude_pty.unwrap_pasted_prompt(prompt) == prompt
+
+    def test_held_paste_is_replayed_without_its_markers(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+
+        socket_path = tmp_path / "first.sock"
+        capture = tmp_path / "capture.json"
+        fake_claude = tmp_path / "fc.py"
+        held = f'\n\n<pasted_content id="a6aa">\n{_PASTE_BODY}\n</pasted_content id="a6aa">\n'
+        _write_fake_claude(
+            fake_claude,
+            f"""\
+resp = send_hook(socket_path, {held!r})
+assert resp["action"] == "block"
+print("blocked", flush=True)
+tty.setraw(0)
+
+read_until(b"\\r")                        # /model command
+os.write(1, b"Set model to sonnet\\n")    # confirm switch
+sys.stdout.flush()
+paste = read_until(b"\\x1b[201~")
+os.read(0, 1)                             # Enter
+capture_path.write_text(json.dumps({{"paste": paste.decode()}}))
+""",
+        )
+
+        result = claude_pty.run_claude_pty(
+            [sys.executable, str(fake_claude), str(socket_path), str(capture)],
+            route_prompt=_route_sonnet,
+            socket_path=socket_path,
+        )
+
+        assert result == 0
+        paste = json.loads(capture.read_text())["paste"]
+        assert paste.endswith(f"\x1b[200~{_PASTE_BODY}\x1b[201~")

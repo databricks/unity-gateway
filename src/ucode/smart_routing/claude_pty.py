@@ -55,6 +55,12 @@ CLEAR_SETTLE_TIMEOUT_S = 1.0
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+# Claude Code wraps pasted text in this marker pair and escapes any copy inside it.
+_PASTED_PROMPT_RE = re.compile(
+    r'\s*<pasted_content id="(?P<id>[^"]*)">\n?(?P<body>.*?)\n?'
+    r'</pasted_content(?: id="(?P=id)")?>\s*',
+    re.DOTALL,
+)
 
 
 def strip_ansi(data: bytes) -> str:
@@ -166,13 +172,22 @@ def model_switch_keys(model: str) -> bytes:
     return f"/model {model}\r".encode()
 
 
+def unwrap_pasted_prompt(prompt: str) -> str:
+    """Return the body of a prompt that is exactly one paste marker pair, else the prompt."""
+    match = _PASTED_PROMPT_RE.fullmatch(prompt)
+    if match is None or "<pasted_content" in match["body"] or "</pasted_content" in match["body"]:
+        return prompt
+    return match["body"]
+
+
 def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True) -> None:
     """Replay a captured prompt as one bracketed paste.
 
-    The replay loop pastes with ``submit=False`` and sends Enter after
-    PASTE_SUBMIT_DELAY_S: a CR bundled with the paste close can be absorbed.
+    A prompt that was one paste is replayed without its markers, since Claude Code
+    wraps the replay again. The replay loop pastes with ``submit=False`` and sends
+    Enter after PASTE_SUBMIT_DELAY_S: a CR bundled with the paste close can be absorbed.
     """
-    clean = prompt.replace("\r\n", "\n").replace("\r", "\n")
+    clean = unwrap_pasted_prompt(prompt).replace("\r\n", "\n").replace("\r", "\n")
     clean = clean.replace("\x00", "").replace("\x1b", "")
     suffix = b"\r" if submit else b""
     os.write(master_fd, b"\x1b[200~" + clean.encode() + b"\x1b[201~" + suffix)

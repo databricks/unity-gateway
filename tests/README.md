@@ -1308,8 +1308,10 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
 quiet window. Another models Claude Code 2.1.325, which reads 64 or more bytes that arrive
 together as a paste: clearing a long held prompt and typing `/model` must still run as keys,
-also when that fake stops reading partway through the clear. These are component checks; live
-first-prompt routing on a pinned Claude Code version is not executed here.
+also when that fake stops reading partway through the clear. A held prompt that is exactly one
+`<pasted_content>` marker pair is replayed as its body, since Claude Code wraps the replay paste
+again; any other prompt is replayed unchanged. These are component checks; live first-prompt
+routing on a pinned Claude Code version is not executed here.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
