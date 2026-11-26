@@ -124,7 +124,7 @@ function Save-UI {
                 param($Handle)
                 [CapabilityWindow]::WindowClass($Handle)
             }
-        } catch [Windows.Automation.ElementNotAvailableException] { }
+        } catch [System.Windows.Automation.ElementNotAvailableException] { }
     })
     Protect-DiagnosticText ($rows | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $evidence "$Name.json")
 }
@@ -189,10 +189,10 @@ function Select-Folder {
             try {
                 $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane' -and
                 $_.Current.Name -like 'Address:*' -and -not $_.Current.IsOffscreen
-            } catch [Windows.Automation.ElementNotAvailableException] { $false }
+            } catch [System.Windows.Automation.ElementNotAvailableException] { $false }
         } | Select-Object -First 1
         $addressName = try { if ($address) { $address.Current.Name } else { '' } }
-            catch [Windows.Automation.ElementNotAvailableException] { '' }
+            catch [System.Windows.Automation.ElementNotAvailableException] { '' }
         @{
             address = $addressName
             button = Find-Control -Names @('Select Folder', 'Select folder', 'Open') -Root $dialog
@@ -212,13 +212,13 @@ function Select-Folder {
 
 try {
     $vmCheckpoint = Get-CoworkLogCheckpoint -LogPath $vmLog
-    $task = New-CoworkTask -Capability $Capability -EvidenceDirectory $evidence
-    $task.startedAfter = $started.ToUniversalTime().ToString('o')
-    $task | ConvertTo-Json | Set-Content -LiteralPath $taskPath
     if ($Capability -eq 'mcp') {
         & $python "$PSScriptRoot/desktop-policy.py" apply $profilePath $policyBackup
         if ($LASTEXITCODE -ne 0) { throw 'Could not restrict native web search for the MCP task' }
     }
+    $task = New-CoworkTask -Capability $Capability -EvidenceDirectory $evidence
+    $task.startedAfter = $started.ToUniversalTime().ToString('o')
+    $task | ConvertTo-Json | Set-Content -LiteralPath $taskPath
     Start-Process -FilePath $env:CLAUDE_DESKTOP_EXECUTABLE -ArgumentList '--force-renderer-accessibility' | Out-Null
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     do {

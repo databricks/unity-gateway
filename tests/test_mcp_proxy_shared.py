@@ -231,6 +231,7 @@ def clients(tmp_path):
             "PYTHONPATH": str(Path(mcp_proxy_runtime.__file__).parents[1]),
         }
     )
+    env.pop("UCODE_RELAYED_PROXY_DIAGNOSTICS", None)
     started = []
 
     def start(
@@ -243,10 +244,12 @@ def clients(tmp_path):
         workspace="https://component.example",
         workspace_id=None,
         executable=sys.executable,
+        diagnostics=True,
     ):
         client = _Client(
             {
                 **env,
+                **({"UCODE_RELAYED_PROXY_DIAGNOSTICS": "1"} if diagnostics else {}),
                 "UG_HEADERS": header,
                 "DATABRICKS_BEARER": bearer,
                 "DATABRICKS_BEARER_COMMAND": bearer_command,
@@ -465,6 +468,21 @@ def test_backend_diagnostics_bound_the_queue_and_report_drops(monkeypatch):
     parsed = [json.loads(line.removeprefix("mcp-diagnostic ")) for line in lines]
     drops = [event for event in parsed if event["event"] == "diagnostic_dropped"]
     assert sum(event["dropped_count"] for event in drops) == 2
+
+
+def test_shutdown_flushes_a_trailing_dropped_count(tmp_path):
+    path = tmp_path / "transport.log"
+    writer = mcp_proxy_daemon._DiagnosticWriter(mcp_proxy_daemon._trace_logger(path))
+    with writer._drop_lock:
+        writer._dropped = 3
+    writer.close()
+    writer._thread.join(timeout=5)
+    events = [
+        json.loads(line.removeprefix("mcp-diagnostic ")) for line in path.read_text().splitlines()
+    ]
+    assert [(event["event"], event["dropped_count"]) for event in events] == [
+        ("diagnostic_dropped", 3)
+    ]
 
 
 def test_diagnostic_readiness_waits_for_the_failed_session_end(tmp_path):
@@ -816,6 +834,27 @@ def test_private_endpoint_rejects_unauthenticated_local_connections(clients, pee
         assert path.parent.stat().st_mode & 0o077 == 0
 
 
+def test_diagnostics_are_opt_in_and_isolate_shared_backends(clients, peer, tmp_path):
+    url = peer[0] + "/mcp"
+    ordinary = clients(url, diagnostics=False)
+    ordinary.initialize()
+    assert ordinary.call("ordinary")["value"] == "ordinary"
+    (ordinary_endpoint,) = (tmp_path / ".ucode/mcp-proxy").glob("*/endpoint.json")
+
+    traced = clients(url, diagnostics=True)
+    traced.initialize()
+    assert traced.call("traced")["value"] == "traced"
+    endpoints = list((tmp_path / ".ucode/mcp-proxy").glob("*/endpoint.json"))
+    assert len(endpoints) == 2
+    traced_endpoint = next(p for p in endpoints if p != ordinary_endpoint)
+    _wait_for_diagnostic_events(
+        traced_endpoint.parent / "transport.log",
+        lambda events: any(e["event"] == "request_start" for e in events),
+        time.monotonic() + 8,
+    )
+    assert not list(ordinary_endpoint.parent.glob("transport.log*"))
+
+
 def test_backend_exits_after_last_client_disconnects(tmp_path):
     directory = tmp_path / "idle-backend"
     directory.mkdir()
@@ -839,6 +878,60 @@ def test_backend_exits_after_last_client_disconnects(tmp_path):
         assert not (directory / "endpoint.json").exists()
 
     asyncio.run(scenario())
+
+
+def test_idle_backend_waits_for_queued_session_end(tmp_path, monkeypatch):
+    directory = tmp_path / "idle-backend"
+    directory.mkdir()
+    entered = threading.Event()
+    release = threading.Event()
+    lines = []
+
+    class BlockingLogger:
+        handlers = []
+
+        def info(self, _format, line):
+            if '"event":"session_end"' in line:
+                entered.set()
+                assert release.wait(5)
+            lines.append(line)
+
+    async def no_op_run(*args, **kwargs):
+        return None
+
+    monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "1")
+    monkeypatch.setattr(mcp_proxy_daemon, "_trace_logger", lambda _path: BlockingLogger())
+    monkeypatch.setattr(mcp_proxy_daemon, "session_token_provider", lambda *args: lambda: "token")
+    monkeypatch.setattr(mcp_proxy_daemon, "_run", no_op_run)
+
+    async def scenario():
+        backend = asyncio.create_task(mcp_proxy_daemon.run_backend(directory, idle_timeout=0.1))
+        try:
+            async with asyncio.timeout(5):
+                while not (directory / "endpoint.json").exists():
+                    await asyncio.sleep(0.01)
+                metadata = json.loads((directory / "endpoint.json").read_text())
+                reader, writer = await asyncio.open_connection("127.0.0.1", metadata["port"])
+                writer.write(json.dumps({"secret": metadata["secret"]}).encode() + b"\n")
+                await writer.drain()
+                assert json.loads(await reader.readline()) == {"ready": True}
+                writer.write(
+                    json.dumps({"url": "http://example", "workspace": "example"}).encode() + b"\n"
+                )
+                await writer.drain()
+                await reader.read()
+                assert await asyncio.to_thread(entered.wait, 2)
+                await asyncio.sleep(0.25)
+                assert not backend.done()
+                release.set()
+                await backend
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            release.set()
+
+    asyncio.run(scenario())
+    assert any('"event":"session_end"' in line for line in lines)
 
 
 def test_pat_tokens_are_scoped_to_each_session(monkeypatch):

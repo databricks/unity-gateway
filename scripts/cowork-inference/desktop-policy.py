@@ -13,6 +13,9 @@ def apply(profile: Path, backup: Path) -> None:
     if not isinstance(disabled, list) or any(not isinstance(item, str) for item in disabled):
         raise ValueError("Desktop disabledBuiltinTools must be a list of strings")
     settings["disabledBuiltinTools"] = list(dict.fromkeys([*disabled, "WebSearch"]))
+    for server in settings.get("managedMcpServers", []):
+        if "mcp-proxy" in server.get("args", []):
+            server.setdefault("env", {})["UCODE_RELAYED_PROXY_DIAGNOSTICS"] = "1"
     with os.fdopen(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
         stream.write(original)
     profile.write_text(json.dumps(settings), encoding="utf-8")

@@ -724,8 +724,11 @@ async def _run(
         started = time.monotonic()
         method = request.method if request.method in {"GET", "POST", "DELETE"} else "OTHER"
         diagnostic("request_start", {"request_id": request_id, "method": method})
+        previous_trace = request.extensions.get("trace")
 
         async def trace(phase, info):
+            if previous_trace is not None:
+                await previous_trace(phase, info)
             if not phase.endswith(
                 (
                     "connect_tcp.started",

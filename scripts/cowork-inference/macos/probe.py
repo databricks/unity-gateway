@@ -254,9 +254,6 @@ def main(private, capability="inference"):
             model_label = json.loads((baseline_evidence / "configuration.json").read_text())[
                 "label"
             ]
-            task = tasks.prepare_task(capability, sys.modules[__name__])
-            save("task.json", json.dumps(task, indent=2))
-            report.update(capability=capability, passed=False, submitted=False)
             if capability == "mcp":
                 process.run(
                     [
@@ -268,6 +265,9 @@ def main(private, capability="inference"):
                     ],
                     check=True,
                 )
+            task = tasks.prepare_task(capability, sys.modules[__name__])
+            save("task.json", json.dumps(task, indent=2))
+            report.update(capability=capability, passed=False, submitted=False)
         with os.fdopen(os.open(raw_log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as log:
             app = process.popen(
                 [

@@ -1829,6 +1829,56 @@ def test_run_uses_mcp_http_defaults(monkeypatch):
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (30.0, 300.0, 30.0, 30.0)
 
 
+def test_run_chains_existing_request_trace(monkeypatch):
+    httpx_module = mcp_proxy._httpx()
+    captured = {}
+    previous_events = []
+    diagnostics = []
+
+    class CapturingClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class StopBridge(Exception):
+        pass
+
+    @asynccontextmanager
+    async def stop_bridge(*args, **kwargs):
+        raise StopBridge
+        yield
+
+    monkeypatch.setattr(httpx_module, "AsyncClient", CapturingClient)
+    monkeypatch.setattr(mcp_proxy, "_build_token_auth", lambda *args, **kwargs: object())
+    monkeypatch.setattr(mcp_proxy, "streamable_http_client", stop_bridge)
+
+    async def scenario():
+        with pytest.raises(StopBridge):
+            await mcp_proxy._run(
+                URL, WS, None, diagnostic=lambda event, data: diagnostics.append((event, data))
+            )
+
+        async def previous(phase, info):
+            previous_events.append((phase, info))
+
+        request = httpx_module.Request("POST", URL, extensions={"trace": previous})
+        await captured["event_hooks"]["request"][0](request)
+        await request.extensions["trace"]("other.event", {"marker": "original"})
+        await request.extensions["trace"]("connection.connect_tcp.started", {})
+
+    anyio.run(scenario)
+    assert previous_events == [
+        ("other.event", {"marker": "original"}),
+        ("connection.connect_tcp.started", {}),
+    ]
+    assert [event for event, _ in diagnostics] == ["request_start", "transport"]
+
+
 class TestServe:
     def test_runs_the_bridge_with_parsed_args(self, monkeypatch):
         captured: dict = {}

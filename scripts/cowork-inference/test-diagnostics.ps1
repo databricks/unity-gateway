@@ -1,4 +1,19 @@
 $ErrorActionPreference = 'Stop'
+if (-not ('System.Windows.Automation.ElementNotAvailableException' -as [type])) {
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    } else {
+        Add-Type 'namespace System.Windows.Automation { public class ElementNotAvailableException : System.Exception {} }'
+    }
+}
+if (-not ('System.Windows.Automation.ElementNotAvailableException' -as [type])) {
+    throw 'UI Automation element exception type is unavailable'
+}
+$diagnosticsSource = Get-Content -LiteralPath "$PSScriptRoot/diagnostics.ps1" -Raw
+$taskSource = Get-Content -LiteralPath "$PSScriptRoot/test-task.ps1" -Raw
+if (($diagnosticsSource + $taskSource) -match '\[Windows\.Automation\.ElementNotAvailableException\]') {
+    throw 'UI Automation exception catches must use the fully qualified type'
+}
 . "$PSScriptRoot/diagnostics.ps1"
 $savedBearer = $env:DATABRICKS_BEARER
 $savedOAuthToken = $env:CLAUDE_CODE_OAUTH_TOKEN
@@ -175,18 +190,11 @@ try {
     if ($stale.nativeHandle -ne 66102 -or $stale.handleClassError -ne 1400) {
         throw 'A stale folder handle must remain visible in the UI snapshot'
     }
-    if (-not ('Windows.Automation.ElementNotAvailableException' -as [type])) {
-        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-            Add-Type -AssemblyName UIAutomationClient
-        } else {
-            Add-Type 'namespace Windows.Automation { public class ElementNotAvailableException : System.Exception {} }'
-        }
-    }
     $script:uiaReads = 0
     $script:uiaWrites = 0
     $uiaField = Set-CoworkFolderInput -ReadEdit {
         $script:uiaReads++
-        if ($script:uiaReads -eq 1) { throw [Windows.Automation.ElementNotAvailableException]::new() }
+        if ($script:uiaReads -eq 1) { throw [System.Windows.Automation.ElementNotAvailableException]::new() }
         return @{ id = '1152'; type = 'ControlType.Pane'; enabled = $true; handle = 123; class = 'Edit' }
     } -WriteAndRead { param($State, $Value, $Deadline) $script:uiaWrites++; return $Value } `
         -Folder '/tmp/CoworkProbe' -Deadline ([DateTime]::UtcNow.AddSeconds(3))

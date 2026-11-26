@@ -125,7 +125,7 @@ function Set-CoworkFolderInput {
     param([scriptblock]$ReadEdit, [scriptblock]$WriteAndRead, [string]$Folder, [DateTime]$Deadline)
     do {
         try { $state = & $ReadEdit }
-        catch [Windows.Automation.ElementNotAvailableException] { $state = $null }
+        catch [System.Windows.Automation.ElementNotAvailableException] { $state = $null }
         catch [ComponentModel.Win32Exception] {
             if ($_.Exception.NativeErrorCode -ne 1400) { throw }
             $state = $null

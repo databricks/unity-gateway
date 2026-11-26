@@ -38,7 +38,13 @@ def test_desktop_evidence_redacts_credentials_and_preserves_diagnostics(monkeypa
 def test_mcp_search_policy_restores_profile_bytes(tmp_path, existing):
     profile = tmp_path / "profile.json"
     backup = tmp_path / "profile.backup"
-    data = {"inferenceProvider": "gateway", "managedMcpServers": [{"name": "web_search"}]}
+    data = {
+        "inferenceProvider": "gateway",
+        "managedMcpServers": [
+            {"name": "web_search", "args": ["mcp-proxy"], "env": {"EXISTING": "preserved"}},
+            {"name": "other", "args": ["other-server"]},
+        ],
+    }
     if existing is not None:
         data["disabledBuiltinTools"] = existing
     original = (json.dumps(data, indent=4) + "\n").encode()
@@ -48,7 +54,14 @@ def test_mcp_search_policy_restores_profile_bytes(tmp_path, existing):
     result = subprocess.run(args, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     actual = json.loads(profile.read_text())
-    assert actual["managedMcpServers"] == [{"name": "web_search"}]
+    assert actual["managedMcpServers"] == [
+        {
+            "name": "web_search",
+            "args": ["mcp-proxy"],
+            "env": {"EXISTING": "preserved", "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1"},
+        },
+        {"name": "other", "args": ["other-server"]},
+    ]
     assert actual["disabledBuiltinTools"] == list(dict.fromkeys([*(existing or []), "WebSearch"]))
     assert backup.read_bytes() == original
     result = subprocess.run(
@@ -60,6 +73,21 @@ def test_mcp_search_policy_restores_profile_bytes(tmp_path, existing):
     assert result.returncode == 0, result.stderr
     assert profile.read_bytes() == original
     assert not backup.exists()
+
+
+def test_mcp_preflight_passes_connector_diagnostics_to_the_child():
+    check = runpy.run_path(str(SCRIPTS.parent / "mcp-connect-check.py"))["check"]
+    server = {
+        "command": sys.executable,
+        "args": [
+            "-c",
+            "import json,os; print(json.dumps({'id':1,'result':os.getenv('UCODE_RELAYED_PROXY_DIAGNOSTICS')}))",
+        ],
+        "env": {"UCODE_RELAYED_PROXY_DIAGNOSTICS": "1"},
+    }
+    result = check(server, {"PATH": os.environ.get("PATH", "")})
+    assert result["initialized"]
+    assert json.loads(result["stdout"])["result"] == "1"
 
 
 @pytest.mark.parametrize("invalid", ["WebSearch", ["Read", 42]])
@@ -752,10 +780,16 @@ def test_mcp_task_restricts_native_search_only_while_desktop_runs(harness, tasks
         "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
     )
     profile.parent.mkdir(parents=True)
-    original = b'{"disabledBuiltinTools":["Read(secret/**)"],"managedMcpServers":[]}\n'
+    original = b'{"disabledBuiltinTools":["Read(secret/**)"],"managedMcpServers":[{"name":"web_search","args":["mcp-proxy"]}]}\n'
     profile.write_bytes(original)
     observed = []
-    monkeypatch.setattr(tasks, "prepare_task", lambda *_: {"capability": "mcp"})
+
+    def prepare(*_):
+        connector = json.loads(profile.read_text())["managedMcpServers"][0]
+        assert connector["env"]["UCODE_RELAYED_PROXY_DIAGNOSTICS"] == "1"
+        return {"capability": "mcp"}
+
+    monkeypatch.setattr(tasks, "prepare_task", prepare)
     monkeypatch.setattr(tasks, "capture_sessions", lambda *_: None)
 
     def native_run(args, **kwargs):

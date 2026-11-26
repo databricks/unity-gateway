@@ -24,6 +24,7 @@ from anyio import to_thread
 
 from ucode import tls
 from ucode.databricks import get_databricks_token, resolve_pat_token
+from ucode.env import env_bool
 from ucode.mcp_proxy import ProxyAuthError, _run, _unwrap_proxy_error
 from ucode.mcp_proxy_runtime import (
     IDLE_TIMEOUT_SECONDS,
@@ -98,10 +99,10 @@ class _DiagnosticWriter:
         self._thread.start()
 
     def record(self, session_id: str, event: str, fields: dict) -> None:
-        try:
-            self._events.put_nowait((session_id, event, fields, int(time.time() * 1000)))
-        except queue.Full:
-            with self._drop_lock:
+        with self._drop_lock:
+            try:
+                self._events.put_nowait((session_id, event, fields, int(time.time() * 1000)))
+            except queue.Full:
                 self._dropped += 1
 
     def _write(self) -> None:
@@ -118,6 +119,12 @@ class _DiagnosticWriter:
                 if self._closed.is_set() and self._events.empty():
                     return
         finally:
+            with self._drop_lock:
+                dropped, self._dropped = self._dropped, 0
+            if dropped:
+                _log_diagnostic(
+                    self._logger, "backend", "diagnostic_dropped", {"dropped_count": dropped}
+                )
             for handler in self._logger.handlers:
                 handler.close()
 
@@ -125,6 +132,7 @@ class _DiagnosticWriter:
         self._closed.set()
         with suppress(queue.Full):
             self._events.put_nowait(None)
+        self._thread.join()
 
 
 def session_token_provider(workspace: str, profile: str | None, use_pat: bool) -> Callable[[], str]:
@@ -206,7 +214,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
     last_disconnect = asyncio.get_running_loop().time()
     unset = object()
     selection: object = unset
-    diagnostics: _DiagnosticWriter
+    diagnostics: _DiagnosticWriter | None = None
 
     async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         nonlocal active, last_disconnect, selection
@@ -216,7 +224,8 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
         started = False
 
         def diagnostic(event: str, fields: dict) -> None:
-            diagnostics.record(session_id, event, fields)
+            if diagnostics is not None:
+                diagnostics.record(session_id, event, fields)
 
         try:
             async with asyncio.timeout(5):
@@ -265,7 +274,7 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
                         stdout=cast(anyio.AsyncFile[str], io),
                         token_provider=token_provider,
                         login_output=login_output,
-                        diagnostic=diagnostic,
+                        diagnostic=diagnostic if diagnostics is not None else None,
                     )
         except asyncio.CancelledError:
             raise
@@ -289,7 +298,8 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
             last_disconnect = asyncio.get_running_loop().time()
 
     server = await asyncio.start_server(accept, "127.0.0.1", 0, limit=MAX_FRAME_BYTES)
-    diagnostics = _DiagnosticWriter(_trace_logger(directory / "transport.log"))
+    if env_bool("UCODE_RELAYED_PROXY_DIAGNOSTICS"):
+        diagnostics = _DiagnosticWriter(_trace_logger(directory / "transport.log"))
     metadata = {
         "protocol": PROTOCOL_VERSION,
         "port": server.sockets[0].getsockname()[1],
@@ -316,7 +326,8 @@ async def run_backend(directory: Path, *, idle_timeout: float = IDLE_TIMEOUT_SEC
         try:
             path.unlink(missing_ok=True)
         finally:
-            diagnostics.close()
+            if diagnostics is not None:
+                await to_thread.run_sync(diagnostics.close)
 
 
 def main() -> None:
