@@ -660,6 +660,13 @@
         "total": 1430
       }
     },
+    "cowork-inference-staging": {
+      "Cowork desktop tasks · Staging Anthropic MPS": {
+        "setup": 460,
+        "run": 300,
+        "total": 740
+      }
+    },
     "cowork-inference-windows": {
       "Cowork desktop tasks · Windows · Anthropic relay MPS": {
         "setup": 230,
@@ -2050,6 +2057,34 @@
         },
         "limited_sample": false,
         "total_only": 1
+      },
+      "integration/cowork-inference-staging/Cowork desktop tasks · Staging Anthropic MPS": {
+        "samples": 5,
+        "distinct_runs": 5,
+        "source_set": "C50",
+        "run_ids": [45532462528, 45550575204, 45672220380, 45723687331, 45772394151],
+        "p50": {
+          "setup": 212.0,
+          "run": 123.0,
+          "total": 327.0
+        },
+        "p95": {
+          "setup": 227.0,
+          "run": 146.0,
+          "total": 367.0
+        },
+        "p99": {
+          "setup": 227.0,
+          "run": 146.0,
+          "total": 367.0
+        },
+        "observed_max": {
+          "setup": 227.0,
+          "run": 146.0,
+          "total": 367.0
+        },
+        "limited_sample": true,
+        "total_only": 0
       },
       "integration/cowork-inference-windows/Cowork desktop tasks · Windows · Anthropic relay MPS": {
         "samples": 103,
