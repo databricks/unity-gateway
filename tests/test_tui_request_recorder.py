@@ -657,14 +657,17 @@ def test_routing_context_retains_each_attempt_after_failure(protocol_session):
     assert [row["sequence"] for row in rows] == [3, 4, 5, 6]
     assert all(row["path"] == _ROUTING_PATH for row in rows)
     assert all(row["request"] == {"task": {"prompt": "calculate with <redacted>"}} for row in rows)
+    # send_response adds the upstream server identity; diagnostics must retain it.
+    server = f"{BaseHTTPRequestHandler.server_version} {BaseHTTPRequestHandler.sys_version}"
     assert rows[0]["response"] == {
         "status": 429,
-        "headers": {"retry-after": "5", "x-request-id": "request-3"},
+        "headers": {"server": server, "retry-after": "5", "x-request-id": "request-3"},
         "body": json.dumps({"code": "RATE_LIMITED"}),
     }
-    assert rows[1]["response"] == {"status": 200, "headers": {}, "body": selection}
+    assert rows[1]["response"] == {"status": 200, "headers": {"server": server}, "body": selection}
     assert all(
-        row["response"] == {"status": 200, "headers": {}, "body": "<invalid response omitted>"}
+        row["response"]
+        == {"status": 200, "headers": {"server": server}, "body": "<invalid response omitted>"}
         for row in rows[2:]
     )
     assert _PRIVATE not in artifact and "session-token" not in artifact
