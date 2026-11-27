@@ -1,7 +1,7 @@
 """VS Code: install ug's model extension so Copilot Chat can use the workspace's Unity Gateway models.
 
 Configure-only, like Cursor (it stays out of `agents.__init__._MODULES`): `ug configure --agents
-vscode` packs the extension that ships with ug into a vsix, together with a `ug-config.json` that
+copilot` packs the extension that ships with ug into a vsix, together with a `ug-config.json` that
 holds the workspace, its models and the auth command, and installs it with VS Code's `code` command.
 The extension reads that file from its own folder and writes the user settings it needs itself.
 `ug revert` removes those settings from the user's settings.json, which an uninstalled extension
