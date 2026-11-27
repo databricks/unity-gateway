@@ -496,10 +496,9 @@ jobs:
       fail-fast: false
       # The four Cowork checks run as parallel legs. The provider service serves the lane's
       # concurrent Claude shards already (#1824), reports no configured rate limits, and each
-      # check issues only a handful of tiny requests, so the legs run side by side. Every leg
-      # runs the inference check first: it completes Desktop's gateway onboarding on a fresh
-      # runner, and the skill task additionally needs the inference task's Cowork account
-      # directory on the same runner, so it keeps its original place behind inference.
+      # check issues only a handful of tiny requests, so the legs run side by side. Each leg
+      # completes gateway onboarding; the skill leg also runs inference to create the Cowork
+      # account directory its plugin commands need.
       matrix:
         check:
           - id: inference-skill
@@ -554,6 +553,7 @@ jobs:
           path: ${{ runner.tool_cache }}/node/22.19.0
           key: node-toolcache-${{ runner.os }}-${{ runner.arch }}-22.19.0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        id: staging-python
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
@@ -605,18 +605,73 @@ jobs:
         with:
           path: ${{ runner.temp }}/Claude.msix
           key: claude-desktop-windows-${{ env.CLAUDE_DESKTOP_WINDOWS_SHA256 }}
-      - name: Install Claude Desktop
-        id: desktop-install
+      # Only dependency-only caches from trusted main may be restored by a PR.
+      - name: Restore staging pinned Claude CLI
+        id: staging-cli-cache
+        if: ${{ inputs.ref == '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cowork-claude-2.1.290
+          key: cowork-claude-${{ runner.os }}-${{ runner.arch }}-node-22.19.0-2.1.290
+      - name: Install staging pinned Claude CLI
+        if: ${{ steps.staging-cli-cache.outputs.cache-hit != 'true' }}
         shell: pwsh
-        run: ./scripts/cowork-inference/download-desktop.ps1
-      - name: Install the Desktop UG runtime and Claude CLI
+        run: |
+          & npm.cmd install --prefix "$env:RUNNER_TEMP/cowork-claude-2.1.290" --save-exact --no-audit --fund=false `
+            --registry "$env:NPM_REGISTRY" --fetch-retries=0 --fetch-timeout=30000 '@anthropic-ai/claude-code@2.1.290'
+          if ($LASTEXITCODE -ne 0) { throw 'Claude CLI installation failed' }
+      - name: Save staging pinned Claude CLI
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ref == '' && steps.staging-cli-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cowork-claude-2.1.290
+          key: cowork-claude-${{ runner.os }}-${{ runner.arch }}-node-22.19.0-2.1.290
+      - name: Restore staging desktop runtime dependencies
+        id: staging-runtime-cache
+        if: ${{ inputs.ref == '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/desktop-ug-runtime
+          key: cowork-runtime-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.staging-python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+      - name: Install staging desktop runtime dependencies
+        if: ${{ steps.staging-runtime-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          & python.exe -m venv "$env:RUNNER_TEMP/desktop-ug-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create UG runtime' }
+          & python.exe -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]))' | Set-Content "$env:RUNNER_TEMP/cowork-requirements.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read UG dependencies' }
+          $env:PIP_EXTRA_INDEX_URL = ''
+          & "$env:RUNNER_TEMP/desktop-ug-runtime/Scripts/python.exe" -m pip install --disable-pip-version-check `
+            --index-url "$env:PACKAGE_INDEX" -r "$env:RUNNER_TEMP/cowork-requirements.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'UG dependency installation failed' }
+      - name: Save staging desktop runtime dependencies
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ref == '' && steps.staging-runtime-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/desktop-ug-runtime
+          key: cowork-runtime-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.staging-python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+      - name: Install Claude Desktop and the checkout
         id: desktop-dependencies
         shell: pwsh
         env:
           UG_COWORK_PACKAGE_INDEX: ${{ env.PACKAGE_INDEX }}
           UG_COWORK_NPM_REGISTRY: ${{ env.NPM_REGISTRY }}
         run: |
-          ./scripts/cowork-inference/install-dependencies.ps1
+          $desktopEnv = Join-Path $env:RUNNER_TEMP 'desktop-install-env'
+          $desktopJob = Start-Job -ArgumentList $desktopEnv -ScriptBlock {
+            param($outputEnv)
+            $env:GITHUB_ENV = $outputEnv
+            & ./scripts/cowork-inference/download-desktop.ps1
+          }
+          try {
+            ./scripts/cowork-inference/install-dependencies.ps1 -CachedDependencies
+          } finally {
+            $desktopJob | Wait-Job | Receive-Job -ErrorAction Stop
+            if ($desktopJob.State -ne 'Completed') { throw 'Claude Desktop installation failed' }
+            Get-Content -LiteralPath $desktopEnv | Add-Content $env:GITHUB_ENV
+            Remove-Job $desktopJob
+          }
           # Desktop's credential helper reruns this, so tokens outlive the one-hour M2M token.
           $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
           $mint = Join-Path $env:GITHUB_WORKSPACE 'scripts/cowork-inference/bearer-token.py'
@@ -640,8 +695,10 @@ jobs:
         timeout-minutes: 15
         shell: pwsh
         run: |
+          $inferenceArgs = @()
+          if ($env:UG_COWORK_TASK -ne 'skill') { $inferenceArgs += '-OnboardingOnly' }
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
-            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference" @inferenceArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Assert Cowork ${{ matrix.check.task_name }}
         if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}
@@ -652,7 +709,7 @@ jobs:
             -Capability "$env:UG_COWORK_TASK" -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/$env:UG_COWORK_TASK"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Record staging Desktop model usage
-        if: ${{ !cancelled() && steps.desktop-install.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.desktop-dependencies.outcome != 'skipped' }}
         continue-on-error: true
         shell: bash
         run: |
@@ -668,7 +725,7 @@ jobs:
           & $python scripts/cowork-inference/desktop-pat.py revoke --state "$env:RUNNER_TEMP/cowork-pat-id"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork evidence
-        if: ${{ !cancelled() && steps.desktop-install.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.desktop-dependencies.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: cowork-inference-staging-${{ matrix.check.id }}

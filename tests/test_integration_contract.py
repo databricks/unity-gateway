@@ -2603,9 +2603,8 @@ def test_staging_cowork_lane_runs_desktop_tasks_in_parallel_on_protected_runners
     assert job.index("uses: databricks/setup-cli@") < job.index(
         "name: Assert Cowork inference through Windows UI Automation"
     )
-    # Every leg runs the inference check first: it completes Desktop's gateway onboarding
-    # on a fresh runner, and the skill task's plugin commands reuse the inference task's
-    # Cowork account directory on the same runner.
+    # Every leg completes gateway onboarding; the skill leg also runs inference so its
+    # plugin commands can reuse the resulting Cowork account directory.
     inference = job.split(
         "      - name: Assert Cowork inference through Windows UI Automation\n", 1
     )[1].split("      - name: ", 1)[0]
@@ -3479,3 +3478,39 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         if FORK_GUARD in condition:
             assert f"({FORK_GUARD})" in condition, name
     assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]
+
+
+def test_staging_cowork_reuses_only_trusted_setup_and_keeps_checkout_fresh():
+    job = _integration_jobs()["cowork-inference-staging"]
+    assert "name: Restore staging desktop runtime dependencies" in job
+    assert "name: Restore staging pinned Claude CLI" in job
+    for name in ("Save staging desktop runtime dependencies", "Save staging pinned Claude CLI"):
+        step = job.split(f"      - name: {name}\n", 1)[1].split("      - name: ", 1)[0]
+        assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in step
+        assert "inputs.ref == ''" in step
+    assert job.index("name: Save staging desktop runtime dependencies") < job.index(
+        "name: Install Claude Desktop and the checkout"
+    )
+    setup = job.split("      - name: Install Claude Desktop and the checkout\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert "Start-Job" in setup
+    assert "install-dependencies.ps1 -CachedDependencies" in setup
+    assert "Receive-Job" in setup
+    assert "download-desktop.ps1" in setup
+
+
+def test_staging_cowork_onboards_each_leg_without_repeating_inference():
+    job = _integration_jobs()["cowork-inference-staging"]
+    assert "if ($env:UG_COWORK_TASK -ne 'skill') { $inferenceArgs += '-OnboardingOnly' }" in job
+    inference = (
+        Path(__file__).parent.parent / "scripts/cowork-inference/test-inference.ps1"
+    ).read_text()
+    assert "[switch]$OnboardingOnly" in inference
+    assert "if (-not $OnboardingOnly) {" in inference
+    assert inference.index("$report.coworkActivated = $true") < inference.index(
+        "if (-not $OnboardingOnly) {"
+    )
+    assert inference.index("if (-not $OnboardingOnly) {") < inference.index(
+        "$report.responseAsserted = $true"
+    )
