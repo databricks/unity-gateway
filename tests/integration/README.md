@@ -182,13 +182,18 @@ and failure when any required task control is missing.
 Those component tests control native boundaries and use an isolated subprocess for
 termination checks; they do not replace the native desktop inference jobs.
 
-Both native Windows and macOS Cowork jobs run
-inference, a selected-folder file read, and local plugin skill execution sequentially.
+The native Windows Cowork job runs inference, a selected-folder file read, and local
+plugin skill execution sequentially. After successful inference, its skill case runs
+even if the file case fails. The native macOS job runs three parallel legs per model
+source: inference followed by exactly one of file, skill, or MCP web search. Inference
+completes first-launch onboarding on each runner and creates the account directory
+needed by the skill task. Each leg keeps signed Desktop verification, isolated evidence,
+PAT revocation, and the existing blocking source budget. Workflow contracts are local
+checks, not live macOS validation.
 The file/skill assertions require real native tool results and completed answers;
-UC skill downloads and external MCP execution are not covered by this job.
-After successful inference, the skill case runs even if the file case fails. Both remain
-blocking. The job budget includes both task timeouts and artifact collection; CLI stderr
-is logged separately from JSON, and transcript rotation does not abort evidence polling.
+UC skill downloads remain uncovered. All capability checks remain blocking. The job
+budget includes task timeouts and artifact collection; CLI stderr is logged separately
+from JSON, and transcript rotation does not abort evidence polling.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API

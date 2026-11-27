@@ -374,13 +374,16 @@ jobs:
       - *budget-check
 
   cowork-inference-macos:
-    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · macOS (runs in Integration)' || format('Cowork desktop tasks · macOS · {0}', matrix.source.name) }}
+    name: ${{ inputs.mode == 'advisory' && 'Cowork desktop tasks · macOS (runs in Integration)' || format('Cowork desktop tasks · macOS · {0} · {1}', matrix.source.name, matrix.check) }}
     runs-on: macos-15-intel
     if: ${{ inputs.mode != 'advisory' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 80
     strategy:
       fail-fast: false
+      # Each leg completes first-launch onboarding before its one capability check;
+      # the skill check also needs the account directory created by inference here.
       matrix:
+        check: [file, skill, mcp]
         source:
           - id: databricks
             name: Databricks Hosted
@@ -477,6 +480,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py'
       - name: Assert Cowork file read
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' && matrix.check == 'file' }}
         timeout-minutes: 19
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -484,7 +488,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability file'
       - name: Assert Cowork skill execution
-        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' && matrix.check == 'skill' }}
         timeout-minutes: 19
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -492,7 +496,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability skill'
       - name: Assert Cowork MCP web search
-        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' && matrix.check == 'mcp' }}
         timeout-minutes: 19
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -517,7 +521,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: cowork-inference-macos-${{ matrix.source.id }}
+          name: cowork-inference-macos-${{ matrix.source.id }}-${{ matrix.check }}
           retention-days: 3
           path: ${{ runner.temp }}/macos-cowork-evidence/
           if-no-files-found: warn

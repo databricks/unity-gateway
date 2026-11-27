@@ -2540,6 +2540,7 @@ def test_cowork_ci_covers_each_claude_model_source(job_name):
     artifact = "cowork-inference" if job_name.endswith("windows") else "cowork-inference-macos"
     assert re.findall(r"(?m)^          name: (cowork-inference.*)$", job) == [
         f"{artifact}-${{{{ matrix.source.id }}}}"
+        + ("-${{ matrix.check }}" if job_name.endswith("macos") else "")
     ]
 
 
@@ -2549,9 +2550,12 @@ def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
     step = job.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
         "      - name: ", 1
     )[0]
+    check_condition = " && matrix.check == 'mcp'" if job_name.endswith("macos") else ""
     assert (
-        "        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}\n" in step
-    )
+        "        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success'"
+        + check_condition
+        + " }}\n"
+    ) in step
     # `ug mcp add` and the connector proxy authenticate against the e2e workspace.
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in step
     assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in step
@@ -3446,6 +3450,30 @@ def test_integration_modes_preserve_blocking_and_advisory_lanes():
         if FORK_GUARD in condition:
             assert f"({FORK_GUARD})" in condition, name
     assert "default: all" in _workflow("integration.yml").split("  workflow_dispatch:", 1)[0]
+
+
+def test_macos_cowork_matrix_keeps_inference_before_each_isolated_capability():
+    job = _integration_jobs()["cowork-inference-macos"]
+    assert "        check: [file, skill, mcp]\n" in job
+    assert "matrix.source.name, matrix.check" in job
+    inference = job.index("      - name: Configure and assert Cowork inference")
+    for capability, name in (
+        ("file", "file read"),
+        ("skill", "skill execution"),
+        ("mcp", "MCP web search"),
+    ):
+        start = job.index(f"      - name: Assert Cowork {name}\n")
+        assert inference < start
+        step = job[start:].split("      - name: ", 2)[1]
+        assert (
+            "        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' && "
+            f"matrix.check == '{capability}' }}}}\n"
+        ) in step
+        assert f"--capability {capability}'" in step
+        assert "timeout-minutes: 19" in step
+    assert job.count("scripts/cowork-inference/macos/terminal.py'") == 1
+    assert "cowork-inference-macos-${{ matrix.source.id }}-${{ matrix.check }}" in job
+    assert "BUDGET_JOB_NAME: Cowork desktop tasks · macOS · ${{ matrix.source.name }}\n" in job
 
 
 def test_macos_cowork_caches_only_dependency_state_before_checkout_install():
