@@ -4955,12 +4955,18 @@ def list_provider_service_models(
     """The models the gateway lists for Model Provider Service ``service_name``, and why listing
     failed. An empty listing is not a failure.
 
-    Anthropic-API providers use the Anthropic catalog; other providers use the Codex catalog.
+    Anthropic-API providers use the Anthropic catalog. Other providers use both catalogs, since
+    some (Microsoft Foundry) also serve Claude models on the Anthropic route.
     """
 
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         return list_anthropic_provider_models(workspace, token, service_name)
-    return list_codex_provider_models(workspace, token, service_name)
+    codex_models, codex_reason = list_codex_provider_models(workspace, token, service_name)
+    anthropic_models, anthropic_reason = list_anthropic_provider_models(
+        workspace, token, service_name
+    )
+    models = list(dict.fromkeys([*codex_models, *anthropic_models]))
+    return models, None if models else codex_reason or anthropic_reason
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

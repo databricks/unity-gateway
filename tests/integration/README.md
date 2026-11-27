@@ -2546,7 +2546,8 @@ Component tests cover Claude MPS picker labels, Codex MPS labels with dotted ver
 and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
 wire APIs and Claude limits. Provider wildcard checks also cover by-tool catalog selection:
 Claude expands from the Anthropic catalog and Codex from the Codex catalog whatever the
-service's provider type, while other tools keep provider-based selection.
+service's provider type. Copilot uses the Anthropic catalog for Anthropic-API provider
+types and both catalogs for the rest, so a Foundry service's Claude models are listed.
 These checks use controlled discovery responses.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
