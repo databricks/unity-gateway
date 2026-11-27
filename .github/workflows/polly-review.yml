@@ -376,6 +376,10 @@ jobs:
           read both in full with their own tools and apply them. Include both
           absolute paths and this requirement in every reviewer task. If either cannot
           be read, report an incomplete review and the failure; do not claim a clean review.
+          Apply the rubric's shared-constant, import-placement, and metrics-package guidance
+          where affected; keep import-style notes nonblocking and do not repeat lint. For
+          demo/evidence generators, check symlink-resolved output containment and rejection
+          before side effects, rather than merely checking that artifacts are absent from the diff.
           Apply the rubric's terse voice to findings; keep the required summary and
           test table complete. Do not invent findings to fill a review category.
 
