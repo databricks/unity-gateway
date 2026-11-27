@@ -68,7 +68,12 @@ CODEX_OS_MANAGED_CONFIG = MANAGED_PATHS[1]
 PARENT_SCHEMA_HEADER = "databricks-model-service-parent-schema"
 CONFIGURE_ARGS = ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
 TRACE_DEADLINE_SECONDS = 300
-TRACE_INGESTION_SECONDS = 300
+# 2026-11-25..27, 99 main/PR runs: export-to-post-positive-poll upper bounds
+# p50=18.724s, p95=27.213s (nearest rank), max=30.198s (run 45818731592).
+# Bound: first successful /v1/traces request start to the next restarted-files
+# artifact's UTC mtime + 2s (ZIP rounding); includes bare ug and MCP-list work.
+# 90s is 2.98x the measured maximum; keep the Phase B positive-query guard.
+TRACE_INGESTION_SECONDS = 90
 USER_MCP = "ug-e2e-user-echo"
 USER_SKILL = "ug-e2e-user-notes"
 MANAGED_SKILL = skill_name(FIXTURE_SUMMARY_SKILL_NAME)
