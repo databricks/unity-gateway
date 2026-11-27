@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
+import queue
+import stat
+import subprocess
 import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -825,6 +831,69 @@ class TestDirectModelCommand:
 
 class TestFirstPromptHook:
     @requires_pty
+    @pytest.mark.parametrize("cleared", [False, True], ids=["ordinary-prompt", "clear-session"])
+    def test_disabled_hook_settles_opaque_recovery(self, tmp_path, monkeypatch, cleared):
+        from typer.testing import CliRunner
+
+        from ucode import cli
+
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        monkeypatch.setenv(v2.FIRST_PROMPT_SOCKET_ENV, str(tmp_path / "first.sock"))
+        environment = {
+            v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        }
+        monkeypatch.setattr(cli, "effective_environment", lambda **_kwargs: environment)
+        delayed = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        stop = threading.Event()
+        ready = threading.Event()
+        notifications = []
+
+        def settled(kind):
+            notifications.append(kind)
+            assert chooser.cancel_manual_choice()
+
+        thread = claude_pty.serve_first_prompt_socket(
+            tmp_path / "first.sock",
+            lambda _prompt: pytest.fail("disabled routing selected a model"),
+            lambda *_args: pytest.fail("disabled routing blocked a prompt"),
+            stop,
+            on_submitted_prompt=lambda _prompt: settled("prompt"),
+            on_session_cleared=lambda: settled("clear"),
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        try:
+            assert ready.wait(5)
+            assert delayed.begin("sonnet")
+            recalled = claude_pty.ModelSwitchInput().observe(b"\x1b[A\r", time.monotonic())
+            assert recalled.model_command and recalled.manual_model is None
+            assert chooser.abandon(recalled.manual_model) is False
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            payload = (
+                {"hook_event_name": "SessionStart", "source": "clear"}
+                if cleared
+                else {"prompt": "continue with routing disabled"}
+            )
+            result = CliRunner().invoke(
+                cli.app, ["claude-router-hook", "route-first-prompt"], input=json.dumps(payload)
+            )
+            assert result.exit_code == 0, result.output
+            assert result.output == ""
+            assert notifications == ["clear" if cleared else "prompt"]
+            assert delayed.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+            assert not v2.smart_routing_enabled(environment, default=False, agent=AGENT_CLAUDE)
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+            chooser.finish(timeout=0)
+            delayed.finish(timeout=0)
+        assert not thread.is_alive()
+
+    @requires_pty
     def test_renders_boxed_router_notice(self):
         model = "system.ai.claude-sonnet-4-6[1m]"
         reason = "Routed to Sonnet because the task is narrowly scoped."
@@ -951,6 +1020,53 @@ class TestFirstPromptHook:
         assert command == "/bin/ug claude-router-hook route-first-prompt"
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
         assert "user-policy" in str(settings["hooks"]["PreToolUse"])
+        clear_hooks = settings["hooks"]["SessionStart"]
+        assert len(clear_hooks) == 1
+        assert clear_hooks[0]["matcher"] == "clear"
+        assert clear_hooks[0]["hooks"][0]["command"] == command
+
+    @requires_pty
+    def test_clear_session_hook_preserves_route_claim_and_replay_acknowledgement(self, tmp_path):
+        socket_path = tmp_path / "first.sock"
+        routed = []
+        submitted = []
+        cleared = []
+        ready = threading.Event()
+        stop = threading.Event()
+        thread = claude_pty.serve_first_prompt_socket(
+            socket_path,
+            lambda prompt: (
+                routed.append(prompt) or claude_pty.FirstPromptRoute("sonnet", "Sonnet", "")
+            ),
+            lambda _prompt, _model: None,
+            stop,
+            on_submitted_prompt=submitted.append,
+            on_session_cleared=lambda: cleared.append(True),
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        try:
+            assert ready.wait(5)
+            assert (
+                claude_pty.request_first_prompt_route(
+                    socket_path, {"prompt": "hello", "session_id": "before-clear"}
+                )["action"]
+                == "block"
+            )
+            assert claude_pty.request_first_prompt_route(
+                socket_path,
+                {"hook_event_name": "SessionStart", "source": "clear", "session_id": "after-clear"},
+            ) == {"action": "allow"}
+            assert cleared == [True]
+            assert submitted == []
+            assert claude_pty.request_first_prompt_route(
+                socket_path, {"prompt": "hello again", "session_id": "after-clear"}
+            ) == {"action": "allow"}
+            assert routed == ["hello"]
+            assert submitted == ["hello again"]
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+        assert not thread.is_alive()
 
 
 class TestSmartRoutingEnvVars:
@@ -1008,7 +1124,9 @@ class TestV2Launch:
         )
 
     @requires_pty
-    def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
+    def test_restores_model_captured_immediately_before_switch(
+        self, tmp_path, monkeypatch, capfdbinary
+    ):
         ucode_settings = tmp_path / "ucode-settings.json"
         user_settings = tmp_path / "settings.json"
         ucode_settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gw"}}))
@@ -1053,11 +1171,17 @@ class TestV2Launch:
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
             generated = Path(argv[argv.index("--settings") + 1])
             captured["settings"] = json.loads(generated.read_text())
+            user_settings.write_text("{")
+            assert kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5") is False
+            assert kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5") is False
+            captured["preparation_warning"] = capfdbinary.readouterr().out
             # A user-selected model before the first prompt becomes the value to restore.
             user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
             kwargs["prepare_model_switch"]("system.ai.claude-sonnet-5")
             # Simulate `/model` changing the user file, plus an unrelated concurrent edit.
-            user_settings.write_text(json.dumps({"model": "routed", "theme": "light", "new": True}))
+            user_settings.write_text(
+                json.dumps({"model": "system.ai.claude-sonnet-5", "theme": "light", "new": True})
+            )
             kwargs["restore_model_setting"]()
             captured["restored_during_run"] = json.loads(user_settings.read_text())
             # A later user choice must survive session exit.
@@ -1080,6 +1204,10 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 0
+        warning = captured["preparation_warning"]
+        assert b"\r\n\x1b[36mSmart Routing could not prepare model recovery" in warning
+        assert warning.count(b"could not prepare model recovery") == 1
+        assert warning.endswith(b"\x1b[0m\r\n")
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"][-1] == "--debug"
         assert captured["routed_model"] == claude_pty.FirstPromptRoute(
@@ -1107,6 +1235,14 @@ class TestV2Launch:
         assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "logsCommand"
         ] == ["/bin/ug", "smart-router-logs"]
+        plugin_dir = Path(captured["argv"][captured["argv"].index("--plugin-dir") + 1])
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "modelSettingCommand"
+        ] == [
+            sys.executable,
+            str(plugin_dir / "hooks/model-setting-receipt.py"),
+            captured["settings"]["env"][claude_hooks.FIRST_PROMPT_SOCKET_ENV],
+        ]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -1935,6 +2071,7 @@ class TestSubagentRouting:
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
+        monkeypatch.setattr(v2.session_log, "LOG_DIR", tmp_path / "sessions")
         captured = {}
 
         def fake_urlopen(request, timeout):
@@ -2169,24 +2306,833 @@ class TestSubagentRouting:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         first = v2._ClaudeModelSettingGuard(user_settings)
         second = v2._ClaudeModelSettingGuard(user_settings)
-        captured: list[str] = []
-
-        first.begin("system.ai.claude-opus-4-8")
+        assert first.begin("system.ai.claude-opus-4-8") is True
         user_settings.write_text(json.dumps({"model": "system.ai.claude-opus-4-8"}))
-
-        def run_second() -> None:
-            second.begin("system.ai.claude-sonnet-5")
-            captured.append(json.loads(user_settings.read_text())["model"])
+        try:
+            assert second.begin("system.ai.claude-sonnet-5") is False
+        finally:
+            first.restore()
+        assert second.begin("system.ai.claude-sonnet-5") is True
+        try:
+            assert json.loads(user_settings.read_text()) == {"model": "haiku"}
+        finally:
             second.restore()
 
-        thread = threading.Thread(target=run_second)
-        thread.start()
-        first.restore()
-        thread.join(timeout=5)
 
-        assert not thread.is_alive()
-        assert captured == ["haiku"]
-        assert json.loads(user_settings.read_text()) == {"model": "haiku"}
+class TestModelSettingRecovery:
+    @pytest.mark.parametrize("saved", [{"model": "fable"}, {}], ids=["saved-model", "no-model"])
+    def test_external_save_preserves_live_writers(self, tmp_path, monkeypatch, saved):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        monkeypatch.setattr(v2, "CLAUDE_MODEL_DEFER_TIMEOUT_S", 0)
+        delayed = v2._ClaudeModelSettingGuard(settings)
+        newer = v2._ClaudeModelSettingGuard(settings)
+        try:
+            assert delayed.begin("sonnet")
+            delayed.defer()
+            assert delayed.is_routed() is False
+            settings.write_text(json.dumps({**saved, "theme": "light"}))
+            assert newer.begin("opus")
+            recovery = json.loads(delayed._recovery_path.read_text())
+            assert delayed._token in recovery["pending"]
+            assert recovery["before"] == saved
+            settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+            assert newer.restore()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert delayed.restore()
+            assert json.loads(settings.read_text()) == {**saved, "theme": "light"}
+        finally:
+            newer.finish(timeout=0)
+            delayed.finish(timeout=0)
+
+    @pytest.mark.parametrize("older_completion", ["restore", "confirm_manual_choice"])
+    @pytest.mark.parametrize("older_model", [None, "opus"])
+    def test_unregistered_older_choice_cannot_replace_a_newer_choice(
+        self, tmp_path, monkeypatch, older_completion, older_model
+    ):
+        # Windows 3.12 can share both wall-clock and monotonic ticks across inputs.
+        monkeypatch.setattr(v2.time, "time_ns", lambda: 1_000_000_000)
+        monkeypatch.setattr(v2.time, "monotonic_ns", lambda: 1_000_000_000)
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        older = v2._ClaudeModelSettingGuard(settings)
+        newer = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        acquire = v2.acquire_exclusive_file_lock
+
+        def busy_lock(_file, *, timeout):
+            raise TimeoutError("another process holds the journal lock")
+
+        try:
+            # Only the older choice's initial registration loses the lock.
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", busy_lock)
+            assert older.abandon(older_model) is False
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire)
+            assert newer.abandon("fable") is False
+            settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+            assert newer.confirm_manual_choice()
+            assert getattr(older, older_completion)()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "fable", "theme": "light"}
+        finally:
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire)
+            older.finish(timeout=0)
+            newer.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    @pytest.mark.parametrize("contended", [False, True])
+    def test_newer_choice_with_matching_wall_clock_survives_lock_contention(
+        self, tmp_path, monkeypatch, contended
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        monkeypatch.setattr(v2.time, "time_ns", lambda: 1_000_000_000)
+        pending = v2._ClaudeModelSettingGuard(settings)
+        older = v2._ClaudeModelSettingGuard(settings)
+        newer = v2._ClaudeModelSettingGuard(settings)
+        acquire = v2.acquire_exclusive_file_lock
+        busy_attempts = int(contended)
+
+        def acquire_after_contention(file, *, timeout):
+            nonlocal busy_attempts
+            if busy_attempts:
+                busy_attempts -= 1
+                raise TimeoutError("another process holds the journal lock")
+            return acquire(file, timeout=timeout)
+
+        try:
+            assert pending.begin("sonnet")
+            assert older.abandon("opus") is False
+            assert older.confirm_manual_choice()
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire_after_contention)
+            assert newer.abandon("fable") is False
+            settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+            assert newer.confirm_manual_choice()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "fable", "theme": "light"}
+        finally:
+            monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire)
+            older.finish(timeout=0)
+            newer.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    @pytest.mark.parametrize(
+        ("wall_offset", "order_token"),
+        [
+            pytest.param(-1, None, id="legacy-older"),
+            pytest.param(1, None, id="legacy-newer"),
+            pytest.param(-1, "same", id="monotonic-reset"),
+            pytest.param(1, "same", id="later-wall-clock"),
+            pytest.param(0, "stale", id="legacy-writer-retains-peer-order"),
+        ],
+    )
+    def test_manual_order_keeps_wall_clock_for_persisted_journals(
+        self, tmp_path, monkeypatch, wall_offset, order_token
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        monkeypatch.setattr(v2.time, "time_ns", lambda: 1_000_000_000)
+        pending = v2._ClaudeModelSettingGuard(settings)
+        previous = v2._ClaudeModelSettingGuard(settings)
+        current = v2._ClaudeModelSettingGuard(settings)
+        try:
+            assert pending.begin("sonnet")
+            assert previous.abandon("fable") is False
+            assert previous.confirm_manual_choice()
+            recovery_path = pending._recovery_path
+            recovery = json.loads(recovery_path.read_text())
+            recovery["manual_started_at"] += wall_offset
+            # Old journals lack the tie-breaker; a reboot can reset its counter.
+            if order_token is None:
+                recovery.pop("manual_order", None)
+            else:
+                recovery["manual_order"] = {
+                    "token": recovery["manual_choice"] if order_token == "same" else "superseded",
+                    "monotonic_ns": 2_000_000_000,
+                }
+            recovery_path.write_text(json.dumps(recovery))
+            monkeypatch.setattr(v2.time, "perf_counter_ns", lambda: 100)
+            assert current.abandon("opus") is (wall_offset > 0)
+            assert current.confirm_manual_choice()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {
+                "model": "fable" if wall_offset > 0 else "opus",
+                "theme": "light",
+            }
+        finally:
+            previous.finish(timeout=0)
+            current.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires a POSIX copier executable")
+    def test_exit_bounds_a_stalled_permission_copy(self, tmp_path, monkeypatch, capsys):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        guard = v2._ClaudeModelSettingGuard(settings)
+        assert guard.begin("sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        snapshot = recovery.read_bytes()
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        marker = tmp_path / "copy-started"
+        copier = binaries / "cp"
+        # The external copier stalls; recovery and its file writes remain real.
+        copier.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
+            f"Path({str(marker)!r}).touch()\ntime.sleep(30)\n"
+        )
+        copier.chmod(0o700)
+        try:
+            with monkeypatch.context() as copier_env:
+                copier_env.setenv("PATH", str(binaries))
+                started = time.monotonic()
+                assert guard.finish(timeout=0.2) is False
+                elapsed = time.monotonic() - started
+            assert marker.exists()
+            assert elapsed < 1
+            assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+            assert recovery.read_bytes() == snapshot
+            assert not list(tmp_path.glob(".settings.json.*"))
+            warning = " ".join(capsys.readouterr().out.split())
+            assert "could not restore" in warning and "haiku" in warning
+        finally:
+            guard.finish(timeout=0)
+
+    def test_confirmed_manual_choice_survives_registration_lock_contention(
+        self, tmp_path, monkeypatch
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        acquire = v2.acquire_exclusive_file_lock
+        busy_attempts = 2
+
+        def acquire_after_contention(file, *, timeout):
+            nonlocal busy_attempts
+            # The lock becomes available after abandonment and confirmation first encounter it.
+            if busy_attempts:
+                busy_attempts -= 1
+                raise TimeoutError("recovery lock is busy")
+            return acquire(file, timeout=timeout)
+
+        monkeypatch.setattr(v2, "acquire_exclusive_file_lock", acquire_after_contention)
+        try:
+            assert chooser.abandon("opus") is False
+            if not chooser.confirm_manual_choice():
+                assert chooser.restore()
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux POSIX ACL representation")
+    def test_restore_preserves_access_control(self, guard_sessions):
+        import struct
+
+        settings, start = guard_sessions
+        guard = start()
+        assert guard("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        group = next((gid for gid in os.getgroups() if gid != os.getgid()), os.getgid())
+        os.chown(settings, -1, group)
+        # Named-user access with no group access catches chmod-only restoration.
+        entries = [
+            (1, 6, 0xFFFFFFFF),
+            (2, 4, 65534),
+            (4, 0, 0xFFFFFFFF),
+            (16, 4, 0xFFFFFFFF),
+            (32, 0, 0xFFFFFFFF),
+        ]
+        acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+        try:
+            os.setxattr(settings, "system.posix_acl_access", acl)
+        except OSError as error:
+            if error.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                pytest.skip("The test filesystem does not support POSIX ACLs")
+            raise
+        before = settings.stat()
+
+        assert guard("restore")
+
+        after = settings.stat()
+        assert (after.st_uid, after.st_gid, after.st_mode) == (
+            before.st_uid,
+            before.st_gid,
+            before.st_mode,
+        )
+        assert os.getxattr(settings, "system.posix_acl_access") == acl
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.fixture
+    def guard_sessions(self, tmp_path):
+        settings = tmp_path / "settings" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        script = """
+import contextlib
+import io
+import json
+import os
+import sys
+import traceback
+from pathlib import Path
+from ucode.smart_routing import v2
+
+guard = v2._ClaudeModelSettingGuard(Path(sys.argv[1]))
+try:
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request.pop("method")
+        if method == "crash":
+            os._exit(0)
+        output = io.StringIO()
+        result, error, message = None, None, ""
+        try:
+            with contextlib.redirect_stdout(output):
+                result = getattr(guard, method)(**request)
+        except (OSError, ValueError, RuntimeError) as exc:
+            error = type(exc).__name__
+            message = "".join(traceback.format_exception(exc))
+        print(json.dumps({
+            "result": result, "error": error, "message": message, "output": output.getvalue(),
+        }), flush=True)
+finally:
+    guard.finish(timeout=0.2)
+"""
+        processes = []
+
+        def start():
+            stderr = tempfile.TemporaryFile(mode="w+")
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-c", script, str(settings)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr,
+                text=True,
+                env={**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)},
+            )
+            replies = queue.Queue()
+
+            def read_replies():
+                for line in proc.stdout:
+                    replies.put(line)
+                replies.put(None)
+
+            reader = threading.Thread(target=read_replies)
+            reader.start()
+            processes.append((proc, reader, stderr))
+
+            def request(method, *, error=None, **kwargs):
+                proc.stdin.write(json.dumps({"method": method, **kwargs}) + "\n")
+                proc.stdin.flush()
+                if method == "crash":
+                    assert proc.wait(timeout=5) == 0
+                    return None
+                response = replies.get(timeout=5)
+                assert response is not None, "guard process exited before responding"
+                response = json.loads(response)
+                print(response["output"], end="")
+                assert response["error"] == error, response
+                return response["result"]
+
+            return request
+
+        try:
+            yield settings, start
+        finally:
+            failures = []
+            for proc, reader, stderr in processes:
+                try:
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    pass
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                    failures.append("guard process did not stop")
+                reader.join(timeout=1)
+                stderr.seek(0)
+                if proc.returncode:
+                    failures.append(stderr.read())
+                stderr.close()
+                proc.stdout.close()
+                if reader.is_alive():
+                    failures.append("guard stdout reader did not stop")
+            assert not failures, failures
+
+    @requires_pty
+    @pytest.mark.parametrize("linked", [False, True], ids=["regular-file", "symlink"])
+    def test_restoration_preserves_user_file_mode_and_symlink(self, guard_sessions, linked):
+        settings, start = guard_sessions
+        target = settings.with_name("user-settings.json") if linked else settings
+        if linked:
+            settings.rename(target)
+            settings.symlink_to(target.name)
+        target.chmod(0o640)
+        guard = start()
+        assert guard("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        before = target.stat()
+        assert guard("restore")
+        assert settings.is_symlink() is linked
+        if linked:
+            assert os.readlink(settings) == target.name
+        assert json.loads(target.read_text()) == {"model": "haiku", "theme": "light"}
+        assert stat.S_IMODE(target.stat().st_mode) == 0o640
+        assert target.stat().st_ino != before.st_ino
+
+    @pytest.mark.parametrize("late_write", ["before", "during", "after", "never"])
+    def test_deferred_ownership_is_bounded_without_losing_the_default(
+        self, guard_sessions, late_write
+    ):
+        before = {"model": "haiku"}
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({**before, "theme": "dark"}))
+        first, second = start(), start()
+        assert first("begin", routed_model="sonnet")
+        first("defer")
+        assert second("begin", routed_model="opus") is False
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S / 2 + 0.1)
+        first("defer")  # Further edits must not extend the ownership deadline.
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S / 2 + 0.1)
+        first("is_routed")
+        if late_write == "before":
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+
+        assert second("begin", routed_model="opus") is True
+        if late_write == "during":
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert first("is_routed") is False
+            assert first("restore") is False
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert second("restore") is True
+        assert json.loads(settings.read_text()) == {**before, "theme": "light"}
+
+        if late_write == "after":
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert first("is_routed")
+        assert first("restore") is True
+        assert json.loads(settings.read_text()) == {**before, "theme": "light"}
+
+    def test_deferred_sessions_do_not_consume_the_same_persisted_write(self, guard_sessions):
+        settings, start = guard_sessions
+        first, second = start(), start()
+        assert first("begin", routed_model="sonnet")
+        first("defer")
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
+        assert first("is_routed") is False
+        assert second("begin", routed_model="sonnet") is True
+        second("defer")
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
+        assert second("is_routed") is False
+        settings.write_text(json.dumps({"model": "sonnet"}))
+        assert first("is_routed")
+        assert second("is_routed") is False
+        assert first("restore")
+        assert second("is_routed") is False
+        settings.write_text(json.dumps({"model": "sonnet"}))
+        assert second("is_routed") is True
+        assert second("restore") is True
+        assert json.loads(settings.read_text()) == {"model": "haiku"}
+
+    def test_dead_owner_retains_the_original_default(self, guard_sessions):
+        settings, start = guard_sessions
+        owner = start()
+        assert owner("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        owner("crash")
+        guard = start()
+        assert guard("begin", routed_model="opus")
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert guard("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.mark.parametrize("completed", [False, True], ids=["pending", "completed"])
+    def test_manual_choice_revokes_older_cleanup_in_competing_sessions(
+        self, guard_sessions, completed
+    ):
+        settings, start = guard_sessions
+        first, second = start(), start()
+        assert first("begin", routed_model="sonnet")
+        first("defer")
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
+        assert first("is_routed") is False
+        assert second("begin", routed_model="opus") is True
+        if completed:
+            assert second("restore")
+        chooser = second if completed else first
+        assert chooser("abandon") is False
+        assert first("restore") is False
+        assert second("restore") is False
+        model = "sonnet" if completed else "opus"
+        settings.write_text(json.dumps({"model": model, "theme": "light"}))
+        assert chooser("confirm_saved_model_choice", model=model) is completed
+        assert second("restore") is True
+        assert first("restore") is True
+        assert json.loads(settings.read_text()) == {"model": model, "theme": "light"}
+
+    @pytest.mark.parametrize("completed", [False, True], ids=["fresh-chooser", "completed-chooser"])
+    @pytest.mark.parametrize("before", [{"model": "opus"}, {}], ids=["saved-model", "no-model"])
+    def test_manual_choice_survives_another_sessions_late_write(
+        self, guard_sessions, completed, before
+    ):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({**before, "theme": "dark"}))
+        chooser, pending = start(), start()
+        if completed:
+            assert chooser("begin", routed_model="sonnet")
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "dark"}))
+            assert chooser("restore")
+        assert pending("begin", routed_model="sonnet")
+        assert chooser("abandon", manual_model="haiku") is False
+        settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert chooser("confirm_manual_choice")
+        assert pending("is_routed")
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.mark.parametrize(
+        "persisted_before", [False, True], ids=["late-write", "already-matching"]
+    )
+    @pytest.mark.parametrize("confirmed", [False, True], ids=["cancelled", "confirmed"])
+    def test_matching_temporary_model_still_requires_manual_confirmation(
+        self, guard_sessions, tmp_path, persisted_before, confirmed
+    ):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        if persisted_before:
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        pending("defer")
+        assert chooser("abandon", manual_model="sonnet") is False
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        assert json.loads(recovery.read_text())["before"] == {"model": "haiku"}
+
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore") is False
+        assert json.loads(recovery.read_text())["before"] == {"model": "haiku"}
+        assert chooser("confirm_manual_choice" if confirmed else "cancel_manual_choice")
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {
+            "model": "sonnet" if confirmed else "haiku",
+            "theme": "light",
+        }
+
+    @pytest.mark.parametrize("persisted", [False, True], ids=["manual-pending", "manual-persisted"])
+    def test_new_route_keeps_the_manual_restore_target(self, guard_sessions, persisted):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({"model": "opus", "theme": "dark"}))
+        pending, chooser, new = start(), start(), start()
+        assert pending("begin", routed_model="sonnet")
+        pending("defer")
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
+        assert pending("is_routed") is False
+        assert chooser("abandon", manual_model="haiku") is False
+        if persisted:
+            settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        assert new("begin", routed_model="opus") is False
+        if not persisted:
+            settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        assert chooser("confirm_manual_choice")
+        assert new("begin", routed_model="opus")
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert new("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.mark.parametrize("older_completion", ["restore", "confirm_manual_choice"])
+    def test_later_manual_choice_survives_an_older_handoff(self, guard_sessions, older_completion):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "dark"}))
+        pending, first, second = start(), start(), start()
+        assert pending("begin", routed_model="opus")
+        assert first("abandon", manual_model="haiku") is False
+        assert second("abandon", manual_model="fable") is False
+        assert first(older_completion)
+        settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+        assert second("confirm_manual_choice")
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "fable", "theme": "light"}
+
+    @pytest.mark.parametrize(
+        "exit_method",
+        [
+            "finish",
+            pytest.param(
+                "crash",
+                marks=pytest.mark.skipif(
+                    os.name != "posix", reason="crash recovery requires POSIX process liveness"
+                ),
+            ),
+        ],
+    )
+    def test_unconfirmed_manual_model_does_not_replace_the_default(
+        self, guard_sessions, exit_method
+    ):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        assert chooser("abandon", manual_model="not-a-real-model") is False
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore") is False
+        assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+        chooser(exit_method)
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @requires_pty
+    @pytest.mark.parametrize("confirmed", [False, True], ids=["cancelled", "confirmed"])
+    def test_exit_preserves_another_sessions_pending_manual_choice(
+        self, guard_sessions, tmp_path, capsys, confirmed
+    ):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        pending("defer")
+        assert chooser("abandon", manual_model="opus") is False
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        snapshot = json.loads(recovery.read_text())
+
+        assert pending("finish", timeout=0) is False
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert "another session's /model choice is unresolved" in output
+        assert "Complete that choice or exit that session" in output
+        assert "to retry recovery" in output
+        assert "Set its model back" not in output
+        after_exit = json.loads(recovery.read_text())
+        assert after_exit["before"] == snapshot["before"]
+        assert after_exit["manual"] == snapshot["manual"]
+        assert after_exit["pending"].keys() == snapshot["pending"].keys()
+        assert all(entry["finished"] for entry in after_exit["pending"].values())
+        pending("crash")
+        if confirmed:
+            settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+            assert chooser("confirm_manual_choice")
+        else:
+            assert chooser("cancel_manual_choice")
+        assert json.loads(settings.read_text()) == {
+            "model": "opus" if confirmed else "haiku",
+            "theme": "light",
+        }
+        next_session = start()
+        assert next_session("begin", routed_model="fable")
+        settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+        assert next_session("restore")
+        assert json.loads(settings.read_text()) == {
+            "model": "opus" if confirmed else "haiku",
+            "theme": "light",
+        }
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
+    @pytest.mark.parametrize("failure_phase", ["register", "confirm", "cancel"])
+    def test_manual_target_survives_a_failed_handoff(self, guard_sessions, tmp_path, failure_phase):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        recovery_dir = tmp_path / ".ucode"
+        if failure_phase in {"confirm", "cancel"}:
+            assert chooser("abandon", manual_model="opus") is False
+        try:
+            recovery_dir.chmod(0o500)
+            if failure_phase == "register":
+                chooser("abandon", manual_model="opus", error="PermissionError")
+            elif failure_phase == "confirm":
+                chooser("confirm_manual_choice", error="PermissionError")
+            else:
+                chooser("cancel_manual_choice", error="PermissionError")
+        finally:
+            recovery_dir.chmod(0o700)
+        model = "sonnet" if failure_phase == "cancel" else "opus"
+        settings.write_text(json.dumps({"model": model, "theme": "light"}))
+        if failure_phase == "register":
+            assert chooser("restore") is False
+            assert chooser("confirm_manual_choice")
+        assert chooser("restore")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore")
+        expected = "haiku" if failure_phase == "cancel" else "opus"
+        assert json.loads(settings.read_text()) == {"model": expected, "theme": "light"}
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
+    @pytest.mark.parametrize("before", [{"model": "haiku"}, {}], ids=["saved-model", "no-model"])
+    def test_failed_writes_preserve_recovery_and_bound_exit(
+        self, guard_sessions, tmp_path, capsys, before
+    ):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({**before, "theme": "dark"}))
+        guard, other = start(), start()
+        assert guard("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        recovery = next((tmp_path / ".ucode").glob("claude-v2-model-*.json"))
+        snapshot = recovery.read_bytes()
+        try:
+            settings.parent.chmod(0o500)
+            guard("restore", error="PermissionError")
+            assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+            assert other("begin", routed_model="opus") is False
+            assert recovery.read_bytes() == snapshot
+        finally:
+            settings.parent.chmod(0o700)
+
+        assert guard("restore") is True
+        assert json.loads(settings.read_text()) == {**before, "theme": "light"}
+        assert other("begin", routed_model="opus") is True
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        snapshot = recovery.read_bytes()
+        try:
+            settings.parent.chmod(0o500)
+            started = time.monotonic()
+            assert other("finish", timeout=0.02) is False
+            assert time.monotonic() - started < 1
+            assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+            assert recovery.read_bytes() == snapshot
+            warning = " ".join(capsys.readouterr().out.split())
+            assert "could not restore" in warning
+            assert "haiku" in warning if before else "Remove its model setting" in warning
+        finally:
+            settings.parent.chmod(0o700)
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
+    def test_recovery_file_failures_preserve_manual_choice(self, guard_sessions, tmp_path, capsys):
+        settings, start = guard_sessions
+        guard = start()
+        assert guard("begin", routed_model="sonnet")
+        recovery_dir = tmp_path / ".ucode"
+        recovery = next(recovery_dir.glob("claude-v2-model-*.json"))
+        assert guard("abandon") is False
+        assert guard("confirm_saved_model_choice", model="haiku") is False
+        assert guard("restore")
+        recovery.write_text("{")
+        blocked = start()
+        for _ in range(2):
+            assert blocked("begin", routed_model="sonnet") is False
+        warning = capsys.readouterr().out
+        assert warning.count("could not prepare model recovery") == 1
+        assert str(recovery) in "".join(warning.split())
+        assert recovery.read_text() == "{"
+        recovery.unlink()
+        try:
+            recovery_dir.chmod(0o500)
+            assert guard("begin", routed_model="sonnet") is False
+            warning = capsys.readouterr().out
+            assert "could not prepare model recovery" in warning
+            assert str(recovery) in "".join(warning.split())
+            assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "dark"}
+        finally:
+            recovery_dir.chmod(0o700)
+
+        assert guard("begin", routed_model="sonnet")
+        recovery = next(recovery_dir.glob("claude-v2-model-*.json"))
+        snapshot = recovery.read_bytes()
+        try:
+            recovery_dir.chmod(0o500)
+            guard("abandon", error="PermissionError")
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert guard("finish", timeout=0) is False
+            assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+            assert recovery.read_bytes() == snapshot
+            assert "could not discard old model recovery state" in capsys.readouterr().out
+        finally:
+            recovery_dir.chmod(0o700)
+
+    def test_incomplete_settings_write_retains_recovery(self, guard_sessions):
+        settings, start = guard_sessions
+        guard = start()
+        assert guard("begin", routed_model="sonnet")
+        settings.write_text('{"model":')
+        guard("restore", error="JSONDecodeError")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert guard("restore") is True
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    def test_exit_waits_for_a_contended_settings_lock(self, guard_sessions, tmp_path):
+        settings, start = guard_sessions
+        guard = start()
+        assert guard("begin", routed_model="sonnet")
+        settings.write_text(json.dumps({"model": "sonnet"}))
+        guard("defer")
+        locked = threading.Event()
+        release = threading.Event()
+
+        def other_writer():
+            with (tmp_path / ".ucode" / "claude-v2-model.lock").open("a+") as lock:
+                v2.acquire_exclusive_file_lock(lock, timeout=0)
+                locked.set()
+                release.wait(timeout=2)
+                v2.release_file_lock(lock)
+
+        writer = threading.Thread(target=other_writer)
+        writer.start()
+        try:
+            assert locked.wait(timeout=1)
+            assert guard("restore") is False
+            timer = threading.Timer(0.05, release.set)
+            timer.start()
+            assert guard("finish", timeout=1) is True
+            timer.join(timeout=1)
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            release.set()
+            writer.join(timeout=2)
+        assert not writer.is_alive()
+
+    @pytest.mark.parametrize("manual_model", ["not-a-real-model", "sonnet"])
+    @pytest.mark.parametrize(
+        "persisted_before", [False, True], ids=["late-write", "already-written"]
+    )
+    def test_cancelled_manual_model_keeps_its_own_routed_write_recoverable(
+        self, guard_sessions, manual_model, persisted_before
+    ):
+        settings, start = guard_sessions
+        pending = start()
+        assert pending("begin", routed_model="sonnet")
+        if persisted_before:
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+
+        assert pending("abandon", manual_model=manual_model) is False, (
+            "starting a manual command discarded the pending routed write"
+        )
+        assert pending("cancel_manual_choice") is False
+        if not persisted_before:
+            assert pending("is_routed") is False
+            assert json.loads(settings.read_text())["model"] == "haiku"
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+
+        assert pending("is_routed")
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
 
 
 @requires_pty
@@ -2420,3 +3366,145 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+class TestOpaqueModelSettingRecovery:
+    @pytest.mark.parametrize("same_session", [False, True])
+    def test_opaque_input_keeps_routed_tokens_until_classified(
+        self, tmp_path, monkeypatch, same_session
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = pending if same_session else v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        try:
+            assert chooser.abandon(None) is False
+            recovery = json.loads(pending._recovery_path.read_text())
+            assert pending._token in recovery["pending"]
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert pending.restore() is False
+            assert chooser.cancel_manual_choice() is (not same_session)
+            assert pending.is_routed()
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    def test_opaque_input_blocks_a_new_routed_writer_until_cancelled(self, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        pending = v2._ClaudeModelSettingGuard(settings)
+        try:
+            assert chooser.abandon(None) is False
+            assert pending.begin("sonnet") is False
+            assert chooser.cancel_manual_choice()
+            assert pending.begin("sonnet")
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+
+class TestOpaqueInputSettlement:
+    def test_cancelling_opaque_input_recovers_an_exited_writer(self, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+        try:
+            assert chooser.abandon(None) is False
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert pending.finish(timeout=0) is False
+            assert chooser.cancel_manual_choice()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+            assert not pending._recovery_path.exists()
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+    def test_ordinary_prompt_cancels_before_tentative_registration_gets_the_lock(
+        self, tmp_path, monkeypatch
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        pending = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert pending.begin("sonnet")
+
+        def busy_lock(_file, *, timeout):
+            raise TimeoutError("another process holds the journal lock")
+
+        try:
+            # Contention affects the lock only; recovery reads and writes stay real.
+            with monkeypatch.context() as lock:
+                lock.setattr(v2, "acquire_exclusive_file_lock", busy_lock)
+                assert chooser.abandon(None) is False
+            assert chooser.cancel_manual_choice()
+            assert pending._token in json.loads(pending._recovery_path.read_text())["pending"]
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert pending.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            chooser.finish(timeout=0)
+            pending.finish(timeout=0)
+
+
+class TestConfirmedOpaquePeerRecovery:
+    @pytest.mark.parametrize("saved_model", ["fable", "gateway/model-alias[1m]", None])
+    def test_live_peer_write_after_opaque_confirmation_preserves_the_saved_choice(
+        self, tmp_path, monkeypatch, saved_model
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        peer = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert peer.begin("sonnet")
+        try:
+            assert chooser.abandon(None) is False
+            before = {"model": saved_model} if saved_model is not None else {}
+            settings.write_text(json.dumps({**before, "theme": "dark"}))
+            assert chooser.prepare_saved_model_choice() is False
+            assert chooser.confirm_saved_model_choice(saved_model)
+            assert peer._recovery_path.exists(), "a live routed writer lost its recovery token"
+            assert peer._token in json.loads(peer._recovery_path.read_text())["pending"]
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+            assert peer.is_routed()
+            assert peer.restore()
+            assert json.loads(settings.read_text()) == {**before, "theme": "light"}
+        finally:
+            chooser.finish(timeout=0)
+            peer.finish(timeout=0)
+
+    def test_output_without_a_saved_selector_keeps_the_choice_tentative(
+        self, tmp_path, monkeypatch
+    ):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path / ".ucode")
+        peer = v2._ClaudeModelSettingGuard(settings)
+        chooser = v2._ClaudeModelSettingGuard(settings)
+        assert peer.begin("sonnet")
+        try:
+            assert chooser.abandon(None) is False
+            assert chooser.confirm_manual_choice() is False
+            recovery = json.loads(peer._recovery_path.read_text())
+            assert peer._token in recovery["pending"] and "manual" in recovery
+            settings.write_text(json.dumps({"model": "sonnet"}))
+            assert peer.restore() is False
+            assert chooser.cancel_manual_choice()
+            assert peer.restore()
+            assert json.loads(settings.read_text()) == {"model": "haiku"}
+        finally:
+            chooser.finish(timeout=0)
+            peer.finish(timeout=0)

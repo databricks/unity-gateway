@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TypedDict, cast
 
 import tomlkit
 import tomlkit.exceptions
 
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.ui import console
 
 
@@ -43,23 +47,68 @@ def ensure_parent_dir(path: Path) -> None:
         raise RuntimeError(f"Failed to create directory for {path}") from exc
 
 
-def atomic_write_json(path: Path, payload: object) -> None:
+def atomic_write_json(
+    path: Path,
+    payload: object,
+    *,
+    mode: int | None = None,
+    preserve_permissions: bool = False,
+    copy_timeout: float = 5.0,
+) -> None:
     """Write ``payload`` as indented JSON to ``path`` atomically (temp file + ``os.replace``).
 
-    The temp file is created in the destination directory and renamed into place, so a crash, a
+    The temp file is created beside the destination and renamed into place, so a crash, a
     full disk, or a concurrent reader never sees a half-written file. This is a raw writer: unlike
     ``write_json_file`` it does not honor dry-run, so callers that should be skipped under dry-run
-    must guard the call themselves.
+    must guard the call themselves. An explicit ``mode`` is applied before publishing the file.
+    ``preserve_permissions`` retains an existing POSIX file's ownership and ACLs;
+    a new file uses the usual private temporary-file permissions unless ``mode`` is set.
+    ``copy_timeout`` bounds the permission-copy subprocess.
     """
     ensure_parent_dir(path)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2))
-        os.replace(tmp_name, path)
-    except OSError as exc:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise RuntimeError(f"Failed to write file: {path}") from exc
+    # Isolate the staged file while its access rules and ownership are changing.
+    staging = (
+        tempfile.TemporaryDirectory(dir=path.parent, prefix=f".{path.name}.")
+        if preserve_permissions
+        else nullcontext(path.parent)
+    )
+    with staging as directory:
+        fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                if preserve_permissions and path.exists():
+                    before = path.stat()
+                    # Relative PATH entries could select a copier from the user's project.
+                    search_path = os.pathsep.join(
+                        entry for entry in os.get_exec_path() if os.path.isabs(entry)
+                    )
+                    copier = shutil.which("cp", path=search_path) if search_path else None
+                    if copier is None:
+                        raise OSError("The cp utility is required to preserve file permissions")
+                    # copystat omits ownership and macOS ACLs.
+                    subprocess_cross_os.run(
+                        [copier, "-p", str(path), tmp_name],
+                        check=True,
+                        capture_output=True,
+                        stdin=subprocess.DEVNULL,
+                        timeout=copy_timeout,
+                    )
+                    copied = os.stat(tmp_name)
+                    # Reject a copier that replaced the inode behind our writable descriptor.
+                    if (copied.st_uid, copied.st_gid, copied.st_mode) != (
+                        before.st_uid,
+                        before.st_gid,
+                        before.st_mode,
+                    ) or copied.st_ino != os.fstat(handle.fileno()).st_ino:
+                        raise OSError("Could not preserve file permissions")
+                    handle.truncate()
+                handle.write(json.dumps(payload, indent=2))
+            if mode is not None:
+                os.chmod(tmp_name, mode)
+            os.replace(tmp_name, path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to write file: {path}") from exc
 
 
 def backup_existing_file(config_path: Path, backup_path: Path) -> bool:

@@ -603,6 +603,10 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
+validation extracts event names from matcher-qualified hook summaries and checks
+session-start and saved-model receipt hooks independently of registration order.
+Launch options include an empty `modelSettingCommand`
+when first-prompt recovery is absent. These remain native component checks. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's native off-feedback selector has component coverage in
 `../test_smart_router_feedback.py` and `../test_codex_metadata.py`: native tool binding,
@@ -916,6 +920,10 @@ trust screens through visible choices, and reads the answer from a finished agen
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
+The offline `../test_integration_evidence.py` subprocess check loads the real pytest plugin and
+uses synthetic native logs to exercise setup, call and capture failures. It preserves the original
+exception when capture also fails, fails capture-only errors, and keeps unmarked tests lazy.
+This check makes no agent or gateway calls.
 
 VS Code Copilot Chat has four live journeys in `test_ug_configure_copilot_vscode.py`. VS Code has
 no ug launch command: `ug configure --agents copilot` installs ug's extension when `code` is on
@@ -1387,6 +1395,10 @@ by component tests in `../test_claude_smart_routing_v2.py`, not by a live regist
 
 Exact candidate-model and router-name preservation in decision logs has component
 coverage in `../test_claude_smart_routing_v2.py`; this suite does not assert those fields.
+The [main test guide](../README.md) describes offline Claude prompt and saved-default recovery
+coverage, including bounded preparation retries and preserving writes to new files without a copier.
+Current-source native receipt acceptance, ordering, delayed persistence and concurrent
+picker acceptance remain unverified by those component tests.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
@@ -1803,6 +1815,15 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
   identify a named tool or establish which service caused a protocol failure.
   It reports recorder status, including the existing synthetic 502 for interrupted upstreams,
   and cannot diagnose truncated protocol bodies because their partial structure is discarded.
+  The direct Claude routing hook, Codex back-on journey, and CUJ4 preset journeys retain
+  `routing-responses-<checkpoint>.json` (prefixed by the preset in CUJ4), even when a hook
+  returns no decision or the TUI times out before response assertions. Each scope records
+  every select/validate request and its paired response, not only successful decisions.
+  An empty list means no request was recorded; a null response means it was still pending.
+  Credentials are redacted, and non-200 bodies retain only safe error identifiers with
+  upstream `Server` and request/rate-limit headers. Malformed HTTP 200 bodies are marked
+  without retaining raw text.
+  Capture does not wait, retry requests, or replace the original journey failure.
 - `wheels/`: the tested wheel when built from the checkout; replay it with
   `--ug-wheel`. For release installations, `installed.txt` records the resolution.
 

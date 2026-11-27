@@ -1,9 +1,9 @@
 """PTY wrapper that routes Claude Code's first prompt with ``/model <name>``.
 
-Claude Code has no runtime control protocol, so a per-launch UserPromptSubmit
-hook captures and blocks the first prompt. While the TUI is idle, this wrapper
-types a direct model command, restores the user's persisted default model, and
-replays the prompt. Claude Code keeps a blocked prompt in its input box, so every
+The gateway TUI's plugin API exposes no session model setter, so a per-launch
+UserPromptSubmit hook captures and blocks the first prompt. While the TUI is idle,
+this wrapper types a direct model command, restores the user's persisted default
+model, and replays the prompt. Claude Code keeps a blocked prompt in its input box, so every
 write into the box first clears it. Terminal traffic is otherwise forwarded unchanged.
 """
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import pty
 import re
@@ -24,16 +25,28 @@ import threading
 import time
 import tty
 from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Literal
 
-from ucode import metrics
+from ucode import databricks, metrics
+from ucode.config_io import APP_DIR
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.smart_routing.v2 import ClaudeRoutingSetupError, format_routing_notice
 
 MAX_MODEL_NAME_LEN = 200
+MAX_PROMPT_RECOVERY_FILES = 10
 CONFIRM_TIMEOUT_S = 3.0
 SWITCH_TIMEOUT_S = 6.0
 MODEL_PERSIST_TIMEOUT_S = 2.0
+# Leave the receipt helper time to receive a refusal before its five-second socket timeout.
+MODEL_SETTING_RECEIPT_TIMEOUT_S = 4.0
+MODEL_PREPARE_INTERVAL_S = 0.2
+MODEL_RESTORE_INTERVAL_S = 0.2
+MODEL_RESTORE_MAX_INTERVAL_S = 2.0
 READY_QUIET_S = 0.75
 SELECT_TIMEOUT_S = 0.2
 PASTE_SUBMIT_DELAY_S = 0.3
@@ -55,6 +68,13 @@ CLEAR_SETTLE_TIMEOUT_S = 1.0
 DEFAULT_COLUMNS = 80
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+_INPUT_ESCAPE_RE = re.compile(
+    rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~]|\][^\x07]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)"
+)
+_TERMINAL_REPLY_RE = re.compile(
+    rb"\x1b(?:\[\?[0-9]+u|\[\??[0-9]+;[0-4]\$y|P(?:>\||[01][$+]r)[ -~]*\x1b\\)"
+)
+_MODEL_SWITCH_COMMANDS = ("/model", "/config", "/settings", "/fast", "/auto")
 
 
 def strip_ansi(data: bytes) -> str:
@@ -136,6 +156,199 @@ class OutputMarkerDetector:
         return self.triggered
 
 
+class ManualModelConfirmation:
+    """Match a completed native model result after a possible manual command."""
+
+    def __init__(self, model: str | None) -> None:
+        self._model = _squash(model).casefold() if model is not None else None
+        self._buffer = b""
+
+    def _matches_model(self, label: str) -> bool:
+        if not label:
+            return False
+        if self._model is None or label == self._model:
+            return True
+        # Native family shortcuts render a display version instead of the saved alias.
+        return (
+            self._model in databricks.ANTHROPIC_FAMILIES
+            and re.fullmatch(rf"(?:claude)?{self._model}(?:[0-9]+(?:\.[0-9]+)*)?", label)
+            is not None
+        )
+
+    def observe(self, chunk: bytes) -> Literal["confirmed", "cancelled"] | None:
+        self._buffer = (self._buffer + chunk)[-8192:]
+        text = re.sub(r"[^\S\r\n]+", "", strip_ansi(self._buffer)).casefold()
+        prefix = r"(?:^|[\r\n])(?:⎿)?"
+        rejected = re.search(
+            prefix + r"modelswitchto(.+?)wasblockedbyapremodelswitchhook(?::[^\r\n]*)?[\r\n]",
+            text,
+        )
+        if rejected and self._matches_model(rejected[1]):
+            return "cancelled"
+        if re.search(prefix + r"modelswitchcancelled[\r\n]", text):
+            return "cancelled"
+        for result in re.finditer(
+            prefix + r"(setmodelto|modelsetto|keptmodelas)(.*?)"
+            r"(andsavedasyourdefaultfornewsessions|forthissessiononly|[\r\n])",
+            text,
+        ):
+            if result[1] == "keptmodelas":
+                return "cancelled"
+            if self._matches_model(result[2]):
+                return "cancelled" if result[3] == "forthissessiononly" else "confirmed"
+        return None
+
+
+@dataclass(frozen=True)
+class ModelSwitchInputResult:
+    edited: bool
+    model_command: bool
+    manual_model: str | None = None
+
+
+class ModelSwitchInput:
+    """Distinguish edits and possible model commands from terminal traffic."""
+
+    def __init__(self) -> None:
+        self._pending = b""
+        self._line = b""
+        self._cursor = 0
+        self._line_known = True
+        self._last_input = 0.0
+        self._pasting = False
+
+    @property
+    def pending(self) -> bool:
+        return bool(self._pending) or self._pasting
+
+    def _move_cursor(self, direction: bytes, count: int = 1) -> None:
+        if (
+            not self._line_known
+            or not self._line
+            or b"\n" in self._line
+            or not self._line.isascii()
+        ):
+            # Native cursor movement counts graphemes and visual rows.
+            self._line_known = False
+            return
+        if direction == b"D":
+            self._cursor = max(0, self._cursor - count)
+        elif direction == b"C":
+            self._cursor = min(len(self._line), self._cursor + count)
+        else:
+            self._cursor = 0 if direction == b"H" else len(self._line)
+
+    def observe(self, data: bytes, now: float) -> ModelSwitchInputResult:
+        if data:
+            self._pending += data
+            self._last_input = now
+        edited = model_command = False
+        manual_model = None
+        while self._pending:
+            if self._pending.startswith(b"\x1b"):
+                match = _INPUT_ESCAPE_RE.match(self._pending)
+                if match:
+                    sequence = match[0]
+                    self._pending = self._pending[match.end() :]
+                    if sequence in (b"\x1b[200~", b"\x1b[201~"):
+                        self._pasting = sequence == b"\x1b[200~"
+                        edited |= self._pasting
+                    elif cursor := re.fullmatch(rb"\x1b(?:\[([0-9]*)|O)([CDHF])", sequence):
+                        count = cursor[1] or b"1"
+                        if len(count) > 4:
+                            self._line_known = False
+                        else:
+                            self._move_cursor(cursor[2], max(1, int(count)))
+                    elif sequence == b"\x1b[3~":
+                        start = self._cursor
+                        self._move_cursor(b"C")
+                        self._line = self._line[:start] + self._line[self._cursor :]
+                        self._cursor = start
+                        edited = True
+                    elif (
+                        sequence.startswith(b"\x1bO")
+                        or sequence in (b"\x1b[1~", b"\x1b[4~")
+                        or sequence[-1:] in (b"A", b"B", b"C", b"D", b"F", b"H")
+                    ):
+                        # History and cursor motion leave the submitted text unknown,
+                        # but navigation alone must not interrupt automatic replay.
+                        self._line_known = False
+                    elif (
+                        _TERMINAL_REPLY_RE.fullmatch(sequence)
+                        or sequence.startswith(b"\x1b]")
+                        or sequence[-1:]
+                        in (
+                            b"I",
+                            b"O",
+                            b"c",
+                            b"R",
+                            b"n",
+                        )
+                    ):
+                        pass  # Focus and terminal replies do not edit the prompt.
+                    else:
+                        edited = True
+                        self._line_known = False
+                    continue
+                if (
+                    len(self._pending) <= 4096
+                    and now - self._last_input < ESC_GAP_S
+                    and (len(self._pending) == 1 or self._pending[1:2] in (b"[", b"O", b"]", b"P"))
+                ):
+                    break  # An escape sequence may span several stdin reads.
+            char, self._pending = self._pending[:1], self._pending[1:]
+            edited = True
+            if char in (b"\r", b"\n") and not self._pasting:
+                command = self._line.decode("utf-8", "replace").split()
+                possible_model = not self._line_known or (
+                    b"\n" not in self._line
+                    and b"\r" not in self._line
+                    and bool(command)
+                    # Enter may accept a partially typed command from native completion.
+                    and any(name.startswith(command[0]) for name in _MODEL_SWITCH_COMMANDS)
+                )
+                if possible_model:
+                    model_command = True
+                    manual_model = None
+                    if (
+                        self._line_known
+                        and len(command) == 2
+                        and command[0] == "/model"
+                        and valid_model_name(command[1])
+                    ):
+                        manual_model = command[1]
+                self._line = b""
+                self._cursor = 0
+                self._line_known = True
+            elif self._pasting:
+                self._line_known &= len(self._line) < 4096
+                self._line = (self._line[: self._cursor] + char + self._line[self._cursor :])[
+                    -4096:
+                ]
+                self._cursor = min(self._cursor + 1, len(self._line))
+            elif char in (b"\x08", b"\x7f"):
+                end = self._cursor
+                self._move_cursor(b"D")
+                self._line = self._line[: self._cursor] + self._line[end:]
+            elif char == CLEAR_LINE:
+                self._line = self._line[self._cursor :]
+                self._cursor = 0
+                self._line_known = False  # Native Ctrl-U may stop at a wrapped screen row.
+            elif char >= b" ":
+                self._line_known &= len(self._line) < 4096
+                self._line = (self._line[: self._cursor] + char + self._line[self._cursor :])[
+                    -4096:
+                ]
+                self._cursor = min(self._cursor + 1, len(self._line))
+            else:
+                # Completion, search, and editing bindings can change text without
+                # sending its contents back through stdin.
+                self._line_known = False
+        return ModelSwitchInputResult(
+            edited=edited, model_command=model_command, manual_model=manual_model
+        )
+
+
 def terminal_columns(fd: int) -> int:
     """Return the terminal width of *fd*, or DEFAULT_COLUMNS when it is unknown."""
     try:
@@ -182,16 +395,72 @@ def inject_note(out_fd: int, message: str) -> None:
     os.write(out_fd, ("\r\n\x1b[36m" + message + "\x1b[0m\r\n").encode())
 
 
-def request_first_prompt_route(path: Path, payload: dict, *, timeout: float = 5.0) -> dict | None:
-    """Send a UserPromptSubmit payload to the owning PTY wrapper."""
-    prompt = payload.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        return None
-    request = {
-        "method": "route_first_prompt",
-        "prompt": prompt,
-        "session_id": payload.get("session_id"),
-    }
+def prompt_recovery_note(prompt: str) -> str:
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+        with os.fdopen(
+            os.open(APP_DIR / "claude-prompt-recovery.lock", flags, 0o600),
+            "a+",
+            encoding="utf-8",
+        ) as lock:
+            acquire_exclusive_file_lock(lock, timeout=0.1)
+            try:
+                copies = islice(APP_DIR.glob("claude-prompt-*.txt"), MAX_PROMPT_RECOVERY_FILES)
+                if sum(1 for _ in copies) >= MAX_PROMPT_RECOVERY_FILES:
+                    return (
+                        f"The recovery file limit ({MAX_PROMPT_RECOVERY_FILES}) was reached in "
+                        f"{APP_DIR}. Delete copies you have already resent. "
+                        f"Your prompt as a JSON string: {json.dumps(prompt)}"
+                    )
+                new_copy: Path | None = None
+                try:
+                    with NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        newline="",
+                        prefix="claude-prompt-",
+                        suffix=".txt",
+                        dir=APP_DIR,
+                        delete=False,
+                    ) as saved:
+                        new_copy = Path(saved.name)
+                        saved.write(prompt)
+                        saved.flush()
+                        os.fsync(saved.fileno())
+                except OSError:
+                    if new_copy is not None:
+                        with contextlib.suppress(OSError):
+                            new_copy.unlink()
+                    raise
+            finally:
+                release_file_lock(lock)
+        return (
+            f"Your prompt is saved in {saved.name} until you delete it. "
+            "Open it to resend when Claude is ready, then delete the recovery file."
+        )
+    except OSError:
+        # Escaping control bytes keeps the recovery copy from acting on the terminal.
+        return f"Could not save a recovery file. Your prompt as a JSON string: {json.dumps(prompt)}"
+
+
+def request_first_prompt_route(
+    path: Path, payload: dict, *, timeout: float = 5.0, route_enabled: bool = True
+) -> dict | None:
+    """Forward a first-prompt or clear hook to the owning PTY wrapper."""
+    if payload.get("hook_event_name") == "SessionStart":
+        if payload.get("source") != "clear":
+            return None
+        request = {"method": "session_cleared", "session_id": payload.get("session_id")}
+    else:
+        prompt = payload.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
+        request = {
+            "method": "route_first_prompt" if route_enabled else "prompt_submitted",
+            "prompt": prompt,
+            "session_id": payload.get("session_id"),
+        }
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(timeout)
@@ -233,6 +502,8 @@ def serve_first_prompt_socket(
     stop: threading.Event,
     *,
     on_submitted_prompt: Callable[[str], None] = lambda _prompt: None,
+    on_session_cleared: Callable[[], None] = lambda: None,
+    on_model_setting: Callable[[dict], dict] = lambda _request: {},
     log: Callable[[str], None] = lambda _message: None,
 ) -> threading.Thread:
     """Serve the hook protocol, blocking exactly one non-command prompt."""
@@ -269,8 +540,18 @@ def serve_first_prompt_socket(
                             isinstance(request, dict)
                             and request.get("method") == "route_first_prompt"
                         )
+                        is_submission = (
+                            isinstance(request, dict)
+                            and request.get("method") == "prompt_submitted"
+                        )
                         is_command = isinstance(prompt, str) and prompt.lstrip().startswith("/")
-                        if (
+                        if isinstance(request, dict) and request.get("method") == "model_setting":
+                            response = on_model_setting(request)
+                        elif (
+                            isinstance(request, dict) and request.get("method") == "session_cleared"
+                        ):
+                            on_session_cleared()
+                        elif (
                             is_route
                             and not claimed
                             and isinstance(prompt, str)
@@ -291,8 +572,7 @@ def serve_first_prompt_socket(
                                 response["display_model"] = display_model
                                 blocked = (prompt, model)
                         elif (
-                            is_route
-                            and claimed
+                            (is_route and claimed or is_submission)
                             and not is_command
                             and isinstance(prompt, str)
                             and prompt.strip()
@@ -301,12 +581,13 @@ def serve_first_prompt_socket(
                             submitted = prompt
                     except Exception as exc:  # noqa: BLE001 - hooks must fail open
                         log(f"[ERR] first-prompt request: {exc!r}")
+                    if submitted is not None:
+                        # Classify the prompt before Claude can emit its reply.
+                        on_submitted_prompt(submitted)
                     stream.write((json.dumps(response) + "\n").encode())
                     stream.flush()
                     if blocked is not None:
                         on_blocked_prompt(*blocked)
-                    if submitted is not None:
-                        on_submitted_prompt(submitted)
         finally:
             server.close()
 
@@ -349,9 +630,15 @@ def run_claude_pty(
     *,
     route_prompt: Callable[[str], FirstPromptRoute],
     socket_path: Path,
-    prepare_model_switch: Callable[[str], None] = lambda _model: None,
+    prepare_model_switch: Callable[[str], bool | None] = lambda _model: None,
     model_switch_persisted: Callable[[], bool] = lambda: True,
-    restore_model_setting: Callable[[], None] = lambda: None,
+    restore_model_setting: Callable[[], bool | None] = lambda: None,
+    defer_model_setting: Callable[[], None] = lambda: None,
+    abandon_model_setting: Callable[[str | None], bool | None] = lambda _model: None,
+    confirm_manual_model_setting: Callable[[], bool | None] = lambda: None,
+    prepare_saved_model_setting: Callable[[], bool | None] = lambda: None,
+    confirm_saved_model_setting: Callable[[str | None], bool | None] = lambda _model: None,
+    cancel_manual_model_setting: Callable[[], bool | None] = lambda: None,
     log_path: Path | None = None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
@@ -372,6 +659,9 @@ def run_claude_pty(
     pending: dict[str, tuple[str, str] | None] = {"value": None}
     # Set when the UserPromptSubmit hook fires after the claim, confirming submission.
     submitted_event = threading.Event()
+    submitted_count = 0
+    cleared_count = 0
+    model_setting_requests: list[tuple[dict, Future[dict], float]] = []
 
     def on_blocked_prompt(prompt: str, model: str) -> None:
         with pending_lock:
@@ -379,7 +669,35 @@ def run_claude_pty(
         log(f"[ROUTE] first prompt -> {model!r}")
 
     def on_submitted_prompt(_prompt: str) -> None:
-        submitted_event.set()
+        nonlocal submitted_count
+        with pending_lock:
+            submitted_count += 1
+            submitted_event.set()
+
+    def on_session_cleared() -> None:
+        nonlocal cleared_count
+        with pending_lock:
+            cleared_count += 1
+
+    def on_model_setting(request: dict) -> dict:
+        now = time.monotonic()
+        deadline = request.get("deadline", now + MODEL_SETTING_RECEIPT_TIMEOUT_S)
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            return {"acknowledged": False}
+        deadline = min(deadline, now + MODEL_SETTING_RECEIPT_TIMEOUT_S)
+        if deadline <= now:
+            return {"acknowledged": False}
+        completed: Future[dict] = Future()
+        with pending_lock:
+            model_setting_requests.append((request, completed, deadline))
+        try:
+            return completed.result(timeout=max(0.0, deadline - time.monotonic()))
+        except (TimeoutError, CancelledError):
+            # Cancellation prevents queued work from applying after its caller gives up.
+            # An operation already changing recovery must finish its write.
+            completed.cancel()
+            log("[WARN] native model-setting receipt was not processed before its deadline")
+            return {"acknowledged": False}
 
     server_thread = serve_first_prompt_socket(
         socket_path,
@@ -387,6 +705,8 @@ def run_claude_pty(
         on_blocked_prompt,
         stop,
         on_submitted_prompt=on_submitted_prompt,
+        on_session_cleared=on_session_cleared,
+        on_model_setting=on_model_setting,
         log=log,
     )
     socket_deadline = time.monotonic() + 2.0
@@ -423,11 +743,200 @@ def run_claude_pty(
             routed_model = ""
             switch_started = 0.0
             ready_capture = 0.0
+            next_prepare_check = 0.0
             paste_deadline = 0.0
             verify_deadline = 0.0
             esc_deadline = 0.0
             submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
+            switch_cancelled: OutputMarkerDetector | None = None
+            manual_complete: ManualModelConfirmation | None = None
+            manual_unknown = False
+            manual_generation = 0
+            automatic_command_pending = False
+            automatic_command_id: int | None = None
+            native_saves: dict[int, tuple[bool, int]] = {}
+            manual_prompt_after: int | None = None
+            manual_clear_after: int | None = None
+            model_pending = False
+            deferred_restore = False
+            restore_ready = False
+            next_restore_check = 0.0
+            restore_check_interval = MODEL_RESTORE_INTERVAL_S
+            restore_error_logged = False
+            user_input = ModelSwitchInput()
+
+            def observe_input(data: bytes, now: float) -> None:
+                nonlocal phase, model_pending, deferred_restore, restore_ready, manual_complete
+                nonlocal next_restore_check, restore_check_interval
+                nonlocal manual_unknown, manual_prompt_after, manual_clear_after, manual_generation
+                if phase == "waiting_prompt":
+                    return
+                observation = user_input.observe(data, now)
+                if observation.model_command:
+                    # A known manual target must also survive other sessions' late writes.
+                    model = observation.manual_model
+                    manual_generation += 1
+                    manual_complete = ManualModelConfirmation(model)
+                    manual_unknown = model is None
+                    with pending_lock:
+                        manual_prompt_after = submitted_count if manual_unknown else None
+                        manual_clear_after = cleared_count if manual_unknown else None
+                        # Skip the outstanding replay acknowledgement, then classify later hooks.
+                        if (
+                            manual_prompt_after is not None
+                            and submit_attempts
+                            and not submitted_event.is_set()
+                        ):
+                            manual_prompt_after += 1
+                    try:
+                        model_pending = abandon_model_setting(model) is False
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        model_pending = True
+                        log(f"[WARN] manual model handoff deferred: {exc}")
+                    deferred_restore = model_pending
+                    restore_ready = model_pending
+                    next_restore_check = 0.0
+                    restore_check_interval = MODEL_RESTORE_INTERVAL_S
+                if phase == "verifying" and submitted_event.is_set():
+                    return
+                if not observation.edited:
+                    return
+                if phase != "done":
+                    already_submitted = phase == "verifying"
+                    phase = "done"
+                    confirm.clear()
+                    inject_note(
+                        1,
+                        "Smart Routing stopped automatic replay because you entered input. "
+                        + (
+                            "Check whether your prompt was sent before resending it."
+                            if already_submitted
+                            else "Resend your prompt when Claude is ready."
+                        ),
+                    )
+                    log("[WARN] user input stopped automatic replay")
+                if model_pending and not observation.model_command:
+                    defer_model_setting()
+                    deferred_restore = True
+
+            def settle_manual_choice(
+                outcome: Literal["confirmed", "cancelled"], saved: dict | None = None
+            ) -> None:
+                nonlocal model_pending, deferred_restore, restore_ready, manual_complete
+                nonlocal next_restore_check, restore_check_interval, manual_prompt_after
+                nonlocal manual_clear_after
+                try:
+                    complete_manual = (
+                        confirm_manual_model_setting
+                        if outcome == "confirmed"
+                        else cancel_manual_model_setting
+                    )
+                    model_pending = (
+                        confirm_saved_model_setting(saved["model"])
+                        if saved is not None
+                        else complete_manual()
+                    ) is False
+                except (OSError, ValueError, RuntimeError) as exc:
+                    model_pending = True
+                    log(f"[WARN] {outcome} manual model handoff deferred: {exc}")
+                deferred_restore = model_pending
+                # Cancelling a manual choice does not acknowledge the delayed routed write.
+                restore_ready = False
+                next_restore_check = 0.0
+                restore_check_interval = MODEL_RESTORE_INTERVAL_S
+                manual_complete = None
+                manual_prompt_after = None
+                manual_clear_after = None
+
+            def process_model_setting_requests() -> None:
+                nonlocal automatic_command_pending, automatic_command_id
+                nonlocal model_pending, deferred_restore, restore_ready, manual_complete
+                nonlocal manual_unknown, manual_prompt_after, manual_clear_after
+                with pending_lock:
+                    requests = model_setting_requests[:]
+                    model_setting_requests.clear()
+                for request, completed, deadline in requests:
+                    if time.monotonic() >= deadline:
+                        completed.cancel()
+                    if not completed.set_running_or_notify_cancel():
+                        continue
+                    response: dict = {}
+                    try:
+                        event = request.get("event")
+                        receipt_id = request.get("id")
+                        if (
+                            type(receipt_id) is not int
+                            or receipt_id <= 0
+                            or event not in {"command", "prepare", "saved", "failed"}
+                        ):
+                            continue
+                        response["acknowledged"] = True
+                        if event == "command":
+                            if (
+                                automatic_command_pending
+                                and request.get("command") == "model"
+                                and request.get("origin") == "composer"
+                            ):
+                                # The injected command precedes any later stdin in the PTY.
+                                automatic_command_id = receipt_id
+                                automatic_command_pending = False
+                        elif event == "prepare":
+                            automatic = (
+                                automatic_command_id is not None
+                                and request.get("command_id") == automatic_command_id
+                            )
+                            native_saves[receipt_id] = (automatic, manual_generation)
+                            if not automatic:
+                                model_pending = prepare_saved_model_setting() is False
+                                deferred_restore = restore_ready = model_pending
+                                manual_unknown = True
+                                manual_complete = ManualModelConfirmation(None)
+                                with pending_lock:
+                                    manual_prompt_after = submitted_count
+                                    manual_clear_after = cleared_count
+                        elif event in {"saved", "failed"}:
+                            saved = native_saves.pop(receipt_id, None)
+                            if saved is None or saved[0] or saved[1] != manual_generation:
+                                continue
+                            if event == "failed":
+                                settle_manual_choice("cancelled")
+                            elif "model" in request and (
+                                request["model"] is None or isinstance(request["model"], str)
+                            ):
+                                settle_manual_choice("confirmed", {"model": request["model"]})
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        response["acknowledged"] = False
+                        model_pending = deferred_restore = True
+                        log(f"[WARN] native model-setting recovery deferred: {exc}")
+                    finally:
+                        completed.set_result(response)
+
+            def observe_model_output(chunk: bytes) -> None:
+                nonlocal automatic_command_pending
+                if phase in ("switching", "waiting_cancel") and switch_complete is not None:
+                    switch_complete.observe(chunk)
+                    if switch_complete.triggered:
+                        automatic_command_pending = False
+                    assert switch_cancelled is not None
+                    if phase == "waiting_cancel":
+                        switch_cancelled.observe(chunk)
+
+                if manual_complete is not None:
+                    with pending_lock:
+                        ordinary_prompt = (
+                            manual_prompt_after is not None
+                            and submitted_count > manual_prompt_after
+                        )
+                        session_cleared = (
+                            manual_clear_after is not None and cleared_count > manual_clear_after
+                        )
+                    if ordinary_prompt or session_cleared:
+                        settle_manual_choice("cancelled")
+                    elif chunk:
+                        outcome = manual_complete.observe(chunk)
+                        if outcome is not None and (outcome != "confirmed" or not manual_unknown):
+                            settle_manual_choice(outcome)
 
             def forward_output(chunk: bytes) -> None:
                 nonlocal last_output
@@ -438,8 +947,7 @@ def run_claude_pty(
                 keystroke = confirm.observe(chunk, last_output)
                 if keystroke is not None:
                     os.write(master_fd, keystroke)
-                if phase == "switching" and switch_complete is not None:
-                    switch_complete.observe(chunk)
+                observe_model_output(chunk)
 
             def forward_output_until(deadline: float) -> bool:
                 """Forward Claude's output until *deadline*; return False once Claude exits."""
@@ -486,6 +994,7 @@ def run_claude_pty(
                 inject_prompt(master_fd, routed_prompt, submit=False)
 
             while True:
+                process_model_setting_requests()
                 readable = [master_fd, 0] if stdin_open else [master_fd]
                 try:
                     ready_fds, _, _ = select.select(readable, [], [], SELECT_TIMEOUT_S)
@@ -500,8 +1009,10 @@ def run_claude_pty(
                     if not data:
                         stdin_open = False
                     else:
+                        observe_input(data, time.monotonic())
                         os.write(master_fd, data)
 
+                chunk = b""
                 if master_fd in ready_fds:
                     try:
                         chunk = os.read(master_fd, 8192)
@@ -510,6 +1021,8 @@ def run_claude_pty(
                     if not chunk:
                         break
                     forward_output(chunk)
+                else:
+                    observe_model_output(b"")
 
                 if phase == "waiting_prompt":
                     with pending_lock:
@@ -520,21 +1033,56 @@ def run_claude_pty(
                         ready_capture = time.monotonic()
 
                 now = time.monotonic()
+                observe_input(b"", now)
+                if phase == "verifying" and submitted_event.is_set():
+                    phase = "done"
+                    log("[DONE] first prompt confirmed submitted")
                 idle = last_output > 0.0 and now - last_output >= READY_QUIET_S
-                if phase == "waiting_to_switch" and idle:
-                    prepare_model_switch(routed_model)
+                if (
+                    model_pending
+                    and (deferred_restore or phase == "waiting_persist")
+                    and now >= next_restore_check
+                ):
+                    next_restore_check = now + restore_check_interval
+                    if deferred_restore:
+                        # Keep recovering late writes without polling at startup frequency.
+                        restore_check_interval = min(
+                            restore_check_interval * 2, MODEL_RESTORE_MAX_INTERVAL_S
+                        )
+                    try:
+                        if (
+                            restore_ready or model_switch_persisted()
+                        ) and restore_model_setting() is not False:
+                            model_pending = False
+                            deferred_restore = False
+                            log("[RESTORE] saved model restored")
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        defer_model_setting()
+                        if not restore_error_logged:
+                            log(f"[WARN] saved model restoration deferred: {exc}")
+                            restore_error_logged = True
+                if user_input.pending:
+                    continue  # Do not inject keystrokes into an incomplete terminal reply.
+                switch_prepared = False
+                if phase == "waiting_to_switch" and idle and now >= next_prepare_check:
+                    switch_prepared = prepare_model_switch(routed_model) is not False
+                    next_prepare_check = time.monotonic() + MODEL_PREPARE_INTERVAL_S
+                if switch_prepared:
+                    model_pending = True
+                    automatic_command_pending = True
                     clear_input()
                     confirm.arm(time.monotonic() + CONFIRM_TIMEOUT_S)
                     switch_complete = OutputMarkerDetector(("Set model to", "Model set to"))
+                    switch_cancelled = OutputMarkerDetector(("Kept model as",))
                     phase = "switching"
                     type_keys(model_switch_keys(routed_model))
                     switch_started = time.monotonic()
                     log(f"[SWITCH] /model {routed_model}")
                 elif phase == "waiting_to_switch" and now - ready_capture >= READY_TIMEOUT_S:
-                    # Output never went quiet; skip the switch and submit on the default model.
+                    # Neither terminal activity nor another session's lock may stall input.
                     inject_note(
                         1,
-                        "Smart Routing could not find a quiet window to switch models; "
+                        "Smart Routing could not prepare the model switch; "
                         "submitting your prompt on the default model.",
                     )
                     paste_prompt()
@@ -542,37 +1090,51 @@ def run_claude_pty(
                     phase = "pasting"
                     log("[WARN] waiting_to_switch timed out; skipping /model, pasting prompt")
                 elif (
-                    phase == "switching"
+                    phase in ("switching", "waiting_cancel")
+                    and now >= esc_deadline
                     and switch_complete is not None
-                    and switch_complete.triggered
+                    and switch_cancelled is not None
+                    and (switch_complete.triggered or switch_cancelled.triggered)
                 ):
+                    # Claude's explicit "Kept model as" result completes cancellation;
+                    # a generic cancel message or quiet redraw does not.
+                    restore_ready = switch_cancelled.triggered and not switch_complete.triggered
                     phase = "waiting_persist"
                     switch_started = now
                 elif phase == "switching" and now - switch_started >= SWITCH_TIMEOUT_S:
-                    # ESC cancels the /model command; gap prevents ESC+\x1b[200~ being an Alt-seq.
+                    # ESC can race with /model finishing. Replaying before its final
+                    # redraw lets the command clear our pasted prompt.
                     os.write(master_fd, b"\x1b")
-                    restore_model_setting()
+                    confirm.clear()
                     inject_note(
                         1,
                         "Smart Routing could not confirm the model switch; "
-                        "submitting your prompt on the default model.",
+                        "waiting for Claude before replaying your prompt.",
                     )
+                    switch_started = now
                     esc_deadline = now + ESC_GAP_S
-                    phase = "esc_gap"
+                    phase = "waiting_cancel"
                     log(f"[ERR] direct model switch timed out for {routed_model!r}")
-                elif phase == "esc_gap" and now >= esc_deadline:
-                    paste_prompt()
-                    paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
-                    phase = "pasting"
-                elif phase == "waiting_persist" and model_switch_persisted():
-                    restore_model_setting()
+                elif phase == "waiting_cancel" and now - switch_started >= READY_TIMEOUT_S:
+                    # A quiet redraw does not prove /model has stopped writing.
+                    defer_model_setting()
+                    deferred_restore = True
+                    inject_note(
+                        1,
+                        "Smart Routing could not confirm Claude was ready. "
+                        + prompt_recovery_note(routed_prompt),
+                    )
+                    phase = "done"
+                    log("[WARN] Claude did not settle after Escape; automatic replay stopped")
+                elif phase == "waiting_persist" and not model_pending:
                     paste_prompt()
                     paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
                     log("[PASTE] first prompt pasted; waiting for submit delay")
                 elif phase == "waiting_persist" and now - switch_started >= MODEL_PERSIST_TIMEOUT_S:
                     # Fail-open: don't kill claude; submit on whatever model is active.
-                    restore_model_setting()
+                    defer_model_setting()
+                    deferred_restore = True
                     inject_note(
                         1,
                         "Smart Routing could not confirm the default model was preserved. "
@@ -581,7 +1143,7 @@ def run_claude_pty(
                     paste_prompt()
                     paste_deadline = time.monotonic() + PASTE_SUBMIT_DELAY_S
                     phase = "pasting"
-                    log("[ERR] routed model was not persisted before timeout; submitting anyway")
+                    log("[WARN] saved model restoration still pending; submitting prompt")
                 elif phase == "pasting" and now >= paste_deadline:
                     os.write(master_fd, b"\r")
                     verify_deadline = now + SUBMIT_VERIFY_S
@@ -589,10 +1151,7 @@ def run_claude_pty(
                     phase = "verifying"
                     log("[SUBMIT] Enter sent; verifying submission")
                 elif phase == "verifying":
-                    if submitted_event.is_set():
-                        phase = "done"
-                        log("[DONE] first prompt confirmed submitted")
-                    elif now >= verify_deadline:
+                    if now >= verify_deadline:
                         if submit_attempts >= MAX_SUBMIT_ATTEMPTS:
                             inject_note(
                                 1,

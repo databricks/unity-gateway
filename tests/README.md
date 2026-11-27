@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+`test_tui_request_recorder.py` covers routing-response artifacts when a journey fails
+before checking its decisions: every attempt is paired by sequence, previous journeys
+and inference traffic are excluded, and pending responses remain explicit without a wait.
+Cases retain non-200 error codes, upstream `Server` and request/rate-limit headers,
+and malformed/compressed response outcomes, redact credentials, keep separate scopes'
+artifacts, and preserve the journey's original failure if artifact writing also fails.
+These component checks do not establish live routing success.
+
 CUJ4 covers Codex's native Auto row appearing first, main-model and reasoning-effort
 choices, and completed gateway inference on the selected model and effort. This live
 journey has not been run locally.
@@ -371,8 +379,13 @@ unit/component checks, not live workspace or sign-in coverage; CLI wiring is sep
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding and launch-option tests in CI. Auto picker tests cover
-selecting the last model in a large catalog, silent saves, and restoring a kept per-model alias.
+TypeScript event-forwarding and launch-option tests in CI.
+Native validation extracts event names from matcher-qualified hook summaries and
+requires the session-start and saved-model receipt hooks without depending on their
+registration order; launch-option checks include the empty
+`modelSettingCommand` default when first-prompt recovery is absent.
+Auto picker tests cover selecting the last model in a large catalog, silent saves,
+and restoring a kept per-model alias.
 A fresh Claude process reads a saved custom Auto alias. Its `/context` output verifies the catalog
 window and an explicit compaction preference.
 `test_claude_launch_settings.py` checks the 200k fallback written to the alias, catalog bounds, and precedence with native settings on disk,
@@ -1305,11 +1318,43 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
-command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
-quiet window. Another models Claude Code 2.1.325, which reads 64 or more bytes that arrive
+command, and the replay must arrive unchanged after a confirmed switch or cancellation, or a
+missing quiet window. Another models Claude Code 2.1.325, which reads 64 or more bytes that arrive
 together as a paste: clearing a long held prompt and typing `/model` must still run as keys,
 also when that fake stops reading partway through the clear. These are component checks; live
 first-prompt routing on a pinned Claude Code version is not executed here.
+Recovery cases retain pending writes after same-session manual cancellation or a native
+PreModelSwitch rejection, including a write that arrives later. History/completion-derived `/clear`
+settles tentative recovery through the clear-session hook without acknowledging a replay or resetting
+its routing claim. Prior replay acknowledgements and clear hooks leave a newer opaque choice pending
+until its own cancellation or ordinary-prompt hook. Model-like reply text cannot turn that ordinary
+prompt into a model change. A late automatic model result also leaves a history prompt pending.
+Saved-default changes carry the raw selector through the native config receipt. Live routed
+writers keep their recovery entries after a manual choice or an uninstrumented external save,
+including a removed model key. Session-only choices keep the prior default. CLI/socket checks
+settle tentative recovery after routing is disabled, through either an ordinary prompt or `/clear`,
+without selecting a route. Queued receipts expire before they can change recovery, including
+requests delayed in the socket backlog; an operation already writing recovery finishes its write.
+`claude_model_setting_recovery.test.mjs` exercises the production registration and hook handlers
+with a fake process boundary. It checks command lifetime, captured save identity, non-model command
+forwarding, rejected saves, and failed receipt delivery with one warning and unchanged native outcomes.
+Current-source native ordering, delayed native persistence and concurrent picker acceptance remain
+unverified.
+Model-recovery component cases force equal wall-clock and coarse monotonic timestamps and verify
+manual-choice order through registration-lock contention. They cover old journals without a
+tie-breaker, stale ordering records left by older writers, and newer wall-clock input after the
+monotonic counter resets. A high-resolution monotonic counter breaks ties within a wall-clock tick.
+Prompt-copy checks cover private files retained until deletion, a ten-file creation limit,
+concurrent writers, failed partial-copy cleanup and escaped inline fallback while preserving earlier
+copies. `test_config_io.py` rejects an external copier that replaces the staged inode, preserving the
+original file, and covers missing copiers in both filtered and absolute search paths. A preserving
+write to a new path succeeds without a copier, uses private permissions or the explicit mode,
+and leaves no staging files.
+The fake-TUI wrapper uses shorter switch and ready deadlines. Persistence, ownership and retry
+backoff retain their production timing and final-state assertions. Input-origin matrices live in
+the parser tests; PTY cases retain each native settlement path, exact input forwarding and recovery
+outcome. Contended preparation throttles retries even on fast loop turns and sends one prompt
+on the default model with an actionable notice when the readiness deadline expires.
 
 Codex version tests cover one longer probe after an inconclusive cached result. Supported
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail

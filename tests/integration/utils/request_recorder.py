@@ -50,6 +50,10 @@ _STOP_REASONS = {
 }
 # The statuses whose evidence is captured through _overload_details.
 _OVERLOAD_STATUSES = {429, 503}
+_ROUTING_PATHS = {
+    "/ai-gateway/routing/v1/routes:select",
+    "/ai-gateway/routing/v1/routes:validate",
+}
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,45 @@ class TuiRequestRecorder:
             for sequence, response in responses
             if response.status_code in _OVERLOAD_STATUSES
         ]
+
+    def _routing_responses(self, after: int) -> list[dict]:
+        with self._condition:
+            exchanges = [
+                (request, self._responses.get(request.sequence))
+                for request in self._requests
+                if request.sequence > after
+                and request.method == "POST"
+                and request.path in _ROUTING_PATHS
+            ]
+        rows = []
+        for request, response in exchanges:
+            details = None
+            if response is not None:
+                if response.status_code != 200:
+                    # Error codes and request/rate-limit headers are useful; free-text
+                    # errors can echo credentials, so use the existing safe projection.
+                    details = _overload_details(response)
+                else:
+                    try:
+                        body = httpx.Response(
+                            response.status_code, headers=response.headers, content=response.body
+                        ).json()
+                    except (httpx.DecodingError, ValueError):
+                        body = "<invalid response omitted>"
+                    details = {
+                        "status": response.status_code,
+                        "headers": _rate_limit_headers(response),
+                        "body": body,
+                    }
+            rows.append(
+                {
+                    "sequence": request.sequence,
+                    "path": request.path,
+                    "request": request.payload,
+                    "response": details,
+                }
+            )
+        return rows
 
     def _forward(self, handler: BaseHTTPRequestHandler) -> None:
         assert self._client
@@ -462,6 +505,31 @@ def _response_protocol(response: RecordedResponse | None) -> dict:
     except (ValueError, RecursionError):
         result["state"] = "malformed"
     return result
+
+
+@contextmanager
+def record_routing_responses(
+    session, recorder: TuiRequestRecorder, *, name: str = "routing-responses"
+) -> Iterator[TuiRequestRecorder]:
+    """Retain every routing attempt in this scope, even before a decision is recorded.
+
+    Snapshot without waiting for unfinished responses. The checkpoint separates this
+    journey's traffic from earlier journeys on a shared CUJ recorder.
+    """
+    checkpoint = recorder.checkpoint()
+    failure = None
+    try:
+        yield recorder
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            session.record(f"{name}-{checkpoint}.json", recorder._routing_responses(checkpoint))
+        except BaseException:
+            if failure is None:
+                raise
+            failure.add_note("Routing response evidence could not be recorded.")
 
 
 @contextmanager

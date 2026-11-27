@@ -45,9 +45,12 @@ def _handler(router):
             self.send_response(router.status)
             self.send_header("Content-Length", str(len(router.body)))
             self.end_headers()
-            for byte in router.body:
-                self.wfile.write(bytes([byte]))
-                time.sleep(router.pace)
+            if router.pace:
+                for byte in router.body:
+                    self.wfile.write(bytes([byte]))
+                    time.sleep(router.pace)
+            else:
+                self.wfile.write(router.body)
             router.answered.set()
 
         def log_message(self, *args):
@@ -92,7 +95,8 @@ def real_transport(monkeypatch):
 
 
 def _wait_for_result(path):
-    deadline = time.monotonic() + 3
+    # Allow the worker's full request deadline, then time to publish its result.
+    deadline = time.monotonic() + validation.VALIDATION_TIMEOUT_SECONDS + 3
     while time.monotonic() < deadline:
         if path.exists():
             return json.loads(path.read_text())

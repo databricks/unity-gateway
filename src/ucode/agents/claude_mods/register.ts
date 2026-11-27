@@ -1,4 +1,5 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
+import { registerModelSettingRecovery } from './model-setting-recovery.ts';
 import {
   endStatusBandTurn,
   registerStatusBand,
@@ -379,6 +380,7 @@ async function runInternalModel($: EngineInterface, internalModels: string[], mo
 }
 
 export function register(on: On, options: PluginOptions): void {
+  registerModelSettingRecovery(on, options);
   const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   const routingSync: RoutingSyncState = {};
   type MainModelChooser = {

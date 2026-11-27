@@ -135,11 +135,14 @@ def test_case_01_managed_claude_uses_admin_discovery_after_configure(
     with AgentTerminal(session, "claude", command, "case-01-managed") as tui:
         tui.boot()
         screen = tui.open_model_picker(
-            model_visible=lambda text: any(
-                claude_model_in_picker(
-                    text, model_id, _managed_claude_provider_catalog.display_names[model_id]
+            model_visible=lambda text: (
+                session.claude_gateway_cache_ready(list(_managed_claude_provider_catalog.model_ids))
+                and any(
+                    claude_model_in_picker(
+                        text, model_id, _managed_claude_provider_catalog.display_names[model_id]
+                    )
+                    for model_id in _managed_claude_provider_catalog.model_ids
                 )
-                for model_id in _managed_claude_provider_catalog.model_ids
             )
         )
         tui.exit_normally()
@@ -161,11 +164,14 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(
     with AgentTerminal(session, "claude", command, "case-01-fresh-managed") as tui:
         tui.boot()
         screen = tui.open_model_picker(
-            model_visible=lambda text: any(
-                claude_model_in_picker(
-                    text, model_id, _managed_claude_provider_catalog.display_names[model_id]
+            model_visible=lambda text: (
+                session.claude_gateway_cache_ready(list(_managed_claude_provider_catalog.model_ids))
+                and any(
+                    claude_model_in_picker(
+                        text, model_id, _managed_claude_provider_catalog.display_names[model_id]
+                    )
+                    for model_id in _managed_claude_provider_catalog.model_ids
                 )
-                for model_id in _managed_claude_provider_catalog.model_ids
             )
         )
         tui.exit_normally()

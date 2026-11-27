@@ -45,7 +45,17 @@ def sync_first_prompt_hook(doc: dict, executable: str) -> None:
                     )
                 ]
             }
-        ]
+        ],
+        "SessionStart": [
+            {
+                "matcher": "clear",
+                "hooks": [
+                    _routing_command_hook(
+                        [executable, ROUTING_HOOK_COMMAND_MARKER, ROUTE_FIRST_PROMPT_EVENT]
+                    )
+                ],
+            }
+        ],
     }
     hooks.sync_managed_hooks(doc, FIRST_PROMPT_HOOK_MARKER, groups)
 

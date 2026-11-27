@@ -44,6 +44,7 @@ from utils.managed import (
 from utils.request_recorder import (
     TuiRequestRecorder,
     record_claude_response_protocol,
+    record_routing_responses,
     served_inference_request,
 )
 from utils.terminal import AgentTerminal
@@ -323,33 +324,39 @@ def test_smart_routing_claude_route_subagent_hook(
             "model": "sonnet",
         },
     }
-    result = session.run(
-        "claude-router-hook",
-        "route-subagent-mod",
-        "--host",
-        workspace,
-        *(arg for model in CLAUDE_MODELS for arg in ("--model", model)),
-        input_text=json.dumps(payload),
-        timeout=60,
-    )
-    assert result.stdout.strip(), f"Routing hook returned no decision: {result.stderr}"
-    output = json.loads(result.stdout)
-    assert output["model"] in CLAUDE_MODELS, output
-    assert isinstance(output["rationale"], str), output
-    assert set(output) == {"model", "rationale"}, output
+    with (
+        TuiRequestRecorder(workspace) as recorder,
+        record_routing_responses(session, recorder),
+    ):
+        result = session.run(
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            recorder.url,
+            *(arg for model in CLAUDE_MODELS for arg in ("--model", model)),
+            input_text=json.dumps(payload),
+            timeout=60,
+        )
+        assert result.stdout.strip(), f"Routing hook returned no decision: {result.stderr}"
+        output = json.loads(result.stdout)
+        assert output["model"] in CLAUDE_MODELS, output
+        assert isinstance(output["rationale"], str), output
+        assert set(output) == {"model", "rationale"}, output
 
-    decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
-    assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
-    rows = [json.loads(line) for line in decisions_path.read_text().splitlines() if line.strip()]
-    session.record("claude-smart-routing-decisions.jsonl", rows)
-    assert len(rows) == 1, rows
-    row = rows[0]
-    assert row["session_id"] == payload["session_id"], row
-    assert row["task_name"] == payload["tool_input"]["prompt"], row
-    assert row["requested_model"] in CLAUDE_MODELS, row
+        decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
+        assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
+        rows = [
+            json.loads(line) for line in decisions_path.read_text().splitlines() if line.strip()
+        ]
+        session.record("claude-smart-routing-decisions.jsonl", rows)
+        assert len(rows) == 1, rows
+        row = rows[0]
+        assert row["session_id"] == payload["session_id"], row
+        assert row["task_name"] == payload["tool_input"]["prompt"], row
+        assert row["requested_model"] in CLAUDE_MODELS, row
 
-    assert row["requested_model"] == output["model"], row
-    assert row["rationale"] == output["rationale"], row
+        assert row["requested_model"] == output["model"], row
+        assert row["rationale"] == output["rationale"], row
 
 
 @pytest.mark.live
@@ -979,7 +986,10 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     _select_smart_router_version(
         session, "codex", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
     )
-    with TuiRequestRecorder(workspace) as recorder:
+    with (
+        TuiRequestRecorder(workspace) as recorder,
+        record_routing_responses(session, recorder),
+    ):
         session.run(
             "configure",
             "--workspace",

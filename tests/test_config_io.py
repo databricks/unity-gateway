@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import stat
+import sys
 
 import pytest
 import tomlkit
@@ -204,6 +208,180 @@ class TestWriteHelpers:
         config_io.atomic_write_json(p, {"a": 1})
         config_io.atomic_write_json(p, {"a": 2})
         assert json.loads(p.read_text()) == {"a": 2}
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.parametrize("mode", [None, 0o640])
+    def test_atomic_preserving_write_creates_a_new_file_without_a_copier(
+        self, tmp_path, monkeypatch, mode
+    ):
+        path = tmp_path / "nested" / "out.json"
+        payload = {"model": "haiku"}
+        monkeypatch.setenv("PATH", "")
+
+        config_io.atomic_write_json(path, payload, mode=mode, preserve_permissions=True)
+
+        assert path.read_text() == json.dumps(payload, indent=2)
+        if os.name == "posix":
+            assert stat.S_IMODE(path.stat().st_mode) == (0o600 if mode is None else mode)
+        assert list(path.parent.iterdir()) == [path]
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    @pytest.mark.parametrize("mode", [None, 0o640])
+    def test_atomic_write_preserves_permissions_with_the_available_copier(
+        self, tmp_path, monkeypatch, mode
+    ):
+        copier = shutil.which("cp")
+        assert copier is not None
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        configured_copier = binaries / "cp"
+        configured_copier.symlink_to(copier)
+        monkeypatch.setenv("PATH", str(binaries))
+        run = config_io.subprocess_cross_os.run
+        calls = []
+
+        # Exercise the real copy while recording which PATH entry was used.
+        def record_run(argv, **kwargs):
+            calls.append(argv)
+            return run(argv, **kwargs)
+
+        monkeypatch.setattr(config_io.subprocess_cross_os, "run", record_run)
+        path = tmp_path / "out.json"
+        path.write_text(json.dumps({"old": "x" * 1000}))
+        path.chmod(0o440)
+        before = path.stat()
+        payload = {"replacement": True}
+
+        config_io.atomic_write_json(path, payload, mode=mode, preserve_permissions=True)
+
+        assert calls[0][0] == str(configured_copier)
+        assert path.read_text() == json.dumps(payload, indent=2)
+        after = path.stat()
+        assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+        assert stat.S_IMODE(after.st_mode) == (0o440 if mode is None else mode)
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    @pytest.mark.parametrize("entry", ["", ".", "bin"])
+    @pytest.mark.parametrize("installed_copier", [False, True])
+    def test_atomic_preserving_write_ignores_relative_copiers(
+        self, tmp_path, monkeypatch, entry, installed_copier
+    ):
+        copier = shutil.which("cp")
+        assert copier is not None
+        project = tmp_path / "project"
+        project.mkdir()
+        relative_bin = project / entry if entry else project
+        relative_bin.mkdir(exist_ok=True)
+        marker = tmp_path / "project-copier-ran"
+        # A trap in the external copier dependency detects accidental project execution.
+        trap = relative_bin / "cp"
+        trap.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\n"
+            f"Path({str(marker)!r}).touch()\nraise SystemExit(23)\n"
+        )
+        trap.chmod(0o700)
+        directories = [entry]
+        if installed_copier:
+            directories.append(os.path.dirname(os.path.abspath(copier)))
+        monkeypatch.setenv("PATH", os.pathsep.join(directories))
+        monkeypatch.chdir(project)
+        path = tmp_path / "out.json"
+        original = '{"original": true}'
+        path.write_text(original)
+        path.chmod(0o640)
+        before = path.stat()
+
+        if installed_copier:
+            config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+            assert json.loads(path.read_text()) == {"replacement": True}
+        else:
+            with pytest.raises(RuntimeError, match="Failed to write file"):
+                config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+            assert path.read_text() == original
+
+        assert not marker.exists()
+        after = path.stat()
+        assert (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) == (
+            before.st_uid,
+            before.st_gid,
+            0o640,
+        )
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    def test_atomic_preserving_write_without_a_copier_keeps_the_original(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "out.json"
+        original = '{"original": true}'
+        path.write_text(original)
+        path.chmod(0o640)
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+        with pytest.raises(RuntimeError, match="Failed to write file"):
+            config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+
+        assert path.read_text() == original
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX file permissions",
+    )
+    def test_atomic_write_preserves_the_original_when_permissions_cannot_be_copied(self, tmp_path):
+        path = tmp_path / "out.json"
+        path.write_text('{"original": true}')
+        path.chmod(0)
+        try:
+            with pytest.raises(RuntimeError, match="Failed to write file"):
+                config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+        finally:
+            path.chmod(0o600)
+
+        assert json.loads(path.read_text()) == {"original": True}
+        assert not list(tmp_path.glob(".out.json.*"))
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permissions")
+    def test_atomic_preserving_write_rejects_a_successful_copier_that_replaces_the_staged_file(
+        self, tmp_path, monkeypatch
+    ):
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        copier = binaries / "cp"
+        copied = tmp_path / "copier-finished"
+        # Exercise replacement by the external dependency while retaining the real writer.
+        copier.write_text(
+            f"#!{sys.executable}\n"
+            "import os\nimport shutil\nimport sys\nfrom pathlib import Path\n"
+            "staged = Path(sys.argv[-1])\n"
+            "replacement = staged.with_suffix('.replacement')\n"
+            "shutil.copy2(sys.argv[-2], replacement)\n"
+            "os.replace(replacement, staged)\n"
+            f"Path({str(copied)!r}).touch()\n"
+        )
+        copier.chmod(0o700)
+        monkeypatch.setenv("PATH", str(binaries))
+        path = tmp_path / "out.json"
+        original = b'{"original": true}\n'
+        path.write_bytes(original)
+        path.chmod(0o640)
+        before = path.stat()
+
+        with pytest.raises(RuntimeError, match="Failed to write file") as error:
+            config_io.atomic_write_json(path, {"replacement": True}, preserve_permissions=True)
+
+        after = path.stat()
+        assert copied.exists()
+        assert str(error.value.__cause__) == "Could not preserve file permissions"
+        assert path.read_bytes() == original
+        assert (after.st_ino, after.st_uid, after.st_gid, after.st_mode) == (
+            before.st_ino,
+            before.st_uid,
+            before.st_gid,
+            before.st_mode,
+        )
         assert not list(tmp_path.glob(".out.json.*"))
 
 

@@ -50,7 +50,16 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
-            assert "./register.ts hooks: session.start" in result.stdout
+            hook_prefix = "./register.ts hooks: "
+            hook_line = next(
+                (line for line in result.stdout.splitlines() if hook_prefix in line), ""
+            )
+            # Native summaries qualify filtered hooks, e.g. config.set{key=model}.
+            hooks = {
+                hook.strip().partition("{")[0]
+                for hook in hook_line.partition(hook_prefix)[2].split(",")
+            }
+            assert {"session.start", "command.run", "config.set"} <= hooks, result.stdout
 
 
 def test_header_mod_validation_and_merge(native_binary, tmp_path):
@@ -103,11 +112,13 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
             **_claude_mod_launch_options(env),
             "autoPicker": "",
             "validateCommand": [],
+            "modelSettingCommand": [],
         }
         assert b.observe()["options"] == {
             **_claude_mod_launch_options({}),
             "autoPicker": "",
             "validateCommand": [],
+            "modelSettingCommand": [],
         }
         assert not (a.plugin / "hooks/launch.json").exists()
 
