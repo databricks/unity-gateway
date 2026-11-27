@@ -19,6 +19,8 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    refactored should already have coverage before the refactor. Flag dead or redundant code,
    unnecessary branches, duplicated helpers, agent-specific logic in shared orchestration, and
    private helpers called across module boundaries. Prefer an existing helper or module boundary.
+   Question new dependencies and generated/lock-file churn when existing code or the standard
+   library can do the job; require a concrete need before expanding the dependency graph.
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
@@ -65,6 +67,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
    modify only fields it owns, preserve caller/admin state, remove stale state it owns, and
    show errors that tell the user what they can do.
+   When routing moves to startup or its UI is hidden, preserve a session record in the existing
+   smart-router log so `/smart-router logs` (Claude) or `$smart-router logs` (Codex) can explain
+   the decision later. Check persisted history through the existing journey and request recorder,
+   not only a transient notice.
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
@@ -85,6 +91,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+   For CI scheduling changes, assess merge-queue critical-path time, flake exposure, and shared
+   provider quota under concurrent runs. Moving every live suite into the queue can delay all
+   merges; compare targeted PR checks and full-suite coverage before recommending it. Require
+   measurements for speed claims, and keep required security/test gates effective.
 
 ## Voice and tone
 
