@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import json
+import threading
+from unittest.mock import MagicMock
 
 import pytest
 
 from ucode.agents import gemini
+from ucode.agents.args import LaunchOptions
+from ucode.state import set_provider_service
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
+DEFAULT_MODEL = "system.ai.gemini-3-5-flash"
+PRO_MODEL = "system.ai.gemini-3-1-pro"
 
 
 @pytest.fixture(autouse=True)
@@ -265,3 +271,129 @@ class TestWriteUserMcpServers:
         assert doc["security"] == {"x": 1}  # untouched
         assert "mine" not in doc["mcpServers"]
         assert doc["mcpServers"]["svc"] == {"command": "ug", "args": ["mcp-proxy", "u"]}
+
+
+class TestResolveExplicitModel:
+    def test_returns_a_discovered_model(self):
+        state = {"gemini_models": [DEFAULT_MODEL, PRO_MODEL]}
+
+        assert gemini.resolve_explicit_model(PRO_MODEL, state) == PRO_MODEL
+
+    def test_accepts_a_managed_default_outside_the_admin_model_list(self):
+        state = {"gemini_default_model": "admin-chosen-default", "gemini_models": [PRO_MODEL]}
+
+        assert (
+            gemini.resolve_explicit_model("admin-chosen-default", state) == "admin-chosen-default"
+        )
+        with pytest.raises(RuntimeError, match=f"Available: {PRO_MODEL}, admin-chosen-default\\."):
+            gemini.resolve_explicit_model("system.ai.no-such-model", state)
+
+    @pytest.mark.parametrize(
+        ("models", "available"),
+        [([DEFAULT_MODEL, PRO_MODEL], f"{DEFAULT_MODEL}, {PRO_MODEL}"), ([], "none")],
+        ids=["discovered", "nothing-discovered"],
+    )
+    def test_rejects_a_model_discovery_did_not_find(self, models, available):
+        with pytest.raises(RuntimeError) as exc:
+            gemini.resolve_explicit_model("system.ai.no-such-model", {"gemini_models": models})
+
+        assert str(exc.value) == (
+            "Gemini CLI model 'system.ai.no-such-model' is not configured. "
+            f"Available: {available}. Run `ug configure --agent gemini` to rediscover models."
+        )
+
+
+class TestLaunch:
+    @pytest.fixture(autouse=True)
+    def _isolate_tool_config(self, tmp_path, monkeypatch):
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(gemini, "GEMINI_ENV_PATH", tmp_path / "ucode.env")
+        monkeypatch.setattr(gemini, "GEMINI_BACKUP_PATH", tmp_path / "backup")
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr("ucode.agents.gemini.save_state", lambda s: None)
+        monkeypatch.setattr(
+            "ucode.agents.gemini.get_databricks_token",
+            lambda ws, profile=None, **kwargs: "fake-token",
+        )
+
+    @staticmethod
+    def _state():
+        return {"workspace": WS, "gemini_models": [DEFAULT_MODEL, PRO_MODEL]}
+
+    @staticmethod
+    def _launch(monkeypatch, state, tool_args=(), options=None):
+        captured: dict = {"refresher_models": []}
+
+        def fake_popen(argv, env):
+            captured["argv"] = argv
+            captured["env"] = env
+            proc = MagicMock()
+            proc.wait.return_value = 0
+            return proc
+
+        monkeypatch.setattr(gemini.subprocess_cross_os, "popen", fake_popen)
+        # The real refresher sleeps 30 minutes between rewrites; record the model it was handed.
+        monkeypatch.setattr(
+            gemini,
+            "_refresh_forever",
+            lambda state, model, stop_event: captured["refresher_models"].append(model),
+        )
+        with pytest.raises(SystemExit) as exc:
+            gemini.launch(state, list(tool_args), options=options or LaunchOptions())
+        assert exc.value.code == 0
+        return captured
+
+    def test_ug_model_option_is_the_launch_model(self, monkeypatch):
+        captured = self._launch(
+            monkeypatch, self._state(), ["-p", "hi"], LaunchOptions(user_pinned_model=PRO_MODEL)
+        )
+
+        assert captured["env"]["GEMINI_MODEL"] == PRO_MODEL
+        assert captured["argv"] == ["gemini", "-p", "hi"]
+        assert gemini.persisted_provider_model() == PRO_MODEL  # the env file agrees
+        assert captured["refresher_models"] == [PRO_MODEL]
+
+    @pytest.mark.parametrize(
+        "previous", [None, PRO_MODEL], ids=["first-launch", "after-model-launch"]
+    )
+    def test_without_a_model_option_launches_the_default(self, monkeypatch, previous):
+        if previous:
+            gemini.write_tool_config(self._state(), previous)  # an earlier `--model` launch
+
+        captured = self._launch(monkeypatch, self._state())
+
+        # `--model` is per launch: the env file a previous launch left must not make it stick.
+        assert captured["env"]["GEMINI_MODEL"] == DEFAULT_MODEL
+        assert gemini.persisted_provider_model() == DEFAULT_MODEL
+        assert captured["refresher_models"] == [DEFAULT_MODEL]
+
+    def test_bare_provider_relaunch_keeps_the_pinned_target(self, monkeypatch):
+        provider = "cat.schema.svc"
+        state = set_provider_service(self._state(), "gemini", provider)
+        gemini.write_tool_config(state, "gemini-3.1-pro", provider=provider)  # an earlier launch
+
+        captured = self._launch(monkeypatch, state)
+
+        assert captured["env"]["GEMINI_MODEL"] == "gemini-3.1-pro"
+        assert (
+            f"Databricks-Model-Provider-Service:{provider}"
+            in (captured["env"]["GEMINI_CLI_CUSTOM_HEADERS"])
+        )
+        assert captured["refresher_models"] == ["gemini-3.1-pro"]
+
+    def test_token_refresh_keeps_rewriting_the_session_model(self, monkeypatch):
+        written: list[str] = []
+        stop_event = threading.Event()
+
+        def fake_write(state, model, **kwargs):
+            written.append(model)
+            stop_event.set()
+            return state, "fresh-token"
+
+        monkeypatch.setattr(gemini, "TOKEN_REFRESH_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(gemini, "write_tool_config", fake_write)
+
+        gemini._refresh_forever(self._state(), PRO_MODEL, stop_event)
+
+        assert written == [PRO_MODEL]
