@@ -189,6 +189,7 @@ Check the tables for the `ug` version that your fleet runs.
 | `availableModels` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models. |
 | `enforceAvailableModels` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models. |
 | `modelPicker` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models. |
+| `modelPricing` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `UG_MODEL_PRICING=1` opts in, with the workspace's published USD-per-million-token rates for its `system.ai` models (from the `models` list); Claude Code then prices sessions at those rates. |
 | `env.CLAUDE_CODE_ENABLE_TELEMETRY` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |
 | `env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |
 | `env.OTEL_TRACES_EXPORTER` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |

@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -16,7 +17,7 @@ from unittest.mock import ANY, MagicMock, Mock
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import gateway_proxy, managed_files
+from ucode import gateway_proxy, managed_files, pricing
 from ucode.agents import LaunchOptions, claude
 from ucode.databricks import RelayLookup
 from ucode.smart_routing import claude_routing, v2
@@ -3468,6 +3469,469 @@ class TestWriteToolConfigManagedSettings:
         assert "allowManagedMcpServersOnly" not in managed
         assert managed["cleanupPeriodDays"] == 30
         assert recorded == [[]]
+
+
+class TestManagedModelPricing:
+    """`ug configure` fetches system.ai rates so the managed settings carry modelPricing.
+
+    The fetch-and-write tests opt in via ``UG_MODEL_PRICING``; the flag-off contract (no rates
+    call, no cache write, no modelPricing key) has its own tests at the bottom of the class. The
+    pricing helpers themselves are covered in ``tests/test_pricing.py``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _os_settings_writes_enabled(self, monkeypatch):
+        # The agent host opts out of OS-managed settings; these tests need the writes.
+        monkeypatch.delenv("UG_SKIP_OS_SETTINGS", raising=False)
+
+    @pytest.fixture(autouse=True)
+    def _pricing_opted_in(self, monkeypatch):
+        # Pricing ships off by default; every behavior test opts in. The flag-off tests below
+        # delenv it again to exercise the default.
+        monkeypatch.setenv(pricing.MODEL_PRICING_ENV, "1")
+
+    GLM_RATES = {
+        "system.ai.glm-5-3": {
+            "DBU": {"input": 20.0, "output": 62.85714, "cache_read": 3.71428},
+            "USD": {"input": 1.4, "output": 4.3999998, "cache_read": 0.2599996},
+        }
+    }
+
+    GLM_OVERRIDES = {
+        "system.ai.glm-5-3": {"input": 1.4, "output": 4.4, "cacheRead": 0.26, "cacheWrite": 1.4}
+    }
+
+    def test_render_overlay_writes_model_pricing_with_the_catalog_picker(self):
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=["system.ai.glm-5-3"],
+            model_id_to_display_name={"system.ai.glm-5-3": "GLM 5.3"},
+        )
+        overlay, keys = claude.render_overlay(
+            WS, None, picker_catalog=catalog, model_pricing=self.GLM_OVERRIDES
+        )
+
+        assert overlay["modelPricing"] == {"overrides": self.GLM_OVERRIDES}
+        assert ["modelPricing"] in keys
+        # The prices ride the settings block, not the picker rows.
+        assert "description" not in overlay["modelPicker"]["options"][0]
+
+    def test_render_overlay_writes_model_pricing_with_static_models(self):
+        overlay, keys = claude.render_overlay(
+            WS,
+            None,
+            static_models=["system.ai.glm-5-3", "system.ai.claude-haiku-4-5"],
+            model_pricing=self.GLM_OVERRIDES,
+        )
+
+        assert overlay["modelPricing"] == {"overrides": self.GLM_OVERRIDES}
+        assert overlay["modelPicker"]["options"] == [
+            {"model": "system.ai.glm-5-3", "label": "GLM 5.3"},
+            {"model": "system.ai.claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+        ]
+        assert ["modelPricing"] in keys
+
+    def test_render_overlay_writes_no_model_pricing_for_a_provider_source(self):
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            provider="main.default.anthropic-mps",
+            provider_models={"default": "claude-sonnet-4-6"},
+            model_pricing=self.GLM_OVERRIDES,
+        )
+
+        assert "modelPricing" not in overlay
+
+    def _patch_writes(self, monkeypatch, managed_writes):
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "read_json_safe", lambda path: {})
+        monkeypatch.setattr(claude, "write_json_file", lambda path, payload: None)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        # The manifest records live in ~/.ucode; never let a test write the real one.
+        monkeypatch.setattr(claude, "record_ug_picker", lambda *a, **kw: None)
+        monkeypatch.setattr(claude, "record_settings_passthrough", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: None)
+        monkeypatch.setattr(managed_files, "read_managed_file", lambda path: None)
+        monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
+
+        def fake_write_managed(path, text, **kwargs):
+            managed_writes.append(json.loads(text))
+            return "written"
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", fake_write_managed)
+
+    @staticmethod
+    def _pricing_manifest():
+        from ucode.managed_config import normalize_managed_config
+
+        return normalize_managed_config(
+            {
+                "spec_version": 1,
+                "default_agent": "CODING_AGENT_CLAUDE_CODE",
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_CLAUDE_CODE",
+                        "config": {
+                            "default_models": {
+                                "default_model": "system.ai.claude-sonnet-4-6",
+                                "default_opus_model": "system.ai.claude-opus-4-8",
+                                "default_haiku_model": "system.ai.claude-haiku-4-5",
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+
+    def test_configure_fetches_rates_into_the_managed_settings(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        manifest = self._pricing_manifest()
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
+        )
+        requested: list = []
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+
+        def fake_rates(workspace, token, fqns):
+            requested.append((workspace, token, fqns))
+            # Only opus has published USD rates; haiku is served only in DBU, so it gets no row.
+            return (
+                {
+                    "system.ai.claude-opus-4-8": {
+                        "USD": {
+                            "input": 5.0,
+                            "output": 25.0,
+                            "cache_read": 0.5,
+                            "cache_creation": 6.25,
+                            "cache_creation_1h": 10.0,
+                        }
+                    },
+                    "system.ai.claude-haiku-4-5": {
+                        "DBU": {"input": 1.0, "output": 5.0, "cache_read": 0.1}
+                    },
+                },
+                None,
+            )
+
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", fake_rates)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        # The fetch strips ug's own `[1m]` hint before asking the rates API.
+        assert requested == [
+            (
+                WS,
+                "workspace-token",
+                ["system.ai.claude-haiku-4-5", "system.ai.claude-opus-4-8"],
+            )
+        ]
+        assert state[pricing.MODEL_PRICING_STATE_KEY] == {
+            "system.ai.claude-opus-4-8": {
+                "input": 5.0,
+                "output": 25.0,
+                "cacheRead": 0.5,
+                # cacheWrite prefers the 1-hour cache-creation rate.
+                "cacheWrite": 10.0,
+            }
+        }
+        assert managed_writes[0]["modelPricing"] == {
+            "overrides": {
+                "system.ai.claude-opus-4-8": {
+                    "input": 5.0,
+                    "output": 25.0,
+                    "cacheRead": 0.5,
+                    "cacheWrite": 10.0,
+                }
+            }
+        }
+        assert managed_writes[0]["modelPicker"]["options"] == [
+            {
+                "model": "system.ai.claude-opus-4-8[1m]",
+                "label": "Claude Opus 4.8",
+                "behavesAs": "claude-opus-4-8",
+            },
+            {
+                "model": "system.ai.claude-haiku-4-5",
+                "label": "Claude Haiku 4.5",
+                "behavesAs": "claude-haiku-4-5",
+            },
+        ]
+
+    def test_configure_prices_static_managed_models(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": ["system.ai.glm-5-3"],
+        }
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert managed_writes[0]["modelPricing"] == {"overrides": self.GLM_OVERRIDES}
+        assert managed_writes[0]["modelPicker"]["options"] == [
+            {"model": "system.ai.glm-5-3", "label": "GLM 5.3"}
+        ]
+
+    def test_plain_launch_reuses_cached_prices_for_identical_files(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        manifest = self._pricing_manifest()
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
+        )
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+        configured = managed_writes[0]
+
+        # A plain launch passes the managed inputs explicitly; it must not fetch again, and its
+        # file must match the one configure wrote.
+        monkeypatch.setattr(
+            pricing,
+            "fetch_model_service_rates",
+            lambda *a: pytest.fail("launch must reuse the cached prices"),
+        )
+        inputs = claude.managed_model_inputs(state, manifest)
+        claude.write_tool_config(
+            state,
+            None,
+            route_root_model=inputs.route_root_model,
+            coding_agent_config_defaults=inputs.coding_agent_config_defaults,
+            picker_catalog=inputs.picker_catalog,
+        )
+
+        assert managed_writes[1] == configured
+
+    def test_failed_fetch_leaves_the_settings_unpriced_and_clears_the_cache(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        manifest = self._pricing_manifest()
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
+        )
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(
+            pricing, "fetch_model_service_rates", lambda *a: ({}, "HTTP 404 Not Found")
+        )
+        warnings = []
+        monkeypatch.setattr(pricing, "print_warning", lambda message: warnings.append(message))
+        # A stale cache from an earlier configure must not outlive the failed refresh: a plain
+        # launch renders the cache, so its file would otherwise differ from this unpriced write.
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            pricing.MODEL_PRICING_STATE_KEY: self.GLM_OVERRIDES,
+        }
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert warnings == ["Model prices are unavailable for the model picker: HTTP 404 Not Found"]
+        assert state[pricing.MODEL_PRICING_STATE_KEY] == {}
+        assert "modelPricing" not in managed_writes[0]
+
+    def test_flag_off_by_default_skips_the_fetch_and_every_cache_write(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        manifest = self._pricing_manifest()
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda _state: _managed_config_result(manifest)
+        )
+        monkeypatch.setattr(
+            pricing, "get_databricks_token", lambda *a, **kw: pytest.fail("must not authenticate")
+        )
+        monkeypatch.setattr(
+            pricing,
+            "fetch_model_service_rates",
+            lambda *a, **kw: pytest.fail("must not call the rates API"),
+        )
+        monkeypatch.delenv(pricing.MODEL_PRICING_ENV, raising=False)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert pricing.MODEL_PRICING_STATE_KEY not in state
+        assert "modelPricing" not in managed_writes[0]
+
+    def test_flag_off_ignores_a_cached_price_on_launch_and_configure(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(
+            pricing,
+            "fetch_model_service_rates",
+            lambda *a, **kw: pytest.fail("must not call the rates API"),
+        )
+        monkeypatch.delenv(pricing.MODEL_PRICING_ENV, raising=False)
+        # Prices cached by an earlier flag-on run must not reach either write path while off.
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": ["system.ai.glm-5-3"],
+            pricing.MODEL_PRICING_STATE_KEY: self.GLM_OVERRIDES,
+        }
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+        claude.write_tool_config(
+            state,
+            None,
+            picker_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=["system.ai.glm-5-3"], model_id_to_display_name={}
+            ),
+        )
+
+        for written in managed_writes:
+            assert "modelPricing" not in written
+
+    FOREIGN_PRICING = {
+        "overrides": {
+            "admin.model": {"input": 1.0, "output": 2.0, "cacheRead": 0.1, "cacheWrite": 1.0}
+        }
+    }
+
+    def _seed_managed_file(self, monkeypatch, existing: dict, snapshots):
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: json.dumps(existing))
+        monkeypatch.setattr(managed_files, "read_managed_file", lambda path: json.dumps(existing))
+        monkeypatch.setattr(claude, "managed_file_snapshots", lambda tool, parser: snapshots)
+
+    def test_reconfigure_preserves_an_admins_own_model_pricing(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        monkeypatch.delenv(pricing.MODEL_PRICING_ENV, raising=False)
+        # The block an administrator authored was never recorded as ug's, so a configure that
+        # carries no prices leaves it exactly as found.
+        snapshots = managed_files.ManagedFileSnapshots(
+            {"modelPricing": self.FOREIGN_PRICING["overrides"]}, None, None
+        )
+        self._seed_managed_file(monkeypatch, {"modelPricing": self.FOREIGN_PRICING}, snapshots)
+        state = {"workspace": WS, "codex_models": [], "claude_static_models": ["system.ai.glm-5-3"]}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert managed_writes[0]["modelPricing"] == self.FOREIGN_PRICING
+
+    def test_reconfigure_reverts_ugs_own_stale_model_pricing(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        monkeypatch.delenv(pricing.MODEL_PRICING_ENV, raising=False)
+        # A block ug recorded writing, with no pre-ug baseline, is dropped when a later
+        # configure carries no prices.
+        ug_block = {"overrides": self.GLM_OVERRIDES}
+        snapshots = managed_files.ManagedFileSnapshots({}, None, {"modelPricing": ug_block})
+        self._seed_managed_file(monkeypatch, {"modelPricing": ug_block}, snapshots)
+        state = {"workspace": WS, "codex_models": [], "claude_static_models": ["system.ai.glm-5-3"]}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert "modelPricing" not in managed_writes[0]
+
+    def test_reconfigure_replaces_ugs_own_model_pricing_wholesale(self, monkeypatch):
+        managed_writes = []
+        self._patch_writes(monkeypatch, managed_writes)
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
+        # An earlier configure priced a model this one no longer serves: the new block must
+        # replace it entirely, not deep-merge and keep the stale model at old prices.
+        stale_block = {
+            "overrides": {
+                "system.ai.gone-model": {
+                    "input": 9.9,
+                    "output": 9.9,
+                    "cacheRead": 9.9,
+                    "cacheWrite": 9.9,
+                }
+            }
+        }
+        snapshots = managed_files.ManagedFileSnapshots({}, None, {"modelPricing": stale_block})
+        self._seed_managed_file(monkeypatch, {"modelPricing": stale_block}, snapshots)
+        state = {"workspace": WS, "codex_models": [], "claude_static_models": ["system.ai.glm-5-3"]}
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert managed_writes[0]["modelPricing"] == {"overrides": self.GLM_OVERRIDES}
+
+    def _real_reconcile_env(self, tmp_path, monkeypatch):
+        """Real managed-settings reconcile and revert flow, writes landing in ``tmp_path``."""
+        managed_path = tmp_path / "managed-settings.json"
+        backup_dir = tmp_path / "managed-backups"
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+        )
+
+        def privileged_write(target, text):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", privileged_write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())
+        monkeypatch.setattr(claude, "remove_privileged_tree", shutil.rmtree)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "claude_header_mod_root", lambda: tmp_path / "ucode-plugins")
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda **_kwargs: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+        return managed_path
+
+    def test_configure_then_revert_leaves_no_model_pricing_or_state(self, tmp_path, monkeypatch):
+        from ucode import state as state_module
+
+        managed_path = self._real_reconcile_env(tmp_path, monkeypatch)
+        baseline = {"env": {"MY_OWN": "keep"}}
+        managed_path.write_text(json.dumps(baseline))
+        monkeypatch.setattr(pricing, "get_databricks_token", lambda *a, **kw: "workspace-token")
+        monkeypatch.setattr(pricing, "fetch_model_service_rates", lambda *a: (self.GLM_RATES, None))
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": ["system.ai.glm-5-3"],
+        }
+
+        claude.write_tool_config(state, None, derive_managed_model_inputs=True)
+
+        assert json.loads(managed_path.read_text())["modelPricing"] == {
+            "overrides": self.GLM_OVERRIDES
+        }
+        assert state[pricing.MODEL_PRICING_STATE_KEY] == self.GLM_OVERRIDES
+
+        # `ug revert` restores the managed file from its pre-ug baseline, dropping the block
+        # ug wrote, and clear_state drops the whole workspace entry, pricing cache included.
+        assert claude.revert_managed_settings() == "restored"
+        assert json.loads(managed_path.read_text()) == baseline
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "current_workspace": WS,
+                    "workspaces": {WS: {pricing.MODEL_PRICING_STATE_KEY: self.GLM_OVERRIDES}},
+                }
+            )
+        )
+        monkeypatch.setattr(state_module, "STATE_PATH", state_file)
+        state_module.clear_state()
+
+        assert json.loads(state_file.read_text()).get("workspaces") == {}
 
 
 class TestAddClaudeMcpServer:
