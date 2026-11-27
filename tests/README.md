@@ -271,8 +271,8 @@ The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
 inference through the desktop UI for Databricks Hosted and the Anthropic relay MPS; the
 staging `cowork-inference-staging` job runs the same Desktop steps for the
-non-relay Anthropic MPS, as three parallel legs on protected runners, each leg running
-the inference check before its task. Each lane
+non-relay Anthropic MPS, as three parallel legs on protected runners. Each leg completes
+onboarding, and the skill leg also runs the inference check before its task. Each lane
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
 Both Windows lanes also run a `system.ai.web_search` connector search through UG's MCP proxy,

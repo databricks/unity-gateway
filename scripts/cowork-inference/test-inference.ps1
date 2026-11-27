@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$OutputDirectory)
+param([Parameter(Mandatory)][string]$OutputDirectory, [switch]$OnboardingOnly)
 
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Run on a disposable GitHub Actions runner' }
@@ -64,46 +64,48 @@ try {
         throw 'Cowork control has no supported native activation pattern'
     }
     $report.coworkActivated = $true
-    $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
-    $report.initialModel = Select-CoworkModel -Root $window -Label $configuration.targetModelLabel
-    $report.model = $configuration.targetModel
-    $editor = Wait-Control -Root $window -Names 'Write your prompt to Claude'
-    $prompt = 'Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools.'
-    $valuePattern = $null
-    if ($editor.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
-        $valuePattern.SetValue($prompt)
-    } else {
-        $editor.SetFocus()
-        [Windows.Forms.SendKeys]::SendWait($prompt)
-    }
-    $submit = Wait-Control -Root $window -Names 'Start task'
-    $submit.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-    $report.promptSubmitted = $true
-    $deadline = [DateTime]::UtcNow.AddSeconds(240)
-    do {
-        Start-Sleep -Seconds 2
-        $paneCondition = [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::NameProperty, 'Primary pane')
-        $pane = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $paneCondition)
-        if (-not $pane) { continue }
-        $controls = $pane.FindAll([Windows.Automation.TreeScope]::Descendants,
-            [Windows.Automation.Condition]::TrueCondition)
-        $responseError = Get-CoworkResponseError -Names @($controls | ForEach-Object { $_.Current.Name })
-        if ($responseError) { throw $responseError }
-        $responseCondition = [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::NameProperty, 'Claude responded: 48213')
-        $finishedCondition = [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::NameProperty, 'Claude finished the response')
-        $answer = $pane.FindFirst([Windows.Automation.TreeScope]::Descendants, $responseCondition)
-        $finished = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $finishedCondition)
-        if ($answer -and $finished) {
-            $report.responseAsserted = $true
-            $report.responseFinished = $true
-            $report.expectedResponse = '48213'
-            break
+    if (-not $OnboardingOnly) {
+        $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
+        $report.initialModel = Select-CoworkModel -Root $window -Label $configuration.targetModelLabel
+        $report.model = $configuration.targetModel
+        $editor = Wait-Control -Root $window -Names 'Write your prompt to Claude'
+        $prompt = 'Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools.'
+        $valuePattern = $null
+        if ($editor.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+            $valuePattern.SetValue($prompt)
+        } else {
+            $editor.SetFocus()
+            [Windows.Forms.SendKeys]::SendWait($prompt)
         }
-    } until ([DateTime]::UtcNow -ge $deadline)
-    if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }
+        $submit = Wait-Control -Root $window -Names 'Start task'
+        $submit.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $report.promptSubmitted = $true
+        $deadline = [DateTime]::UtcNow.AddSeconds(240)
+        do {
+            Start-Sleep -Seconds 2
+            $paneCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, 'Primary pane')
+            $pane = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $paneCondition)
+            if (-not $pane) { continue }
+            $controls = $pane.FindAll([Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.Condition]::TrueCondition)
+            $responseError = Get-CoworkResponseError -Names @($controls | ForEach-Object { $_.Current.Name })
+            if ($responseError) { throw $responseError }
+            $responseCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, 'Claude responded: 48213')
+            $finishedCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, 'Claude finished the response')
+            $answer = $pane.FindFirst([Windows.Automation.TreeScope]::Descendants, $responseCondition)
+            $finished = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $finishedCondition)
+            if ($answer -and $finished) {
+                $report.responseAsserted = $true
+                $report.responseFinished = $true
+                $report.expectedResponse = '48213'
+                break
+            }
+        } until ([DateTime]::UtcNow -ge $deadline)
+        if (-not $report.responseAsserted) { throw 'Cowork did not show the expected response within 240 seconds' }
+    }
 } catch {
     $report.error = $_.Exception.Message
 } finally {

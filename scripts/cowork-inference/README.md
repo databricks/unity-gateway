@@ -44,10 +44,11 @@ Staging rejects GitHub-hosted runners, so the Windows Desktop tasks run in their
 shards instead of after them. The job splits the four checks into three parallel legs —
 inference with the skill task, the file read, and the MCP web search — because the provider
 service serves the lane's concurrent Claude shards already, reports no configured rate
-limits, and each check issues only a handful of tiny requests. Every leg runs the inference
-check first: it completes Desktop's first-launch gateway onboarding on a fresh runner, and
-the skill task's plugin commands reuse that task's Cowork account directory on the same
-runner. The Databricks CLI is installed and exposed on PATH before the checks, as in the
+limits, and each check issues only a handful of tiny requests. Each leg completes Desktop's
+first-launch gateway onboarding. The skill leg also runs the full inference check, because
+its plugin commands reuse the inference task's Cowork account directory on the same runner.
+The file and MCP legs each assert their own completed task without repeating that baseline
+inference assertion. The Databricks CLI is installed and exposed on PATH before the checks, as in the
 CLI lanes: Desktop's credential helper and the connector proxy resolve the `desktop-ci` PAT
 profile through `databricks auth profiles`, and this lane carries no `DATABRICKS_BEARER` to
 short-circuit that resolution. It skips merge-group
@@ -142,7 +143,10 @@ matching the existing GitHub-hosted Windows CLI integration tests. These public
 package sources are approved for this CI job. Python 3.12 is selected explicitly;
 Claude Code's native binary selection requires its npm postinstall script.
 Package installation needs no JFrog credentials or GitHub OIDC permission. The staging lane installs the same
-versions through the internal PyPI and npm proxies its CLI tests already use.
+versions through the internal PyPI and npm proxies its CLI tests already use. It restores a pinned CLI and
+a dependency-only Python runtime cache, saved only on main pushes before the checkout is installed. Each
+run installs its own checkout, concurrently with the verified Desktop installation; explicit-ref runs bypass
+the caches.
 
 Desktop and CLI versions are upgraded deliberately. For Desktop, update the official
 URL and SHA256 together, keep signature/version checks, and run the native job on each
