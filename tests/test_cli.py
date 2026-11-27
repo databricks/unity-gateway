@@ -8712,6 +8712,82 @@ class TestConfigureSharedStateCopilotCatalog:
         assert state["copilot_catalog"] == own
 
 
+class TestConfigureSharedStatePiModelLimits:
+    """Pi's model limits come from the gateway's Anthropic listing, as Copilot's do."""
+
+    WS = "https://pi.databricks.com"
+
+    def _configure(self, monkeypatch, *, listing, saved=None, previous_ws=None, dest_saved=None):
+        import ucode.cli as cli_mod
+
+        TestConfigureSharedStateSkipDiscovery._stub(monkeypatch)
+        previous = {"workspace": previous_ws or self.WS}
+        if saved is not None:
+            previous["pi_model_limits"] = saved
+        monkeypatch.setattr(cli_mod, "load_state", lambda: dict(previous))
+        dest_block = {} if dest_saved is None else {"pi_model_limits": dest_saved}
+        monkeypatch.setattr(
+            cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: ({"sonnet": "main.team.coder"}, [], [], [], None),
+        )
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
+        monkeypatch.setattr(
+            cli_mod, "list_anthropic_model_catalog", lambda *_args, **_kwargs: listing
+        )
+        return cli_mod.configure_shared_state(self.WS, tools=["pi"])
+
+    def test_saves_the_listed_limits(self, monkeypatch):
+        import ucode.databricks as db_mod
+
+        alias = "anthropic-aigw-481f0baa-main.team.coder"
+        listing = db_mod.AnthropicModelCatalog(
+            model_ids=[alias],
+            model_id_to_display_name={},
+            model_id_to_limits={alias: (1_000_000, 128_000)},
+        )
+
+        state = self._configure(monkeypatch, listing=listing)
+
+        assert state["pi_model_limits"] == {"main.team.coder": [1_000_000, 128_000]}
+
+    def test_failed_listing_keeps_the_saved_limits(self, monkeypatch):
+        import ucode.databricks as db_mod
+
+        saved = {"main.team.coder": [1_000_000, 128_000]}
+        failed = db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+        )
+
+        state = self._configure(monkeypatch, listing=failed, saved=saved)
+
+        assert state["pi_model_limits"] == saved
+
+    def test_failed_listing_after_a_workspace_switch_keeps_only_that_workspace_limits(
+        self, monkeypatch
+    ):
+        import ucode.databricks as db_mod
+
+        failed = db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+        )
+        own = {"main.team.coder": [200_000, 64_000]}
+
+        state = self._configure(
+            monkeypatch,
+            listing=failed,
+            saved={"main.team.coder": [1_000_000, 128_000]},
+            previous_ws="https://other.databricks.com",
+            dest_saved=own,
+        )
+
+        assert state["pi_model_limits"] == own
+
+
 class TestConfigureSharedStateSkipPreflight:
     """With skip_preflight (--skip-preflight), a prior configure is trusted:
     no auth login, token fetch, gateway probe, or model discovery runs — but the

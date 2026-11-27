@@ -176,6 +176,68 @@ class TestRenderOverlayAuthAndModels:
         ids = {m["id"] for m in overlay["providers"]["databricks-claude"]["models"]}
         assert ids == {"claude-opus", "claude-sonnet"}
 
+    @pytest.mark.parametrize(
+        ("model", "context", "output"),
+        [
+            ("system.ai.claude-opus-4-8", 1_000_000, 128_000),
+            ("system.ai.claude-sonnet-4-6", 1_000_000, 128_000),
+            ("system.ai.claude-haiku-5-5", 1_000_000, 128_000),
+            ("system.ai.claude-sonnet-4-5", 200_000, 32_000),
+            ("databricks-claude-haiku-4-5", 200_000, 32_000),
+            ("claude-sonnet", 200_000, 32_000),
+        ],
+    )
+    def test_claude_models_declare_token_limits(self, model, context, output):
+        # Pi's custom-model defaults (128K context, 16K output) would truncate 1M-window models.
+        overlay, _ = _overlay(model, claude_models={"sonnet": model})
+        (entry,) = overlay["providers"]["databricks-claude"]["models"]
+        assert entry == {"id": model, "contextWindow": context, "maxTokens": output}
+
+    def test_gateway_listed_limits_win_over_the_name(self):
+        # An opaque service name says nothing about its model; the gateway listing does.
+        listed = {
+            "main.team.coder": (1_000_000, 128_000),
+            "system.ai.claude-opus-4-8": (922_000, 64_000),
+        }
+        overlay, _ = pi.render_overlay(
+            "main.team.coder",
+            "tok",
+            _base_urls(),
+            {"sonnet": "main.team.coder", "opus": "system.ai.claude-opus-4-8"},
+            [],
+            [],
+            listed,
+        )
+        entries = {m["id"]: m for m in overlay["providers"]["databricks-claude"]["models"]}
+        assert entries["main.team.coder"]["contextWindow"] == 1_000_000
+        assert entries["main.team.coder"]["maxTokens"] == 128_000
+        assert entries["system.ai.claude-opus-4-8"]["contextWindow"] == 922_000
+        assert entries["system.ai.claude-opus-4-8"]["maxTokens"] == 64_000
+
+    def test_unlisted_model_falls_back_to_name_limits(self):
+        model = "system.ai.claude-sonnet-4-6"
+        overlay, _ = pi.render_overlay(
+            model, "tok", _base_urls(), {"sonnet": model}, [], [], {"other": (1, 1)}
+        )
+        (entry,) = overlay["providers"]["databricks-claude"]["models"]
+        assert (entry["contextWindow"], entry["maxTokens"]) == (1_000_000, 128_000)
+
+    def test_limits_state_unwraps_gateway_aliases(self):
+        from ucode.databricks import AnthropicModelCatalog
+
+        alias = "anthropic-aigw-481f0baa-main.team.coder"
+        listing = AnthropicModelCatalog(
+            model_ids=[alias],
+            model_id_to_display_name={},
+            model_id_to_limits={alias: (1_000_000, 128_000)},
+        )
+        assert pi.model_limits_state(listing) == {"main.team.coder": [1_000_000, 128_000]}
+
+    def test_openai_and_gemini_models_stay_bare(self):
+        overlay, _ = _overlay("gpt-5", codex_models=["gpt-5"], gemini_models=["gemini-2"])
+        assert overlay["providers"]["databricks-openai"]["models"] == [{"id": "gpt-5"}]
+        assert overlay["providers"]["databricks-gemini"]["models"] == [{"id": "gemini-2"}]
+
     def test_openai_models_listed(self):
         overlay, _ = _overlay("gpt-5", codex_models=["gpt-5", "gpt-5-mini"])
         ids = {m["id"] for m in overlay["providers"]["databricks-openai"]["models"]}
@@ -369,6 +431,19 @@ class TestWriteToolConfig:
         api_key = written["providers"]["databricks-claude"]["apiKey"]
         assert api_key.startswith("!")
         assert "auth-token" in api_key
+
+    def test_saved_gateway_limits_reach_the_config(self, tmp_path, monkeypatch):
+        pi_mod, config_file, _, _ = self._setup(tmp_path, monkeypatch)
+        state = self._state(
+            claude_models={"sonnet": "main.team.coder"},
+            pi_model_limits={"main.team.coder": [1_000_000, 128_000], "bad": "x"},
+        )
+
+        with patch("ucode.agents.pi.save_state"):
+            pi_mod.write_tool_config(state, "main.team.coder", token="tok")
+
+        (entry,) = json.loads(config_file.read_text())["providers"]["databricks-claude"]["models"]
+        assert entry == {"id": "main.team.coder", "contextWindow": 1_000_000, "maxTokens": 128_000}
 
     def test_bearer_never_written_to_the_config(self, tmp_path, monkeypatch):
         # The whole point: a token on disk is a token that can go stale, and pi

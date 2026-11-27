@@ -16,6 +16,14 @@ Per-provider `compat` flags work around fields the gateway translators reject:
   sends the legacy `anthropic-beta: fine-grained-tool-streaming-...` header
   instead, which the gateway accepts.
 
+Gateway Claude ids are not in Pi's built-in catalog, so a bare `{"id": ...}`
+entry would get Pi's custom-model defaults (a 128K context and 16K output).
+Each Claude entry declares `contextWindow` and `maxTokens`: the limits the
+gateway's Anthropic listing reports for the model (saved at discovery), else
+`claude_token_limits`, the name-based limits Copilot also falls back to. The
+listing comes first because a custom service name says nothing about the model
+it serves.
+
 OSS / Databricks-foundation models (Llama, Qwen, etc.) are not exposed via
 pi today — they live behind /ai-gateway/mlflow/v1 with per-model
 `max_tokens` caps that pi has no global way to honor without per-model
@@ -35,6 +43,7 @@ import shlex
 import signal
 
 from ucode import metrics
+from ucode.agents.copilot import claude_token_limits, saved_limits
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -46,12 +55,14 @@ from ucode.config_io import (
 from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
+    AnthropicModelCatalog,
     build_auth_token_argv,
     build_pi_base_urls,
     classify_model_family,
     get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.workspace import workspace_headers
@@ -87,6 +98,31 @@ PROVIDER_KEYS: list[list[str]] = [["providers", name] for name in PROVIDER_NAMES
 LEGACY_PROVIDER_NAMES = ("databricks-anthropic", "databricks-codex", "databricks-oss")
 
 
+# Per-workspace `{model: [max_input_tokens, max_tokens]}` from the gateway's Anthropic listing,
+# for every model it reports limits for (Claude and GPT among them). Only Claude entries read it
+# today.
+MODEL_LIMITS_STATE_KEY = "pi_model_limits"
+
+
+def model_limits_state(listing: AnthropicModelCatalog) -> dict[str, list[int]]:
+    """The listing's limits in the form discovery saves under ``MODEL_LIMITS_STATE_KEY``.
+
+    The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Pi
+    sends the full name, so the limits are keyed by it."""
+    return {
+        unwrap_anthropic_gateway_model(model): list(limit)
+        for model, limit in listing.model_id_to_limits.items()
+    }
+
+
+def _claude_model_entry(model_id: str, listed_limits: dict[str, tuple[int, int]]) -> dict:
+    """A databricks-claude model entry with its context window and output limit."""
+    context, output = (
+        listed_limits.get(model_id) or claude_token_limits(model_id) or (200_000, 32_000)
+    )
+    return {"id": model_id, "contextWindow": context, "maxTokens": output}
+
+
 def _resolve_model_selector(
     model: str,
     claude_models: dict[str, str],
@@ -113,11 +149,14 @@ def render_overlay(
     claude_models: dict[str, str],
     codex_models: list[str],
     gemini_models: list[str],
+    model_limits: dict[str, tuple[int, int]] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Pi's private agent config.
 
     ``api_key`` is a pi config value, not necessarily a literal bearer: see
-    ``build_pi_api_key`` for the `!command` form every provider gets."""
+    ``build_pi_api_key`` for the `!command` form every provider gets. ``model_limits``
+    holds the gateway-listed ``(max_input_tokens, max_tokens)`` per model."""
+    listed_limits = model_limits or {}
     providers: dict = {}
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
@@ -144,7 +183,7 @@ def render_overlay(
             # the legacy beta header instead when this is false.
             "compat": {"supportsEagerToolInputStreaming": False},
             "headers": ua_headers,
-            "models": [{"id": m} for m in claude_ids],
+            "models": [_claude_model_entry(m, listed_limits) for m in claude_ids],
         }
         keys.append(["providers", "databricks-claude"])
     if codex_models:
@@ -219,6 +258,7 @@ def write_tool_config(
         claude_models,
         codex_models,
         gemini_models,
+        saved_limits(state.get(MODEL_LIMITS_STATE_KEY)),
     )
     existing = read_json_safe(PI_CONFIG_PATH)
     providers = existing.get("providers")

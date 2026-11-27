@@ -604,7 +604,7 @@ def catalog_state(models: list[CopilotModel]) -> dict:
     }
 
 
-def _saved_limits(value: object) -> dict[str, tuple[int, int]]:
+def saved_limits(value: object) -> dict[str, tuple[int, int]]:
     if not isinstance(value, dict):
         return {}
     return {
@@ -629,7 +629,7 @@ def copilot_catalog(state: dict) -> list[CopilotModel]:
     gives GPT models a limit. State saved before the catalog existed falls back to the Claude and
     GPT discovery lists."""
     saved = state.get(CATALOG_STATE_KEY)
-    limits = _saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
+    limits = saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
     static = build_copilot_catalog(_string_list(state.get("copilot_static_models")))
     if static:
         return [replace(model, listed_limits=limits.get(model.id)) for model in static]
