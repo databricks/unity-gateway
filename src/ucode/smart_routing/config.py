@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
@@ -30,11 +34,28 @@ SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 # Route only subagents with V2, subagent-only, and orchestration all enabled.
 SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 
+# Route only subagents with orchestration, hiding subagent model details in the main TUI.
+SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL = "subagent_orch_v0_blind_subagent_model"
+
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
+# Preserve subagent_orch_v0_blind_subagent_model for Claude, with all Codex routing flags disabled.
+SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY = (
+    "subagent_orch_v0_blind_subagent_model_claude_only"
+)
+
+SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
+SUBAGENT_AUTO_V0 = "subagent_auto_v0"
+
+# Route the first prompt and subagents with orchestration.
+FIRST_PROMPT_AND_SUBAGENT_ORCH_V0 = "first_prompt_and_subagent_orch_v0"
+
+# Preserve first_prompt_and_subagent_orch_v0 for Claude, with all Codex routing flags disabled.
+FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY = "first_prompt_and_subagent_orch_v0_claude_only"
+
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
-DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
+DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
 
 _RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 
@@ -43,27 +64,63 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+    },
+    FIRST_PROMPT_AND_SUBAGENT_ORCH_V0: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
+}
+_BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL] = {
+    **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+}
+
+# Agent-specific opt-out for versions that route only the other agent.
+_ROUTING_OFF = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "0",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+}
+
+_AUTO_V0 = {
+    **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
 }
 
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
@@ -71,6 +128,10 @@ _VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
         AGENT_CODEX: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
+    },
+    FIRST_PROMPT_AND_SUBAGENT_ORCH_V0: {
+        AGENT_CLAUDE: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_ORCH_V0],
+        AGENT_CODEX: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_ORCH_V0],
     },
     SUBAGENT_ONLY_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
@@ -88,14 +149,32 @@ _VERSIONS = {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
     },
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+    },
     # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
-        AGENT_CODEX: {
-            ENABLE_SMART_ROUTING_ENV_VAR: "0",
-            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        },
+        AGENT_CODEX: _ROUTING_OFF,
+    },
+    # Codex opts out of routing and orchestration; Claude keeps the blind orch v0 preset.
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+        AGENT_CODEX: _ROUTING_OFF,
+    },
+    SUBAGENT_AUTO_V0: {
+        AGENT_CLAUDE: _AUTO_V0,
+        AGENT_CODEX: _AUTO_V0,
+    },
+    SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
+        AGENT_CLAUDE: _AUTO_V0,
+        AGENT_CODEX: _ROUTING_OFF,
+    },
+    # Codex opts out of routing and orchestration; Claude keeps first_prompt_and_subagent_orch_v0.
+    FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
+        AGENT_CLAUDE: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_ORCH_V0],
+        AGENT_CODEX: _ROUTING_OFF,
     },
 }
 
@@ -127,6 +206,37 @@ def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) 
 
 
 _validate_versions(_VERSIONS)
+
+
+_selected_version: ContextVar[str] = ContextVar("smart_router_config_version", default="")
+
+
+def selected_version(env: Mapping[str, str] | None = None) -> str:
+    """Read a selector or the current launch's already-consumed selector."""
+    source = os.environ if env is None else env
+    if env is not None or SMART_ROUTER_CONFIG_VERSION_ENV_VAR in source:
+        return source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
+    return _selected_version.get()
+
+
+@contextmanager
+def version_scope() -> Iterator[None]:
+    """Retain version identity for this call without reapplying its routing flags."""
+    token = _selected_version.set(selected_version())
+    try:
+        yield
+    finally:
+        _selected_version.reset(token)
+
+
+def auto_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this launch selected a Claude Auto configuration version."""
+    return selected_version(env) in (SUBAGENT_AUTO_V0, SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+
+
+def subagent_model_visible(env: Mapping[str, str]) -> bool:
+    """Whether a resolved environment shows subagent model details in the main TUI."""
+    return env.get(ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR) != "0"
 
 
 def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:

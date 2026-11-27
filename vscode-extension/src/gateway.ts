@@ -1,6 +1,6 @@
 import type { Tokens } from "./auth";
 
-/** POSTs a streaming request to `path` on the workspace's AI Gateway and yields each server-sent event's JSON. */
+/** POSTs a streaming request to `path` on the workspace's Unity Gateway and yields each server-sent event's JSON. */
 export async function* streamEvents(
   workspace: string,
   path: string,
@@ -33,17 +33,17 @@ export async function* streamEvents(
     // requires us to send one; the gateway's refusal names the limit to use instead.
     const allowed = Number(/max_tokens: \d+ > (\d+)/.exec(detail)?.[1]);
     if (!allowed) {
-      throw new Error(`AI Gateway returned ${response.status}: ${detail}`);
+      throw new Error(`Unity Gateway returned ${response.status}: ${detail}`);
     }
     response = await post(token, { ...body, max_tokens: allowed });
     if (!response.ok || !response.body) {
-      throw new Error(`AI Gateway returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      throw new Error(`Unity Gateway returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
     }
   }
   if (response.headers.get("content-type")?.startsWith("text/html")) {
     await response.body.cancel();
     // What a host that serves several workspaces answers when it can't tell which one is meant.
-    throw new Error("AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.");
+    throw new Error("Unity Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.");
   }
   const decoder = new TextDecoder();
   let buffer = "";

@@ -2,10 +2,11 @@
 
 import os
 import time
+from contextlib import suppress
 
 import pytest
 from utils.constants import CLAUDE_TEST_MODEL
-from utils.evidence import FileTask, fresh_id
+from utils.evidence import FileTask, claude_telemetry_debug_summary, fresh_id
 from utils.managed import use_managed_config_fixture
 from utils.sql import resolve_trace_table, resolve_warehouse_id, wait_for_count
 
@@ -35,19 +36,30 @@ def test_ug_claude_exports_trace_to_configured_table(live_session, workspace):
         "--disable-databricks-ai-tools",
     )
     session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={marker}"
-    result = session.run(
-        "claude",
-        "--",
-        "-p",
-        f"{task.prompt} Trace correlation marker: {marker}",
-        "--output-format",
-        "json",
-        "--allowedTools",
-        "Read",
-        "--model",
-        CLAUDE_TEST_MODEL,
-        timeout=180,
-    )
+    debug_file = session.home / "claude-trace-debug.log"
+    try:
+        result = session.run(
+            "claude",
+            "--",
+            "-p",
+            f"{task.prompt} Trace correlation marker: {marker}",
+            "--output-format",
+            "json",
+            "--allowedTools",
+            "Read",
+            "--model",
+            CLAUDE_TEST_MODEL,
+            "--debug-file",
+            str(debug_file),
+            timeout=180,
+        )
+    finally:
+        with suppress(OSError):
+            session.record(
+                "claude-telemetry-debug.json", claude_telemetry_debug_summary(debug_file)
+            )
+        with suppress(OSError):
+            debug_file.unlink(missing_ok=True)
     task.assert_headless_answer("claude", result)
 
     time.sleep(30)

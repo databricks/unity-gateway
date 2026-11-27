@@ -15,16 +15,64 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import PurePath
 
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
+from .agents import antigravity
 from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
 SELECTED = "[›❯>]"
 
 
-def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+def claude_workspace_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
+    """Match the disposable project's full path even when the terminal wraps it."""
+    return "Accessing workspace:" in screen and "".join(str(cwd).split()) in "".join(screen.split())
+
+
+def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
+    """Whether Codex 0.156+ is asking to trust exactly the test project, with Trust selected."""
+    return (
+        bool(re.search(r"(?m)^\s*Folder access\s*$", screen))
+        and bool(re.search(rf"(?m)^\s*{re.escape(str(cwd))}\s*$", screen))
+        # Windows ConPTY captures the selection marker as U+FFFD.
+        and bool(re.search(r"(?m)^\s*[›❯>\ufffd]\s*1[.)]\s+Trust and continue\s*$", screen))
+    )
+
+
+def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
+    """Whether Codex's prompt has its model/directory footer, which its startup draft lacks."""
+    return bool(
+        re.search(
+            rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
+            rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(cwd.name)}(?: · [^\n]*)?"
+            # Codex 0.156 appends a warning badge after the directory.
+            r"(?:[ \t]+⚠[ \t]+\d+ warnings? · f2 to view)?$",
+            screen,
+        )
+    )
+
+
+def _normalize_smart_router_env_guard(command: str) -> str:
+    whitespace_guard = (
+        "if ([string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)) "
+    )
+    if command.startswith(whitespace_guard):
+        command = (
+            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+            + command.removeprefix(whitespace_guard)
+        )
+    return re.sub(
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1Write-Output "ENV_UNSET"\2',
+        command,
+        count=1,
+    )
+
+
+def codex_command_approval_pending(screen: str, expected_command: str | tuple[str, ...]) -> bool:
     prompt = "Would you like to run the following command?"
     if prompt not in screen:
         return False
@@ -32,13 +80,22 @@ def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
     if "Press enter to confirm or esc to cancel" not in dialog:
         return False
     command = re.search(
-        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>\ufffd][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
         dialog,
+    )
+    expected_commands = (
+        (expected_command,) if isinstance(expected_command, str) else expected_command
+    )
+    rendered_command = (
+        " ".join(line.strip() for line in command.group(1).splitlines()).strip()
+        if command
+        else None
     )
     assert (
         re.search(r"(?m)^[ \t]*Environment: local[ \t]*$", dialog) is not None
         and command is not None
-        and command.group(1).strip() == expected_command
+        and _normalize_smart_router_env_guard(rendered_command)
+        in tuple(_normalize_smart_router_env_guard(expected) for expected in expected_commands)
     ), "Codex requested an unexpected command approval:\n" + dialog
     return True
 
@@ -46,7 +103,7 @@ def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
-        r"^[ \t]*↑/↓ to select · Enter to view · Esc to close[ \t]*\s*\Z",
+        r"^[ \t]*↑/↓ to (?:select|navigate) · Enter to view · Esc to close[ \t]*\s*\Z",
         text,
     )
 
@@ -70,12 +127,17 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    # 2.1.322 adds a collapsed history heading after the current task rows.
+    # Newer versions omit the Completed count; every current row must still be done.
+    if rows and re.fullmatch(r"Earlier in this session \([0-9]+\)", rows[-1]):
+        rows.pop()
     if not rows:
         return False
-    completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
+    completed = re.fullmatch(r"Completed(?: \(([1-9][0-9]*)\))?", rows[0])
     return (
         completed is not None
-        and len(rows) - 1 == int(completed[1])
+        and len(rows) > 1
+        and (completed[1] is None or len(rows) - 1 == int(completed[1]))
         and all(re.fullmatch(r"(?:❯\s*)?✔\s+.+\s+done\s+·\s+.+", row) for row in rows[1:])
     )
 
@@ -89,6 +151,11 @@ class TerminalScreen(pyte.Screen):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        # Copilot sends the private form (`CSI ? 6 n`), which pyte's Stream passes as `private=True`
+        # but Screen.report_device_status does not accept.
+        super().report_device_status(mode, **kwargs)
 
     @property
     def display(self):
@@ -226,7 +293,13 @@ class TerminalProcess:
         self.agent = agent
         self.name = name
         self.command = command
-        env = {**session.env, "TERM": "xterm-256color"}
+        self.proxy_diagnostics = session.home / f"proxy-{fresh_id()}.log"
+        # Background proxy output can overwrite the native agent's prompt and footer.
+        env = {
+            **session.env,
+            "TERM": "xterm-256color",
+            "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE": str(self.proxy_diagnostics),
+        }
         if agent == "codex":
             # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
             session.choose_codex_windows_sandbox()
@@ -247,6 +320,10 @@ class TerminalProcess:
 
     def __exit__(self, exc_type, exc, traceback):
         self.child.kill()
+        if self.agent == "antigravity":
+            # Optional evidence must not replace the test's original failure.
+            with contextlib.suppress(OSError):
+                antigravity.requested_urls(self.session)
         routing_log = (
             self.session.home
             / ".ucode"
@@ -264,6 +341,9 @@ class TerminalProcess:
                 "signalstatus": self.child.signalstatus,
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
+                "proxy_diagnostics": self.proxy_diagnostics.read_text(encoding="utf-8")
+                if self.proxy_diagnostics.is_file()
+                else None,
                 "agent_sessions": agent_sessions(self.session, self.agent)
                 if self.agent in ("claude", "codex", "copilot")
                 else {},
@@ -306,27 +386,28 @@ class TerminalProcess:
                 since = None
         raise AssertionError(f"TUI did not show {description} within {timeout}s:\n{self.visible}")
 
-    def selected_line(self):
+    def selected_line(self, *, after=None):
+        # Prior submitted prompts also begin with ❯. Once a menu is open, only
+        # its rows can identify the current selection.
+        text = self.visible if after is None else self.visible.rpartition(after)[2]
         return next(
-            (
-                line.strip()
-                for line in self.visible.splitlines()
-                if re.match(rf"^\s*{SELECTED}", line)
-            ),
+            (line.strip() for line in text.splitlines() if re.match(rf"^\s*{SELECTED}", line)),
             "",
         )
 
     def choose(self, prompt, label):
         """Navigate the visible menu with arrow keys; never write its saved state."""
-        self.wait_for(lambda text: prompt in text and self.selected_line(), prompt, timeout=120)
+        self.wait_for(
+            lambda text: prompt in text and self.selected_line(after=prompt), prompt, timeout=120
+        )
         visited = set()
         for _ in range(100):
-            current = self.selected_line()
+            current = self.selected_line(after=prompt)
             if label in current:
                 self.send("\r", f"choose {label}")
                 self.wait_for(
                     lambda text, before=current: (
-                        prompt not in text or self.selected_line() != before
+                        prompt not in text or self.selected_line(after=prompt) != before
                     ),
                     f"confirmation of {label}",
                 )
@@ -335,7 +416,8 @@ class TerminalProcess:
             visited.add(current)
             self.send("\x1b[B", f"move towards {label}")
             self.wait_for(
-                lambda text, before=current: self.selected_line() != before, "next menu option"
+                lambda text, before=current: self.selected_line(after=prompt) != before,
+                "next menu option",
             )
         raise AssertionError(f"Could not select {label}")
 
@@ -408,10 +490,8 @@ class AgentTerminal(TerminalProcess):
                         return
                     continue
                 ready_since = None
-            if (
-                self.agent != "antigravity"
-                and "Accessing workspace:" in text
-                and self.session.cwd.name in text
+            if self.agent != "antigravity" and claude_workspace_trust_dialog_shown(
+                text, self.session.cwd
             ):
                 ready_since = None
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
@@ -488,22 +568,7 @@ class AgentTerminal(TerminalProcess):
                 ),
                 (
                     "trust-directory",
-                    self.agent == "codex"
-                    and bool(
-                        re.search(
-                            rf"(?m)^\s*>\s+You are in "
-                            rf"{re.escape(str(self.session.cwd.parent))}[\\/][^\\/\r\n]*$",
-                            text,
-                        )
-                    )
-                    and (
-                        "Do you trust the contents of this directory?" in text
-                        or "directory allows project-local config, hooks, and exec policies to load."
-                        in text
-                    )
-                    and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", text))
-                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
-                    and "Press enter to continue" in text,
+                    self.agent == "codex" and codex_trust_dialog_shown(text, self.session.cwd),
                     "\r",
                 ),
             ]
@@ -532,11 +597,7 @@ class AgentTerminal(TerminalProcess):
                 + text
             )
             # Codex's startup draft precedes hook review and lacks the model/directory footer.
-            if self.agent == "codex" and not re.search(
-                rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
-                rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(self.session.cwd.name)}(?: · [^\n]*)?$",
-                text,
-            ):
+            if self.agent == "codex" and not codex_session_footer_shown(text, self.session.cwd):
                 ready_since = None
                 continue
             title = {
@@ -547,6 +608,7 @@ class AgentTerminal(TerminalProcess):
             }.get(self.agent, "Codex")
             if (
                 title in text
+                and "Accessing workspace:" not in text
                 and "Confirm folder trust" not in text
                 and "loading" not in text.lower()
                 and not re.search(r"(?m)^\s*>\s+You are in\b", text)
@@ -629,7 +691,12 @@ class AgentTerminal(TerminalProcess):
             self.approving = True
         return True
 
-    def wait_for_task(self, task, timeout=180):
+    def wait_for_task(self, task, timeout=180, *, completion=None, description=None):
+        """Wait for task evidence while handling the usual permissions and API errors.
+
+        A caller may supply a different evidence predicate for a specific journey;
+        the default still requires and asserts the parent's completed answer.
+        """
         permission_in_progress = False
 
         def completed(screen):
@@ -658,14 +725,17 @@ class AgentTerminal(TerminalProcess):
             if self.approve_windows_command(screen):
                 return False
             permission_in_progress = False
-            return task.completed(self.session, self.agent)
+            return (
+                completion() if completion is not None else task.completed(self.session, self.agent)
+            )
 
         self.wait_for(
             completed,
-            "a completed assistant answer with the file's value",
+            description or "a completed assistant answer with the file's value",
             timeout=timeout,
         )
-        task.assert_completed(self.session, self.agent)
+        if completion is None:
+            task.assert_completed(self.session, self.agent)
 
     def wait_for_background_tasks(self, timeout=180):
         """Wait in Claude's native task view without stopping or detaching work."""

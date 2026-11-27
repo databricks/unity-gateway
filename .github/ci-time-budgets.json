@@ -1,0 +1,3309 @@
+{
+  "ci": {
+    "checks": {
+      "Checks": {
+        "setup": 20,
+        "run": 15,
+        "total": 20
+      }
+    },
+    "claude-mod": {
+      "Claude mod · 2.1.290": {
+        "setup": 25,
+        "run": 285,
+        "total": 295
+      }
+    },
+    "e2e": {
+      "All agent tests": {
+        "setup": 20,
+        "run": 15,
+        "total": 20
+      }
+    },
+    "e2e-shards": {
+      "Agent launch tests · Claude · Linux": {
+        "setup": 30,
+        "run": 45,
+        "total": 70
+      },
+      "Agent launch tests · Claude · Windows": {
+        "setup": 100,
+        "run": 80,
+        "total": 165
+      },
+      "Agent launch tests · Codex · Linux": {
+        "setup": 45,
+        "run": 205,
+        "total": 240
+      },
+      "Agent launch tests · Codex · Windows": {
+        "setup": 105,
+        "run": 560,
+        "total": 645
+      },
+      "Agent launch tests · Copilot · Linux": {
+        "setup": 45,
+        "run": 170,
+        "total": 195
+      },
+      "Agent launch tests · Copilot · Windows": {
+        "setup": 100,
+        "run": 240,
+        "total": 325
+      },
+      "Agent launch tests · Gemini · Linux": {
+        "setup": 40,
+        "run": 50,
+        "total": 70
+      },
+      "Agent launch tests · Gemini · Windows": {
+        "setup": 225,
+        "run": 210,
+        "total": 405
+      },
+      "Agent launch tests · OpenCode · Linux": {
+        "setup": 40,
+        "run": 240,
+        "total": 285
+      },
+      "Agent launch tests · OpenCode · Windows": {
+        "setup": 165,
+        "run": 1045,
+        "total": 1140
+      },
+      "Agent launch tests · Pi · Linux": {
+        "setup": 40,
+        "run": 470,
+        "total": 495
+      },
+      "Agent launch tests · Pi · Windows": {
+        "setup": 365,
+        "run": 345,
+        "total": 650
+      },
+      "Gateway API tests · Linux": {
+        "setup": 25,
+        "run": 70,
+        "total": 85
+      },
+      "Gateway API tests · Windows": {
+        "setup": 60,
+        "run": 65,
+        "total": 120
+      }
+    },
+    "managed-quota-probe": {
+      "Managed quota probe (advisory)": {
+        "setup": 10,
+        "run": 60,
+        "total": 70
+      }
+    },
+    "required-e2e": {
+      "e2e": {
+        "setup": 15,
+        "run": 15,
+        "total": 15
+      }
+    },
+    "required-tests": {
+      "test": {
+        "setup": 15,
+        "run": 15,
+        "total": 15
+      }
+    },
+    "unit-linux": {
+      "Unit tests · Linux · 1/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 10/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 11/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 12/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 13/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 14/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 15/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 16/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 17/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 18/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 19/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 2/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 20/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 21/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 22/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 23/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 24/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 3/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 4/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 5/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 6/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 7/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 8/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      },
+      "Unit tests · Linux · 9/24": {
+        "setup": 20,
+        "run": 55,
+        "total": 60
+      }
+    },
+    "unit-test-times": {
+      "Unit test times": {
+        "setup": 165,
+        "run": 15,
+        "total": 165
+      }
+    },
+    "unit-windows": {
+      "Unit tests · Windows · 1/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 10/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 11/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 12/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 13/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 14/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 15/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 16/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 17/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 18/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 19/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 2/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 20/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 21/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 22/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 23/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 24/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 25/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 26/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 27/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 28/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 29/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 3/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 30/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 31/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 32/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 33/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 34/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 35/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 36/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 37/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 38/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 39/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 4/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 40/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 41/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 42/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 43/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 44/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 45/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 46/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 47/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 48/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 49/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 5/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 50/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 51/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 52/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 53/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 54/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 55/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 56/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 57/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 58/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 59/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 6/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 60/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 61/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 62/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 63/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 64/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 7/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 8/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      },
+      "Unit tests · Windows · 9/64": {
+        "setup": 60,
+        "run": 70,
+        "total": 85
+      }
+    },
+    "vscode-extension": {
+      "VS Code extension": {
+        "setup": 25,
+        "run": 20,
+        "total": 35
+      }
+    },
+    "windows-provisioning": {
+      "Windows provisioning helpers": {
+        "setup": 45,
+        "run": 25,
+        "total": 55
+      }
+    }
+  },
+  "integration": {
+    "anthropic-mps": {
+      "Anthropic MPS - Staging workspace · Claude · Linux": {
+        "setup": 50,
+        "run": 270,
+        "total": 310
+      },
+      "Anthropic MPS - Staging workspace · Claude · Windows": {
+        "setup": 230,
+        "run": 1130,
+        "total": 1320
+      },
+      "Anthropic MPS - Staging workspace · Copilot · Linux (non-blocking)": {
+        "setup": 45,
+        "run": 95,
+        "total": 135
+      },
+      "Anthropic MPS - Staging workspace · Copilot · Windows (non-blocking)": {
+        "setup": 235,
+        "run": 220,
+        "total": 400
+      }
+    },
+    "antigravity": {
+      "Full journeys · Antigravity · Linux": {
+        "setup": 30,
+        "run": 575,
+        "total": 600
+      }
+    },
+    "codex-desktop-macos": {
+      "Codex desktop inference · macOS": {
+        "setup": 100,
+        "run": 685,
+        "total": 740
+      }
+    },
+    "codex-desktop-windows": {
+      "Codex desktop inference · Windows": {
+        "setup": 185,
+        "run": 2910,
+        "total": 3075
+      }
+    },
+    "codex-relay": {
+      "Codex relay login and inference": {
+        "setup": 50,
+        "run": 105,
+        "total": 150
+      }
+    },
+    "copilot": {
+      "Full journeys · Copilot · Linux (non-blocking)": {
+        "setup": 30,
+        "run": 915,
+        "total": 940
+      },
+      "Full journeys · Copilot · Windows (non-blocking)": {
+        "setup": 65,
+        "run": 1170,
+        "total": 1220
+      }
+    },
+    "cowork-inference-macos": {
+      "Cowork desktop tasks · macOS · Anthropic MPS": {
+        "setup": 785,
+        "run": 685,
+        "total": 1430
+      },
+      "Cowork desktop tasks · macOS · Anthropic relay MPS": {
+        "setup": 785,
+        "run": 820,
+        "total": 1480
+      },
+      "Cowork desktop tasks · macOS · Databricks Hosted": {
+        "setup": 775,
+        "run": 695,
+        "total": 1430
+      }
+    },
+    "cowork-inference-windows": {
+      "Cowork desktop tasks · Windows · Anthropic relay MPS": {
+        "setup": 230,
+        "run": 540,
+        "total": 740
+      },
+      "Cowork desktop tasks · Windows · Databricks Hosted": {
+        "setup": 240,
+        "run": 535,
+        "total": 730
+      }
+    },
+    "cujs": {
+      "All integration tests": {
+        "setup": 15,
+        "run": 15,
+        "total": 15
+      }
+    },
+    "dedicated-cuj": {
+      "E2E CUJs · CUJ 1 · Explicit models, tracing, headers": {
+        "setup": 50,
+        "run": 445,
+        "total": 490
+      },
+      "E2E CUJs · CUJ 2 · MPS and named MCP": {
+        "setup": 50,
+        "run": 455,
+        "total": 500
+      },
+      "E2E CUJs · CUJ 2 · Named skills": {
+        "setup": 55,
+        "run": 280,
+        "total": 325
+      },
+      "E2E CUJs · CUJ 3 · UC MCP discovery": {
+        "setup": 55,
+        "run": 340,
+        "total": 390
+      },
+      "E2E CUJs · CUJ 3 · UC model discovery": {
+        "setup": 50,
+        "run": 650,
+        "total": 695
+      },
+      "E2E CUJs · CUJ 3 · UC skill discovery": {
+        "setup": 50,
+        "run": 290,
+        "total": 330
+      },
+      "E2E CUJs · CUJ 4 · Smart routing": {
+        "setup": 50,
+        "run": 820,
+        "total": 865
+      },
+      "E2E CUJs · CUJ 5 · Budget-driven defaults": {
+        "setup": 50,
+        "run": 300,
+        "total": 345
+      },
+      "E2E CUJs · CUJ 6 · Repeated config and removal": {
+        "setup": 55,
+        "run": 1080,
+        "total": 1130
+      },
+      "E2E CUJs · CUJ 7 · Unmanaged model discovery": {
+        "setup": 170,
+        "run": 475,
+        "total": 525
+      },
+      "E2E CUJs · CUJ 8 · Second managed-settings writer": {
+        "setup": 50,
+        "run": 280,
+        "total": 330
+      },
+      "E2E CUJs · CUJ 9 · Model sources": {
+        "setup": 50,
+        "run": 635,
+        "total": 680
+      }
+    },
+    "dedicated-cuj-plan": {
+      "Plan E2E CUJs": {
+        "setup": 15,
+        "run": 15,
+        "total": 15
+      }
+    },
+    "full": {
+      "Full journeys · Claude · Linux": {
+        "setup": 45,
+        "run": 1135,
+        "total": 1165
+      },
+      "Full journeys · Claude · Windows": {
+        "setup": 70,
+        "run": 595,
+        "total": 645
+      },
+      "Full journeys · Codex · Linux": {
+        "setup": 35,
+        "run": 970,
+        "total": 1000
+      },
+      "Full journeys · Codex · Linux · Smart routing": {
+        "setup": 35,
+        "run": 1035,
+        "total": 1050
+      },
+      "Full journeys · Codex · Windows": {
+        "setup": 65,
+        "run": 1250,
+        "total": 1305
+      },
+      "Full journeys · Codex · Windows · Smart routing": {
+        "setup": 70,
+        "run": 490,
+        "total": 540
+      }
+    },
+    "headless-windows": {
+      "Windows headless journey · Claude": {
+        "setup": 65,
+        "run": 140,
+        "total": 205
+      }
+    },
+    "installation": {
+      "Installation tests": {
+        "setup": 30,
+        "run": 50,
+        "total": 75
+      }
+    },
+    "installation-windows": {
+      "Windows installation tests": {
+        "setup": 60,
+        "run": 65,
+        "total": 115
+      }
+    },
+    "managed": {
+      "Managed config · Claude": {
+        "setup": 40,
+        "run": 440,
+        "total": 465
+      },
+      "Managed config · Codex": {
+        "setup": 40,
+        "run": 200,
+        "total": 230
+      }
+    },
+    "managed-smart": {
+      "Managed config · Codex · Smart routing": {
+        "setup": 35,
+        "run": 1075,
+        "total": 1095
+      }
+    },
+    "managed-opencode": {
+      "Managed OpenCode self-managed (non-blocking)": {
+        "setup": 35,
+        "run": 120,
+        "total": 150
+      }
+    },
+    "opencode": {
+      "Full journeys · OpenCode · Linux (non-blocking)": {
+        "setup": 35,
+        "run": 90,
+        "total": 115
+      },
+      "Full journeys · OpenCode · Windows (non-blocking)": {
+        "setup": 65,
+        "run": 140,
+        "total": 195
+      }
+    },
+    "smoke": {
+      "Smoke journeys · Claude · Linux": {
+        "setup": 40,
+        "run": 125,
+        "total": 155
+      },
+      "Smoke journeys · Claude · Windows": {
+        "setup": 90,
+        "run": 250,
+        "total": 300
+      },
+      "Smoke journeys · Codex · Linux": {
+        "setup": 30,
+        "run": 105,
+        "total": 130
+      },
+      "Smoke journeys · Codex · Windows": {
+        "setup": 70,
+        "run": 180,
+        "total": 240
+      }
+    },
+    "soft-fail": {
+      "Soft-fail journeys · claude · Linux (non-blocking)": {
+        "setup": 30,
+        "run": 1330,
+        "total": 1350
+      },
+      "Soft-fail journeys · claude · Windows (non-blocking)": {
+        "setup": 70,
+        "run": 2620,
+        "total": 2690
+      }
+    },
+    "vscode": {
+      "Full journeys · VS Code Copilot Chat · Linux (non-blocking)": {
+        "setup": 60,
+        "run": 400,
+        "total": 450
+      },
+      "Full journeys · VS Code Copilot Chat · Windows (non-blocking)": {
+        "setup": 65,
+        "run": 430,
+        "total": 490
+      }
+    },
+    "workspace": {
+      "Workspace validation": {
+        "setup": 15,
+        "run": 15,
+        "total": 15
+      }
+    },
+    "live-shard-times": {
+      "Live shard coverage": {
+        "setup": 20,
+        "run": 40,
+        "total": 45
+      }
+    }
+  },
+  "publish-skills-test": {
+    "smoke": {
+      "Publisher composite action": {
+        "setup": 30,
+        "run": 35,
+        "total": 55
+      }
+    },
+    "tests": {
+      "Publisher tests (Python 3.12)": {
+        "setup": 85,
+        "run": 65,
+        "total": 145
+      },
+      "Publisher tests (Python 3.13)": {
+        "setup": 50,
+        "run": 60,
+        "total": 95
+      }
+    }
+  },
+  "user-journey-test-required": {
+    "require-user-journey-test": {
+      "User Journey Test Required": {
+        "setup": 35,
+        "run": 35,
+        "total": 35
+      }
+    }
+  },
+  "zizmor": {
+    "zizmor": {
+      "zizmor": {
+        "setup": 15,
+        "run": 50,
+        "total": 50
+      }
+    }
+  },
+  "_unit_calibration": {
+    "run_ids": [
+      "45470171048",
+      "45473197271",
+      "45476004939",
+      "45476989409",
+      "45477820335",
+      "45478065254",
+      "45478548077",
+      "45479521505",
+      "45480569959",
+      "45483896653",
+      "45484170882",
+      "45484475823",
+      "45484509818",
+      "45488875247",
+      "45489911402",
+      "45489927708",
+      "45495030385",
+      "45496311846",
+      "45496500170",
+      "45498695619",
+      "45501052413",
+      "45502129590",
+      "45502423723",
+      "45503676630",
+      "45504068496",
+      "45504126297",
+      "45504479075",
+      "45504632977",
+      "45504733835",
+      "45504831005",
+      "45504842000",
+      "45505469977",
+      "45505547983",
+      "45505738861",
+      "45505947239",
+      "45506553887",
+      "45506840840",
+      "45507834921",
+      "45518362609",
+      "45518822977",
+      "45519243546",
+      "45520268463",
+      "45522786732",
+      "45524382155",
+      "45525228816",
+      "45532462528",
+      "45533067172",
+      "45535038961",
+      "45535803512",
+      "45536037120",
+      "45536273944",
+      "45537634861",
+      "45538770367",
+      "45538947870",
+      "45539327153",
+      "45541452859",
+      "45542255198",
+      "45542642818",
+      "45543089364",
+      "45543178123",
+      "45562891003",
+      "45574780259",
+      "45589963200"
+    ],
+    "linux": {
+      "samples": 1560,
+      "p50": {
+        "setup": 4.0,
+        "run": 18.0,
+        "total": 22.0
+      },
+      "p95": {
+        "setup": 6.0,
+        "run": 26.0,
+        "total": 30.0
+      },
+      "p99": {
+        "setup": 6,
+        "run": 30.0,
+        "total": 34.0
+      },
+      "observed_max": {
+        "setup": 11.0,
+        "run": 32.0,
+        "total": 36.0
+      }
+    },
+    "windows": {
+      "samples": 4160,
+      "p50": {
+        "setup": 10.0,
+        "run": 17.0,
+        "total": 27.0
+      },
+      "p95": {
+        "setup": 13.0,
+        "run": 25.0,
+        "total": 37.0
+      },
+      "p99": {
+        "setup": 22.0,
+        "run": 30.0,
+        "total": 45.0
+      },
+      "observed_max": {
+        "setup": 51.0,
+        "run": 57,
+        "total": 73.0
+      },
+      "recent_outlier_calibration": {
+        "run_ids": [
+          "45543089364",
+          "45538947870",
+          "45532462528",
+          "45562891003"
+        ],
+        "samples": 256,
+        "run_p99": 32.0,
+        "run_max": 57,
+        "run_margin": 13,
+        "outlier_run": "45562891003",
+        "outlier_job": 139031483052,
+        "phase_margin": {
+          "setup": 9.0,
+          "run": 13,
+          "total": 12.0
+        },
+        "reason": "Shard 16 had a 26-second pre-session startup outlier while recent main and PR medians remained 17 seconds. Main run phases use plan-to-final-step timestamps; PR run phases use budget-clock output."
+      }
+    }
+  },
+  "_job_calibration": {
+    "jobs": {
+      "ci/checks/Checks": {
+        "samples": 67,
+        "distinct_runs": 64,
+        "source_set": "C2",
+        "p50": {
+          "setup": 4.0,
+          "run": 1.0,
+          "total": 5.0
+        },
+        "p95": {
+          "setup": 5.0,
+          "run": 2.0,
+          "total": 7.0
+        },
+        "p99": {
+          "setup": 7.0,
+          "run": 2.0,
+          "total": 8.0
+        },
+        "observed_max": {
+          "setup": 7.0,
+          "run": 2.0,
+          "total": 8.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/claude-mod/Claude mod · 2.1.290": {
+        "samples": 109,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 8.0,
+          "run": 84.0,
+          "total": 93.0
+        },
+        "p95": {
+          "setup": 12.0,
+          "run": 135.0,
+          "total": 144.0
+        },
+        "p99": {
+          "setup": 14.0,
+          "run": 137.0,
+          "total": 147.0
+        },
+        "observed_max": {
+          "setup": 14.0,
+          "run": 228.0,
+          "total": 236.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Claude · Linux": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 12.0,
+          "run": 16.0,
+          "total": 29.0
+        },
+        "p95": {
+          "setup": 15.0,
+          "run": 22.0,
+          "total": 34.0
+        },
+        "p99": {
+          "setup": 17.0,
+          "run": 25.0,
+          "total": 38.0
+        },
+        "observed_max": {
+          "setup": 18.0,
+          "run": 26.0,
+          "total": 43.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Claude · Windows": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 35.0,
+          "run": 28.0,
+          "total": 64.0
+        },
+        "p95": {
+          "setup": 49.0,
+          "run": 38.0,
+          "total": 81.0
+        },
+        "p99": {
+          "setup": 65.0,
+          "run": 43.0,
+          "total": 100.0
+        },
+        "observed_max": {
+          "setup": 66.0,
+          "run": 53.0,
+          "total": 103.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Codex · Linux": {
+        "samples": 109,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 13.0,
+          "run": 88.0,
+          "total": 102.0
+        },
+        "p95": {
+          "setup": 17.0,
+          "run": 102.0,
+          "total": 118.0
+        },
+        "p99": {
+          "setup": 19.0,
+          "run": 113.0,
+          "total": 126.0
+        },
+        "observed_max": {
+          "setup": 32.0,
+          "run": 152.0,
+          "total": 166.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Codex · Windows": {
+        "samples": 105,
+        "distinct_runs": 102,
+        "source_set": "C5",
+        "p50": {
+          "setup": 40.0,
+          "run": 219.0,
+          "total": 259.0
+        },
+        "p95": {
+          "setup": 48.0,
+          "run": 279.0,
+          "total": 321.0
+        },
+        "p99": {
+          "setup": 64.0,
+          "run": 306.0,
+          "total": 363.0
+        },
+        "observed_max": {
+          "setup": 81.0,
+          "run": 329.0,
+          "total": 373.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Copilot · Linux": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 10.0,
+          "run": 76.0,
+          "total": 86.0
+        },
+        "p95": {
+          "setup": 14.0,
+          "run": 85.0,
+          "total": 96.0
+        },
+        "p99": {
+          "setup": 15.0,
+          "run": 95.0,
+          "total": 104.0
+        },
+        "observed_max": {
+          "setup": 32.0,
+          "run": 100.0,
+          "total": 111.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Copilot · Windows": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 34.0,
+          "run": 102.0,
+          "total": 137.0
+        },
+        "p95": {
+          "setup": 47.0,
+          "run": 119.0,
+          "total": 161.0
+        },
+        "p99": {
+          "setup": 76.0,
+          "run": 129.0,
+          "total": 194.0
+        },
+        "observed_max": {
+          "setup": 80.0,
+          "run": 131.0,
+          "total": 205.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Gemini · Linux": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 16.0,
+          "run": 9.0,
+          "total": 25.0
+        },
+        "p95": {
+          "setup": 20.0,
+          "run": 13.0,
+          "total": 31.0
+        },
+        "p99": {
+          "setup": 25.0,
+          "run": 17.0,
+          "total": 36.0
+        },
+        "observed_max": {
+          "setup": 25.0,
+          "run": 43.0,
+          "total": 59.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Gemini · Windows": {
+        "samples": 109,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 87.0,
+          "run": 66.0,
+          "total": 155.0
+        },
+        "p95": {
+          "setup": 111.0,
+          "run": 104.0,
+          "total": 201.0
+        },
+        "p99": {
+          "setup": 130.0,
+          "run": 111.0,
+          "total": 215.0
+        },
+        "observed_max": {
+          "setup": 136.0,
+          "run": 131.0,
+          "total": 216.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · OpenCode · Linux": {
+        "samples": 109,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 14.0,
+          "run": 84.0,
+          "total": 98.0
+        },
+        "p95": {
+          "setup": 19.0,
+          "run": 120.0,
+          "total": 141.0
+        },
+        "p99": {
+          "setup": 19.0,
+          "run": 186.0,
+          "total": 200.0
+        },
+        "observed_max": {
+          "setup": 29.0,
+          "run": 187.0,
+          "total": 200.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · OpenCode · Windows": {
+        "samples": 97,
+        "distinct_runs": 95,
+        "source_set": "C6",
+        "p50": {
+          "setup": 48.0,
+          "run": 376.0,
+          "total": 429.0
+        },
+        "p95": {
+          "setup": 63.0,
+          "run": 521.0,
+          "total": 568.0
+        },
+        "p99": {
+          "setup": 141.0,
+          "run": 548.0,
+          "total": 611.0
+        },
+        "observed_max": {
+          "setup": 141.0,
+          "run": 548.0,
+          "total": 611.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Pi · Linux": {
+        "samples": 109,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 15.0,
+          "run": 103.0,
+          "total": 119.0
+        },
+        "p95": {
+          "setup": 20.0,
+          "run": 177.0,
+          "total": 192.0
+        },
+        "p99": {
+          "setup": 22.0,
+          "run": 263.0,
+          "total": 278.0
+        },
+        "observed_max": {
+          "setup": 26.0,
+          "run": 376.0,
+          "total": 393.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Agent launch tests · Pi · Windows": {
+        "samples": 102,
+        "distinct_runs": 100,
+        "source_set": "C7",
+        "p50": {
+          "setup": 147.0,
+          "run": 114.0,
+          "total": 265.0
+        },
+        "p95": {
+          "setup": 181.0,
+          "run": 172.0,
+          "total": 324.0
+        },
+        "p99": {
+          "setup": 213.0,
+          "run": 240.0,
+          "total": 394.0
+        },
+        "observed_max": {
+          "setup": 222.0,
+          "run": 286.0,
+          "total": 508.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Gateway API tests · Linux": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 7.0,
+          "run": 20.0,
+          "total": 27.0
+        },
+        "p95": {
+          "setup": 10.0,
+          "run": 33.0,
+          "total": 41.0
+        },
+        "p99": {
+          "setup": 12.0,
+          "run": 36.0,
+          "total": 44.0
+        },
+        "observed_max": {
+          "setup": 13.0,
+          "run": 47.0,
+          "total": 55.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e-shards/Gateway API tests · Windows": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 24.0,
+          "run": 23.0,
+          "total": 47.0
+        },
+        "p95": {
+          "setup": 30.0,
+          "run": 32.0,
+          "total": 60.0
+        },
+        "p99": {
+          "setup": 40.0,
+          "run": 39.0,
+          "total": 64.0
+        },
+        "observed_max": {
+          "setup": 43.0,
+          "run": 41.0,
+          "total": 65.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/e2e/All agent tests": {
+        "samples": 108,
+        "distinct_runs": 103,
+        "source_set": "C8",
+        "p50": {
+          "setup": 0.0,
+          "run": 0.0,
+          "total": 0.0
+        },
+        "p95": {
+          "setup": 0.0,
+          "run": 1.0,
+          "total": 1.0
+        },
+        "p99": {
+          "setup": 2.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "observed_max": {
+          "setup": 7.0,
+          "run": 1.0,
+          "total": 7.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/managed-quota-probe/Managed quota probe (advisory)": {
+        "samples": 3,
+        "distinct_runs": 3,
+        "source_set": "C49",
+        "run_ids": [
+          45550115709,
+          45599332926,
+          45611592226
+        ],
+        "p50": {
+          "setup": 5,
+          "run": 29,
+          "total": 34
+        },
+        "p95": {
+          "setup": 5,
+          "run": 30,
+          "total": 34
+        },
+        "p99": {
+          "setup": 5,
+          "run": 30,
+          "total": 34
+        },
+        "observed_max": {
+          "setup": 5,
+          "run": 30,
+          "total": 34
+        },
+        "limited_sample": true,
+        "total_only": 0
+      },
+      "ci/required-e2e/e2e": {
+        "samples": 77,
+        "distinct_runs": 75,
+        "source_set": "C9",
+        "p50": {
+          "setup": 0.0,
+          "run": 0.0,
+          "total": 0.0
+        },
+        "p95": {
+          "setup": 0.0,
+          "run": 1.0,
+          "total": 1.0
+        },
+        "p99": {
+          "setup": 2.0,
+          "run": 1.0,
+          "total": 2.0
+        },
+        "observed_max": {
+          "setup": 2.0,
+          "run": 1.0,
+          "total": 2.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/required-tests/test": {
+        "samples": 117,
+        "distinct_runs": 110,
+        "source_set": "C10",
+        "p50": {
+          "setup": 0.0,
+          "run": 0.0,
+          "total": 0.0
+        },
+        "p95": {
+          "setup": 0.0,
+          "run": 1.0,
+          "total": 1.0
+        },
+        "p99": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "observed_max": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/unit-test-times/Unit test times": {
+        "samples": 72,
+        "distinct_runs": 65,
+        "source_set": "C11",
+        "p50": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 4.0
+        },
+        "p95": {
+          "setup": 6.0,
+          "run": 2.0,
+          "total": 8.0
+        },
+        "p99": {
+          "setup": 132.0,
+          "run": 2.0,
+          "total": 132.0
+        },
+        "observed_max": {
+          "setup": 132.0,
+          "run": 2.0,
+          "total": 132.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/vscode-extension/VS Code extension": {
+        "samples": 114,
+        "distinct_runs": 112,
+        "source_set": "C12",
+        "p50": {
+          "setup": 4.0,
+          "run": 8.0,
+          "total": 12.0
+        },
+        "p95": {
+          "setup": 8.0,
+          "run": 9.0,
+          "total": 17.0
+        },
+        "p99": {
+          "setup": 10.0,
+          "run": 9.0,
+          "total": 18.0
+        },
+        "observed_max": {
+          "setup": 11.0,
+          "run": 10.0,
+          "total": 20.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "ci/windows-provisioning/Windows provisioning helpers": {
+        "samples": 66,
+        "distinct_runs": 64,
+        "source_set": "C2",
+        "p50": {
+          "setup": 6.0,
+          "run": 5.0,
+          "total": 11.0
+        },
+        "p95": {
+          "setup": 9.0,
+          "run": 8.0,
+          "total": 15.0
+        },
+        "p99": {
+          "setup": 35.0,
+          "run": 11.0,
+          "total": 42.0
+        },
+        "observed_max": {
+          "setup": 35.0,
+          "run": 11.0,
+          "total": 42.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/anthropic-mps/Anthropic MPS - Staging workspace · Claude · Linux": {
+        "samples": 107,
+        "distinct_runs": 104,
+        "source_set": "C13",
+        "p50": {
+          "setup": 20.0,
+          "run": 122.0,
+          "total": 142.0
+        },
+        "p95": {
+          "setup": 23.0,
+          "run": 134.0,
+          "total": 154.0
+        },
+        "p99": {
+          "setup": 27.0,
+          "run": 143.0,
+          "total": 163.0
+        },
+        "observed_max": {
+          "setup": 34.0,
+          "run": 145.0,
+          "total": 164.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/anthropic-mps/Anthropic MPS - Staging workspace · Claude · Windows": {
+        "samples": 49,
+        "distinct_runs": 17,
+        "source_set": "C14",
+        "p50": {
+          "setup": 83.0,
+          "run": 201.0,
+          "total": 299.0
+        },
+        "p95": {
+          "setup": 114.0,
+          "run": 563.0,
+          "total": 659.0
+        },
+        "p99": {
+          "setup": 120.0,
+          "run": 569.0,
+          "total": 668.0
+        },
+        "observed_max": {
+          "setup": 120.0,
+          "run": 569.0,
+          "total": 668.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/anthropic-mps/Anthropic MPS - Staging workspace · Copilot · Linux (non-blocking)": {
+        "samples": 94,
+        "distinct_runs": 91,
+        "source_set": "C15",
+        "p50": {
+          "setup": 19.0,
+          "run": 40.0,
+          "total": 60.0
+        },
+        "p95": {
+          "setup": 22.0,
+          "run": 47.0,
+          "total": 66.0
+        },
+        "p99": {
+          "setup": 24.0,
+          "run": 60.0,
+          "total": 79.0
+        },
+        "observed_max": {
+          "setup": 24.0,
+          "run": 60.0,
+          "total": 79.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/anthropic-mps/Anthropic MPS - Staging workspace · Copilot · Windows (non-blocking)": {
+        "samples": 95,
+        "distinct_runs": 92,
+        "source_set": "C16",
+        "p50": {
+          "setup": 72.0,
+          "run": 76.0,
+          "total": 150.0
+        },
+        "p95": {
+          "setup": 117.0,
+          "run": 109.0,
+          "total": 200.0
+        },
+        "p99": {
+          "setup": 130.0,
+          "run": 145.0,
+          "total": 218.0
+        },
+        "observed_max": {
+          "setup": 130.0,
+          "run": 145.0,
+          "total": 218.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/antigravity/Full journeys · Antigravity · Linux": {
+        "samples": 109,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 11.0,
+          "run": 140.0,
+          "total": 153.0
+        },
+        "p95": {
+          "setup": 14.0,
+          "run": 287.0,
+          "total": 299.0
+        },
+        "p99": {
+          "setup": 17.0,
+          "run": 376.0,
+          "total": 388.0
+        },
+        "observed_max": {
+          "setup": 18.0,
+          "run": 378.0,
+          "total": 392.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/codex-desktop-macos/Codex desktop inference · macOS": {
+        "samples": 85,
+        "distinct_runs": 83,
+        "source_set": "C17",
+        "p50": {
+          "setup": 38.0,
+          "run": 227.0,
+          "total": 264.0
+        },
+        "p95": {
+          "setup": 48.0,
+          "run": 326.0,
+          "total": 363.0
+        },
+        "p99": {
+          "setup": 60.0,
+          "run": 546.0,
+          "total": 592.0
+        },
+        "observed_max": {
+          "setup": 60.0,
+          "run": 546.0,
+          "total": 592.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/codex-desktop-windows/Codex desktop inference · Windows": {
+        "samples": 65,
+        "distinct_runs": 64,
+        "source_set": "C18",
+        "p50": {
+          "setup": 77.0,
+          "run": 1313.0,
+          "total": 1395.0
+        },
+        "p95": {
+          "setup": 91.0,
+          "run": 1454.0,
+          "total": 1537.0
+        },
+        "p99": {
+          "setup": 120.0,
+          "run": 1493.0,
+          "total": 1576.0
+        },
+        "observed_max": {
+          "setup": 120.0,
+          "run": 1493.0,
+          "total": 1576.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/codex-relay/Codex relay login and inference": {
+        "samples": 106,
+        "distinct_runs": 104,
+        "source_set": "C13",
+        "p50": {
+          "setup": 19.0,
+          "run": 45.0,
+          "total": 65.0
+        },
+        "p95": {
+          "setup": 23.0,
+          "run": 51.0,
+          "total": 73.0
+        },
+        "p99": {
+          "setup": 25.0,
+          "run": 61.0,
+          "total": 80.0
+        },
+        "observed_max": {
+          "setup": 25.0,
+          "run": 64.0,
+          "total": 84.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/copilot/Full journeys · Copilot · Linux (non-blocking)": {
+        "samples": 89,
+        "distinct_runs": 86,
+        "source_set": "C19",
+        "p50": {
+          "setup": 12.0,
+          "run": 410.0,
+          "total": 422.0
+        },
+        "p95": {
+          "setup": 15.0,
+          "run": 456.0,
+          "total": 469.0
+        },
+        "p99": {
+          "setup": 17.0,
+          "run": 519.0,
+          "total": 531.0
+        },
+        "observed_max": {
+          "setup": 17.0,
+          "run": 519.0,
+          "total": 531.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/copilot/Full journeys · Copilot · Windows (non-blocking)": {
+        "samples": 86,
+        "distinct_runs": 83,
+        "source_set": "C20",
+        "p50": {
+          "setup": 26.0,
+          "run": 535.0,
+          "total": 561.0
+        },
+        "p95": {
+          "setup": 32.0,
+          "run": 584.0,
+          "total": 610.0
+        },
+        "p99": {
+          "setup": 41.0,
+          "run": 678.0,
+          "total": 707.0
+        },
+        "observed_max": {
+          "setup": 41.0,
+          "run": 678.0,
+          "total": 707.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/cowork-inference-macos/Cowork desktop tasks · macOS · Anthropic MPS": {
+        "samples": 95,
+        "distinct_runs": 93,
+        "source_set": "C21",
+        "p50": {
+          "setup": 267.0,
+          "run": 249.0,
+          "total": 523.0
+        },
+        "p95": {
+          "setup": 391.0,
+          "run": 341.0,
+          "total": 713.0
+        },
+        "p99": {
+          "setup": 469.0,
+          "run": 379.0,
+          "total": 809.0
+        },
+        "observed_max": {
+          "setup": 469.0,
+          "run": 379.0,
+          "total": 809.0
+        },
+        "limited_sample": false,
+        "total_only": 2
+      },
+      "integration/cowork-inference-macos/Cowork desktop tasks · macOS · Anthropic relay MPS": {
+        "samples": 96,
+        "distinct_runs": 94,
+        "source_set": "C22",
+        "p50": {
+          "setup": 251.0,
+          "run": 246.0,
+          "total": 509.0
+        },
+        "p95": {
+          "setup": 391.0,
+          "run": 409.0,
+          "total": 739.0
+        },
+        "p99": {
+          "setup": 483.0,
+          "run": 534.0,
+          "total": 952.0
+        },
+        "observed_max": {
+          "setup": 483.0,
+          "run": 534.0,
+          "total": 952.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/cowork-inference-macos/Cowork desktop tasks · macOS · Databricks Hosted": {
+        "samples": 95,
+        "distinct_runs": 93,
+        "source_set": "C23",
+        "p50": {
+          "setup": 256.0,
+          "run": 256.0,
+          "total": 521.0
+        },
+        "p95": {
+          "setup": 386.0,
+          "run": 346.0,
+          "total": 715.0
+        },
+        "p99": {
+          "setup": 426.0,
+          "run": 384.0,
+          "total": 781.0
+        },
+        "observed_max": {
+          "setup": 426.0,
+          "run": 384.0,
+          "total": 781.0
+        },
+        "limited_sample": false,
+        "total_only": 1
+      },
+      "integration/cowork-inference-windows/Cowork desktop tasks · Windows · Anthropic relay MPS": {
+        "samples": 103,
+        "distinct_runs": 100,
+        "source_set": "C24",
+        "p50": {
+          "setup": 94.0,
+          "run": 218.0,
+          "total": 317.0
+        },
+        "p95": {
+          "setup": 114.0,
+          "run": 269.0,
+          "total": 368.0
+        },
+        "p99": {
+          "setup": 124.0,
+          "run": 303.0,
+          "total": 404.0
+        },
+        "observed_max": {
+          "setup": 125.0,
+          "run": 332.0,
+          "total": 434.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/cowork-inference-windows/Cowork desktop tasks · Windows · Databricks Hosted": {
+        "samples": 103,
+        "distinct_runs": 100,
+        "source_set": "C7",
+        "p50": {
+          "setup": 92.0,
+          "run": 212.0,
+          "total": 310.0
+        },
+        "p95": {
+          "setup": 119.0,
+          "run": 266.0,
+          "total": 364.0
+        },
+        "p99": {
+          "setup": 129.0,
+          "run": 302.0,
+          "total": 400.0
+        },
+        "observed_max": {
+          "setup": 134.0,
+          "run": 302.0,
+          "total": 418.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/cujs/All integration tests": {
+        "samples": 97,
+        "distinct_runs": 95,
+        "source_set": "C25",
+        "p50": {
+          "setup": 0.0,
+          "run": 0.0,
+          "total": 0.0
+        },
+        "p95": {
+          "setup": 0.0,
+          "run": 1.0,
+          "total": 1.0
+        },
+        "p99": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "observed_max": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj-plan/Plan E2E CUJs": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 1.0,
+          "run": 0.0,
+          "total": 1.0
+        },
+        "p95": {
+          "setup": 2.0,
+          "run": 1.0,
+          "total": 2.0
+        },
+        "p99": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "observed_max": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 1 · Explicit models, tracing, headers": {
+        "samples": 103,
+        "distinct_runs": 101,
+        "source_set": "C26",
+        "p50": {
+          "setup": 20.0,
+          "run": 195.0,
+          "total": 215.0
+        },
+        "p95": {
+          "setup": 24.0,
+          "run": 222.0,
+          "total": 244.0
+        },
+        "p99": {
+          "setup": 26.0,
+          "run": 227.0,
+          "total": 249.0
+        },
+        "observed_max": {
+          "setup": 27.0,
+          "run": 227.0,
+          "total": 250.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 2 · MPS and named MCP": {
+        "samples": 105,
+        "distinct_runs": 102,
+        "source_set": "C5",
+        "p50": {
+          "setup": 20.0,
+          "run": 190.0,
+          "total": 211.0
+        },
+        "p95": {
+          "setup": 25.0,
+          "run": 227.0,
+          "total": 248.0
+        },
+        "p99": {
+          "setup": 28.0,
+          "run": 236.0,
+          "total": 258.0
+        },
+        "observed_max": {
+          "setup": 30.0,
+          "run": 242.0,
+          "total": 265.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 2 · Named skills": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 21.0,
+          "run": 119.0,
+          "total": 140.0
+        },
+        "p95": {
+          "setup": 27.0,
+          "run": 138.0,
+          "total": 161.0
+        },
+        "p99": {
+          "setup": 32.0,
+          "run": 151.0,
+          "total": 183.0
+        },
+        "observed_max": {
+          "setup": 35.0,
+          "run": 151.0,
+          "total": 186.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 3 · UC MCP discovery": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 20.0,
+          "run": 150.0,
+          "total": 170.0
+        },
+        "p95": {
+          "setup": 27.0,
+          "run": 169.0,
+          "total": 193.0
+        },
+        "p99": {
+          "setup": 29.0,
+          "run": 184.0,
+          "total": 205.0
+        },
+        "observed_max": {
+          "setup": 29.0,
+          "run": 188.0,
+          "total": 215.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 3 · UC model discovery": {
+        "samples": 104,
+        "distinct_runs": 101,
+        "source_set": "C27",
+        "p50": {
+          "setup": 21.0,
+          "run": 273.0,
+          "total": 294.0
+        },
+        "p95": {
+          "setup": 24.0,
+          "run": 324.0,
+          "total": 346.0
+        },
+        "p99": {
+          "setup": 25.0,
+          "run": 331.0,
+          "total": 352.0
+        },
+        "observed_max": {
+          "setup": 27.0,
+          "run": 333.0,
+          "total": 354.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 3 · UC skill discovery": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 20.0,
+          "run": 124.0,
+          "total": 145.0
+        },
+        "p95": {
+          "setup": 25.0,
+          "run": 143.0,
+          "total": 165.0
+        },
+        "p99": {
+          "setup": 28.0,
+          "run": 148.0,
+          "total": 170.0
+        },
+        "observed_max": {
+          "setup": 29.0,
+          "run": 148.0,
+          "total": 170.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 4 · Smart routing": {
+        "samples": 50,
+        "distinct_runs": 17,
+        "source_set": "C14",
+        "p50": {
+          "setup": 22.0,
+          "run": 365.0,
+          "total": 386.0
+        },
+        "p95": {
+          "setup": 24.0,
+          "run": 409.0,
+          "total": 431.0
+        },
+        "p99": {
+          "setup": 28.0,
+          "run": 442.0,
+          "total": 465.0
+        },
+        "observed_max": {
+          "setup": 28.0,
+          "run": 442.0,
+          "total": 465.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 5 · Budget-driven defaults": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 21.0,
+          "run": 133.0,
+          "total": 154.0
+        },
+        "p95": {
+          "setup": 25.0,
+          "run": 150.0,
+          "total": 172.0
+        },
+        "p99": {
+          "setup": 27.0,
+          "run": 162.0,
+          "total": 183.0
+        },
+        "observed_max": {
+          "setup": 27.0,
+          "run": 178.0,
+          "total": 200.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 6 · Repeated config and removal": {
+        "samples": 95,
+        "distinct_runs": 93,
+        "source_set": "C28",
+        "p50": {
+          "setup": 20.0,
+          "run": 495.0,
+          "total": 515.0
+        },
+        "p95": {
+          "setup": 26.0,
+          "run": 540.0,
+          "total": 564.0
+        },
+        "p99": {
+          "setup": 30.0,
+          "run": 551.0,
+          "total": 573.0
+        },
+        "observed_max": {
+          "setup": 30.0,
+          "run": 551.0,
+          "total": 573.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 7 · Unmanaged model discovery": {
+        "samples": 102,
+        "distinct_runs": 100,
+        "source_set": "C29",
+        "p50": {
+          "setup": 21.0,
+          "run": 209.0,
+          "total": 229.0
+        },
+        "p95": {
+          "setup": 25.0,
+          "run": 237.0,
+          "total": 261.0
+        },
+        "p99": {
+          "setup": 28.0,
+          "run": 247.0,
+          "total": 281.0
+        },
+        "observed_max": {
+          "setup": 133.0,
+          "run": 259.0,
+          "total": 366.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 8 · Second managed-settings writer": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 21.0,
+          "run": 122.0,
+          "total": 143.0
+        },
+        "p95": {
+          "setup": 25.0,
+          "run": 140.0,
+          "total": 164.0
+        },
+        "p99": {
+          "setup": 27.0,
+          "run": 154.0,
+          "total": 174.0
+        },
+        "observed_max": {
+          "setup": 28.0,
+          "run": 158.0,
+          "total": 182.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/dedicated-cuj/E2E CUJs · CUJ 9 · Model sources": {
+        "samples": 102,
+        "distinct_runs": 100,
+        "source_set": "C7",
+        "p50": {
+          "setup": 21.0,
+          "run": 267.0,
+          "total": 288.0
+        },
+        "p95": {
+          "setup": 25.0,
+          "run": 317.0,
+          "total": 340.0
+        },
+        "p99": {
+          "setup": 28.0,
+          "run": 346.0,
+          "total": 368.0
+        },
+        "observed_max": {
+          "setup": 28.0,
+          "run": 358.0,
+          "total": 380.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/full/Full journeys · Claude · Linux": {
+        "samples": 91,
+        "distinct_runs": 89,
+        "source_set": "C30",
+        "p50": {
+          "setup": 12.0,
+          "run": 502.0,
+          "total": 515.0
+        },
+        "p95": {
+          "setup": 20.0,
+          "run": 567.0,
+          "total": 581.0
+        },
+        "p99": {
+          "setup": 33.0,
+          "run": 605.0,
+          "total": 623.0
+        },
+        "observed_max": {
+          "setup": 33.0,
+          "run": 605.0,
+          "total": 623.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/full/Full journeys · Claude · Windows": {
+        "samples": 70,
+        "distinct_runs": 18,
+        "source_set": "C31",
+        "p50": {
+          "setup": 25.0,
+          "run": 260.0,
+          "total": 288.0
+        },
+        "p95": {
+          "setup": 34.0,
+          "run": 296.0,
+          "total": 321.0
+        },
+        "p99": {
+          "setup": 43.0,
+          "run": 353.0,
+          "total": 380.0
+        },
+        "observed_max": {
+          "setup": 43.0,
+          "run": 353.0,
+          "total": 380.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/full/Full journeys · Codex · Linux": {
+        "samples": 95,
+        "distinct_runs": 93,
+        "source_set": "C32",
+        "p50": {
+          "setup": 12.0,
+          "run": 410.0,
+          "total": 422.0
+        },
+        "p95": {
+          "setup": 17.0,
+          "run": 483.0,
+          "total": 498.0
+        },
+        "p99": {
+          "setup": 22.0,
+          "run": 507.0,
+          "total": 517.0
+        },
+        "observed_max": {
+          "setup": 22.0,
+          "run": 507.0,
+          "total": 517.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/full/Full journeys · Codex · Linux · Smart routing": {
+        "samples": 83,
+        "distinct_runs": 81,
+        "source_set": "C33",
+        "p50": {
+          "setup": 12.0,
+          "run": 427.0,
+          "total": 440.0
+        },
+        "p95": {
+          "setup": 17.0,
+          "run": 478.0,
+          "total": 492.0
+        },
+        "p99": {
+          "setup": 21.0,
+          "run": 827.0,
+          "total": 838.0
+        },
+        "observed_max": {
+          "setup": 21.0,
+          "run": 827.0,
+          "total": 838.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/full/Full journeys · Codex · Windows": {
+        "samples": 89,
+        "distinct_runs": 87,
+        "source_set": "C34",
+        "p50": {
+          "setup": 26.0,
+          "run": 572.0,
+          "total": 598.0
+        },
+        "p95": {
+          "setup": 32.0,
+          "run": 623.0,
+          "total": 652.0
+        },
+        "p99": {
+          "setup": 43.0,
+          "run": 700.0,
+          "total": 732.0
+        },
+        "observed_max": {
+          "setup": 43.0,
+          "run": 700.0,
+          "total": 732.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/full/Full journeys · Codex · Windows · Smart routing": {
+        "samples": 87,
+        "distinct_runs": 85,
+        "source_set": "C35",
+        "p50": {
+          "setup": 26.0,
+          "run": 199.0,
+          "total": 226.0
+        },
+        "p95": {
+          "setup": 35.0,
+          "run": 226.0,
+          "total": 257.0
+        },
+        "p99": {
+          "setup": 39.0,
+          "run": 390.0,
+          "total": 429.0
+        },
+        "observed_max": {
+          "setup": 39.0,
+          "run": 390.0,
+          "total": 429.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/headless-windows/Windows headless journey · Claude": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 25.0,
+          "run": 63.0,
+          "total": 90.0
+        },
+        "p95": {
+          "setup": 32.0,
+          "run": 68.0,
+          "total": 101.0
+        },
+        "p99": {
+          "setup": 39.0,
+          "run": 74.0,
+          "total": 106.0
+        },
+        "observed_max": {
+          "setup": 49.0,
+          "run": 75.0,
+          "total": 116.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/installation-windows/Windows installation tests": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 23.0,
+          "run": 27.0,
+          "total": 51.0
+        },
+        "p95": {
+          "setup": 28.0,
+          "run": 32.0,
+          "total": 57.0
+        },
+        "p99": {
+          "setup": 30.0,
+          "run": 37.0,
+          "total": 60.0
+        },
+        "observed_max": {
+          "setup": 32.0,
+          "run": 45.0,
+          "total": 67.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/installation/Installation tests": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 11.0,
+          "run": 21.0,
+          "total": 32.0
+        },
+        "p95": {
+          "setup": 15.0,
+          "run": 24.0,
+          "total": 37.0
+        },
+        "p99": {
+          "setup": 16.0,
+          "run": 27.0,
+          "total": 39.0
+        },
+        "observed_max": {
+          "setup": 17.0,
+          "run": 28.0,
+          "total": 41.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/live-shard-times/Live shard coverage": {
+        "samples": 13,
+        "distinct_runs": 13,
+        "source_set": "C36",
+        "p50": {
+          "setup": 5.0,
+          "run": 1.0,
+          "total": 6.0
+        },
+        "p95": {
+          "setup": 9.0,
+          "run": 2.0,
+          "total": 10.0
+        },
+        "p99": {
+          "setup": 9.0,
+          "run": 2.0,
+          "total": 10.0
+        },
+        "observed_max": {
+          "setup": 9.0,
+          "run": 2.0,
+          "total": 10.0
+        },
+        "limited_sample": true,
+        "total_only": 0
+      },
+      "integration/managed-opencode/Managed OpenCode self-managed (non-blocking)": {
+        "samples": 97,
+        "distinct_runs": 94,
+        "source_set": "C37",
+        "p50": {
+          "setup": 12.0,
+          "run": 53.0,
+          "total": 65.0
+        },
+        "p95": {
+          "setup": 17.0,
+          "run": 59.0,
+          "total": 73.0
+        },
+        "p99": {
+          "setup": 24.0,
+          "run": 61.0,
+          "total": 81.0
+        },
+        "observed_max": {
+          "setup": 24.0,
+          "run": 61.0,
+          "total": 81.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/managed-smart/Managed config · Codex · Smart routing": {
+        "samples": 87,
+        "distinct_runs": 85,
+        "source_set": "C39",
+        "p50": {
+          "setup": 12.0,
+          "run": 448.0,
+          "total": 460.0
+        },
+        "p95": {
+          "setup": 14.0,
+          "run": 536.0,
+          "total": 546.0
+        },
+        "p99": {
+          "setup": 21.0,
+          "run": 684.0,
+          "total": 697.0
+        },
+        "observed_max": {
+          "setup": 21.0,
+          "run": 684.0,
+          "total": 697.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/managed/Managed config · Claude": {
+        "samples": 108,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 12.0,
+          "run": 165.0,
+          "total": 177.0
+        },
+        "p95": {
+          "setup": 18.0,
+          "run": 219.0,
+          "total": 231.0
+        },
+        "p99": {
+          "setup": 22.0,
+          "run": 234.0,
+          "total": 247.0
+        },
+        "observed_max": {
+          "setup": 25.0,
+          "run": 244.0,
+          "total": 266.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/managed/Managed config · Codex": {
+        "samples": 106,
+        "distinct_runs": 103,
+        "source_set": "C38",
+        "p50": {
+          "setup": 12.0,
+          "run": 86.0,
+          "total": 98.0
+        },
+        "p95": {
+          "setup": 18.0,
+          "run": 99.0,
+          "total": 115.0
+        },
+        "p99": {
+          "setup": 19.0,
+          "run": 103.0,
+          "total": 117.0
+        },
+        "observed_max": {
+          "setup": 20.0,
+          "run": 118.0,
+          "total": 136.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/opencode/Full journeys · OpenCode · Linux (non-blocking)": {
+        "samples": 96,
+        "distinct_runs": 94,
+        "source_set": "C37",
+        "p50": {
+          "setup": 12.0,
+          "run": 38.0,
+          "total": 50.0
+        },
+        "p95": {
+          "setup": 16.0,
+          "run": 43.0,
+          "total": 56.0
+        },
+        "p99": {
+          "setup": 20.0,
+          "run": 44.0,
+          "total": 60.0
+        },
+        "observed_max": {
+          "setup": 20.0,
+          "run": 44.0,
+          "total": 60.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/opencode/Full journeys · OpenCode · Windows (non-blocking)": {
+        "samples": 96,
+        "distinct_runs": 93,
+        "source_set": "C40",
+        "p50": {
+          "setup": 25.0,
+          "run": 61.0,
+          "total": 86.0
+        },
+        "p95": {
+          "setup": 31.0,
+          "run": 68.0,
+          "total": 96.0
+        },
+        "p99": {
+          "setup": 34.0,
+          "run": 83.0,
+          "total": 107.0
+        },
+        "observed_max": {
+          "setup": 34.0,
+          "run": 83.0,
+          "total": 107.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/smoke/Smoke journeys · Claude · Linux": {
+        "samples": 110,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 12.0,
+          "run": 57.0,
+          "total": 69.0
+        },
+        "p95": {
+          "setup": 18.0,
+          "run": 62.0,
+          "total": 76.0
+        },
+        "p99": {
+          "setup": 19.0,
+          "run": 64.0,
+          "total": 78.0
+        },
+        "observed_max": {
+          "setup": 19.0,
+          "run": 64.0,
+          "total": 81.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/smoke/Smoke journeys · Claude · Windows": {
+        "samples": 107,
+        "distinct_runs": 105,
+        "source_set": "C41",
+        "p50": {
+          "setup": 26.0,
+          "run": 116.0,
+          "total": 141.0
+        },
+        "p95": {
+          "setup": 31.0,
+          "run": 123.0,
+          "total": 150.0
+        },
+        "p99": {
+          "setup": 39.0,
+          "run": 125.0,
+          "total": 159.0
+        },
+        "observed_max": {
+          "setup": 71.0,
+          "run": 125.0,
+          "total": 196.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/smoke/Smoke journeys · Codex · Linux": {
+        "samples": 109,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 12.0,
+          "run": 44.0,
+          "total": 56.0
+        },
+        "p95": {
+          "setup": 15.0,
+          "run": 52.0,
+          "total": 65.0
+        },
+        "p99": {
+          "setup": 17.0,
+          "run": 60.0,
+          "total": 73.0
+        },
+        "observed_max": {
+          "setup": 17.0,
+          "run": 74.0,
+          "total": 86.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/smoke/Smoke journeys · Codex · Windows": {
+        "samples": 109,
+        "distinct_runs": 106,
+        "source_set": "C4",
+        "p50": {
+          "setup": 26.0,
+          "run": 80.0,
+          "total": 107.0
+        },
+        "p95": {
+          "setup": 33.0,
+          "run": 88.0,
+          "total": 120.0
+        },
+        "p99": {
+          "setup": 37.0,
+          "run": 106.0,
+          "total": 128.0
+        },
+        "observed_max": {
+          "setup": 43.0,
+          "run": 109.0,
+          "total": 140.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/soft-fail/Soft-fail journeys · claude · Linux (non-blocking)": {
+        "samples": 64,
+        "distinct_runs": 64,
+        "source_set": "C42",
+        "p50": {
+          "setup": 11.0,
+          "run": 594.0,
+          "total": 604.0
+        },
+        "p95": {
+          "setup": 14.0,
+          "run": 663.0,
+          "total": 675.0
+        },
+        "p99": {
+          "setup": 18.0,
+          "run": 816.0,
+          "total": 828.0
+        },
+        "observed_max": {
+          "setup": 18.0,
+          "run": 816.0,
+          "total": 828.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/soft-fail/Soft-fail journeys · claude · Windows (non-blocking)": {
+        "samples": 55,
+        "distinct_runs": 55,
+        "source_set": "C43",
+        "p50": {
+          "setup": 25.0,
+          "run": 1207.0,
+          "total": 1233.0
+        },
+        "p95": {
+          "setup": 33.0,
+          "run": 1309.0,
+          "total": 1344.0
+        },
+        "p99": {
+          "setup": 37.0,
+          "run": 1328.0,
+          "total": 1353.0
+        },
+        "observed_max": {
+          "setup": 37.0,
+          "run": 1328.0,
+          "total": 1353.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/vscode/Full journeys · VS Code Copilot Chat · Linux (non-blocking)": {
+        "samples": 93,
+        "distinct_runs": 91,
+        "source_set": "C44",
+        "p50": {
+          "setup": 22.0,
+          "run": 181.0,
+          "total": 204.0
+        },
+        "p95": {
+          "setup": 28.0,
+          "run": 200.0,
+          "total": 224.0
+        },
+        "p99": {
+          "setup": 33.0,
+          "run": 205.0,
+          "total": 231.0
+        },
+        "observed_max": {
+          "setup": 33.0,
+          "run": 205.0,
+          "total": 231.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/vscode/Full journeys · VS Code Copilot Chat · Windows (non-blocking)": {
+        "samples": 94,
+        "distinct_runs": 91,
+        "source_set": "C44",
+        "p50": {
+          "setup": 26.0,
+          "run": 196.0,
+          "total": 221.0
+        },
+        "p95": {
+          "setup": 32.0,
+          "run": 215.0,
+          "total": 244.0
+        },
+        "p99": {
+          "setup": 40.0,
+          "run": 226.0,
+          "total": 251.0
+        },
+        "observed_max": {
+          "setup": 40.0,
+          "run": 226.0,
+          "total": 251.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "integration/workspace/Workspace validation": {
+        "samples": 117,
+        "distinct_runs": 107,
+        "source_set": "C3",
+        "p50": {
+          "setup": 0.0,
+          "run": 0.0,
+          "total": 0.0
+        },
+        "p95": {
+          "setup": 2.0,
+          "run": 1.0,
+          "total": 2.0
+        },
+        "p99": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "observed_max": {
+          "setup": 3.0,
+          "run": 1.0,
+          "total": 3.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      },
+      "publish-skills-test/smoke/Publisher composite action": {
+        "samples": 18,
+        "distinct_runs": 18,
+        "source_set": "C45",
+        "p50": {
+          "setup": 2.0,
+          "run": 11.0,
+          "total": 13.0
+        },
+        "p95": {
+          "setup": 13.0,
+          "run": 16.0,
+          "total": 26.0
+        },
+        "p99": {
+          "setup": 13.0,
+          "run": 16.0,
+          "total": 26.0
+        },
+        "observed_max": {
+          "setup": 13.0,
+          "run": 16.0,
+          "total": 26.0
+        },
+        "limited_sample": true,
+        "total_only": 0
+      },
+      "publish-skills-test/tests/Publisher tests (Python 3.12)": {
+        "samples": 18,
+        "distinct_runs": 18,
+        "source_set": "C45",
+        "p50": {
+          "setup": 11.0,
+          "run": 26.0,
+          "total": 39.0
+        },
+        "p95": {
+          "setup": 41.0,
+          "run": 32.0,
+          "total": 72.0
+        },
+        "p99": {
+          "setup": 41.0,
+          "run": 32.0,
+          "total": 72.0
+        },
+        "observed_max": {
+          "setup": 41.0,
+          "run": 32.0,
+          "total": 72.0
+        },
+        "limited_sample": true,
+        "total_only": 0
+      },
+      "publish-skills-test/tests/Publisher tests (Python 3.13)": {
+        "samples": 18,
+        "distinct_runs": 18,
+        "source_set": "C45",
+        "p50": {
+          "setup": 12.0,
+          "run": 27.0,
+          "total": 38.0
+        },
+        "p95": {
+          "setup": 24.0,
+          "run": 29.0,
+          "total": 46.0
+        },
+        "p99": {
+          "setup": 24.0,
+          "run": 29.0,
+          "total": 46.0
+        },
+        "observed_max": {
+          "setup": 24.0,
+          "run": 29.0,
+          "total": 46.0
+        },
+        "limited_sample": true,
+        "total_only": 0
+      },
+      "user-journey-test-required/require-user-journey-test/User Journey Test Required": {
+        "samples": 39,
+        "distinct_runs": 39,
+        "source_set": "C46",
+        "p50": {
+          "setup": 12.0,
+          "run": 12.0,
+          "total": 12.0
+        },
+        "p95": {
+          "setup": 17.0,
+          "run": 17.0,
+          "total": 17.0
+        },
+        "p99": {
+          "setup": 18.0,
+          "run": 18.0,
+          "total": 18.0
+        },
+        "observed_max": {
+          "setup": 18.0,
+          "run": 18.0,
+          "total": 18.0
+        },
+        "limited_sample": false,
+        "total_only": 36
+      },
+      "zizmor/zizmor/zizmor": {
+        "samples": 32,
+        "distinct_runs": 32,
+        "source_set": "C47",
+        "p50": {
+          "setup": 1.0,
+          "run": 5.0,
+          "total": 6.0
+        },
+        "p95": {
+          "setup": 2.0,
+          "run": 7.0,
+          "total": 9.0
+        },
+        "p99": {
+          "setup": 2.0,
+          "run": 39.0,
+          "total": 40.0
+        },
+        "observed_max": {
+          "setup": 2.0,
+          "run": 39.0,
+          "total": 40.0
+        },
+        "limited_sample": false,
+        "total_only": 0
+      }
+    },
+    "gate": {
+      "samples": 69,
+      "distinct_runs": 67,
+      "source_set": "C48",
+      "p50": 124.0,
+      "p95": 485.0,
+      "p99": 846.0,
+      "observed_max": 846.0,
+      "scope": "successful PR gates",
+      "excluded_failed": 20
+    }
+  }
+}

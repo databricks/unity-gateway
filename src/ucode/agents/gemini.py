@@ -8,6 +8,7 @@ import signal
 import threading
 from pathlib import Path
 
+from ucode import metrics
 from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
@@ -63,7 +64,7 @@ MANAGED_KEYS: list[str] = [
 
 # Gemini CLI 0.45 introduced a "Gemini 3.5 Flash GA" router that rewrites any
 # forced flash model id (e.g. `databricks-gemini-3-5-flash`) to Google's
-# canonical `gemini-3.5-flash`, which the Databricks AI Gateway rejects as an
+# canonical `gemini-3.5-flash`, which the Databricks Unity Gateway rejects as an
 # invalid Unity Catalog endpoint name. Until that regression is fixed upstream
 # we cap the supported version below 0.45 and steer clients onto the newest
 # release that still passes the configured model through verbatim.
@@ -283,6 +284,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
+    metrics.agent_handoff()
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()

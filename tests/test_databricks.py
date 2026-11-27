@@ -11,12 +11,15 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import parse_qs
 
 import pytest
 
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
+from tests.conftest import metric_observations
+from ucode import metrics
 from ucode.databricks import (
     _format_subprocess_result,
     _parse_databricks_cli_version,
@@ -41,6 +44,7 @@ from ucode.databricks import (
     databricks_cli_version,
     ensure_databricks_cli_version,
     ensure_pat_bearer,
+    fetch_databricks_token_untimed,
     get_databricks_profiles,
     get_databricks_token,
     install_ai_tools,
@@ -222,8 +226,8 @@ class _FakeResponseWithHeaders(_FakeResponse):
 class TestWorkspaceOrgId:
     def _stub_response(self, monkeypatch, headers: dict) -> None:
         monkeypatch.setattr(
-            db_mod.urllib_request,
-            "urlopen",
+            db_mod,
+            "_http_open",
             lambda request, timeout=None: _FakeResponseWithHeaders({"ok": True}, headers),
         )
 
@@ -938,6 +942,21 @@ class TestListModelProviderServices:
         assert entry["relayed"] is True
         assert entry["provider_type"] == "openai"
 
+    def test_flags_relayed_github_copilot(self):
+        entry = db_mod._provider_service_entry(
+            {
+                "name": "model-provider-services/main.s.copilot-seats",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_GITHUB_COPILOT",
+                    "github_copilot": {"relayed": {}},
+                    "targets": [{"model": "claude-sonnet-5.5"}],
+                },
+            }
+        )
+        assert entry["relayed"] is True
+        assert entry["provider_type"] == "github_copilot"
+        assert entry["targets"] == ["claude-sonnet-5.5"]
+
     def test_extracts_targets(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
@@ -1320,6 +1339,13 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilots_supported_list_leaves_out_github_copilot(self):
+        error = db_mod._provider_service_unusable_reason(
+            "copilot", {"provider_type": "gemini_enterprise"}, "main.a.gemini"
+        )
+        assert error is not None and "(supported: anthropic," in error
+        assert "github_copilot" not in error
+
     def test_copilot_accepts_openai(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1554,6 +1580,7 @@ class TestListProviderServiceModels:
             ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
             ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
             ("openai", ({"models": []}, None), ([], None)),
+            ("microsoft_foundry", ({"models": []}, None), ([], None)),
         ],
     )
     def test_reports_failures_but_not_empty_listings(
@@ -1589,6 +1616,10 @@ class TestListProviderServiceModels:
         ("main.ucode.claude_haiku", "claude_haiku"),
         ("gpt-5.5", "gpt-5.5"),
         ("main.default.gpt-5.5", "gpt-5.5"),
+        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "claude-haiku-5-5"),
+        ("main.default.lill-oai.gpt-6.1-sol", "gpt-6.1-sol"),
+        ("main.default.lill-oai.gpt-6.1-terra", "gpt-6.1-terra"),
+        ("system.ai.claude-opus-4-7[foo.bar]", "claude-opus-4-7"),
         # An Azure deployment names its region with a slash.
         ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
         ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
@@ -1822,6 +1853,69 @@ class TestServiceUsableForTool:
         assert not db_mod.service_usable_for_tool("copilot", service)
         assert db_mod.service_usable_for_tool("claude", service)
 
+    _COPILOT_RELAY = {
+        "name": "main.s.copilot-seats",
+        "provider_type": "github_copilot",
+        "targets": ["claude-sonnet-5.5"],
+        "relayed": True,
+    }
+
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_for_copilot_and_vscode(self, tool):
+        assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
+        assert not db_mod.service_usable_for_tool("claude", self._COPILOT_RELAY)
+
+    def test_choices_label_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        choices, reason = db_mod.tool_provider_service_choices("copilot", WS, "tok")
+
+        assert reason is None
+        assert choices == [
+            ("main.s.anthropic", "main.s.anthropic"),
+            ("main.s.copilot-seats", "main.s.copilot-seats (GitHub Copilot subscription)"),
+        ]
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
+    def test_other_agents_refuse_a_github_copilot_relay(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "'github_copilot' provider" in reason
+
+    def test_github_copilot_without_a_relay_is_refused(self):
+        service = {**self._COPILOT_RELAY, "relayed": False}
+        reason = db_mod._provider_service_unusable_reason("copilot", service, "svc")
+        assert reason is not None
+        assert "doesn't relay a subscription" in reason
+
+    def test_provider_flag_resolves_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
+        )
+
+        service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
+
+        assert error is None
+        assert service is not None and db_mod.is_copilot_seat_relay(service)
+
+    def test_picker_lists_a_github_copilot_relay(self, monkeypatch):
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
+            ["main.s.anthropic", "main.s.copilot-seats"],
+            None,
+        )
+
 
 class TestModelProviderFeatureUnavailable:
     def test_detects_feature_not_available(self):
@@ -1970,6 +2064,61 @@ class TestListMcpServices:
 
         assert reason is None
         assert names == ["main.schema3.github", "main.schema3.slack"]
+
+    @staticmethod
+    def _paged(monkeypatch, second_page):
+        """Serve a first page of `main.s.a` with a next token, then ``second_page``."""
+
+        def fake_get(url, token, timeout=30):
+            if "page_token" in url:
+                return second_page
+            return {"mcp_services": [{"name": "main.s.a"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+    @pytest.mark.parametrize(
+        "second_page",
+        [
+            (None, "HTTP 404 Not Found: NOT_FOUND"),
+            (None, "HTTP 500 Internal Server Error"),
+            (None, None),
+            (["not", "a", "dict"], None),
+            ({"mcp_services": {"name": "main.s.b"}}, None),
+            # The same token again: the listing would loop rather than finish.
+            ({"mcp_services": [], "next_page_token": "p2"}, None),
+        ],
+    )
+    def test_strict_reports_every_incomplete_scoped_listing(self, monkeypatch, second_page):
+        self._paged(monkeypatch, second_page)
+        lenient = db_mod.list_mcp_services(WS, "token", parent="main.s")
+        strict = db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True)
+        assert lenient == (["main.s.a"], None)
+        # A later-page failure is marked incomplete, so it never reads as a missing schema.
+        assert strict[0] == ["main.s.a"]
+        assert strict[1] and strict[1].startswith("incomplete listing: ")
+
+    def test_strict_reports_the_page_limit(self, monkeypatch):
+        tokens = iter(range(10))
+
+        def fake_get(url, token, timeout=30):
+            return {"mcp_services": [], "next_page_token": f"t{next(tokens)}"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        _names, reason = db_mod.list_mcp_services(
+            WS, "token", parent="main.s", max_pages=3, strict=True
+        )
+        assert reason == "incomplete listing: MCP listing exceeded 3 pages"
+
+    def test_strict_rejects_a_malformed_first_page(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: ({"mcp_services": "main.s.a"}, None),
+        )
+        assert db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True) == (
+            [],
+            "unexpected MCP listing response",
+        )
 
     def test_http_404_reason_surfaces_for_invalid_parent(self, monkeypatch):
         monkeypatch.setattr(
@@ -2218,7 +2367,82 @@ class TestWalkCatalogSchemas:
 
 
 class TestListAllMcpServices:
-    """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
+    """Metastore listing, with the catalog/schema walk as a compatibility fallback."""
+
+    def test_metastore_pages_stream_with_metadata_before_callbacks(self, monkeypatch):
+        urls = []
+        metadata = {}
+        emitted = []
+
+        def fake_get(url, token, timeout=30):
+            urls.append(url)
+            if len(urls) == 1:
+                return {
+                    "mcp_services": [
+                        {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                        {
+                            "name": "mcp-services/main.tools.inactive",
+                            "config": {"connection": {"status": "FAILED"}},
+                        },
+                    ],
+                    "next_page_token": "second",
+                }, None
+            return {
+                "mcp_services": [
+                    {"name": "mcp-services/other.ops.pager", "comment": "Pager"},
+                    {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                ]
+            }, None
+
+        def on_services(new_names):
+            emitted.append([(name, metadata[name]["comment"]) for name in new_names])
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", metadata=metadata, on_services=on_services
+        )
+
+        assert reason is None
+        assert names == ["main.tools.linear", "other.ops.pager"]
+        assert emitted == [
+            [("main.tools.linear", "Linear")],
+            [("other.ops.pager", "Pager")],
+        ]
+        assert len(urls) == 2
+        assert all("parent=" not in url and "view=BASIC" in url for url in urls)
+        assert "page_size=200" in urls[0]
+        assert "page_token=second" in urls[1]
+
+    def test_metastore_mid_page_failure_keeps_partial_result_and_reason(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, token, timeout=30):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/main.tools.linear"}],
+                    "next_page_token": "second",
+                }, None
+            return None, "HTTP 503 Service Unavailable"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        assert names == ["main.tools.linear"]
+        assert reason == "HTTP 503 Service Unavailable"
+        assert len(calls) == 2
+
+    def test_invalid_token_does_not_fall_back_to_schema_walk(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (None, "HTTP 401 Unauthorized"),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "walk_catalog_schemas",
+            lambda *args, **kwargs: pytest.fail("auth failure must not start schema walk"),
+        )
+        assert db_mod.list_all_mcp_services(WS, "bad-token") == ([], "HTTP 401 Unauthorized")
 
     def _fake_http(self, catalogs, schemas_by_catalog, services_by_schema):
         """Route `_http_get_json` by URL to the right stubbed payload."""
@@ -2230,6 +2454,8 @@ class TestListAllMcpServices:
                 cat = url.split("catalog_name=")[1].split("&")[0]
                 return {"schemas": [{"name": s} for s in schemas_by_catalog.get(cat, [])]}, None
             if "unity-catalog/mcp-services" in url:
+                if "parent=" not in url:
+                    return None, "HTTP 400 Bad Request: parent is required"
                 # parent is url-encoded as `schemas%2F<cat>.<schema>`
                 parent = url.split("parent=")[1].split("&")[0]
                 schema_ref = parent.replace("schemas%2F", "").replace("schemas/", "")
@@ -2305,7 +2531,9 @@ class TestListAllMcpServices:
             lambda workspace, token, parent, **kwargs: (["main.tools.linear"], None),
         )
         streamed: list[list[str]] = []
-        names, reason = db_mod.list_all_mcp_services(WS, "token", on_services=streamed.append)
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", on_services=streamed.append, on_progress=lambda *_: None
+        )
 
         assert names == ["main.tools.linear"]
         assert streamed == [["main.tools.linear"]]
@@ -2329,7 +2557,13 @@ class TestListAllMcpServices:
 
     def test_returns_reason_when_no_catalogs(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, timeout=30: ({"catalogs": []}, None)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                ({"catalogs": []}, None)
+                if "unity-catalog/catalogs" in url
+                else (None, "HTTP 400 Bad Request: parent is required")
+            ),
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")
@@ -2528,6 +2762,31 @@ class TestUgBinary:
 
     def test_falls_back_to_ug_without_path_entry(self, monkeypatch):
         monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        assert db_mod.ug_binary() == "ug"
+
+    @pytest.mark.parametrize("name", ["ug", "ucode"])
+    def test_without_ug_on_path_uses_the_running_launcher(self, monkeypatch, tmp_path, name):
+        launcher = tmp_path / "venv" / "bin" / name
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        monkeypatch.setattr("sys.argv", [str(launcher), "configure"])
+
+        assert db_mod.ug_binary() == str(launcher.absolute())
+
+    def test_finds_a_windows_launcher_named_without_exe(self, monkeypatch, tmp_path):
+        launcher = tmp_path / "Scripts" / "ug.exe"
+        launcher.parent.mkdir()
+        launcher.write_text("")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        monkeypatch.setattr("sys.argv", [str(tmp_path / "Scripts" / "ug")])
+
+        assert db_mod.ug_binary() == str(launcher.absolute())
+
+    def test_another_program_falls_back_to_the_bare_name(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        monkeypatch.setattr("sys.argv", [str(tmp_path / "pytest")])
+
         assert db_mod.ug_binary() == "ug"
 
 
@@ -3024,6 +3283,28 @@ class TestGetDatabricksToken:
         )
         assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
 
+    def test_browser_login_failure_records_exit_without_skipping_refetch(
+        self, tmp_path, monkeypatch, metrics_recorder, capfd
+    ):
+        env = self._fake_databricks(tmp_path, "sys.exit(7)")
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        fetches = iter([("", None), ("recovered-token", 3600)])
+
+        assert db_mod._browser_login(WS, None, env, lambda: next(fetches)) == (
+            "recovered-token",
+            3600,
+        )
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["process_exit_code"] == 7
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["operation"] == metrics.DATABRICKS_LOGIN_OPERATION
+        assert error_labels["process_exit_code"] == 7
+        assert capfd.readouterr() == ("", "")
+
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
         # cache fail with "cache update: exit status 45". That's transient (the
@@ -3275,7 +3556,7 @@ class TestGetDatabricksToken:
         assert not any("--no-browser" in call for call in calls)
 
     def test_successful_token_is_memoized_and_force_refresh_bypasses_it(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, metrics_recorder
     ):
         counter = tmp_path / "count"
         counter.write_text("0")
@@ -3299,6 +3580,91 @@ class TestGetDatabricksToken:
         calls = log.read_text().splitlines()
         assert len(calls) == 3
         assert "--force-refresh" in calls[1]
+
+        labels = [
+            attrs
+            for _, attrs in metric_observations(
+                metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+            )
+        ]
+        assert [attrs["in_process_cache_hit"] for attrs in labels] == [
+            False,
+            True,
+            False,
+            True,
+            False,
+        ]
+        assert {attrs["token_source"] for attrs in labels} == {"cli"}
+
+    def test_untimed_fetch_duration_is_reported_once_by_timed_reuse(
+        self, monkeypatch, metrics_recorder
+    ):
+        """An untimed caller's real fetch is reported by the first timed reuse as the cache
+        miss with that fetch's duration; later reuses are plain cache hits."""
+        db_mod.clear_databricks_token_cache()
+
+        def fake_cli_run(cmd, **_kwargs):
+            time.sleep(0.1)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"access_token": "token", "expires_in": 3600}), ""
+            )
+
+        monkeypatch.setattr(db_mod, "run", fake_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        try:
+            assert fetch_databricks_token_untimed(WS, "spec") == "token"
+            memoized = db_mod._memoized_token(db_mod._token_memo_key(WS, "spec"))
+            assert memoized is not None and memoized.unreported_fetch_ms >= 100
+
+            assert get_databricks_token(WS, "spec") == "token"
+            assert get_databricks_token(WS, "spec") == "token"
+        finally:
+            db_mod.clear_databricks_token_cache()
+
+        observations = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert len(observations) == 2
+        [(miss_ms, miss_labels), (hit_ms, hit_labels)] = observations
+        assert miss_labels["in_process_cache_hit"] is False
+        assert miss_labels["token_source"] == "cli"
+        assert miss_ms >= 100
+        assert hit_labels["in_process_cache_hit"] is True
+        assert "awaited_duration_ms" not in miss_labels
+        assert "awaited_duration_ms" not in hit_labels
+
+    def test_credential_failure_raises_login_required_and_transient_does_not(self, monkeypatch):
+        """A CLI-identified credential failure raises the login-required error best-effort
+        callers treat as an expected miss; unrecognized failures stay plain RuntimeErrors."""
+
+        def cli_run(stderr):
+            return lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, "", stderr)
+
+        monkeypatch.setattr(db_mod, "run", cli_run("no cached credentials"))
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            fetch_databricks_token_untimed(WS, "spec")
+
+        monkeypatch.setattr(db_mod, "run", cli_run("connection reset by peer"))
+        with pytest.raises(RuntimeError, match="network connectivity") as excinfo:
+            fetch_databricks_token_untimed(WS, "spec")
+        assert not isinstance(excinfo.value, db_mod.DatabricksLoginRequiredError)
+
+    def test_memoized_failure_raises_login_required_for_the_speculation(self, monkeypatch):
+        """An untimed fetch reuse of an earlier fetch's memoized credential failure raises
+        the login-required error, so the speculation's join treats it as an expected miss
+        instead of reporting a hard token-fetch failure."""
+
+        def failing_cli_run(cmd, **_kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "no cached credentials")
+
+        monkeypatch.setattr(db_mod, "run", failing_cli_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            get_databricks_token(WS, "spec")
+
+        with pytest.raises(db_mod.DatabricksLoginRequiredError, match="auth login"):
+            fetch_databricks_token_untimed(WS, "spec")
 
     def test_concurrent_same_key_misses_are_single_flight(self, monkeypatch):
         fetch_started = threading.Event()
@@ -3569,6 +3935,42 @@ class TestGetDatabricksToken:
         assert sum("auth token" in call for call in calls) == 2
         assert calls.count("auth login --help") == 1
 
+    def test_skipped_reauth_failure_is_not_memoized(self, tmp_path, monkeypatch):
+        """The speculative non-reauth fetch must not poison configure's own fetch: a
+        non-transient failure it memoizes would skip configure's auth login --no-browser."""
+        flag = tmp_path / "reauthed"
+        env, log = self._logging_fake(
+            tmp_path,
+            self._HELP_WITH_NO_BROWSER
+            + "if '--no-browser' in sys.argv[1:]:\n"
+            + f"    Path({str(flag)!r}).write_text('')\n"
+            + f"if Path({str(flag)!r}).exists():\n"
+            + "    print(json.dumps({'access_token': 'after-reauth'}))\n"
+            + "else:\n"
+            + "    print('no cached credentials', file=sys.stderr)\n"
+            + "    sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+
+        with pytest.raises(RuntimeError, match="no access token"):
+            fetch_databricks_token_untimed(WS)
+
+        # The skipped re-auth made no `auth login` call at all — not even the --help probe.
+        calls_after_first_fetch = log.read_text().splitlines()
+        assert calls_after_first_fetch
+        assert not any("auth login" in call for call in calls_after_first_fetch)
+
+        # The default fetch still attempts the non-interactive re-auth (`auth login
+        # --no-browser`) instead of raising the memoized failure, and it repairs the cache.
+        assert get_databricks_token(WS) == "after-reauth"
+        assert (
+            sum(
+                "auth login" in call and "--no-browser" in call
+                for call in log.read_text().splitlines()
+            )
+            >= 1
+        )
+
     def test_force_refresh_retries_a_memoized_failure(self, tmp_path, monkeypatch):
         flag = tmp_path / "logged-in"
         env, log = self._logging_fake(
@@ -3776,7 +4178,7 @@ class TestGetDatabricksToken:
         db_mod.run_databricks_login(WS, "p")
         assert get_databricks_token(WS, "p") == "after-login"
 
-    def test_custom_oauth_cli_login_clears_shared_token_memo(self, monkeypatch):
+    def test_custom_oauth_cli_login_clears_shared_token_memo(self, monkeypatch, metrics_recorder):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
         config = {
@@ -3811,6 +4213,16 @@ class TestGetDatabricksToken:
         assert custom_oauth_mod.ensure_custom_oauth_cli_token(WS, config) == "fresh"
         assert len(login_calls) == 1
         assert len(token_calls) == 1
+
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["login_method"] == "cli"
+        [(_, token_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert token_labels["token_source"] == "cli"
+        assert token_labels["in_process_cache_hit"] is False
 
     @pytest.mark.parametrize(("workspace_id", "login_host"), [("111", f"{WS}?w=111"), (None, WS)])
     def test_custom_oauth_cli_login_selects_the_workspace(
@@ -3902,6 +4314,100 @@ class TestGetDatabricksProfiles:
     def test_returns_empty_on_non_zero_exit(self, monkeypatch):
         self._patched_run(monkeypatch, {"profiles": []}, returncode=1)
         assert get_databricks_profiles() == []
+
+    def test_lists_metadata_without_validating_other_workspaces(self, monkeypatch):
+        entries = [
+            {"name": "mine", "host": WS, "auth_type": "databricks-cli", "valid": False},
+            {
+                "name": "unreachable",
+                "host": "https://unreachable.example.com",
+                "auth_type": "databricks-cli",
+                "valid": False,
+            },
+            {"name": "pat", "host": WS, "auth_type": "pat", "valid": False},
+        ]
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            # Without this flag the CLI authenticates against every profile's host,
+            # even though ug only needs local metadata for selection and PAT filtering.
+            assert "--skip-validate" in args
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"profiles": entries}))
+
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+
+        assert get_databricks_profiles() == [
+            (WS, "mine"),
+            ("https://unreachable.example.com", "unreachable"),
+        ]
+        assert db_mod.profile_auth_type("pat") == "pat"
+        assert all(args[:3] == ["databricks", "auth", "profiles"] for args in calls)
+
+    @pytest.mark.parametrize("missing_auth_type", [None, ""])
+    def test_infers_implicit_pat_locally_without_default_inheritance(
+        self, monkeypatch, tmp_path, missing_auth_type
+    ):
+        config = tmp_path / "databrickscfg"
+        config.write_text(
+            f"[DEFAULT]\nhost = {WS}\ntoken = default-pat\n"
+            f"[implicit-pat]\nhost = {WS}\ntoken = named-pat\n"
+            f"[implicit-oauth]\nhost = {WS}\n"
+            f"[explicit-oauth]\nhost = {WS}\nauth_type = databricks-cli\ntoken = stale-pat\n"
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        entries = [
+            {"name": name, "host": WS, "auth_type": missing_auth_type, "valid": False}
+            for name in ("DEFAULT", "implicit-pat", "implicit-oauth")
+        ]
+        entries.append({"name": "explicit-oauth", "host": WS, "auth_type": "databricks-cli"})
+        self._patched_run(monkeypatch, {"profiles": entries})
+
+        assert get_databricks_profiles() == [(WS, "implicit-oauth"), (WS, "explicit-oauth")]
+        assert db_mod.resolve_pat_token("implicit-pat") == "named-pat"
+        assert db_mod.resolve_pat_token("DEFAULT") == "default-pat"
+        assert db_mod.resolve_pat_token("explicit-oauth") is None
+
+    @pytest.mark.parametrize("contents", [b"[malformed", b"# invalid comment: \xff\n"])
+    def test_optional_local_inference_failure_keeps_cli_metadata(
+        self, monkeypatch, tmp_path, contents
+    ):
+        config = tmp_path / "databrickscfg"
+        config.write_bytes(contents)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        self._patched_run(monkeypatch, {"profiles": [{"name": "mine", "host": WS}]})
+
+        assert get_databricks_profiles() == [(WS, "mine")]
+
+    @pytest.mark.parametrize("authenticated", [True, False])
+    def test_unvalidated_metadata_still_checks_selected_profile(self, monkeypatch, authenticated):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["auth", "profiles"]:
+                payload = {
+                    "profiles": [
+                        {"name": "mine", "host": WS, "auth_type": "databricks-cli", "valid": False},
+                        {"name": "other", "host": "https://other.example.com", "valid": False},
+                    ]
+                }
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+            assert args[1:3] == ["auth", "token"]
+            assert args[args.index("--host") + 1] == WS
+            assert args[args.index("--profile") + 1] == "mine"
+            payload = {"access_token": "selected-workspace-token"} if authenticated else {}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "_log_auth_diagnostics", lambda: None)
+
+        assert db_mod.check_databricks_auth(WS) is authenticated
+        assert [args[1:3] for args in calls] == [["auth", "profiles"], ["auth", "token"]]
 
 
 class TestListDatabricksApps:
@@ -4275,13 +4781,13 @@ class TestProbeUnityGatewayCapabilities:
     def test_definitive_auth_failure_matches_invalid_token_403(self):
         # A stale PAT 403s with an "Invalid access token" body — that's the token being
         # rejected, not a missing grant, so it must classify as a definitive auth failure.
-        assert db_mod._looks_like_definitive_auth_failure(
+        assert db_mod.looks_like_definitive_auth_failure(
             'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
         )
-        assert db_mod._looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
-        assert db_mod._looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
+        assert db_mod.looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
+        assert db_mod.looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
         # A plain permission 403 (missing grant) is left to permission routing.
-        assert not db_mod._looks_like_definitive_auth_failure(
+        assert not db_mod.looks_like_definitive_auth_failure(
             "HTTP 403: Missing Unity Catalog grants"
         )
 
@@ -4341,7 +4847,7 @@ class TestProbeUnityGatewayCapabilities:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
         assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
@@ -4390,7 +4896,7 @@ class TestProbeUnityGatewayCapabilities:
             calls.append(request)
             raise TestHttpGetJsonRetries._http_error(499, "Unknown")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", lambda s: None)
 
         with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
@@ -4437,7 +4943,7 @@ class TestHttpGetJsonReason:
         from ucode.databricks import _http_get_json
 
         exc = self._http_error(400, "Bad Request", body="Invalid Token")
-        with patch("ucode.databricks.urllib_request.urlopen", side_effect=exc):
+        with patch("ucode.databricks._http_open", side_effect=exc):
             payload, reason = _http_get_json("https://x/y", "tok")
         assert payload is None
         assert "HTTP 400" in reason
@@ -4449,7 +4955,7 @@ class TestHttpGetJsonReason:
         from ucode.databricks import _http_get_json
 
         exc = self._http_error(404, "Not Found")
-        with patch("ucode.databricks.urllib_request.urlopen", side_effect=exc):
+        with patch("ucode.databricks._http_open", side_effect=exc):
             payload, reason = _http_get_json("https://x/y", "tok")
         assert payload is None
         assert reason == "HTTP 404 Not Found"
@@ -4479,7 +4985,7 @@ class TestHttpGetJsonRetries:
         responses = [truncated, _FakeResponse({"complete": True})] if recovers else None
         urlopen = MagicMock(side_effect=responses, return_value=truncated)
         sleeps = []
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4506,7 +5012,7 @@ class TestHttpGetJsonRetries:
                 _FakeResponse({"complete": True}),
             ]
         )
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
 
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
@@ -4532,7 +5038,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4555,7 +5061,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4566,7 +5072,9 @@ class TestHttpGetJsonRetries:
         assert sleeps == [1.25]
 
     @pytest.mark.parametrize("code", [499, 502, 503, 504])
-    def test_retries_transient_gateway_status_then_succeeds(self, monkeypatch, code):
+    def test_retries_transient_gateway_status_then_succeeds(
+        self, monkeypatch, code, metrics_recorder
+    ):
         outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
         sleeps = []
 
@@ -4576,7 +5084,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4585,6 +5093,17 @@ class TestHttpGetJsonRetries:
         assert payload == {"ok": True}
         assert reason is None
         assert sleeps == [1.25]
+
+        attempts = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert [attrs["http_status_code"] for _, attrs in attempts] == [code, 200]
+        assert [attrs["attempt"] for _, attrs in attempts] == [1, 2]
+        assert (
+            sum(
+                value
+                for value, _ in metric_observations(metrics_recorder, metrics.HTTP_RETRY_COUNT)
+            )
+            == 1
+        )
 
     @pytest.mark.parametrize("code", [400, 404, 500, 501])
     def test_does_not_retry_other_statuses(self, monkeypatch, code):
@@ -4595,7 +5114,7 @@ class TestHttpGetJsonRetries:
             calls.append(request)
             raise self._http_error(code, "Nope")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
@@ -4613,7 +5132,7 @@ class TestHttpGetJsonRetries:
             calls.append(request)
             raise self._http_error(429, "Too Many Requests")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4631,7 +5150,7 @@ class TestHttpGetJsonRetries:
             calls.append(request)
             raise self._http_error(500, "Internal Server Error")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(
             db_mod.time,
             "sleep",
@@ -4653,7 +5172,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
 
         body, reason = db_mod._http_get_bytes("https://x/y", "tok", max_retries=2)
@@ -4671,7 +5190,7 @@ class TestHttpUgHeaders:
             requests.append(request)
             return _FakeResponse({})
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
 
         db_mod._http_get_json(f"{WS}/get", "tok")
         db_mod._http_post_json(f"{WS}/post", "tok", {})
@@ -4689,7 +5208,7 @@ class TestHttpUgHeaders:
             requests.append(request)
             return _FakeResponse({})
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
 
         db_mod._http_get_json(f"{WS}/get", "tok")
         db_mod._http_post_json(f"{WS}/post", "tok", {})
@@ -4719,7 +5238,8 @@ class TestDatabricksCliResolution:
     the version-read subprocess directly — no real Databricks CLI is needed."""
 
     @pytest.fixture(autouse=True)
-    def _fresh_databricks_cli_cache(self):
+    def _fresh_databricks_cli_cache(self, monkeypatch):
+        monkeypatch.setattr(db_mod.sys, "platform", "win32" if os.name == "nt" else "linux")
         clear_databricks_cli_cache()
         yield
         clear_databricks_cli_cache()
@@ -4782,6 +5302,50 @@ class TestDatabricksCliResolution:
         exe = tmp_path / "databricks.exe"
         exe.write_text("matches PATHEXT's .exe")
         assert db_mod._iter_databricks_executables() == [str(exe)]
+
+    @pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"])
+    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("HOME", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        gui_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", gui_path)
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        candidate = os.path.join(os.path.expanduser(directory), name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value == candidate)
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda value: (1, 20, 0))
+
+        assert databricks_cli_path() == os.path.abspath(candidate)
+        assert os.environ.get("PATH") == gui_path
+
+    def test_macos_preserves_cli_found_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        configured = str(tmp_path / name)
+        homebrew = os.path.join("/opt/homebrew/bin", name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value in {configured, homebrew})
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        probes = Mock(side_effect=lambda value: (1, 0, 0) if value == configured else (1, 20, 0))
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probes)
+
+        assert databricks_cli_path() == configured
+        probes.assert_called_once_with(configured)
+
+    @pytest.mark.parametrize("platform", ["linux", "win32"])
+    def test_standard_macos_locations_are_not_searched_on_other_platforms(
+        self, monkeypatch, platform
+    ):
+        monkeypatch.setattr(db_mod.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        files = Mock(return_value=True)
+        monkeypatch.setattr(db_mod.os.path, "isfile", files)
+
+        assert db_mod._iter_databricks_executables() == []
+        files.assert_not_called()
 
     # -- _discover_databricks_clis -------------------------------------------
 
@@ -5369,45 +5933,63 @@ class TestRunDatabricksCliInstaller:
 
 
 class TestHttpGetJsonTimeout:
-    """A socket read timeout raises a bare TimeoutError (an OSError), not a
-    URLError. It must be returned as a reason, not propagated — otherwise it
-    escapes the best-effort MCP discovery flow and crashes the command."""
+    """Read timeouts — pooled httpx and urllib alike — surface as a `network error:` reason,
+    never raised, or they would escape the best-effort MCP discovery flow and crash the
+    command. urllib still runs for the python trust store and proxied setups."""
 
-    def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+    @staticmethod
+    def _urlopen_timeout(monkeypatch):
         def raise_timeout(request, timeout=None):
             raise TimeoutError("The read operation timed out")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+        monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: False)
+
+    def test_urllib_get_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        self._urlopen_timeout(monkeypatch)
 
         payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok")
 
-        assert payload is None
-        assert reason is not None
-        assert "timed out" in reason
+        assert (payload, reason) == (None, "network error: The read operation timed out")
 
-    def test_post_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
-            raise TimeoutError("The read operation timed out")
-
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+    def test_urllib_post_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        self._urlopen_timeout(monkeypatch)
 
         payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
 
-        assert payload is None
-        assert reason is not None
-        assert "timed out" in reason
+        assert (payload, reason) == (None, "network error: The read operation timed out")
 
-    def test_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
-            raise TimeoutError("The read operation timed out")
-
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+    def test_urllib_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        self._urlopen_timeout(monkeypatch)
 
         body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
 
-        assert body is None
-        assert reason is not None
-        assert "timed out" in reason
+        assert (body, reason) == (None, "network error: The read operation timed out")
+
+    def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        import httpx
+
+        attempts = []
+
+        def timeout(request):
+            attempts.append(request)
+            raise httpx.ReadTimeout("The read operation timed out", request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(timeout))
+        _force_pooled(monkeypatch)
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda _seconds: None)
+
+        payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok", max_retries=1)
+        assert (payload, reason) == (None, "network error: The read operation timed out")
+        assert len(attempts) == 2
+
+        payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
+        assert (payload, reason) == (None, "network error: The read operation timed out")
+
+        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
+        assert (body, reason) == (None, "network error: The read operation timed out")
 
 
 class TestInstallAiTools:
@@ -5737,19 +6319,25 @@ class TestHttpDelete:
         response.status = 200
         return response
 
-    def test_empty_body_is_success_not_a_decode_error(self, monkeypatch):
+    def test_empty_body_is_success_not_a_decode_error(self, monkeypatch, metrics_recorder):
         # Without `allow_empty_body` this would fail with "response was not valid JSON".
         monkeypatch.setattr(
-            db_mod.urllib_request, "urlopen", lambda request, timeout=None: self._empty_response()
+            db_mod, "_http_open", lambda request, timeout=None: self._empty_response()
         )
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is None
         assert payload is None
 
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "DELETE"
+        assert labels["http_status_code"] == 200
+        assert labels["attempt"] == 1
+        assert metric_observations(metrics_recorder, metrics.UG_CLI_ERROR) == []
+
     def test_empty_json_object_is_also_success(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod.urllib_request,
-            "urlopen",
+            db_mod,
+            "_http_open",
             lambda request, timeout=None: self._empty_response("{}"),
         )
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
@@ -5764,12 +6352,12 @@ class TestHttpDelete:
             seen["data"] = request.data
             return self._empty_response()
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        monkeypatch.setattr(db_mod, "_http_open", capture)
         db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert seen["method"] == "DELETE"
         assert seen["data"] is None
 
-    def test_http_error_surfaces_the_body(self, monkeypatch):
+    def test_http_error_surfaces_the_body(self, monkeypatch, metrics_recorder):
         import io
         from unittest.mock import MagicMock
         from urllib.error import HTTPError
@@ -5781,15 +6369,23 @@ class TestHttpDelete:
                 url="", code=403, msg="Forbidden", hdrs=MagicMock(), fp=io.BytesIO(body.encode())
             )
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_http_error)
+        monkeypatch.setattr(db_mod, "_http_open", raise_http_error)
         _, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is not None
         assert "403" in reason
         assert "PERMISSION_DENIED" in reason
 
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "DELETE"
+        assert labels["http_status_code"] == 403
+        assert labels["attempt"] == 1
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["error_code"] == "http_403"
+
 
 class TestHttpPatchJson:
-    def test_uses_the_patch_verb_and_sends_the_body(self, monkeypatch):
+    def test_uses_the_patch_verb_and_sends_the_body(self, monkeypatch, metrics_recorder):
         from unittest.mock import MagicMock
 
         seen = {}
@@ -5805,13 +6401,17 @@ class TestHttpPatchJson:
             response.status = 200
             return response
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        monkeypatch.setattr(db_mod, "_http_open", capture)
         payload, reason = db_mod._http_patch_json(f"{WS}/api/anything", "tok", {"k": "v"})
         assert reason is None
         assert payload == {"name": "coding-agent-configs/x"}
         assert seen["method"] == "PATCH"
         assert json.loads(seen["data"]) == {"k": "v"}
         assert seen["content_type"] == "application/json"
+
+        [(_, labels)] = metric_observations(metrics_recorder, metrics.HTTP_REQUEST_DURATION_MS)
+        assert labels["http_method"] == "PATCH"
+        assert labels["http_status_code"] == 200
 
 
 class TestHttpPostJson:
@@ -5829,7 +6429,7 @@ class TestHttpPostJson:
             response.status = 200
             return response
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        monkeypatch.setattr(db_mod, "_http_open", capture)
         payload, reason = db_mod._http_post_json(
             f"{WS}/api/anything", "tok", {"k": "v"}, headers={"User-Agent": "ucode/1.2.3"}
         )
@@ -5956,7 +6556,7 @@ class TestGetUsageDashboardUrl:
             requests.append((request, timeout))
             return _FakeResponse({"dashboard_id": "dashboard", "dashboard_url": dashboard_url})
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
 
         assert db_mod.get_usage_dashboard_url(WS, "workspace-token") == dashboard_url
         assert len(requests) == 1
@@ -6223,12 +6823,20 @@ class TestBearerCommand:
         path = _write_fake_executable(tmp_path, "broker", body)
         return f'"{path}"' if " " in path else path
 
-    def test_serves_the_command_output_without_touching_the_cli(self, tmp_path, monkeypatch):
+    def test_serves_the_command_output_without_touching_the_cli(
+        self, tmp_path, monkeypatch, metrics_recorder
+    ):
         broker = self._broker(tmp_path, 'print("brokered-token")')
         marker = self._env(tmp_path, monkeypatch, broker)
 
         assert get_databricks_token(WS) == "brokered-token"
         assert not marker.exists()
+
+        [(_, labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert labels["token_source"] == "command"
+        assert labels["in_process_cache_hit"] is False
 
     def test_reruns_the_command_on_every_fetch(self, tmp_path, monkeypatch):
         # The whole point: a static env var cannot be rewritten in a running
@@ -6569,3 +7177,870 @@ class TestSharedHostProfiles:
         assert calls == [
             ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
         ]
+
+
+class TestModelServiceDestinationModels:
+    def test_malformed_primary_keeps_known_relay_providers_but_not_catalog_identity(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        None,
+                        {
+                            "traffic_percentage": 100,
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            },
+                        },
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) is None
+
+    def test_single_primary_without_traffic_is_live_for_both_consumers(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
+
+    @pytest.mark.parametrize(
+        "destination,expected",
+        [
+            ({"external_model_config": {"target": {"model": "gpt-6-luna"}}}, "gpt-6-luna"),
+            (
+                {"pay_per_token_config": {"model": "models/system.ai.gpt-6-luna"}},
+                "system.ai.gpt-6-luna",
+            ),
+        ],
+    )
+    def test_reads_model_identity_from_each_destination_type(self, destination, expected):
+        service = {"config": {"routing": {"destinations": [destination]}}}
+        assert db_mod.model_service_destination_models(service) == [expected]
+
+    def test_includes_error_and_budget_fallbacks_but_ignores_idle_and_deleted(self):
+        def external(model, **kwargs):
+            return {"external_model_config": {"target": {"model": model}}, **kwargs}
+
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        external("gpt-6-luna", traffic_percentage=100),
+                        external("gpt-4o", traffic_percentage=0),
+                        external("gpt-4o", traffic_percentage=100, is_deleted=True),
+                    ],
+                    "fallback": {
+                        "destinations": [
+                            external("gpt-6-astra"),
+                            external("gpt-4o", is_deleted=True),
+                        ]
+                    },
+                    "budget_fallbacks": [{"destination": external("gpt-6-sol")}],
+                }
+            }
+        }
+
+        assert db_mod.model_service_destination_models(service) == [
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+        ]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {},
+            {"config": None},
+            {"config": {"routing": {"destinations": []}}},
+            {"config": {"routing": {"destinations": [{"external_model_config": {"target": {}}}]}}},
+            {"config": {"routing": {"destinations": [{"pay_per_token_config": {"model": 123}}]}}},
+            {"config": {"routing": {"destinations": [{"traffic_percentage": "100"}]}}},
+            {
+                "config": {
+                    "routing": {
+                        "destinations": [
+                            {
+                                "provisioned_throughput_config": {
+                                    "model_serving_endpoint": "serving-endpoints/custom"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        ],
+    )
+    def test_incomplete_identity_is_not_inferred(self, service):
+        assert db_mod.model_service_destination_models(service) is None
+
+
+class TestModelServicesNeedSubscriptionRelay:
+    """A static model-service list launches relayed when a service routes to a relayed MPS."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        db_mod.clear_model_services_cache()
+        yield
+        db_mod.clear_model_services_cache()
+
+    @staticmethod
+    def _service(name: str, *destinations: dict) -> dict:
+        return {
+            "name": f"model-services/{name}",
+            "config": {"routing": {"destinations": list(destinations)}},
+        }
+
+    @staticmethod
+    def _external(mps: str, traffic: int = 100) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_EXTERNAL_FOUNDATION_MODEL",
+            "traffic_percentage": traffic,
+            "external_model_config": {"model_provider_service": f"model-provider-services/{mps}"},
+        }
+
+    @staticmethod
+    def _hosted(model: str) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL",
+            "traffic_percentage": 100,
+            "pay_per_token_config": {"model": f"models/{model}"},
+        }
+
+    @staticmethod
+    def _mps(name: str, *, relayed: bool, provider_type: str = "anthropic") -> dict:
+        return {"name": name, "provider_type": provider_type, "relayed": relayed}
+
+    def _patch(
+        self,
+        monkeypatch,
+        services: dict,
+        relayed: set[str],
+        *,
+        openai: frozenset[str] = frozenset(),
+    ) -> list[tuple[str, float]]:
+        calls: list[tuple[str, float]] = []
+
+        def get_service(name, _ws, _token, *, timeout):
+            calls.append((name, timeout))
+            return (services.get(name), None if name in services else "404")
+
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, _ws, _token, *, timeout: (
+                self._mps(
+                    name,
+                    relayed=name in relayed,
+                    provider_type="openai" if name in openai else "anthropic",
+                ),
+                None,
+            ),
+        )
+        return calls
+
+    def test_service_on_a_relayed_provider_needs_the_relay(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.oss": self._service(
+                    "main.default.oss", self._hosted("system.ai.kimi")
+                ),
+                "main.default.sonnet": self._service(
+                    "main.default.sonnet", self._external("main.default.anthropic")
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.oss", "main.default.sonnet[1m]"]
+        )
+        # Lookups use the short relay timeout, not the 30s default.
+        assert {timeout for _name, timeout in calls} == {db_mod._RELAY_LOOKUP_TIMEOUT_S}
+
+    def test_hosted_api_key_and_missing_services_are_not_relayed(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.keyed": self._service(
+                    "main.default.keyed",
+                    self._external("main.default.keyed-mps"),
+                    # Idle or deleted destinations on a relayed provider don't count.
+                    self._external("main.default.anthropic", traffic=0),
+                    {**self._external("main.default.anthropic"), "is_deleted": True},
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert (
+            lookup("https://ws", "tok", "system.ai.claude-sonnet-5-5")
+            is db_mod.RelayLookup.NOT_RELAYED
+        )
+        assert lookup("https://ws", "tok", "main.default.keyed") is db_mod.RelayLookup.NOT_RELAYED
+        assert lookup("https://ws", "tok", "main.default.gone") is db_mod.RelayLookup.UNKNOWN
+        # system.* ids are never looked up, and a confirmed answer is cached.
+        lookup("https://ws", "tok", "main.default.keyed")
+        assert [name for name, _timeout in calls] == ["main.default.keyed", "main.default.gone"]
+
+    def test_relayed_openai_provider_does_not_need_the_claude_relay(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "main.default.gpt": self._service(
+                    "main.default.gpt", self._external("main.default.chatgpt")
+                )
+            },
+            {"main.default.chatgpt"},
+            openai=frozenset({"main.default.chatgpt"}),
+        )
+        assert not db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"]
+        )
+
+    def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        outcomes = iter([(None, "503"), (service, None)])
+        calls: list[str] = []
+
+        def get_service(name, *_a, timeout):
+            calls.append(name)
+            return next(outcomes)
+
+        now = [1000.0]
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, *_a, timeout: (self._mps(name, relayed=True), None),
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        # Within the retry window the failure is reused, so a per-request caller isn't stalled.
+        now[0] += db_mod._RELAY_LOOKUP_RETRY_AFTER_S - 1
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        assert calls == ["main.default.sonnet"]
+        now[0] += 2
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.RELAYED
+        assert calls == ["main.default.sonnet", "main.default.sonnet"]
+
+    def test_failed_provider_lookup_is_unknown(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        monkeypatch.setattr(db_mod, "get_model_service", lambda *_a, timeout: (service, None))
+        monkeypatch.setattr(
+            db_mod, "get_model_provider_service", lambda *_a, timeout: (None, "timeout")
+        )
+        assert (
+            db_mod.model_service_relay_lookup("https://ws", "tok", "main.default.sonnet")
+            is db_mod.RelayLookup.UNKNOWN
+        )
+
+    def test_relay_candidates_are_custom_three_part_names(self):
+        models = [
+            "system.ai.kimi",
+            "main.default.sonnet[1m]",
+            "main.default.mps.claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "main.default.oss",
+        ]
+        assert db_mod.custom_model_services(models) == [
+            "main.default.sonnet[1m]",
+            "main.default.oss",
+        ]
+
+
+def test_model_service_backing_model_reads_the_first_live_foundation_model():
+    from ucode.databricks import model_service_backing_model
+
+    service = {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {
+                        "is_deleted": True,
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {"model": "models/system.ai.old"},
+                    },
+                    {
+                        "traffic_percentage": 0,
+                        "pay_per_token_config": {"model": "models/system.ai.idle"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "external_model_config": {"model_provider_service": "main.x.mps"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {
+                            "model": "models/system.ai.databricks-claude-sonnet-4-6"
+                        },
+                    },
+                ]
+            }
+        }
+    }
+
+    assert model_service_backing_model(service) == "system.ai.databricks-claude-sonnet-4-6"
+    assert model_service_backing_model({"config": {}}) is None
+
+
+def test_http_get_reuses_keep_alive_connection(fresh_pooled_client):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class CountingServer(ThreadingHTTPServer):
+        daemon_threads = True
+
+        def __init__(self, address, handler):
+            self.connection_count = 0
+            self.connection_count_lock = threading.Lock()
+            super().__init__(address, handler)
+
+        def get_request(self):
+            request, address = super().get_request()
+            with self.connection_count_lock:
+                self.connection_count += 1
+            return request, address
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = CountingServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/api"
+        for _ in range(2):
+            body, reason = db_mod._http_get_bytes(url, "token")
+            assert body == b"{}"
+            assert reason is None
+        assert server.connection_count == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_http_transport_preserves_status_errors(fresh_pooled_client):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            if self.path == "/bad":
+                status, body = 400, b"Invalid Token"
+            elif self.path == "/redirect":
+                status, body = 302, b"redirect"
+            else:
+                status, body = 503, b"unavailable"
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        _, reason = db_mod._http_get_bytes(f"{url}/bad", "token")
+        assert reason == "HTTP 400 Bad Request: Invalid Token"
+        _, reason = db_mod._http_get_bytes(f"{url}/redirect", "token")
+        assert reason == "HTTP 302 Found: redirect"
+        _, reason = db_mod._http_get_bytes(f"{url}/failure", "token")
+        assert reason == "HTTP 503 Service Unavailable: unavailable"
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(db_mod.urllib_request.Request(f"{url}/failure"), timeout=5)
+        assert raised.value.code == 503
+        assert raised.value.read() == b"unavailable"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_http_transport_maps_refused_connections_to_network_errors(fresh_pooled_client):
+    import socket
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    _, reason = db_mod._http_get_bytes(f"http://127.0.0.1:{port}/api", "token")
+    assert reason is not None
+    assert reason.startswith("network error:")
+    # Windows words it "[WinError 10061] ... actively refused it".
+    assert "refused" in reason.lower()
+
+
+def test_http_transport_passes_headers_and_timeout(monkeypatch):
+    import httpx
+
+    captured = {}
+
+    class Client:
+        def send(self, request, *, follow_redirects):
+            captured.update(request=request, follow_redirects=follow_redirects)
+            return httpx.Response(200, content=b"{}", request=request)
+
+    monkeypatch.setattr(db_mod, "_get_http_client", lambda: Client())
+    _force_pooled(monkeypatch)
+    body, reason = db_mod._http_get_bytes(
+        "https://example.test/api", "token", timeout=1.75, headers={"X-Transport-Test": "yes"}
+    )
+    assert body == b"{}"
+    assert reason is None
+    request = captured["request"]
+    assert request.extensions["timeout"] == httpx.Timeout(1.75).as_dict()
+    assert request.method == "GET"
+    assert str(request.url) == "https://example.test/api"
+    assert captured["follow_redirects"] is True
+    headers = dict(request.headers)
+    assert headers["authorization"] == "Bearer token"
+    assert headers["x-transport-test"] == "yes"
+    assert headers["accept-encoding"] == "identity"
+    assert headers["connection"] == "keep-alive"
+    assert headers["user-agent"] == f"Python-urllib/{db_mod.urllib_request.__version__}"
+    assert "accept" not in headers
+
+
+def _clear_proxy_env(monkeypatch):
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _reset_pooled_client(monkeypatch):
+    """Drop the cached process-wide client so the next request builds a fresh one."""
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", os.getpid())
+
+
+def _force_pooled(monkeypatch):
+    """Pin the dispatch to the pooled client for tests that stub `_get_http_client`."""
+    monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: True)
+
+
+def _stub_tls_apply(monkeypatch):
+    """Keep the real tls.apply out of tests that build a client: it would inject truststore
+    into `ssl` for the whole process (conftest extracts it afterwards, but these tests only
+    talk to plain-HTTP loopback servers and never need the OS store)."""
+    monkeypatch.setattr(db_mod.tls, "apply", lambda *args, **kwargs: "os")
+
+
+@pytest.fixture
+def fresh_pooled_client(monkeypatch):
+    """A loopback test gets its own pooled client: clear the proxy env so the dispatch picks
+    the pooled path, pin it, build a fresh client, and close it afterwards so its connections
+    don't outlive the test (monkeypatch restores the previously cached one)."""
+    _clear_proxy_env(monkeypatch)
+    _force_pooled(monkeypatch)
+    _stub_tls_apply(monkeypatch)
+    _reset_pooled_client(monkeypatch)
+    yield
+    client = db_mod._HTTP_CLIENT
+    if client is not None:
+        client.close()
+
+
+def test_pooled_client_built_on_tls_trust_store(monkeypatch):
+    """tls.apply() runs before the client and its transport are built, so httpx's default SSL
+    context verifies against the trust store selected for the whole process; no per-client
+    ssl context or verify= is passed (AGENTS.md)."""
+    import httpx
+
+    order = []
+
+    def spy_apply(*args, **kwargs):
+        order.append("apply")
+        return "os"
+
+    built = {}
+    real_transport = httpx.HTTPTransport
+    transports = []
+
+    def spy_transport(**kwargs):
+        order.append("transport")
+        transports.append(real_transport(**kwargs))
+        return transports[-1]
+
+    real_client = httpx.Client
+
+    def spy_client(*args, **kwargs):
+        order.append("client")
+        built.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(db_mod.tls, "apply", spy_apply)
+    monkeypatch.setattr(httpx, "HTTPTransport", spy_transport)
+    monkeypatch.setattr(httpx, "Client", spy_client)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
+
+    client = db_mod._get_http_client()
+    try:
+        assert order[0] == "apply"
+        assert "client" in order
+        assert "verify" not in built
+    finally:
+        client.close()
+
+
+def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", None)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", None)
+    _stub_tls_apply(monkeypatch)
+    parent_client = db_mod._get_http_client()
+    parent_pid = os.getpid()
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", parent_client)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", parent_pid)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_LOCK", db_mod._HTTP_CLIENT_LOCK)
+    monkeypatch.setattr(db_mod.os, "getpid", lambda: parent_pid + 1)
+
+    db_mod._reset_http_client_after_fork()
+    child_client = db_mod._get_http_client()
+    try:
+        assert child_client is not parent_client
+        assert db_mod._HTTP_CLIENT_PID == parent_pid + 1
+    finally:
+        parent_client.close()
+        child_client.close()
+
+
+class TestPooledClientDispatch:
+    """The pooled client is only for the default setup: OS trust store, no http/https proxy
+    (env or the macOS/Windows system settings). Everything else keeps urllib's own path, byte
+    for byte with main."""
+
+    @staticmethod
+    def _urlopen_sentinel(monkeypatch):
+        """Point urllib's urlopen at a recorder and make any pooled-client build fail loud."""
+        opened = []
+
+        class _Response:
+            headers = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def urlopen(request, timeout):
+            opened.append((request, timeout))
+            return _Response()
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(
+            db_mod, "_get_http_client", lambda: pytest.fail("pooled client must not be built")
+        )
+        return opened
+
+    def test_no_pooled_http_env_switch_uses_urlopen(self, monkeypatch):
+        """UG_NO_POOLED_HTTP is the revert switch: every call goes back to main's urlopen."""
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
+        opened = self._urlopen_sentinel(monkeypatch)
+        request = db_mod.urllib_request.Request("https://x/y")
+
+        for value in ("1", "true"):
+            monkeypatch.setenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR, value)
+            assert db_mod._use_pooled_client() is False
+            db_mod._http_open(request, timeout=5)
+
+        monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
+        monkeypatch.delenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR)
+        assert db_mod._use_pooled_client() is True
+        assert opened == [(request, 5), (request, 5)]
+
+    def test_python_trust_store_uses_urlopen(self, monkeypatch):
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "python")
+        opened = self._urlopen_sentinel(monkeypatch)
+
+        request = db_mod.urllib_request.Request("https://x/y")
+        db_mod._http_open(request, timeout=5)
+
+        assert opened == [(request, 5)]
+
+    def test_https_proxy_env_uses_urlopen(self, monkeypatch):
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
+        monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:3128")
+        opened = self._urlopen_sentinel(monkeypatch)
+
+        request = db_mod.urllib_request.Request("https://x/y")
+        db_mod._http_open(request, timeout=5)
+
+        assert opened == [(request, 5)]
+
+    def test_system_proxy_uses_urlopen(self, monkeypatch):
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
+        monkeypatch.setattr(
+            db_mod.urllib_request, "getproxies", lambda: {"https": "http://system-proxy:8080"}
+        )
+        opened = self._urlopen_sentinel(monkeypatch)
+
+        request = db_mod.urllib_request.Request("https://x/y")
+        db_mod._http_open(request, timeout=5)
+
+        assert opened == [(request, 5)]
+
+    def test_all_proxy_alone_still_pools_direct(self, monkeypatch):
+        # urllib ignores all_proxy (and no_proxy), so they don't disqualify the pooled client;
+        # the client must still be direct with trust_env off, so ALL_PROXY is never mounted.
+        # getproxies is stubbed because a macOS runner's system proxy would leak in otherwise.
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "getproxies",
+            lambda: {"all": "socks5://socks-proxy:1080", "no": "bypassed.example"},
+        )
+
+        import httpx
+
+        assert db_mod._use_pooled_client() is True
+
+        built = {}
+        real_client = httpx.Client
+
+        def spy_client(*args, **kwargs):
+            built.update(kwargs)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", spy_client)
+        _stub_tls_apply(monkeypatch)
+        _reset_pooled_client(monkeypatch)
+        client = db_mod._get_http_client()
+        try:
+            assert isinstance(client._transport, httpx.HTTPTransport)
+            assert built["trust_env"] is False
+        finally:
+            client.close()
+
+    def test_default_setup_pools(self, monkeypatch):
+        _clear_proxy_env(monkeypatch)
+        # Stub getproxies too: a macOS runner's system proxy would leak in otherwise.
+        monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
+        monkeypatch.setattr(db_mod.tls, "effective_trust_store", lambda: "os")
+
+        import httpx
+
+        assert db_mod._use_pooled_client() is True
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"{}"))
+        )
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+
+        response = db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
+
+        assert isinstance(response, db_mod._PooledResponse)
+        assert response.read() == b"{}"
+
+
+class TestPooledRedirectErrors:
+    """httpx errors urllib's opener would have surfaced as HTTP errors keep their shape, so
+    callers see a status-shaped reason instead of a network failure."""
+
+    def test_too_many_redirects_maps_to_http_error_with_the_last_real_status(self, monkeypatch):
+        """Exceeding the redirect budget raises the LAST 3xx, like urllib's redirect handler
+        does — not a made-up status. The response hook on the pooled client tracks it."""
+        from urllib.error import HTTPError
+
+        import httpx
+
+        sent = []
+
+        def always_redirect(request):
+            sent.append(request)
+            return httpx.Response(302, headers={"Location": "https://x/next"}, content=b"moved")
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(always_redirect),
+            event_hooks={"response": [db_mod._remember_redirect]},
+            max_redirects=db_mod.urllib_request.HTTPRedirectHandler.max_redirections,
+        )
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+        _force_pooled(monkeypatch)
+
+        with pytest.raises(HTTPError) as raised:
+            db_mod._http_open(db_mod.urllib_request.Request("https://x/y"), timeout=5)
+
+        assert raised.value.code == 302
+        assert raised.value.reason == "Found"
+        assert raised.value.read() == b"moved"
+        # urllib's budget of 10 redirects: the first request plus 10 follow-ups.
+        assert len(sent) == 11
+
+
+def test_latin1_header_values_are_sent_like_urllib(monkeypatch):
+    """http.client sends header values as latin-1; the pooled path does the same instead of
+    failing on a non-ascii value (e.g. one from UG_HEADERS)."""
+    import httpx
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.raw)
+        return httpx.Response(200, content=b"{}")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+    _force_pooled(monkeypatch)
+
+    request = db_mod.urllib_request.Request("https://x/y", headers={"X-Team": "Équipe"})
+    with db_mod._http_open(request, timeout=5) as response:
+        assert response.read() == b"{}"
+    assert (b"x-team", "Équipe".encode("latin-1")) in [(n.lower(), v) for n, v in seen[0]]
+
+
+class TestPooledRedirectPolicies:
+    """Redirects are followed exactly where urllib's redirect_request follows them: GET/HEAD
+    re-request the target, a POST answered 301/302/303 is re-issued as a bodiless GET, and
+    every other method or 307/308 raises the 3xx as an HTTPError instead of having its body
+    replayed."""
+
+    @staticmethod
+    def _mock_client(monkeypatch, handler):
+        import httpx
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        _force_pooled(monkeypatch)
+        monkeypatch.setattr(db_mod, "_get_http_client", lambda: client)
+        return client
+
+    def test_post_redirect_is_raised_not_followed(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append(request)
+            return httpx.Response(307, headers={"Location": "https://example.test/moved"})
+
+        self._mock_client(monkeypatch, handler)
+
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(
+                db_mod.urllib_request.Request(
+                    "https://example.test/api", data=b"{}", method="POST"
+                ),
+                timeout=5,
+            )
+
+        assert raised.value.code == 307
+        assert raised.value.headers.get("Location") == "https://example.test/moved"
+        assert len(sent) == 1
+
+    def test_post_302_is_followed_as_a_bodiless_get(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append((request.method, request.content))
+            if len(sent) == 1:
+                return httpx.Response(302, headers={"Location": "https://example.test/final"})
+            return httpx.Response(200, content=b"{}")
+
+        self._mock_client(monkeypatch, handler)
+
+        with db_mod._http_open(
+            db_mod.urllib_request.Request("https://example.test/api", data=b"{}", method="POST"),
+            timeout=5,
+        ) as response:
+            assert response.read() == b"{}"
+
+        assert sent == [("POST", b"{}"), ("GET", b"")]
+
+    def test_patch_redirect_is_raised_not_followed(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append(request)
+            return httpx.Response(302, headers={"Location": "https://example.test/moved"})
+
+        self._mock_client(monkeypatch, handler)
+
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(
+                db_mod.urllib_request.Request(
+                    "https://example.test/api", data=b"{}", method="PATCH"
+                ),
+                timeout=5,
+            )
+
+        assert raised.value.code == 302
+        assert len(sent) == 1
+
+    def test_get_redirect_is_followed(self, monkeypatch):
+        import httpx
+
+        sent = []
+
+        def handler(request):
+            sent.append(str(request.url))
+            if len(sent) == 1:
+                return httpx.Response(302, headers={"Location": "https://example.test/final"})
+            return httpx.Response(200, content=b"{}")
+
+        self._mock_client(monkeypatch, handler)
+
+        with db_mod._http_open(
+            db_mod.urllib_request.Request("https://example.test/start"), timeout=5
+        ) as response:
+            assert response.read() == b"{}"
+
+        assert sent == ["https://example.test/start", "https://example.test/final"]
+
+
+class TestWindowsUgExe:
+    def test_prefers_an_exe_then_the_exe_launcher_and_refuses_shims(self):
+        assert db_mod.windows_ug_exe(r"C:\uv\bin\ug.exe", None) == r"C:\uv\bin\ug.exe"
+        assert db_mod.windows_ug_exe(r"C:\tools\ug.cmd", r"C:\uv\bin\UG.EXE") == r"C:\uv\bin\UG.EXE"
+        assert db_mod.windows_ug_exe("ug", r"C:\tools\ug.cmd") is None
+        assert db_mod.windows_ug_exe("ug", None) is None

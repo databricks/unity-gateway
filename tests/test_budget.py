@@ -1,4 +1,4 @@
-"""Tests for the workspace-authenticated AI Gateway budget spend-status client."""
+"""Tests for the workspace-authenticated Unity Gateway budget spend-status client."""
 
 from __future__ import annotations
 

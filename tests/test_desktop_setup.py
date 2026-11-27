@@ -701,7 +701,6 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
     "key,value",
     [
         ("custom_oauth", {"client_id": "custom"}),
-        ("use_pat", True),
         ("profile", None),
     ],
 )
@@ -712,6 +711,34 @@ def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key,
     assert (desktop / "_meta.json").read_bytes() == before
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert "Could not configure Claude Desktop" in capsys.readouterr().out
+
+
+def test_pat_profile_helpers_read_the_profile_pat(desktop):
+    state = {"workspace": "https://workspace.example/", "profile": "pat-profile", "use_pat": True}
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert profile["inferenceCredentialHelperArgs"][-3:] == [
+        "--profile",
+        "pat-profile",
+        "--use-pat",
+    ]
+    assert "component-token" not in json.dumps(profile)
+
+
+def test_pat_profile_otel_helper_reads_the_profile_pat(desktop):
+    state = {
+        "workspace": "https://workspace.example/",
+        "profile": "pat-profile",
+        "use_pat": True,
+        "claude_otel_tracing": True,
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"]).read_text()
+    assert "--use-pat" in helper
 
 
 def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, monkeypatch):
@@ -736,6 +763,23 @@ def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, mon
     assert profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == (
         "main.models.subscription"
     )
+
+
+def test_relay_for_cli_model_services_keeps_desktop_on_gateway_auth(desktop, monkeypatch):
+    # Relay-backed model services in a static list are CLI-only: Desktop has no per-model proxy.
+    monkeypatch.setattr(
+        desktop_setup.shutil, "which", lambda binary: pytest.fail("no relay helper expected")
+    )
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_relayed": True,
+        "claude_relayed_for_model_services": True,
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    assert "--relay" not in configured_profile(desktop)["inferenceCredentialHelperArgs"]
 
 
 def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):

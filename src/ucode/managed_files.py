@@ -16,6 +16,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,7 +47,12 @@ _machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
-UNITY_GATEWAY_MANAGED_SETTINGS_PATH = Path("/etc/unitygateway/managed-settings.json")
+# Written by a managed run: `ug configure --global` on a workspace that publishes an agent
+# configuration. While it exists, the machine-wide files come from that published agent
+# configuration, and every other run leaves them alone.
+PUBLISHED_AGENT_CONFIG_MARKER_PATH = Path("/etc/unitygateway/agents-state.json")
+CODEX_SYSTEM_REQUIREMENTS_PATH = Path("/etc/codex/requirements.toml")
+CODEX_SYSTEM_CONFIG_PATH = Path("/etc/codex/config.toml")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
@@ -85,34 +91,18 @@ CLAUDE_HEADER_MOD_FILES = (
     "ug-headers/.claude-plugin/plugin.json",
     "ug-headers/hooks/hooks.json",
     "ug-headers/hooks/register.ts",
+    "ug-smart-router-recipe/.claude-plugin/plugin.json",
+    "ug-smart-router-recipe/hooks/hooks.json",
+    "ug-smart-router-recipe/hooks/register.ts",
+    "ug-smart-router-recipe/hooks/constants.ts",
+    "ug-smart-router-recipe/hooks/extra-body.ts",
+    "ug-smart-router-recipe/hooks/routing-state.ts",
 )
 
 CLAUDE_DESKTOP_MDM_ROOT = Path("/Library/Application Support/UnityGateway/claude-desktop-mdm")
 CLAUDE_DESKTOP_POLICY_PATH = Path(
     "/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"
 )
-
-_SUDO_REPLACE_TARGETS = {
-    OS.LINUX: frozenset(
-        {
-            Path("/etc/claude-code/managed-settings.json"),
-            Path("/etc/codex/managed_config.toml"),
-            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
-            *(CLAUDE_HEADER_MOD_ROOTS[OS.LINUX] / name for name in CLAUDE_HEADER_MOD_FILES),
-        }
-    ),
-    OS.MACOS: frozenset(
-        {
-            Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
-            Path("/etc/codex/managed_config.toml"),
-            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
-            CLAUDE_DESKTOP_POLICY_PATH,
-            CLAUDE_DESKTOP_MDM_ROOT / "ug",
-            CLAUDE_DESKTOP_MDM_ROOT / "otel-headers.sh",
-            *(CLAUDE_HEADER_MOD_ROOTS[OS.MACOS] / name for name in CLAUDE_HEADER_MOD_FILES),
-        }
-    ),
-}
 
 
 def current_os() -> OS:
@@ -125,6 +115,50 @@ def current_os() -> OS:
     if platform.startswith("win"):
         return OS.WINDOWS
     return OS.OTHER
+
+
+_POSIX_UNITY_GATEWAY_MANAGED_SETTINGS_PATH = Path("/etc/unitygateway/managed-settings.json")
+
+
+def unity_gateway_managed_settings_path() -> Path:
+    """The machine-wide workspace policy: root-owned on Linux/macOS, administrator-only under
+    ProgramData on Windows (readable by every user, like the other machine-wide agent files)."""
+    if current_os() is OS.WINDOWS:
+        return system_cross_os.windows_program_data_dir() / "UnityGateway" / "managed-settings.json"
+    return _POSIX_UNITY_GATEWAY_MANAGED_SETTINGS_PATH
+
+
+UNITY_GATEWAY_MANAGED_SETTINGS_PATH = unity_gateway_managed_settings_path()
+
+_SUDO_REPLACE_TARGETS = {
+    OS.LINUX: frozenset(
+        {
+            Path("/etc/claude-code/managed-settings.json"),
+            Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/ug-model-catalog.json"),
+            _POSIX_UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            PUBLISHED_AGENT_CONFIG_MARKER_PATH,
+            CODEX_SYSTEM_REQUIREMENTS_PATH,
+            CODEX_SYSTEM_CONFIG_PATH,
+            *(CLAUDE_HEADER_MOD_ROOTS[OS.LINUX] / name for name in CLAUDE_HEADER_MOD_FILES),
+        }
+    ),
+    OS.MACOS: frozenset(
+        {
+            Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+            Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/ug-model-catalog.json"),
+            _POSIX_UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            PUBLISHED_AGENT_CONFIG_MARKER_PATH,
+            CODEX_SYSTEM_REQUIREMENTS_PATH,
+            CODEX_SYSTEM_CONFIG_PATH,
+            CLAUDE_DESKTOP_POLICY_PATH,
+            CLAUDE_DESKTOP_MDM_ROOT / "ug",
+            CLAUDE_DESKTOP_MDM_ROOT / "otel-headers.sh",
+            *(CLAUDE_HEADER_MOD_ROOTS[OS.MACOS] / name for name in CLAUDE_HEADER_MOD_FILES),
+        }
+    ),
+}
 
 
 def set_config_scope(scope: str) -> None:
@@ -171,6 +205,31 @@ def per_user_paths(paths: list[str]) -> list[str]:
     return found
 
 
+def published_agent_config_marker() -> dict | None:
+    """The marker a managed run left on this machine, or None when it left none.
+
+    Only a root-owned regular file counts, so a developer can't create or forge one.
+    """
+    if current_os() not in (OS.LINUX, OS.MACOS):
+        return None
+    try:
+        info = PUBLISHED_AGENT_CONFIG_MARKER_PATH.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        return None
+    try:
+        data = json.loads(PUBLISHED_AGENT_CONFIG_MARKER_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def published_agent_config_used() -> bool:
+    """Whether this machine's machine-wide agent settings come from a published agent configuration."""
+    return published_agent_config_marker() is not None
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
@@ -183,9 +242,15 @@ def managed_settings_skipped() -> bool:
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
     that write is blocked. ug also trusts whatever OS-managed files exist and doesn't check them
     against its own settings; the agents apply their native precedence. ``ug configure --user`` has
-    the same effect.
+    the same effect, and so does :func:`published_agent_config_used`, because then only the managed
+    run, an explicit ``ug configure --global`` (:func:`machine_wide_only`), writes the machine-wide
+    files.
     """
-    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
+    return (
+        env_bool(SKIP_OS_SETTINGS_ENV)
+        or _config_scope == "user"
+        or (published_agent_config_used() and not _machine_wide_only)
+    )
 
 
 def managed_files_supported() -> bool:
@@ -680,7 +745,7 @@ def ug_agent_token(user_agent: str, agent: str) -> str | None:
     return match.group(1) if match else None
 
 
-_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}{_PLATFORM_SUFFIX}")
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}( \([^()]*\))?")
 
 
 def mask_user_agent_versions(value: object, key: object = None) -> object:
@@ -688,7 +753,9 @@ def mask_user_agent_versions(value: object, key: object = None) -> object:
     User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
     prompt for sudo to replace) the root-owned file. The ``(<os>; <arch>)`` suffix is dropped too:
     it describes the machine that owns the file, and keeping it would force one sudo rewrite on the
-    first ug upgrade that adds it. Only User-Agent headers are masked: a
+    first ug upgrade that adds it. Its ``mdm`` field is kept during ``ug configure``/``ug revert``,
+    so adding or dropping ``--mdm`` rewrites a file that no longer matches; a launch ignores it, so an unsaved
+    MDM change never becomes a policy conflict. Only User-Agent headers are masked: a
     ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
     exactly."""
     value = _unwrap(value)
@@ -715,7 +782,11 @@ def _is_user_agent(name: object) -> bool:
 
 def _mask_ug_user_agent(user_agent: str) -> str:
     match = _UG_USER_AGENT.fullmatch(user_agent.strip())
-    return f"ucode/* {match.group(1)}/*" if match else user_agent
+    if not match:
+        return user_agent
+    marked = (match.group(2) or "").endswith("; mdm)")
+    mdm = " (mdm)" if marked and explicit_managed_writes() else ""
+    return f"ucode/* {match.group(1)}/*{mdm}"
 
 
 def is_semantically_equal(current: object, desired: object) -> bool:
@@ -782,6 +853,93 @@ def managed_file_status(
             except RuntimeError:
                 status = "invalid"
     return status, _backup_label(tool)
+
+
+@contextmanager
+def _companion_update(
+    companion: tuple[Path, str | None] | None, *, display: str, managed_path: Path
+) -> Iterator[None]:
+    """Roll back the catalog when its managed-file update fails."""
+    if companion is None:
+        yield
+        return
+    path, desired = companion
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to update linked managed companion file {path}.")
+    before = read_managed_file(path)
+    managed_before = read_managed_file(managed_path)
+    try:
+        yield
+    except Exception as exc:
+        try:
+            current = read_managed_file(path)
+            if current != before:
+                if current != desired:
+                    raise RuntimeError(
+                        f"{path} changed concurrently; its newer contents were retained"
+                    )
+                if before is None and read_managed_file(managed_path) != managed_before:
+                    raise RuntimeError(
+                        f"{managed_path} changed; retained {path} to avoid a missing reference"
+                    )
+                reconcile_privileged_files({path: before}, display=display)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"{display} settings update failed ({exc}); companion rollback also failed: "
+                f"{rollback_error}. Repair the managed settings before retrying."
+            ) from exc
+        if isinstance(exc, (OSError, subprocess.CalledProcessError)):
+            raise ManagedFileWriteUnavailable(
+                f"Could not update {display} companion file: {exc}"
+            ) from exc
+        raise
+
+
+@contextmanager
+def managed_companion_file(
+    tool: str, managed_path: Path, companion: tuple[Path, str | None] | None, *, display: str
+) -> Iterator[None]:
+    """Back up a referenced file and update it around the caller's settings write."""
+    if companion is None or is_dry_run() or not managed_files_supported():
+        yield
+        return
+    path, desired = companion
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to update linked managed companion file {path}.")
+    original = read_managed_file(path)
+    if original == desired:
+        yield
+        return
+    _ensure_backup(tool, managed_path, read_managed_file(managed_path))
+    manifest = _load_manifest()
+    snapshots = _manifest_files(manifest)[tool].setdefault("companion_files", {})
+    if str(path) not in snapshots:
+        snapshot = {"original_existed": original is not None}
+        if original is not None:
+            filename = f"{tool}-companion-{_sha256(str(path))}.backup"
+            _write_private_file(MANAGED_BACKUP_DIR / filename, original)
+            snapshot.update(backup_file=filename, original_sha256=_sha256(original))
+        snapshots[str(path)] = snapshot
+        _write_manifest(manifest)
+    with _companion_update(companion, display=display, managed_path=managed_path):
+        if desired is not None:
+            reconcile_privileged_files({path: desired}, display=display)
+        yield
+        if desired is None:
+            reconcile_privileged_files({path: None}, display=display)
+        # A catalog-only update still needs a last-applied TOML snapshot for revert.
+        if "last_applied_file" not in _manifest_files(_load_manifest())[tool]:
+            text = read_managed_file(managed_path)
+            if text is None:
+                raise RuntimeError(
+                    f"Managed settings disappeared during the update: {managed_path}"
+                )
+            _record_last_applied(tool, managed_path, text, [])
+        manifest = _load_manifest()
+        _manifest_files(manifest)[tool]["companion_files"][str(path)]["last_applied_sha256"] = (
+            _sha256(desired) if desired is not None else None
+        )
+        _write_manifest(manifest)
 
 
 def reconcile_managed_file(
@@ -903,6 +1061,7 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    companion_reference: tuple[str, Path] | None = None,
 ) -> str:
     """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
@@ -948,22 +1107,49 @@ def revert_managed_file(
                     "`ug revert` from an interactive terminal."
                 )
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
-        try:
-            if desired_text is None:
-                _privileged_remove(path)
-            else:
-                _privileged_replace(path, desired_text)
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise RuntimeError(
-                f"Could not restore {display} managed settings at {path}. The backup was retained "
-                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
-                "again."
-            ) from exc
-        if read_managed_file(path) != desired_text:
-            raise RuntimeError(
-                f"Could not verify restored {display} managed settings at {path}. The backup was "
-                f"retained under {MANAGED_BACKUP_DIR}."
-            )
+
+    companion = None
+    if companion_reference is not None:
+        key, companion_path = companion_reference
+        snapshot = entry.get("companion_files", {}).get(str(companion_path))
+        if isinstance(snapshot, dict):
+            if companion_path.is_symlink():
+                raise RuntimeError(
+                    f"Refusing to restore linked managed companion file {companion_path}."
+                )
+            current = read_managed_file(companion_path)
+            fingerprint = _sha256(current) if current is not None else None
+            # Preserve a later writer's catalog, just as we preserve their TOML edits.
+            if fingerprint == snapshot.get("last_applied_sha256"):
+                desired_doc = parser(desired_text) if desired_text is not None else {}
+                if desired_doc.get(key) == str(companion_path):
+                    original = _original_text(snapshot)
+                    if original is not None:
+                        companion = (companion_path, original)
+                else:
+                    companion = (companion_path, None)
+    with _companion_update(companion, display=display, managed_path=path):
+        if companion is not None and companion[1] is not None:
+            reconcile_privileged_files({companion[0]: companion[1]}, display=display)
+        if desired_text != current_text:
+            try:
+                if desired_text is None:
+                    _privileged_remove(path)
+                else:
+                    _privileged_replace(path, desired_text)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise RuntimeError(
+                    f"Could not restore {display} managed settings at {path}. The backup was retained "
+                    f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
+                    "again."
+                ) from exc
+            if read_managed_file(path) != desired_text:
+                raise RuntimeError(
+                    f"Could not verify restored {display} managed settings at {path}. The backup was "
+                    f"retained under {MANAGED_BACKUP_DIR}."
+                )
+        if companion is not None and companion[1] is None:
+            reconcile_privileged_files({companion[0]: None}, display=display)
 
     _delete_backup(tool, manifest, entry)
     if original_text is None and desired_text is None:
@@ -1117,13 +1303,14 @@ def _backup_label(tool: str) -> str:
 
 
 def _delete_backup(tool: str, manifest: dict, entry: dict) -> None:
-    for key in ("backup_file", "last_applied_file"):
-        filename = entry.get(key)
-        if isinstance(filename, str):
-            try:
-                _snapshot_path(filename).unlink(missing_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
+    for snapshot in (entry, *entry.get("companion_files", {}).values()):
+        for key in ("backup_file", "last_applied_file"):
+            filename = snapshot.get(key)
+            if isinstance(filename, str):
+                try:
+                    _snapshot_path(filename).unlink(missing_ok=True)
+                except OSError as exc:
+                    raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
     _manifest_files(manifest).pop(tool, None)
     _write_manifest(manifest)
 
@@ -1399,6 +1586,23 @@ def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) 
     return _sudo_command(*command)
 
 
+def _write_windows_workspace_policy(path: Path, desired_text: str | None) -> None:
+    """Install or remove the policy from an elevated process."""
+    try:
+        if desired_text is None:
+            _privileged_remove(path)
+        else:
+            _privileged_replace(path, desired_text)
+    except PermissionError as exc:
+        raise ManagedFileWriteUnavailable(
+            f"Could not update workspace policy at {path}: {exc}"
+        ) from exc
+    if read_managed_file(path) != desired_text:
+        raise ManagedFileWriteUnavailable(
+            f"Workspace policy at {path} changed during installation; run `ug configure` again."
+        )
+
+
 def update_workspace_policy(
     path: Path,
     desired_text: str | None,
@@ -1406,29 +1610,44 @@ def update_workspace_policy(
     interactive: bool = False,
     allow_sudo: bool = False,
 ) -> None:
-    """Install or remove changed policy; unprivileged launches never invoke sudo."""
+    """Install or remove changed policy; unprivileged launches never invoke sudo.
+
+    Windows has no sudo: only an already-elevated process writes, whether it is a launch or an
+    explicit configure, like root on Linux and macOS.
+    """
     if path != UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
         raise RuntimeError(f"Refusing unexpected workspace-policy target: {path}")
-    if current_os() not in (OS.LINUX, OS.MACOS):
-        raise ManagedFileWriteUnavailable(
-            "Machine-wide workspace policy is supported only on Linux and macOS."
-        )
     if managed_settings_skipped():
         raise ManagedFileWriteUnavailable("Machine-wide workspace policy is skipped for this run.")
-    _validate_sudo_replace_target(path)
+    windows = current_os() is OS.WINDOWS
+    if not windows and current_os() not in (OS.LINUX, OS.MACOS):
+        raise ManagedFileWriteUnavailable(
+            "Machine-wide workspace policy is supported only on Linux, macOS, and Windows."
+        )
+    if not windows:
+        _validate_sudo_replace_target(path)
     current_text = read_managed_file(path)
     if current_text == desired_text:
         return
     # Checked before the dry-run preview, so a dry run never shows a write the real run refuses.
-    if not allow_sudo and not _running_as_root():
+    if windows:
+        if not system_cross_os.is_admin():
+            raise ManagedFileWriteUnavailable(
+                _windows_admin_required_message("Unity Gateway workspace", path, "ug configure")
+            )
+    elif not allow_sudo and not _running_as_root():
         raise ManagedFileWriteUnavailable(
             "Workspace policy updates require an administrator or root provisioning run."
         )
     if is_dry_run():
+        via = "as administrator" if windows else "via sudo"
         console.print(
-            f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n"
+            f"\n[bold]\\[dry run] {path} ({via})[/bold]\n"
             f"{desired_text if desired_text is not None else '(remove)'}"
         )
+        return
+    if windows:
+        _write_windows_workspace_policy(path, desired_text)
         return
     running_as_root = _running_as_root()
     can_prompt = interactive and _sudo_may_prompt() and not running_as_root
@@ -1620,12 +1839,19 @@ def _privileged_remove(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def _windows_managed_targets() -> tuple[Path, ...]:
+    return (
+        windows_claude_managed_settings_path(),
+        windows_codex_managed_settings_path(),
+        UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+    )
+
+
 def _validate_windows_target(path: Path) -> None:
     header_mod_files = {
         _windows_claude_header_mod_root() / name for name in CLAUDE_HEADER_MOD_FILES
     }
-    targets = {windows_claude_managed_settings_path(), windows_codex_managed_settings_path()}
-    if path not in targets | header_mod_files:
+    if path not in {*_windows_managed_targets(), *header_mod_files}:
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
@@ -1634,6 +1860,9 @@ def _validate_windows_target(path: Path) -> None:
         for folder in (path.parent, path.parent.parent):
             if folder.is_symlink() or folder.is_junction():
                 raise RuntimeError(f"Refusing to write managed settings through link {folder}")
+    elif path == UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+        if path.parent.is_symlink() or path.parent.is_junction():
+            raise RuntimeError(f"Refusing to write managed settings through link {path.parent}")
 
 
 # Well-known SIDs, because Windows translates the group names.
@@ -1642,36 +1871,43 @@ _WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
 _WINDOWS_USERS_SID = "*S-1-5-32-545"
 
 
+def _run_windows_icacls(folder: Path, *change: str) -> None:
+    """Apply one ``icacls`` change to a folder itself (``/L``), failing the write if it can't."""
+    icacls = str(system_cross_os.windows_system32_dir() / "icacls.exe")
+    result = subprocess_cross_os.run(
+        [icacls, str(folder), *change, "/L"], capture_output=True, text=True, check=False
+    )
+    if result.returncode:
+        output = f"{result.stdout}{result.stderr}".strip()
+        raise PermissionError(f"could not secure {folder}: {output}")
+
+
+def _secure_windows_leaf_folder(folder: Path) -> None:
+    """Give a folder to Administrators and let standard users only read it, like the root-owned
+    0755 folders on Linux and macOS."""
+    # Set the owner before resetting: the inherited CREATOR OWNER entry maps to the current owner.
+    _run_windows_icacls(folder, "/setowner", _WINDOWS_ADMINISTRATORS_SID)
+    _run_windows_icacls(
+        folder,
+        "/inheritance:r",
+        "/grant:r",
+        f"{_WINDOWS_SYSTEM_SID}:(OI)(CI)F",
+        f"{_WINDOWS_ADMINISTRATORS_SID}:(OI)(CI)F",
+        f"{_WINDOWS_USERS_SID}:(OI)(CI)RX",
+    )
+
+
 def _secure_windows_codex_folders(path: Path) -> None:
     """Give the ``OpenAI`` and ``Codex`` folders to Administrators and let standard users only read
-    ``Codex``, like the root-owned 0755 folders on Linux and macOS. A standard user may have created
-    them first and would otherwise keep control.
+    ``Codex``. A standard user may have created them first and would otherwise keep control.
 
     Only the folders change, never their contents, so a planted hard link can't redirect the change
     onto another file. ``/L`` changes a link itself rather than its target, and the caller checks
     for links again afterwards."""
-    icacls = str(system_cross_os.windows_system32_dir() / "icacls.exe")
     codex, openai = path.parent, path.parent.parent
-    # Set the owner before resetting: the inherited CREATOR OWNER entry maps to the current owner.
-    for folder, *change in (
-        (openai, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
-        (openai, "/reset"),
-        (codex, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
-        (
-            codex,
-            "/inheritance:r",
-            "/grant:r",
-            f"{_WINDOWS_SYSTEM_SID}:(OI)(CI)F",
-            f"{_WINDOWS_ADMINISTRATORS_SID}:(OI)(CI)F",
-            f"{_WINDOWS_USERS_SID}:(OI)(CI)RX",
-        ),
-    ):
-        result = subprocess_cross_os.run(
-            [icacls, str(folder), *change, "/L"], capture_output=True, text=True, check=False
-        )
-        if result.returncode:
-            output = f"{result.stdout}{result.stderr}".strip()
-            raise PermissionError(f"could not secure {folder}: {output}")
+    _run_windows_icacls(openai, "/setowner", _WINDOWS_ADMINISTRATORS_SID)
+    _run_windows_icacls(openai, "/reset")
+    _secure_windows_leaf_folder(codex)
 
 
 def _windows_replace(path: Path, desired_text: str) -> None:
@@ -1679,13 +1915,15 @@ def _windows_replace(path: Path, desired_text: str) -> None:
 
     The temp file is created beside the target so the rename stays on one volume and the new file
     inherits the folder's ACL, which lets standard users read but not write: Program Files comes
-    that way, and the Codex folders under ProgramData are secured first."""
+    that way, and the Codex and Unity Gateway folders under ProgramData are secured first."""
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
     path.parent.mkdir(parents=True, exist_ok=True)
     if path == windows_codex_managed_settings_path():
         _secure_windows_codex_folders(path)
+    elif path == UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+        _secure_windows_leaf_folder(path.parent)
     _validate_windows_target(path)  # a folder may have been created or swapped for a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:

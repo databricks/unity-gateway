@@ -14,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from ucode import custom_oauth, gateway_proxy, managed_files
-from ucode.agents import LaunchOptions, codex
+from ucode.agents import LaunchOptions, codex, codex_catalog
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
 from ucode.telemetry import client_platform
@@ -37,11 +37,17 @@ class TestMinimumVersion:
     @pytest.mark.parametrize(
         "version,smart_routing_allowed",
         [
-            ("0.145.0", False),
-            ("0.148.0", False),
+            ("0.156.0", False),
+            ("0.158.0", False),
             ("0.163.0", False),
-            ("0.164.0", True),
-            ("0.165.0", True),
+            ("0.164.0", False),
+            ("0.165.0", False),
+            ("0.170.0", False),
+            ("0.171.0-alpha.12", False),
+            ("0.171.0-rc.1", False),
+            ("0.171.0", True),
+            ("0.171.0+build-test", True),
+            ("0.172.0-alpha.1", True),
             ("1.0.0", True),
         ],
     )
@@ -54,9 +60,9 @@ class TestMinimumVersion:
         ) == smart_routing_allowed
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.155.0")
 
-        expected = "ug requires Codex 0.145.0 or newer; found 0.144.0."
+        expected = "ug requires Codex 0.156.0 or newer; found 0.155.0."
         assert codex.minimum_version_error() == expected
 
     def test_unknown_version_does_not_block(self, monkeypatch):
@@ -68,7 +74,7 @@ class TestMinimumVersion:
 
     @pytest.mark.parametrize(
         ("version", "allowed"),
-        [("0.165.0", True), ("0.163.0", False), ("unknown", False), (None, False)],
+        [("0.171.0", True), ("0.170.0", False), ("unknown", False), (None, False)],
     )
     def test_smart_routing_rechecks_an_unknown_version_with_a_longer_bound(
         self, monkeypatch, version, allowed
@@ -307,7 +313,7 @@ class TestCodexWriteConfig:
         config_path.write_text('model = "gpt-5.6-sol"\n')
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.156.0")
         monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.delenv("CODEX_HOME", raising=False)
         state = {"workspace": WS}
@@ -600,7 +606,7 @@ class TestCodexWriteConfig:
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.156.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
 
         codex.write_tool_config(
@@ -634,7 +640,7 @@ class TestCodexWriteConfig:
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", backup_path)
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.156.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
         state = {
             "workspace": WS,
@@ -645,6 +651,38 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state)
 
         assert "hooks" not in read_toml_safe(config_path)
+
+    def test_config_write_strips_codex_hook_trust_state(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "[[hooks.PreToolUse]]\n"
+            'matcher = "Bash"\n'
+            "[[hooks.PreToolUse.hooks]]\n"
+            'type = "command"\n'
+            'command = "user-policy"\n'
+            "\n"
+            '[hooks.state."/home/u/.codex/hooks.json:post_tool_use:1:0"]\n'
+            'trusted_hash = "sha256:a4ce19f6a4c610a35e632d2bb901bef8b62e0528832f2ab4ee4026b84efa2589"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+
+        codex.write_tool_config({"workspace": WS})
+
+        doc = read_toml_safe(config_path)
+        # A stale snapshot of Codex's trust bookkeeping must not survive in ug's
+        # profile layer, where forwarding it would re-prompt hook approval on
+        # every launch (AIGTWY-5220).
+        assert "state" not in doc["hooks"]
+        pre_tool_commands = [
+            hook["command"] for group in doc["hooks"]["PreToolUse"] for hook in group["hooks"]
+        ]
+        assert pre_tool_commands == ["user-policy"]
+        assert doc["model_provider"] == "Databricks"
 
     def test_legacy_write_preserves_other_profiles_in_shared_config(self, tmp_path, monkeypatch):
         config_dir = tmp_path / ".codex"
@@ -769,7 +807,7 @@ class TestCodexRemoveLegacyProfile:
             "[profiles.ucode]\n"
             'model_provider = "ucode-databricks"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n\n'
+            'name = "Databricks Unity Gateway"\n\n'
             "[model_providers.other]\n"
             'name = "keep"\n',
             encoding="utf-8",
@@ -802,7 +840,7 @@ class TestCodexRevertLegacySharedConfig:
             "[profiles.other]\n"
             'model_provider = "keep"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n',
+            'name = "Databricks Unity Gateway"\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
@@ -971,7 +1009,7 @@ class TestCodexAppCatalog:
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
 
-        def reject(*args):
+        def reject(*args, **kwargs):
             raise RuntimeError("catalog is incompatible")
 
         monkeypatch.setattr(codex, "prepare_codex_catalog", reject)
@@ -1050,7 +1088,7 @@ class TestCodexLaunch:
         profile_path.write_text(
             'model_provider = "Databricks"\n\n'
             "[model_providers.Databricks]\n"
-            'name = "Databricks AI Gateway"\n'
+            'name = "Databricks Unity Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
             encoding="utf-8",
@@ -1335,7 +1373,7 @@ class TestCodexLaunch:
             'model_provider = "ucode-databricks"\n'
             'model = "managed-default"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n'
+            'name = "Databricks Unity Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
             encoding="utf-8",
@@ -1673,6 +1711,28 @@ class TestCodexLaunch:
             "X-New": "1",
         }
 
+    def test_managed_run_drops_ug_headers_once_with_a_warning(self, monkeypatch):
+        warnings: list[str] = []
+        monkeypatch.setenv("UG_HEADERS", "X-New: 1")
+        monkeypatch.setattr(codex, "published_agent_config_used", lambda: True)
+        monkeypatch.setattr(codex, "print_warning_err", warnings.append)
+        monkeypatch.setattr(codex, "_warned_published_agent_config_headers", False)
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        first = codex._render_launch_overlay(WS)
+        codex._render_launch_overlay(WS)
+
+        # The provider is locked in requirements.toml, so Codex would ignore the header anyway.
+        assert first["model_providers"]["Databricks"]["http_headers"] == {"X-Team": "eng"}
+        assert len(warnings) == 1
+        assert "published agent configuration" in warnings[0]
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
@@ -1909,6 +1969,35 @@ class TestCodexLaunch:
         assert 'base_url = "https://example.databricks.com/ai-gateway/codex/v1"' in provider_arg
         assert "Upgrade Codex" not in capsys.readouterr().err
 
+    def test_launch_does_not_forward_hook_trust_state(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            'model_provider = "Databricks"\n'
+            "\n"
+            "[[hooks.PreToolUse]]\n"
+            'matcher = "Agent|.*spawn_agent$"\n'
+            "[[hooks.PreToolUse.hooks]]\n"
+            'type = "command"\n'
+            'command = "ug codex-router-hook route-subagent"\n'
+            "\n"
+            '[hooks.state."/home/u/.codex/hooks.json:post_tool_use:1:0"]\n'
+            'trusted_hash = "sha256:a4ce19f6a4c610a35e632d2bb901bef8b62e0528832f2ab4ee4026b84efa2589"\n',
+            encoding="utf-8",
+        )
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        argv = launches[0]
+        # Codex saves hook approvals in its own config.toml; a forwarded stale
+        # snapshot would outrank it and re-ask on every launch (AIGTWY-5220).
+        assert not any("hooks.state" in arg for arg in argv)
+        assert not any("trusted_hash" in arg for arg in argv)
+        # Other profile config, including hook groups, still reaches the launch.
+        assert 'model_provider="Databricks"' in argv
+        pre_tool_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
+        assert "route-subagent" in pre_tool_override
+
     @pytest.mark.parametrize("tool_args", [[], ["exec", "hi"]])
     @pytest.mark.parametrize("stale_profile", [False, True])
     @pytest.mark.parametrize("version", ["0.129.0", "0.133.0"])
@@ -1980,7 +2069,12 @@ class TestCodexManagedConfig:
             Path(path).write_text(text, encoding="utf-8")
             return "written"
 
-        monkeypatch.setattr(codex, "reconcile_managed_file", fake_write_managed)
+        monkeypatch.setattr(managed_files, "_privileged_replace", fake_write_managed)
+        monkeypatch.setattr(
+            managed_files, "_privileged_remove", lambda path: path.unlink(missing_ok=True)
+        )
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kwargs: True)
         return config_path, managed_path
 
     def test_writes_managed_config_by_default(self, tmp_path, monkeypatch):
@@ -1999,20 +2093,376 @@ class TestCodexManagedConfig:
         desktop: list = []
         monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a: desktop.append(a))
         monkeypatch.setattr(codex, "_sync_desktop_relay", lambda *a, **k: desktop.append(a))
-        monkeypatch.setattr(
-            codex, "prepare_codex_catalog", lambda *a: pytest.fail("catalog is per-user")
-        )
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
         managed_files.set_machine_wide_only(True)
         state = {"workspace": WS, "codex_models": ["gpt-5"], "codex_static_models": ["gpt-5"]}
 
         codex.write_tool_config(state)
 
-        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
-        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        managed = read_toml_safe(managed_path)
+        assert managed["model_provider"] == "Databricks"
+        assert managed["model_catalog_json"] == str(catalog_path)
+        assert json.loads(catalog_path.read_text()) == self.CATALOG
         assert not config_path.exists()
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
         assert desktop == []
         assert codex.configured_paths(state) == []
+
+    CATALOG = {"models": [{"slug": "gpt-5", "visibility": "list"}]}
+
+    def _patch_catalog(self, tmp_path, monkeypatch, managed_path):
+        """Stub the catalog builder and the privileged writer; returns ug's catalog path."""
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: self.CATALOG)
+
+        def fake_privileged(files, **kwargs):
+            for path, text in files.items():
+                if text is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(codex, "reconcile_privileged_files", fake_privileged)
+        monkeypatch.setattr(managed_files, "reconcile_privileged_files", fake_privileged)
+        return managed_path.parent / codex.MANAGED_MODEL_CATALOG_NAME
+
+    def test_static_list_is_enforced_through_managed_catalog(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(catalog_path)
+        assert json.loads(catalog_path.read_text()) == self.CATALOG
+        # The per-user reference stays as the fallback when the managed file can't be written.
+        assert read_toml_safe(config_path)["model_catalog_json"] == str(
+            codex.CODEX_MODEL_CATALOG_PATH
+        )
+
+    def test_static_catalog_uses_workspace_launch_credentials(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        state = {"workspace": WS, "profile": "chosen", "codex_static_models": ["main.team.opaque"]}
+        credentials = []
+
+        def token(current_state, workspace):
+            credentials.append((current_state["profile"], workspace))
+            return "selected-token"
+
+        def prepare(binary, names, *, workspace, get_token):
+            assert workspace == WS
+            assert names == ["main.team.opaque"]
+            assert get_token() == "selected-token"
+            return self.CATALOG
+
+        monkeypatch.setattr(codex, "launch_token", token)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", prepare)
+
+        codex.write_tool_config(state)
+
+        assert credentials == [("chosen", WS)]
+
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"provider": "main.default.openai"}, {"parent_schema": "main.models"}]
+    )
+    def test_dropping_static_list_removes_managed_catalog(self, tmp_path, monkeypatch, kwargs):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        # A provider or UC location discovers its own catalog at launch, which ug's would override.
+        state = {"workspace": WS}
+        if kwargs:
+            state["codex_static_models"] = ["gpt-5"]
+        codex.write_tool_config(state, **kwargs)
+
+        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        assert not catalog_path.exists()
+
+    def test_failed_catalog_write_leaves_managed_file_unreferenced(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS})
+        managed_text = managed_path.read_text()
+
+        def denied(files, **kwargs):
+            raise CalledProcessError(1, ["sudo"], stderr="sudo: a password is required")
+
+        monkeypatch.setattr(managed_files, "reconcile_privileged_files", denied)
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert managed_path.read_text() == managed_text
+        assert not catalog_path.exists()
+        assert read_toml_safe(config_path)["model_catalog_json"] == str(
+            codex.CODEX_MODEL_CATALOG_PATH
+        )
+
+    @pytest.mark.parametrize("replacement", [None, {"models": [{"slug": "gpt-6"}]}])
+    def test_second_user_revert_restores_catalog_before_reference(
+        self, tmp_path, monkeypatch, replacement
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        original_catalog = catalog_path.read_text()
+        # A second user starts with their own empty backup history.
+        backups = tmp_path / "second-user" / "managed-backups"
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backups)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
+        )
+        state = {"workspace": WS}
+        if replacement is not None:
+            state["codex_static_models"] = ["gpt-6"]
+            monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: replacement)
+        codex.write_tool_config(state)
+        assert catalog_path.exists() is (replacement is not None)
+
+        def restore_toml(path, text):
+            if "model_catalog_json" in text:
+                assert catalog_path.read_text() == original_catalog
+            path.write_text(text)
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", restore_toml)
+        codex.revert_managed_config()
+
+        assert managed_path.read_text() == original_toml
+        assert catalog_path.read_text() == original_catalog
+        assert json.loads((backups / "manifest.json").read_text())["files"] == {}
+
+    @pytest.mark.parametrize(
+        "error", [PermissionError("denied"), RuntimeError("verification failed")]
+    )
+    def test_failed_toml_update_rolls_back_catalog(self, tmp_path, monkeypatch, error):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        original_catalog = catalog_path.read_text()
+        replacement = {"models": [{"slug": "gpt-6"}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: replacement)
+
+        def fail_toml(*args, **kwargs):
+            assert json.loads(catalog_path.read_text()) == replacement
+            raise error
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", fail_toml)
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_static_models": ["gpt-6"], "codex_default_model": "gpt-6"}
+            )
+
+        assert managed_path.read_text() == original_toml
+        assert catalog_path.read_text() == original_catalog
+
+    @pytest.mark.parametrize("concurrent_edit", [False, True])
+    def test_catalog_rollback_failure_is_reported(self, tmp_path, monkeypatch, concurrent_edit):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        replacement = {"models": [{"slug": "gpt-6"}]}
+        external = {"models": [{"slug": "admin-model"}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: replacement)
+
+        def fail_toml(*args):
+            if concurrent_edit:
+                catalog_path.write_text(json.dumps(external))
+            else:
+
+                def fail_rollback(*args, **kwargs):
+                    raise PermissionError("rollback denied")
+
+                monkeypatch.setattr(managed_files, "reconcile_privileged_files", fail_rollback)
+            raise PermissionError("TOML denied")
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", fail_toml)
+        with pytest.raises(RuntimeError, match="companion rollback also failed"):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_static_models": ["gpt-6"], "codex_default_model": "gpt-6"}
+            )
+
+        assert managed_path.read_text() == original_toml
+        assert json.loads(catalog_path.read_text()) == (
+            external if concurrent_edit else replacement
+        )
+
+    @pytest.mark.parametrize("failure", ["catalog", "toml"])
+    def test_failed_revert_retains_backup_and_can_retry(self, tmp_path, monkeypatch, failure):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        original_catalog = catalog_path.read_text()
+        backups = tmp_path / "second-user" / "managed-backups"
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backups)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
+        )
+        codex.write_tool_config({"workspace": WS})
+        without_catalog = managed_path.read_text()
+        manifest = (backups / "manifest.json").read_text()
+
+        def denied(*args, **kwargs):
+            raise PermissionError("revert denied")
+
+        with monkeypatch.context() as failing:
+            failing.setattr(
+                managed_files,
+                "reconcile_privileged_files" if failure == "catalog" else "_privileged_replace",
+                denied,
+            )
+            with pytest.raises(RuntimeError):
+                codex.revert_managed_config()
+
+        assert managed_path.read_text() == without_catalog
+        assert not catalog_path.exists()
+        assert (backups / "manifest.json").read_text() == manifest
+        codex.revert_managed_config()
+        assert managed_path.read_text() == original_toml
+        assert catalog_path.read_text() == original_catalog
+
+    def test_failed_first_catalog_install_removes_unreferenced_file(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS})
+        original_toml = managed_path.read_text()
+        monkeypatch.setattr(codex, "explicit_managed_writes", lambda: True)
+
+        def denied(*args):
+            assert catalog_path.exists()
+            raise PermissionError("TOML denied")
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", denied)
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        assert managed_path.read_text() == original_toml
+        assert not catalog_path.exists()
+
+    @pytest.mark.parametrize("existing_reference", [False, True])
+    def test_revert_preserves_another_writers_catalog(
+        self, tmp_path, monkeypatch, existing_reference
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        if existing_reference:
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+            backups = tmp_path / "second-user" / "managed-backups"
+            monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backups)
+            monkeypatch.setattr(
+                managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
+            )
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda *a, **kw: {"models": [{"slug": "gpt-6"}]}
+        )
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-6"]})
+        external = {"models": [{"slug": "admin-model"}]}
+        catalog_path.write_text(json.dumps(external))
+
+        codex.revert_managed_config()
+
+        assert json.loads(catalog_path.read_text()) == external
+        assert managed_path.exists() is existing_reference
+
+    @pytest.mark.parametrize("restored", [True, False])
+    def test_revert_removes_managed_catalog_once_unreferenced(
+        self, tmp_path, monkeypatch, restored
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        # Without ug's backup record (another user configured, or ~/.ucode was wiped), revert
+        # restores nothing; deleting the catalog the file still names would break every user's Codex.
+        if not restored:
+            monkeypatch.setattr(
+                managed_files, "MANAGED_BACKUP_MANIFEST_PATH", tmp_path / "missing.json"
+            )
+
+        codex.revert_managed_config()
+
+        assert catalog_path.exists() is not restored
+
+    @pytest.mark.parametrize(
+        ("state", "kwargs"),
+        [({"codex_static_models": ["gpt-6"]}, {}), ({}, {"provider": "main.default.openai"})],
+    )
+    def test_headless_launch_repairs_stale_managed_catalog(
+        self, tmp_path, monkeypatch, state, kwargs
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        new_catalog = {"models": [{"slug": "gpt-6", "visibility": "list"}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: new_catalog)
+        # No terminal: only a conflict makes the run write the machine-wide files.
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+
+        codex.write_tool_config({"workspace": WS, **state}, **kwargs)
+
+        if state:
+            assert read_toml_safe(managed_path)["model_catalog_json"] == str(catalog_path)
+            assert json.loads(catalog_path.read_text()) == new_catalog
+        else:
+            assert "model_catalog_json" not in read_toml_safe(managed_path)
+            assert not catalog_path.exists()
+
+    def test_headless_launch_leaves_catalog_with_only_new_metadata(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        # A Codex upgrade changes model details, not the admin's list: no sudo, no failed launch.
+        upgraded = {"models": [{"slug": "gpt-5", "visibility": "list", "context_window": 1}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: upgraded)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(
+            codex, "reconcile_privileged_files", lambda *a, **k: pytest.fail("wrote catalog")
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert json.loads(catalog_path.read_text()) == self.CATALOG
+
+    def test_configure_refreshes_same_slug_managed_catalog_and_preserves_mcp(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        previous = {
+            "models": [
+                {
+                    "slug": "gpt-5",
+                    "visibility": "list",
+                    "multi_agent_tools_in_code_mode": False,
+                }
+            ]
+        }
+        prepared = codex_catalog.build_codex_catalog(
+            [{"slug": "gpt-5", "display_name": "GPT 5", "visibility": "list"}], ["gpt-5"]
+        )
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        catalog_path.write_text(json.dumps(previous), encoding="utf-8")
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(catalog_path))}\n"
+            '\n[custom]\nkeep = "value"\n'
+            '\n[mcp_servers.admin]\nurl = "https://admin.example/mcp"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: prepared)
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+        monkeypatch.setattr(codex, "_sync_desktop_relay", lambda *a, **kw: False)
+        monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a, **kw: False)
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert json.loads(catalog_path.read_text()) == prepared
+        managed = read_toml_safe(managed_path)
+        assert managed["model_catalog_json"] == str(catalog_path)
+        assert managed["custom"] == {"keep": "value"}
+        assert managed["mcp_servers"]["admin"] == {"url": "https://admin.example/mcp"}
 
     def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

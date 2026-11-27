@@ -10,7 +10,9 @@ back verbatim.
 With relayed OSS-routing on, the proxy picks per request by the requested model:
 Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
 subscription models keep the OAuth passthrough, so one Claude Code session can use
-both.
+both. A customer Unity Catalog model service (``catalog.schema.name``) may route to a
+relayed provider, so it keeps the OAuth passthrough plus the swap header and drops the
+model-provider-service header, letting the service's own routing pick the destination.
 
 The gateway-auth proxy serves agents that can only hold a static credential
 (Copilot CLI): the agent authenticates to the proxy with a per-session secret,
@@ -35,12 +37,14 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 from urllib.parse import unquote
 
 import httpx
 
+from ucode import metrics
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.workspace import workspace_headers
@@ -84,6 +88,8 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
+_DIAGNOSTICS_FILE_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE"
+_DIAGNOSTICS_FILE_LOCK = threading.Lock()
 
 
 def _diagnostics_enabled() -> bool:
@@ -93,10 +99,21 @@ def _diagnostics_enabled() -> bool:
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
-    payload = {"event": event, **fields}
-    sys.stderr.write(
-        f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
-    )
+    payload = {"event": event, "timestamp_ms": int(time.time() * 1000), **fields}
+    line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
+    if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
+        try:
+            # Windows append writes on separate file handles are not atomic.
+            with _DIAGNOSTICS_FILE_LOCK:
+                with open(path, "a", encoding="utf-8") as log:
+                    log.write(line)
+            return
+        except OSError:
+            # Keep diagnostic evidence if the destination becomes unavailable.
+            sys.stderr.write(
+                "[ucode-relay] Could not write proxy diagnostics file; using stderr.\n"
+            )
+    sys.stderr.write(line)
     sys.stderr.flush()
 
 
@@ -255,6 +272,14 @@ def is_databricks_routed_model(model: str | None) -> bool:
     return "." in model or model.startswith("databricks-")
 
 
+def is_uc_model_service(model: str | None) -> bool:
+    """True when ``model`` names a customer Unity Catalog model service (``catalog.schema.name``,
+    not ``system.*`` or ``databricks-*``)."""
+    if not model or model.startswith(("system.", "databricks-")):
+        return False
+    return model.count(".") >= 2
+
+
 def _request_model(body: bytes | None) -> str | None:
     """The ``model`` field of a JSON request body, or None when absent/unparseable."""
     if not body:
@@ -274,6 +299,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     token_header = AI_GATEWAY_TOKEN_HEADER
     # Applied last so neither the agent nor an admin header can select another workspace.
     workspace_selector: Mapping[str, str] = {}
+    metrics_workspace = ""
+    metrics_proxy_mode = "gateway_auth"
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -293,7 +320,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         """The body to forward; ``body`` unchanged unless a subclass rewrites it."""
         return body
 
-    def _added_headers(self) -> dict[str, str]:
+    def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        """Headers to send with this request; they replace the client's of the same name."""
         return {}
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
@@ -302,12 +330,78 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle(self) -> None:
+        self._metric_started = time.monotonic()
+        self._metric_labels: dict[str, object] = {
+            "proxy_mode": self.metrics_proxy_mode,
+            "api_operation": metrics.api_operation(self.path),
+            "http_method": self.command,
+        }
+        self._metric_bytes = 0
+        self._metric_disconnected = False
+        self._metric_error = None
+        try:
+            self._forward()
+        except Exception as exc:
+            self._metric_error = exc
+            raise
+        finally:
+            metrics.record(
+                metrics.PROXY_REQUEST_DURATION_MS,
+                (time.monotonic() - self._metric_started) * 1000,
+                workspace=self.metrics_workspace,
+                **self._metric_labels,
+                client_disconnected=self._metric_disconnected,
+            )
+            metrics.record(
+                metrics.PROXY_RESPONSE_BYTES,
+                self._metric_bytes,
+                workspace=self.metrics_workspace,
+                **self._metric_labels,
+            )
+            if self._metric_error is not None:
+                metrics.failure(
+                    metrics.PROXY_REQUEST_OPERATION,
+                    self._metric_error,
+                    workspace=self.metrics_workspace,
+                    phase="agent_session",
+                    continued_with_fallback=False,
+                    **self._metric_labels,
+                )
+
+    def _auth_rejection_is_final(self, resp: httpx.Response) -> bool:
+        """Whether a 401/403 (body already read) is a denial a fresh Databricks token can't fix, so
+        it is relayed without the refresh and retry. Subclasses decide from the body."""
+        return False
+
+    def _metric_headers(self, status: int, attempt: int, started: float) -> None:
+        self._metric_labels["http_status_code"] = status
+        metrics.record(
+            metrics.PROXY_UPSTREAM_HEADERS_DURATION_MS,
+            (time.monotonic() - started) * 1000,
+            workspace=self.metrics_workspace,
+            **self._metric_labels,
+            attempt=attempt,
+        )
+
+    def _metric_first_byte(self, started: float) -> int:
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        metrics.record(
+            metrics.PROXY_FIRST_BYTE_DURATION_MS,
+            elapsed_ms,
+            workspace=self.metrics_workspace,
+            **self._metric_labels,
+        )
+        return elapsed_ms
+
+    def _forward(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self._request_body(self.rfile.read(length) if length else None)
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
+        added = self._added_headers(body)
+        added_names = {name.lower() for name in added}
         log_proxy_diagnostic(
             "request_start",
             request_id=diagnostic_id,
@@ -317,8 +411,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         )
 
         def request_headers(token: str) -> dict[str, str]:
-            headers = forwarded_request_headers(self, token, token_header, extra_strip=extra_strip)
-            headers.update(self._added_headers())
+            headers = forwarded_request_headers(
+                self, token, token_header, extra_strip=extra_strip | added_names
+            )
+            headers.update(added)
             if self.workspace_selector:
                 selector_names = {name.lower() for name in self.workspace_selector}
                 headers = {
@@ -329,15 +425,38 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 headers.update(self.workspace_selector)
             return headers
 
+        attempt = 1
+
+        def trace_transport(name: str, _info: dict[str, Any]) -> None:
+            log_proxy_diagnostic(
+                "upstream_transport",
+                request_id=diagnostic_id,
+                attempt=attempt,
+                phase=name,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+
+        extensions = {"trace": trace_transport} if _diagnostics_enabled() else None
+
         try:
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
+            metrics.bind(self.metrics_workspace, token)
             headers = request_headers(token)
-            with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=attempt,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            with self.client.stream(
+                self.command, url, headers=headers, content=body, extensions=extensions
+            ) as resp:
+                self._metric_headers(resp.status_code, 1, started)
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=1,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
@@ -347,6 +466,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # Auth rejected. Drain the (small) error body so the pooled
                 # connection can be reused, then fall through to one retry.
                 resp.read()
+                if self._auth_rejection_is_final(resp):
+                    self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
+                    return
             # A relayed 401/403 may be a stale Databricks swap token rather than a
             # bad Anthropic OAuth — the two are indistinguishable from the status
             # alone. Force-refresh the Databricks token and retry once. If it was the
@@ -362,18 +484,39 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # which otherwise reads as an Anthropic `/login` prompt and sends the
                 # user to the wrong re-auth. Still retry + relay with the existing token.
                 if self._on_refresh_failure(exc):
+                    self._metric_error = exc
+                    self._metric_labels["http_status_code"] = 401
                     return
-            headers = request_headers(self.cache.token)
-            with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+            token = self.cache.token
+            metrics.bind(self.metrics_workspace, token)
+            headers = request_headers(token)
+            attempt = 2
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=attempt,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            metrics.record(
+                metrics.PROXY_AUTH_RETRY_COUNT,
+                1,
+                workspace=self.metrics_workspace,
+                **{k: v for k, v in self._metric_labels.items() if k != "http_status_code"},
+            )
+            with self.client.stream(
+                self.command, url, headers=headers, content=body, extensions=extensions
+            ) as resp:
+                self._metric_headers(resp.status_code, 2, started)
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=2,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
                 self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
         except (BrokenPipeError, ConnectionResetError):
+            self._metric_disconnected = True
             # Client closed before/while we relayed headers — routine on cancel.
             log_proxy_diagnostic(
                 "client_disconnect",
@@ -383,6 +526,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             )
             return
         except httpx.HTTPError as exc:
+            self._metric_error = exc
             # Upstream failed before any bytes reached the client; a 502 is still
             # sendable. (An HTTP *status* like 429 is not an error here — httpx
             # only raises for transport failures — so real gateway errors are
@@ -393,6 +537,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 error_type=type(exc).__name__,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
+            self._metric_labels["http_status_code"] = 502
             self._safe_send_error(502, "gateway proxy upstream error")
 
     # Streaming passthrough: forward chunks as they arrive so SSE token streaming
@@ -407,6 +552,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         started: float | None = None,
     ) -> None:
         started = started if started is not None else time.monotonic()
+        if resp.status_code >= 400:
+            self._metric_error = f"HTTP {resp.status_code}"
         chunks = 0
         bytes_relayed = 0
         first_byte_ms: int | None = None
@@ -425,11 +572,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             for chunk in resp.iter_raw():
                 if chunk:
                     if first_byte_ms is None:
-                        first_byte_ms = round((time.monotonic() - started) * 1000)
+                        first_byte_ms = self._metric_first_byte(started)
                     self.wfile.write(chunk)
                     self.wfile.flush()
                     chunks += 1
                     bytes_relayed += len(chunk)
+                    self._metric_bytes = bytes_relayed
             log_proxy_diagnostic(
                 "response_complete",
                 request_id=diagnostic_id,
@@ -440,6 +588,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
         except (BrokenPipeError, ConnectionResetError):
+            self._metric_disconnected = True
             # Client (Claude Code) closed the connection mid-response — routine on
             # cancelled turns / SSE teardown. Nothing left to relay to, so stop
             # quietly rather than crashing the handler thread.
@@ -453,6 +602,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             )
             return
         except httpx.HTTPError as exc:
+            self._metric_error = exc
             # Upstream dropped mid-stream. Headers (and status) may already be
             # sent, so we can't reliably signal a fresh error — stop and let the
             # client see a truncated stream rather than corrupt the framing.
@@ -475,9 +625,27 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
+# A UC model service keeps the relay credentials but must not be pinned to the launch's
+# model provider service: its own routing chooses the destination.
+_MODEL_SERVICE_ROUTE_STRIP = frozenset({MODEL_PROVIDER_SERVICE_HEADER.lower()})
+
+
 class _RelayProxyHandler(_ProxyHandler):
+    # Set by the server factory: ``(model, databricks_token)`` -> True when the UC model service
+    # routes to a subscription-relay MPS. The gateway rejects relayed requests to any other MPS,
+    # so only those services may keep the relay credentials.
+    routes_to_subscription_relay: Callable[[str, str], bool] | None = None
+
+    def _is_relay_backed_model_service(self, model: str | None) -> bool:
+        if not model or not is_uc_model_service(model) or self.routes_to_subscription_relay is None:
+            return False
+        return self.routes_to_subscription_relay(model, self.cache.token)
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        if is_databricks_routed_model(_request_model(body)):
+        model = _request_model(body)
+        if self._is_relay_backed_model_service(model):
+            return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
+        if is_databricks_routed_model(model):
             return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
         return self.token_header, frozenset(), "relay"
 
@@ -521,6 +689,8 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    request_headers_adder: Callable[[Message, bytes | None], Mapping[str, str]] | None = None
+    discarded_paths: frozenset[str] = frozenset()
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -531,8 +701,11 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             or encoding not in ("identity", "gzip", "deflate")
         ):
             return super()._relay_response(resp, **kwargs)
+        started = kwargs.get("started")
+        started = started if started is not None else time.monotonic()
         body = resp.read()
         body = self.bad_request_rewriter(body) or body
+        self._metric_error = "HTTP 400"
         try:
             self.send_response(400)
             for key, value in resp.headers.items():
@@ -540,9 +713,14 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                     self.send_header(key, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            if body:
+                self._metric_first_byte(started)
             self.wfile.write(body)
-        except OSError:
-            pass
+            self.wfile.flush()
+            self._metric_bytes = len(body)
+        except OSError as exc:
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                self._metric_disconnected = True
 
     def _request_body(self, body: bytes | None) -> bytes | None:
         if body and self.body_rewriter is not None:
@@ -604,6 +782,9 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
+        if self.path.split("?", 1)[0] in self.discarded_paths:
+            self._discard()
+            return
         if self.path_rewriter is not None:
             rewritten = self.path_rewriter(self.path)
             # A rewrite must stay on a path the session may reach.
@@ -613,17 +794,81 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             self.path = rewritten
         super()._handle()
 
-    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        added = frozenset(name.lower() for name in self.added_headers)
-        return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
+    def _discard(self) -> None:
+        """Accept and drop a request the gateway has no route for, with an empty success."""
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError:
+            pass
 
-    def _added_headers(self) -> dict[str, str]:
-        return dict(self.added_headers)
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        return self.token_header, _SESSION_CREDENTIAL_HEADERS, "gateway"
+
+    def _request_headers(self, body: bytes | None) -> Mapping[str, str]:
+        if self.request_headers_adder is None:
+            return {}
+        try:
+            return self.request_headers_adder(self.headers, body)
+        except Exception as exc:
+            # The headers only label the request, so a failure must not cost the request.
+            log_proxy_diagnostic("request_headers_failed", error=type(exc).__name__)
+            return {}
+
+    def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        per_request = self._request_headers(body)
+        overridden = {name.lower() for name in per_request}
+        return {
+            **{
+                name: value
+                for name, value in self.added_headers.items()
+                if name.lower() not in overridden
+            },
+            **per_request,
+        }
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
         self._send_json_error(401, f"Databricks sign-in expired. {self.sign_in_hint}")
         return True
+
+
+_BROWSER_REQUEST_HEADERS = frozenset({"origin", "cookie"})
+_BROWSER_REQUEST_HEADER_PREFIX = "sec-fetch-"
+
+
+class _OtelProxyHandler(_ProxyHandler):
+    """Forwards only OTLP POSTs under ``/v1/`` from a local, non-browser client."""
+
+    def _is_local_non_browser_client(self) -> bool:
+        port = cast(ThreadingHTTPServer, self.server).server_port
+        if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            return False
+        return not any(
+            name.lower() in _BROWSER_REQUEST_HEADERS
+            or name.lower().startswith(_BROWSER_REQUEST_HEADER_PREFIX)
+            for name in self.headers.keys()
+        )
+
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._safe_send_error(status, message)
+
+    def _handle(self) -> None:
+        if not _is_allowed_gateway_path(self.path, ("/v1/",)):
+            self._reject(404, "Not found")
+        elif self.command != "POST":
+            self._reject(405, "Method not allowed")
+        elif not self._is_local_non_browser_client():
+            self._reject(403, "Forbidden")
+        else:
+            super()._handle()
 
 
 class _LoopbackHTTPServer(ThreadingHTTPServer):
@@ -642,6 +887,7 @@ def _start_proxy(
     force_refresh_near_expiry: bool,
     fallback_on_bind_error: bool = True,
     handler_attrs: Mapping[str, object] | None = None,
+    metrics_proxy_mode: str = "gateway_auth",
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
@@ -677,6 +923,8 @@ def _start_proxy(
                 "client": client,
                 "token_header": token_header,
                 "workspace_selector": workspace_headers(workspace),
+                "metrics_workspace": workspace,
+                "metrics_proxy_mode": metrics_proxy_mode,
                 **(handler_attrs or {}),
             },
         ),
@@ -692,6 +940,7 @@ def _start_proxy(
         # the OS pick any free port; the caller reconciles the base URL to it.
         server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
 
+    metrics.start_periodic()
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
     return server, cache, client
@@ -713,9 +962,18 @@ def start_relay_proxy(
     *,
     agent: str = AGENT_CLAUDE,
     fallback_on_bind_error: bool = True,
+    routes_to_subscription_relay: Callable[[str, str], bool] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``).
+
+    ``routes_to_subscription_relay(model, databricks_token)`` tells Claude's proxy which UC model
+    services keep the relay credentials; without it they all take the gateway-auth path."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
+    handler_attrs = (
+        {"routes_to_subscription_relay": staticmethod(routes_to_subscription_relay)}
+        if routes_to_subscription_relay
+        else None
+    )
     return _start_proxy(
         workspace,
         token_provider,
@@ -725,6 +983,8 @@ def start_relay_proxy(
         handler_type=handler_type,
         force_refresh_near_expiry=False,
         fallback_on_bind_error=fallback_on_bind_error,
+        handler_attrs=handler_attrs,
+        metrics_proxy_mode="relay",
     )
 
 
@@ -740,8 +1000,9 @@ def start_otel_proxy(
         token_provider,
         port,
         upstream_path="ai-gateway/otel/",
+        metrics_proxy_mode="otel",
         token_header=AUTHORIZATION_HEADER,
-        handler_type=_ProxyHandler,
+        handler_type=_OtelProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
     )
@@ -760,6 +1021,8 @@ def start_gateway_auth_proxy(
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
+    request_headers_adder: Callable[[Message, bytes | None], Mapping[str, str]] | None = None,
+    discarded_paths: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
@@ -769,8 +1032,9 @@ def start_gateway_auth_proxy(
     Completions request bodies. ``path_rewriter`` maps an accepted request path to the
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
     body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
-    (returning None relays it as it is). Binds an OS-assigned port, read from
-    ``server.server_address[1]``.
+    (returning None relays it as it is). ``request_headers_adder(headers, body)`` gives more
+    headers for one request, which win over ``added_headers``. ``discarded_paths`` are answered
+    with an empty 200 and never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -793,6 +1057,10 @@ def start_gateway_auth_proxy(
             "bad_request_rewriter": (
                 staticmethod(bad_request_rewriter) if bad_request_rewriter else None
             ),
+            "request_headers_adder": (
+                staticmethod(request_headers_adder) if request_headers_adder else None
+            ),
+            "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
     )

@@ -5,6 +5,7 @@ import random
 import re
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 STATE_DIRECTORY = ".gemini/antigravity-cli"
 # Structured, bounded `agy -p` output; it asks before tools it isn't allowed and answers no.
@@ -15,6 +16,8 @@ AGENT_RESPONSE_STEP = 15
 DONE_STATUS = 3
 # Antigravity logs every model request's URL; in gateway mode it names the gateway it was given.
 _REQUEST = re.compile(r"Making Gateway streaming request to: (\S+)")
+_MAX_LOG_FILES = 5
+_MAX_LOG_CHARACTERS = 64_000
 RESOURCE_EXHAUSTED_MAX_ATTEMPTS = 3
 _RESOURCE_EXHAUSTED_BACKOFF_BASE_SECONDS = 5.0
 _RESOURCE_EXHAUSTED_BACKOFF_MAX_SECONDS = 20.0
@@ -76,9 +79,56 @@ def final_response(events: list[dict]) -> str:
     results = [event.get("result") or {} for event in events if event.get("event") == "result"]
     assert results, "Antigravity produced no result event"
     assert results[-1].get("status") == "SUCCESS", results[-1]
+    assert not results[-1].get("denied_actions"), results[-1]
     response = results[-1].get("response")
-    assert isinstance(response, str), results[-1]
+    assert isinstance(response, str) and response.strip(), results[-1]
     return response
+
+
+def assert_mcp_web_search_answer(events: list[dict], *, server: str, query: str) -> None:
+    """Require native MCP search evidence and an official URL shared by its result and answer."""
+    answer = final_response(events)
+    calls = [
+        call
+        for call in completed_tools(events, "call_mcp_tool")
+        if call.get("parameters")
+        == {"ServerName": server, "ToolName": "web_search", "Arguments": {"query": query}}
+    ]
+    assert calls, "No completed MCP web_search call with the requested server and query"
+    returned_urls = set()
+    for call in calls:
+        assert not call.get("error"), call
+        output = call.get("output")
+        assert isinstance(output, str) and output.strip(), call
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            payload = None
+        assert not (isinstance(payload, dict) and payload.get("isError")), call
+        returned_urls.update(_web_urls(output))
+    official_urls = {
+        url
+        for url in returned_urls
+        if urlparse(url).hostname in {"databricks.com", "www.databricks.com"}
+    }
+    assert official_urls, calls
+    assert official_urls & _web_urls(answer), {"returned_urls": official_urls, "answer": answer}
+
+
+def _web_urls(text: str) -> set[str]:
+    urls = set()
+    for match in re.finditer(r"(?P<markup>\*{1,2}|`)?(?P<url>https?://[^\s<>\"'\\)\]]+)", text):
+        raw_url = match["url"]
+        if markup := match["markup"]:
+            raw_url = re.sub(re.escape(markup) + r"[.,!?;:]*$", "", raw_url)
+        url = urlparse(raw_url)
+        # Search citations add attribution that agents omit when returning the homepage.
+        query = "&".join(
+            part for part in url.query.split("&") if part.partition("=")[0] != "utm_source"
+        )
+        path = url.path if url.path.strip("/") else "/"
+        urls.add(url._replace(path=path, query=query).geturl())
+    return urls
 
 
 def _logs(session) -> list[Path]:
@@ -86,13 +136,29 @@ def _logs(session) -> list[Path]:
 
 
 def requested_urls(session) -> list[str]:
-    """Every model request URL Antigravity logged in this session home."""
-    urls = [
-        match.group(1)
-        for path in _logs(session)
-        for match in _REQUEST.finditer(path.read_text(errors="replace"))
-    ]
+    """Every model request URL, plus native diagnostics for retries and final errors."""
+    paths = _logs(session)
+    recent = set(sorted(paths, key=lambda path: path.stat().st_mtime_ns)[-_MAX_LOG_FILES:])
+    urls = []
+    logs = []
+    for path in paths:
+        text = path.read_text(errors="replace")
+        urls.extend(match.group(1) for match in _REQUEST.finditer(text))
+        if path in recent:
+            # Redact before truncating so a token crossing the tail boundary cannot leak.
+            text = session.redact(text)
+            logs.append(
+                {
+                    "name": path.name,
+                    "truncated": len(text) > _MAX_LOG_CHARACTERS,
+                    "tail": text[-_MAX_LOG_CHARACTERS:],
+                }
+            )
     session.record("antigravity-requests.json", {"urls": urls})
+    session.record(
+        "antigravity-logs.json",
+        {"files_omitted": max(0, len(paths) - _MAX_LOG_FILES), "logs": logs},
+    )
     return urls
 
 

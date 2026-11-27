@@ -8,15 +8,23 @@ import os
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
-from ucode.constants import AGENT_CLAUDE
+from ucode.constants import AGENT_CLAUDE, ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import (
+    claude_hooks,
+    config,
+    orchestrator,
+    routing,
+    session_env,
+    session_log,
+    v2,
+)
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -26,13 +34,714 @@ requires_pty = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+
+
+_EXPLANATION = {
+    "selected_model": "model-b",
+    "summary": "Chosen for lower expected cost.",
+    "task_understanding": [],
+    "models": [
+        {
+            "id": "model-b",
+            "name": "Selected model",
+            "selected": True,
+            "considered": True,
+            "reason": "Best expected fit.",
+        },
+        {
+            "id": "alternative",
+            "name": "Alternative",
+            "selected": False,
+            "considered": False,
+            "reason": "Excluded by the routing policy.",
+        },
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("explanation", "retained"),
+    [
+        (_EXPLANATION, True),
+        (json.dumps(_EXPLANATION), True),
+        (
+            {**_EXPLANATION, "session_id": "s1", "tool_use_id": "t1"},
+            True,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "evidence": {"session_id": "s1", "tool_use_id": "t1"},
+            },
+            True,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"session_id": "s1", "tool_use_id": "t1"},
+            },
+            True,
+        ),
+        (None, False),
+        ({"summary": "private-invalid-metadata"}, False),
+    ],
+    ids=[
+        "object",
+        "json-string",
+        "matching-direct-identities",
+        "matching-nested-identities",
+        "matching-direct-and-nested-identities",
+        "absent",
+        "invalid",
+    ],
+)
+def test_explanation_roundtrip_does_not_change_subagent_selection(
+    tmp_path, monkeypatch, caplog, explanation, retained
+):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
+    selected = "system.ai.model-b"
+    calls = []
+    original = {"prompt": "inspect parser", "subagent_type": "general-purpose", "model": "opus"}
+    payload = {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "tool_name": "Agent",
+        "tool_input": original.copy(),
+    }
+
+    def reply(request, timeout):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+    assert result == {"model": selected, "rationale": "Selected by router."}
+    assert payload["tool_input"] == original
+    assert len(calls) == 1
+    assert calls[0]["task"] == {"prompt": "inspect parser"}
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    session_records = session_log.read_decisions("claude", "s1")
+    assert len(session_records) == 1
+    session_record = session_records[0]
+    assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    assert record["rationale"] == "Selected by router."
+    if retained:
+        expected = json.loads(explanation) if isinstance(explanation, str) else explanation
+        assert record["explanation"] == session_record["explanation"] == expected
+        assert session_record["prompt"]["preview"] == "inspect parser"
+    else:
+        assert "explanation" not in record
+        assert "explanation" not in session_record
+    assert ("Discarded routing explanation" in caplog.text) == (
+        explanation is not None and not retained
+    )
+    assert "private-invalid-metadata" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "explanation",
+    [
+        *[
+            pytest.param(
+                {
+                    **_EXPLANATION,
+                    **(
+                        {"selected_model": model_id}
+                        if field == "selected_model"
+                        else {
+                            "models": [
+                                {**_EXPLANATION["models"][0], "id": model_id},
+                                _EXPLANATION["models"][1],
+                            ]
+                        }
+                    ),
+                },
+                id=f"model-{case}-{field}",
+            )
+            for field in ["selected_model", "candidate_id"]
+            for case, model_id in [("ansi", "\x1b[35mmodel-b\x1b[0m"), ("control", "model-b\x00")]
+        ],
+        *[
+            pytest.param(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], field: value},
+                        _EXPLANATION["models"][1],
+                    ],
+                },
+                id=case,
+            )
+            for case, field, value in [
+                ("boolean-quality", "quality_estimate", True),
+                ("boolean-score", "routing_score", False),
+                ("negative-cost", "estimated_cost_usd", -0.1),
+                ("breakdown-array", "components", []),
+                ("breakdown-boolean", "components", {"quality": True}),
+                ("breakdown-nonfinite", "difference_from_winner", {"cost": float("nan")}),
+                ("breakdown-invalid-key", "components", {"cost\n": 1}),
+                ("breakdown-too-many", "components", {f"field{i}": i for i in range(9)}),
+            ]
+        ],
+        pytest.param(
+            {**_EXPLANATION, "models": _EXPLANATION["models"][:1]},
+            id="missing-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "unoffered"},
+                ],
+            },
+            id="unoffered-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "model-b", "considered": True},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="duplicate-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    *_EXPLANATION["models"],
+                    {
+                        "id": "unoffered",
+                        "name": "Unoffered model",
+                        "selected": False,
+                        "considered": True,
+                        "reason": "Outside the offered menu.",
+                    },
+                ],
+            },
+            id="extra-model",
+        ),
+        pytest.param("invalid", id="invalid-json"),
+        pytest.param("[]", id="array"),
+        pytest.param(
+            json.dumps(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                        _EXPLANATION["models"][1],
+                    ],
+                }
+            ),
+            id="nonfinite-json",
+        ),
+        pytest.param(
+            json.dumps({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}),
+            id="oversized-json",
+        ),
+        pytest.param("[" * 2000 + "0" + "]" * 2000, id="deeply-nested"),
+        pytest.param(
+            {**_EXPLANATION, "evidence": {"audit": "x" * 65536}},
+            id="oversized-object",
+        ),
+        pytest.param(
+            {key: value for key, value in _EXPLANATION.items() if key != "task_understanding"},
+            id="missing-task-understanding",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "task_understanding": [""]},
+            id="empty-task-understanding-item",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "name": ""},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="empty-model-name",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "selected_model": "alternative"},
+            id="invalid-selected-model",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "session_id": "s\x1b[31m1"},
+            id="identity-ansi",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "tool_use_id": "t\x00"},
+            id="identity-control",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "session_id": "s" * 257},
+            id="identity-too-long",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "tool_use_id": 1},
+            id="identity-nonstring",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "evidence": {"session_id": []}},
+            id="evidence-identity-nonstring",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "selected": True, "considered": True},
+                ],
+            },
+            id="double-selected",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "considered": False},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="selected-not-considered",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "selected": 1},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="nonbool-selected",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "considered": 1},
+                ],
+            },
+            id="nonbool-considered",
+        ),
+    ],
+)
+def test_parse_routing_explanation_rejects_invalid_metadata(explanation):
+    assert (
+        routing._parse_routing_explanation(
+            explanation,
+            "system.ai.model-b",
+            (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "identity_fields",
+    [
+        pytest.param({"session_id": "stale-session", "tool_use_id": "t1"}, id="stale-session"),
+        pytest.param({"session_id": "s1", "tool_use_id": "stale-call"}, id="stale-tool-use"),
+        pytest.param(
+            {
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"session_id": "other-session"},
+            },
+            id="nested-session-conflict",
+        ),
+        pytest.param(
+            {
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"tool_use_id": "other-call"},
+            },
+            id="nested-tool-use-conflict",
+        ),
+    ],
+)
+def test_explanation_roundtrip_rejects_stale_identity_before_audit(
+    tmp_path, monkeypatch, caplog, identity_fields
+):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
+    selected = "system.ai.model-b"
+    explanation = {**_EXPLANATION, **identity_fields}
+    payload = {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "inspect parser", "subagent_type": "general-purpose"},
+    }
+
+    def reply(request, timeout):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+
+    assert result == {"model": selected, "rationale": "Selected by router."}
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    assert record["router_model"] == selected
+    assert record["rationale"] == "Selected by router."
+    assert "explanation" not in record
+    assert "session or tool-call identity does not match request" in caplog.text
+
+
+def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
+    selected = {
+        **_EXPLANATION["models"][0],
+        "name": " \x1b[34mSelected\x1b[0m model ",
+        "reason": " Best\x01 fit ",
+        "quality_estimate": 0.91,
+        "estimated_cost_usd": 0.24,
+        "routing_score": -0.1,
+        "components": {"quality": 0.91},
+        "difference_from_winner": {"quality": -0.09},
+        "internal_trace": {"discard": "this"},
+    }
+    alternative = {
+        **_EXPLANATION["models"][1],
+        "internal_trace": "discard this too",
+    }
+    explanation = {
+        **_EXPLANATION,
+        "summary": "\x1b[31mSummary\x1b[0m\x01more\n" + "x" * 2050,
+        "task_understanding": ["\x1b[32mStep\x1b[0m\x00 two"],
+        "recipe": {"malformed": "unused optional metadata"},
+        "formula": "formula\x7f text",
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "evidence": {
+            "session_id": "s1",
+            "tool_use_id": "t1",
+            "internal_trace": "discard this",
+        },
+        "internal_trace": "discard this",
+        "models": [selected, alternative],
+    }
+    original = json.loads(json.dumps(explanation))
+
+    normalized = routing._parse_routing_explanation(
+        explanation,
+        "system.ai.model-b",
+        (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+    )
+
+    assert normalized is not None
+    summary_prefix = "Summary more "
+    assert normalized["summary"] == summary_prefix + "x" * (2000 - len(summary_prefix))
+    assert normalized["task_understanding"] == ["Step two"]
+    assert "recipe" not in normalized
+    assert normalized["formula"] == "formula text"
+    assert normalized["models"] == [
+        {
+            "id": "model-b",
+            "name": "Selected model",
+            "selected": True,
+            "considered": True,
+            "reason": "Best fit",
+            "quality_estimate": 0.91,
+            "estimated_cost_usd": 0.24,
+            "routing_score": -0.1,
+            "components": {"quality": 0.91},
+            "difference_from_winner": {"quality": -0.09},
+        },
+        {
+            "id": "alternative",
+            "name": "Alternative",
+            "selected": False,
+            "considered": False,
+            "reason": "Excluded by the routing policy.",
+        },
+    ]
+    assert normalized["session_id"] == "s1"
+    assert normalized["tool_use_id"] == "t1"
+    assert normalized["evidence"] == {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+    }
+    assert set(normalized) == {
+        "selected_model",
+        "summary",
+        "task_understanding",
+        "models",
+        "formula",
+        "session_id",
+        "tool_use_id",
+        "evidence",
+    }
+    assert explanation == original
+
+    null_identity = {
+        **_EXPLANATION,
+        "session_id": None,
+        "tool_use_id": None,
+        "evidence": {"session_id": None, "tool_use_id": None},
+    }
+    normalized_null_identity = routing._parse_routing_explanation(
+        null_identity,
+        "system.ai.model-b",
+        (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+    )
+    assert normalized_null_identity is not None
+    assert normalized_null_identity["session_id"] is None
+    assert normalized_null_identity["tool_use_id"] is None
+    assert normalized_null_identity["evidence"] == {"session_id": None, "tool_use_id": None}
+
+
+@pytest.mark.parametrize(
+    ("selected", "execution_model", "explanation_id"),
+    [
+        (
+            "anthropic-aigw-c442a48-system.ai.model-b",
+            "anthropic-aigw-c442a48-system.ai.model-b",
+            "model-b",
+        ),
+        (
+            "anthropic-aigw-01234567-system.ai.model-b",
+            "anthropic-aigw-01234567-system.ai.model-b",
+            "model-b",
+        ),
+        ("gpt-5.4.1", "gpt-5.4.1[1m]", "gpt-5.4.1"),
+        (
+            "anthropic-aigw-c442a48-gpt-5.4.1",
+            "anthropic-aigw-c442a48-gpt-5.4.1",
+            "gpt-5.4.1",
+        ),
+        ("system.ai.gpt-5.4.1", "system.ai.gpt-5.4.1[1m]", "gpt-5.4.1"),
+        (
+            "anthropic-aigw-01234567-system.ai.gpt-5.4.1",
+            "anthropic-aigw-01234567-system.ai.gpt-5.4.1[1m]",
+            "gpt-5.4.1",
+        ),
+        (
+            "anthropic-aigw-c442a48-system.ai.gpt-5.4.1",
+            "anthropic-aigw-c442a48-system.ai.gpt-5.4.1",
+            "gpt-5.4.1",
+        ),
+        ("databricks-gpt-5.4.1", "databricks-gpt-5.4.1[1m]", "databricks-gpt-5.4.1"),
+        ("anthropic-aigw-01234567-gpt-5.4.1", "anthropic-aigw-01234567-gpt-5.4.1[1m]", "gpt-5.4.1"),
+        ("gpt-5.4.1[1m]", "gpt-5.4.1[1m]", "gpt-5.4.1[1m]"),
+        ("custom.catalog.gpt-5.4.1", "custom.catalog.gpt-5.4.1", "custom.catalog.gpt-5.4.1"),
+        (
+            "custom.catalog.gpt-5.4.1[1m]",
+            "custom.catalog.gpt-5.4.1[1m]",
+            "custom.catalog.gpt-5.4.1[1m]",
+        ),
+    ],
+)
+def test_gateway_wrappers_and_context_hint_preserve_valid_explanation(
+    tmp_path, monkeypatch, selected, execution_model, explanation_id
+):
+    explanation = {
+        **_EXPLANATION,
+        "selected_model": explanation_id,
+        "models": [
+            {**model, "id": explanation_id if model["selected"] else model["id"]}
+            for model in _EXPLANATION["models"]
+        ],
+    }
+
+    def reply(request, timeout):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        {
+            "session_id": "wrapped-session",
+            "tool_use_id": "wrapped-call",
+            "tool_name": "Agent",
+            "tool_input": {"prompt": "inspect the repository"},
+        },
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+
+    assert result == {"model": execution_model, "rationale": "Selected by router."}
+    records = session_log.read_decisions("claude", "wrapped-session")
+    assert len(records) == 1
+    assert records[0]["explanation"] == explanation
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch, wrapped):
+    model_ids = [f"custom.catalog.model-{index:02d}" for index in range(20)]
+    model_ids[1] = model_ids[0] + "[1m]"
+    model_ids[2] = "custom.catalog.namespace.model-02"
+    model_ids[3] = model_ids[2] + "[1m]"
+    offered_models = [
+        ("anthropic-aigw-01234567-" if wrapped else "") + model for model in model_ids
+    ]
+    selected_model = offered_models[0]
+    explanation = {
+        "selected_model": model_ids[0],
+        "summary": "Selected from the offered custom catalog.",
+        "task_understanding": [],
+        "models": [
+            {
+                "id": model_id,
+                "name": f"Custom model {index:02d}",
+                "selected": model_id == model_ids[0],
+                "considered": index < 18,
+                "reason": (
+                    "Not available for comparison."
+                    if index >= 18
+                    else "Selected for the task."
+                    if model_id == model_ids[0]
+                    else "Evaluated by the router."
+                ),
+            }
+            for index, model_id in enumerate(model_ids)
+        ],
+    }
+    calls = []
+    payload = {
+        "session_id": "s20",
+        "tool_use_id": "t20",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "inspect the repository", "subagent_type": "general-purpose"},
+    }
+
+    def reply(request, timeout):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected_model},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected from the custom catalog.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=offered_models,
+        audit_decision=True,
+    )
+
+    assert result == {"model": selected_model, "rationale": "Selected from the custom catalog."}
+    assert len(calls) == 1
+    assert calls[0]["route_options"] == [
+        {"model": model_id, "harness": "claude"} for model_id in offered_models
+    ]
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    rows = record["explanation"]["models"]
+    assert len(rows) == 20
+    assert [row["id"] for row in rows] == model_ids
+    assert all(row["considered"] for row in rows[:18])
+    assert all(not row["considered"] for row in rows[-2:])
+    assert [row["reason"] for row in rows[-2:]] == ["Not available for comparison."] * 2
+
+    assert record["explanation"] == explanation
+
+
+@pytest.mark.parametrize("catalog_size", [128, 129, 256])
+def test_claude_route_options_keep_latest_families_within_api_limit(catalog_size):
+    preferred = [
+        "global.anthropic.claude-opus-5-5",
+        "us.anthropic.claude-sonnet-5-5",
+        "us.anthropic.claude-haiku-5-5",
+    ]
+    models = [
+        "anthropic.claude-opus-5-5",
+        "anthropic.claude-sonnet-5-5",
+        "anthropic.claude-haiku-5-5",
+        *(f"anthropic.claude-sonnet-4-{index}" for index in range(catalog_size - 6)),
+    ]
+    models += preferred
+
+    options = v2._claude_route_options(models)
+    offered = [model for model, _harness in options]
+
+    assert len(options) == 128
+    assert set(preferred) <= set(offered) <= set(models)
+    assert all(harness == "claude" for _model, harness in options)
+    if catalog_size == routing.MAX_ROUTE_OPTIONS:
+        assert offered == models
+
+
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
     models = set()
     for agent_path in (plugin_dir / "agents").glob("*.md"):
         model_line = next(
             line for line in agent_path.read_text().splitlines() if line.startswith("model: ")
         )
-        models.add(json.loads(model_line.removeprefix("model: ")))
+        model = model_line.removeprefix("model: ")
+        models.add(json.loads(model) if model.startswith('"') else model)
     return models
 
 
@@ -57,7 +766,10 @@ class TestManagedModelPicker:
 
         assert catalog is not None
         assert catalog.model_ids == ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]
-        assert catalog.model_id_to_display_name == {}
+        assert catalog.model_id_to_display_name == {
+            "system.ai.claude-opus-4-8": "Opus",
+            "system.ai.claude-sonnet-5": "Sonnet",
+        }
 
     def test_ignores_empty_or_missing_picker(self, tmp_path, monkeypatch):
         path = tmp_path / "managed-settings.json"
@@ -181,6 +893,49 @@ class TestFirstPromptHook:
         finally:
             stop.set()
 
+    @requires_pty
+    def test_orchestrator_context_survives_the_first_prompt_hold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", config.FIRST_PROMPT_AND_SUBAGENT_ORCH_V0_CLAUDE_ONLY
+        )
+        controls: dict[str, str] = {}
+        session_env.start_session(controls)
+        for key, value in controls.items():
+            monkeypatch.setenv(key, value)
+        socket_path = tmp_path / "first.sock"
+        stop = threading.Event()
+        ready = threading.Event()
+        claude_pty.serve_first_prompt_socket(
+            socket_path,
+            lambda _prompt: claude_pty.FirstPromptRoute(
+                model="sonnet", display_model="sonnet", rationale="Selected for a narrow task."
+            ),
+            lambda _prompt, _model: None,
+            stop,
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
+        )
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt": "fix the parser",
+        }
+        try:
+            assert ready.wait(5)
+            held = claude_pty.request_first_prompt_route(socket_path, payload)
+            held_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+            replay = claude_pty.request_first_prompt_route(socket_path, payload)
+            replay_context = orchestrator.hook_output(payload, agent=AGENT_CLAUDE)
+        finally:
+            stop.set()
+
+        assert claude_pty.first_prompt_hook_output(held)["decision"] == "block"
+        assert claude_pty.first_prompt_hook_output(replay) is None
+        # Claude discards a blocked prompt's context, so a once per session injection would be lost.
+        assert replay_context == held_context
+        context = replay_context["hookSpecificOutput"]["additionalContext"]
+        assert "Smart Router Orchestrator is on for this session" in context
+        assert orchestrator.CLAUDE_AGENT_DESCRIPTION in context
+
     def test_first_prompt_hook_is_per_launch(self):
         settings = {
             "hooks": {
@@ -234,6 +989,23 @@ class TestV2Launch:
             claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
 
         claude.exec_or_spawn.assert_not_called()
+
+    def test_setup_failure_launches_claude_unrouted_with_a_warning(self, monkeypatch):
+        error = v2.ClaudeRoutingSetupError("Smart routing could not start its socket")
+        monkeypatch.setattr(v2, "launch_claude", Mock(side_effect=error))
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        monkeypatch.setattr(claude, "exec_or_spawn", Mock())
+        monkeypatch.setattr(claude, "print_warning", Mock())
+
+        with patch.dict(os.environ):
+            claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
+            assert os.environ[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+            assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+
+        claude.exec_or_spawn.assert_called_once()
+        claude.print_warning.assert_any_call(
+            "Smart routing could not start its socket; starting Claude Code without Smart Routing."
+        )
 
     @requires_pty
     def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
@@ -332,6 +1104,9 @@ class TestV2Launch:
         command = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "routeCommand"
         ]
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "logsCommand"
+        ] == ["/bin/ug", "smart-router-logs"]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -433,7 +1208,17 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("omnigent", [False, True])
+    @pytest.mark.parametrize("auto_picker", [False, True])
+    def test_subagent_only_launch_skips_first_prompt_routing(
+        self, tmp_path, monkeypatch, auto_picker, omnigent
+    ):
+        if omnigent:
+            monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only" if auto_picker else ""
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent")
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
@@ -474,6 +1259,9 @@ class TestV2Launch:
                 settings_path = Path(argv[argv.index("--settings") + 1])
                 captured["settings_path"] = settings_path
                 captured["settings"] = json.loads(settings_path.read_text())
+                captured["controls"] = json.loads(
+                    Path(captured["settings"]["env"][v2.SESSION_ENV_VAR]).read_text()
+                )
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
@@ -504,31 +1292,59 @@ class TestV2Launch:
 
         assert exc.value.code == 4
         settings = captured["settings"]
-        assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
+        assert "deniedModels" not in settings
+        plugin_config = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]
+        if auto_picker:
+            auto = json.loads(plugin_config["options"].pop("autoPicker"))
+            assert auto["mainModel"] == "system.ai.claude-opus-4-8"
+        assert captured["controls"] == (
+            dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if auto_picker else {}
+        )
+        route_argv = [
+            "/bin/ug",
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            "https://example.com",
+            "--model",
+            "system.ai.claude-opus-4-8",
+        ]
+        validate_command = (
+            {}
+            if omnigent
+            else {
+                "validateCommand": [
+                    *route_argv[:2],
+                    claude_hooks.ROUTE_VALIDATION_MOD_EVENT,
+                    *route_argv[3:],
+                ]
+            }
+        )
+        assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
-                "routeCommand": [
-                    "/bin/ug",
-                    "claude-router-hook",
-                    "route-subagent-mod",
-                    "--host",
-                    "https://example.com",
-                    "--model",
-                    "system.ai.claude-opus-4-8",
-                ],
+                "logsCommand": ["/bin/ug", "smart-router-logs"],
+                "routeCommand": route_argv,
+                **validate_command,
             }
         }
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert env["UCODE_AGENT_LABELS_DIR"] == str(v2.APP_DIR / "claude-agent-labels")
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
             assert env[key] == os.environ[key]
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
+        # The managed recipe mod reads its recipe from the environment, not pluginConfigs.
+        assert env[routing.ROUTER_NAME_ENV_VAR] == routing.ROUTER_NAME
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
-        assert "UserPromptSubmit" not in settings["hooks"]
+        assert ("UserPromptSubmit" in settings["hooks"]) is auto_picker
         assert "PreToolUse" not in settings["hooks"]
-        assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert captured["plugin_models"] == set()
+        expected_overrides = {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
+        if auto_picker:
+            expected_overrides[auto["model"]] = "system.ai.claude-opus-4-8"
+        assert settings["modelOverrides"] == expected_overrides
+        assert captured["plugin_models"] == ({"sonnet"} if auto_picker else set())
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"].count("--agents") == 1
         assert captured["argv"].count("--plugin-dir") == 2
@@ -537,6 +1353,296 @@ class TestV2Launch:
         assert not captured["plugin_dir"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
+
+    @pytest.mark.parametrize(
+        ("replace", "managed_policy", "auto_enabled"),
+        [
+            (False, {}, True),
+            (None, {}, True),
+            (False, {"modelOverrides": {}}, False),
+            (False, {"availableModels": []}, False),
+            (True, {}, False),
+            (False, {"env": {"ANTHROPIC_CUSTOM_MODEL_OPTION": "admin-model"}}, False),
+        ],
+    )
+    def test_auto_launch_respects_managed_policy_with_session_aliases(
+        self, tmp_path, monkeypatch, replace, managed_policy, auto_enabled
+    ):
+        from ucode.agents.claude_auto import auto_variant, is_auto_model
+
+        models = ["team.models.admin", "system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        rows = [{"model": model} for model in models]
+        rows[0]["behavesAs"] = "claude-opus-4-8[1m]"
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                {
+                    "modelPicker": {
+                        **({"replaceBuiltInOptions": replace} if replace is not None else {}),
+                        "options": rows,
+                    },
+                    "deniedModels": [models[1]],
+                    **managed_policy,
+                }
+            )
+        )
+        before = managed.read_bytes()
+        launch_settings = {"deniedModels": [auto_variant({"model": models[2]})]}
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: (launch_settings, args),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        assert managed.read_bytes() == before
+        assert captured["deniedModels"] == launch_settings["deniedModels"]
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        if not auto_enabled:
+            assert "autoPicker" not in options
+            assert not any(is_auto_model(k) for k in captured["modelOverrides"])
+            return
+        auto = json.loads(options["autoPicker"])
+        assert [row["model"] for row in auto["models"]] == [models[0]]
+        assert {k: v for k, v in captured["modelOverrides"].items() if is_auto_model(k)} == {
+            auto_variant(rows[0]): models[0]
+        }
+
+    def test_auto_launch_serves_configured_static_catalog_row(self, tmp_path, monkeypatch):
+        """A managed static Auto catalog drives the mod without a custom-model slot.
+
+        Configure wrote the replacement picker with one Auto row (the default
+        variant) plus per-main-model aliases; the launch recognizes it as Auto's
+        source and keeps the managed file untouched.
+        """
+        from ucode.agents.claude_auto import auto_variant, is_auto_model, picker_has_auto_row
+
+        models = ["team.models.admin", "system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        rows = [{"model": model} for model in models]
+        rows[0]["behavesAs"] = "claude-opus-4-8[1m]"
+        aliases = {auto_variant(row): row["model"] for row in rows}
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                {
+                    "availableModels": [*models, *aliases],
+                    "enforceAvailableModels": True,
+                    "modelOverrides": aliases,
+                    "modelPicker": {
+                        "replaceBuiltInOptions": True,
+                        "options": [
+                            *rows,
+                            {
+                                "model": auto_variant(rows[0]),
+                                "label": "Auto",
+                                "description": "Delivers frontier-model quality.",
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        before = managed.read_bytes()
+        assert picker_has_auto_row(json.loads(before)) is True
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured["argv"] = argv
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        assert managed.read_bytes() == before
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        auto = json.loads(options["autoPicker"])
+        assert auto["mainModel"] == models[0]
+        assert auto["model"] == auto_variant(rows[0])
+        # Native stays on the immutable static row; the mod holds the main model and,
+        # without a launch-only model, restores the user's saved one.
+        assert auto["staticModel"] == auto_variant(rows[0])
+        assert auto["preferSaved"] is True
+        assert captured["argv"][captured["argv"].index("--model") + 1] == auto_variant(rows[0])
+        assert [row["model"] for row in auto["models"]] == models
+        assert {row["autoModel"] for row in auto["models"]} == set(aliases)
+        # The managed aliases stay in the managed file; launch settings carry no copies.
+        assert not any(is_auto_model(k) for k in captured.get("modelOverrides", {}))
+
+    @pytest.mark.parametrize(
+        ("launch_model", "tool_args", "expected_model"),
+        [
+            (None, [], None),
+            ("system.ai.claude-sonnet-5", [], "system.ai.claude-sonnet-5"),
+            (None, ["--model", "claude-haiku-4-5"], "claude-haiku-4-5"),
+        ],
+        ids=["plain", "launch-model", "forwarded-model"],
+    )
+    def test_installed_static_auto_row_enters_auto_with_the_auto_version(
+        self, tmp_path, monkeypatch, launch_model, tool_args, expected_model
+    ):
+        """The exact Auto version enables the installed picker without changing its file."""
+        from ucode.agents.claude_auto import add_picker_entry, auto_variant
+
+        models = ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                add_picker_entry(
+                    {
+                        "env": {"ANTHROPIC_MODEL": models[0]},
+                        "availableModels": models,
+                        "modelPicker": {
+                            "replaceBuiltInOptions": True,
+                            "options": [{"model": model} for model in models],
+                        },
+                    },
+                    static_auto_row=True,
+                )
+            )
+        )
+        before = managed.read_bytes()
+        static_alias = auto_variant({"model": models[0]})
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured["argv"] = argv
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                list(tool_args),
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=launch_model,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        assert managed.read_bytes() == before
+        assert os.environ["ENABLE_SMART_ROUTER_AUTO_MODE"] == "0"
+        assert captured["env"]["ENABLE_SMART_ROUTER_AUTO_MODE"] == "1"
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == "1"
+        auto = json.loads(options["autoPicker"])
+        assert auto["staticModel"] == static_alias
+        argv = captured["argv"]
+        assert argv[argv.index("--model") + 1] == (expected_model or static_alias)
+        assert argv.count("--model") == 1
+        assert auto["preferSaved"] is (launch_model is None)
+
+    @pytest.mark.parametrize("version", [None, "", "unknown_v99", "subagent_orch_v0_claude_only"])
+    def test_static_auto_row_without_auto_version_stays_ordinary(
+        self, tmp_path, monkeypatch, version
+    ):
+        from ucode.agents.claude_auto import add_picker_entry
+
+        models = ["system.ai.claude-opus-5-5"]
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                add_picker_entry(
+                    {
+                        "availableModels": models,
+                        "modelPicker": {
+                            "replaceBuiltInOptions": True,
+                            "options": [{"model": models[0]}],
+                        },
+                    },
+                    static_auto_row=True,
+                )
+            )
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        if version is None:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        assert "autoPicker" not in options
+        assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == "0"
+        assert captured["env"]["ENABLE_SMART_ROUTER_AUTO_MODE"] == "0"
+        assert os.environ["ENABLE_SMART_ROUTER_AUTO_MODE"] == "1"
 
     def test_subagent_only_launch_keeps_the_forwarded_model(self, tmp_path, monkeypatch):
         model = "system.ai.claude-opus-5-5"
@@ -596,7 +1702,7 @@ class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, picker_catalog):
+    def _launch(monkeypatch, tmp_path, *, picker_catalog, provider=None):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -626,7 +1732,7 @@ class TestV2ModelPickerDiscovery:
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
-                {"workspace": "https://example.com"},
+                {"workspace": "https://example.com", "_claude_launch_provider": provider},
                 [],
                 binary="claude",
                 user_settings_path=user_settings,
@@ -637,6 +1743,46 @@ class TestV2ModelPickerDiscovery:
             )
         assert exc.value.code == 0
         return discovery_calls
+
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            (None, "databricks-claude-opus-4-8", "system.ai.claude-opus-4-8"),
+            (
+                "main.default.anthropic-mps",
+                "anthropic.claude-opus-4-8",
+                "anthropic.claude-opus-4-8",
+            ),
+        ],
+    )
+    def test_startup_validation_gets_the_launch_model_list_and_provider(
+        self, tmp_path, monkeypatch, provider, model, expected
+    ):
+        validation_start = Mock()
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
+        monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
+        catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
+
+        assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
+
+        validation_start.assert_called_once_with(
+            "https://example.com",
+            "token",
+            [(expected, "claude")],
+            router_name="chosen-recipe",
+            session_controls=Path(os.environ[v2.SESSION_ENV_VAR]),
+            provider=provider,
+        )
+
+    def test_startup_validation_is_skipped_for_omnigent(self, tmp_path, monkeypatch):
+        validation_start = Mock()
+        monkeypatch.setattr(v2.route_validation, "start", validation_start)
+        monkeypatch.setenv(ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_OMNI_LAUNCH_MODE)
+        catalog = AnthropicModelCatalog(model_ids=["m"], model_id_to_display_name={})
+
+        assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog) == 0
+
+        validation_start.assert_not_called()
 
     def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
         discovery_calls = self._launch(
@@ -694,7 +1840,17 @@ class TestSubagentRouting:
             "router_name": "task_v2",
         }
 
-    def test_routes_agent_prompt_with_initialized_model_menu(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "assignment",
+        [
+            {"prompt": "inspect the parser"},
+            {"prompt": " \n", "description": "inspect the parser"},
+        ],
+        ids=["prompt", "blank-prompt-description"],
+    )
+    def test_routes_agent_prompt_with_initialized_model_menu(
+        self, tmp_path, monkeypatch, assignment
+    ):
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
         captured = {}
         decisions_path = tmp_path / "decisions.jsonl"
@@ -721,7 +1877,7 @@ class TestSubagentRouting:
                 "tool_use_id": "original-sonnet-call",
                 "tool_input": {
                     "subagent_type": "Explore",
-                    "prompt": "inspect the parser",
+                    **assignment,
                     "model": "sonnet",
                 },
             },
@@ -749,6 +1905,31 @@ class TestSubagentRouting:
         assert decision_record["original_model"] == "sonnet"
         assert decision_record["original_subagent_type"] == "Explore"
         assert decision_record["tool_use_id"] == "original-sonnet-call"
+
+    def test_label_only_agent_keeps_requested_model(self, tmp_path, monkeypatch):
+        decisions_path = tmp_path / "decisions.jsonl"
+        monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
+        select = Mock()
+        monkeypatch.setattr(routing, "select_route", select)
+        payload = {
+            "tool_name": "Agent",
+            "tool_input": {"task_name": "parser", "agent_name": "Explore", "model": "sonnet"},
+        }
+        original = json.dumps(payload)
+
+        assert (
+            v2.route_claude_subagent(
+                payload,
+                workspace="https://example.com",
+                token="token",
+                available_models=["system.ai.claude-opus-4-8"],
+                audit_decision=True,
+            )
+            is None
+        )
+        select.assert_not_called()
+        assert json.dumps(payload) == original
+        assert not decisions_path.exists()
 
     def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
         monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
@@ -796,7 +1977,7 @@ class TestSubagentRouting:
         monkeypatch.setattr(
             v2,
             "_request_claude_routing_decision",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 routing.RoutingDecision(model=gateway_model),
                 None,
             ),
@@ -888,7 +2069,7 @@ class TestSubagentRouting:
         monkeypatch.setattr(
             v2,
             "_request_claude_routing_decision",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 routing.RoutingDecision(model=selected_model),
                 None,
             ),
@@ -1027,7 +2208,7 @@ class TestPtyFlow:
             lambda: pytest.fail("Claude must not launch without the routing socket"),
         )
 
-        with pytest.raises(RuntimeError, match="Claude was not launched"):
+        with pytest.raises(v2.ClaudeRoutingSetupError, match="prompt-routing socket"):
             claude_pty.run_claude_pty(
                 ["claude"],
                 route_prompt=lambda _prompt: claude_pty.FirstPromptRoute(
@@ -1214,7 +2395,9 @@ class TestV2HeadlessClaude:
         assert prompts == []
         assert launched["argv"].count("--model") == 1
 
-    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch):
+    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch, capsys, caplog):
+        caplog.set_level("DEBUG", logger="ucode.smart_routing.v2")
+
         def fail():
             raise RuntimeError("router timed out")
 
@@ -1224,6 +2407,9 @@ class TestV2HeadlessClaude:
 
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
+        output = capsys.readouterr()
+        assert "router timed out" not in output.out + output.err
+        assert "router timed out" in caplog.text
 
 
 def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):

@@ -8,7 +8,7 @@ of those exercise is the whole thing wired together over real sockets: the
 real `rfile`, the pooled `httpx` client streaming to a real upstream and back,
 and `_relay_response` writing to a real `wfile`.
 
-These tests stand up a fake AI Gateway upstream, start the *real* relay or OTLP
+These tests stand up a fake Unity Gateway upstream, start the *real* relay or OTLP
 proxy pointed at it, and drive it with a real HTTP client — so a regression
 anywhere in that chain is caught.
 Fully hermetic: no agent binary, no network, no workspace credentials.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,23 +27,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, metrics
 
 
 class _CapturedRequest:
-    def __init__(self, method: str, path: str, headers: dict[str, str], body: bytes):
+    def __init__(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        body: bytes,
+        names: tuple[str, ...] = (),
+    ):
         self.method = method
         self.path = path
         # Keyed lowercase so assertions don't depend on header-case normalization.
         self.headers = headers
         self.body = body
+        # Every header name as sent, lowercased, to catch one sent twice.
+        self.names = names
 
     def header(self, name: str) -> str | None:
         return self.headers.get(name.lower())
 
 
 class _FakeGateway:
-    """Real HTTP server standing in for the workspace AI Gateway upstream.
+    """Real HTTP server standing in for the workspace Unity Gateway upstream.
 
     Records each forwarded request and returns a scripted response: a status code
     plus a list of body byte-chunks (flushed with an optional inter-chunk delay so
@@ -87,6 +97,7 @@ class _FakeGateway:
                         path=self.path,
                         headers={k.lower(): v for k, v in self.headers.items()},
                         body=body,
+                        names=tuple(k.lower() for k in self.headers.keys()),
                     )
                 )
                 self.send_response(statuses.pop(0) if statuses else status)
@@ -191,6 +202,52 @@ def _running_otel_proxy(gateway: _FakeGateway, token_provider=None):
 
 
 class TestRelayedProxyEndToEnd:
+    @pytest.mark.parametrize("diagnostics", [False, True])
+    @pytest.mark.parametrize("retry", [False, True])
+    def test_transport_diagnostics_over_socket(
+        self, make_gateway, monkeypatch, capsys, diagnostics, retry
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1" if diagnostics else "0")
+        monkeypatch.delenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, raising=False)
+        gw = make_gateway(
+            statuses=[401, 200] if retry else [200],
+            chunks=[b"private-response"],
+            headers={"X-Private": "private-response-header"},
+        )
+        with _running_proxy(gw, _counting_token("private-token")) as proxy_url:
+            response = httpx.post(
+                f"{proxy_url}/v1/messages",
+                headers={"Authorization": "Bearer private-oauth"},
+                content=b"private-request",
+                timeout=10,
+            )
+
+        assert response.status_code == 200
+        assert response.content == b"private-response"
+        assert response.headers["X-Private"] == "private-response-header"
+        assert all(request.body == b"private-request" for request in gw.requests)
+        logged = capsys.readouterr().err
+        assert "private-" not in logged
+        if not diagnostics:
+            assert logged == ""
+            return
+        events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
+        assert len({event["request_id"] for event in events}) == 1
+        transport = [event for event in events if event["event"] == "upstream_transport"]
+        assert {event["attempt"] for event in transport} == ({1, 2} if retry else {1})
+        for attempt in range(1, 3 if retry else 2):
+            phases = [event["phase"] for event in transport if event["attempt"] == attempt]
+            sent = phases.index("http11.send_request_body.complete")
+            waiting = phases.index("http11.receive_response_headers.started")
+            received = phases.index("http11.receive_response_headers.complete")
+            assert sent < waiting < received
+        assert all(
+            set(event) == {"event", "timestamp_ms", "request_id", "attempt", "phase", "elapsed_ms"}
+            and isinstance(event["elapsed_ms"], int)
+            and event["elapsed_ms"] >= 0
+            for event in transport
+        )
+
     def test_forwards_request_with_swap_header_and_passthrough(self, make_gateway):
         # The whole relayed data-plane over real sockets: the proxy injects a fresh
         # swap token, passes the caller's Anthropic OAuth + the MPS routing header
@@ -278,6 +335,81 @@ class TestOtelProxyEndToEnd:
         assert req.header("X-Databricks-AI-Gateway-Token") is None
         assert req.body == b"\x0a\x02\x08\x01"
 
+    @staticmethod
+    def _raw_request(proxy_url: str, request_line: str, *headers: str) -> int:
+        """Send an unnormalized request and return its status code."""
+        port = int(proxy_url.rsplit(":", 1)[1])
+        lines = [request_line, *headers, "Content-Length: 2", "Connection: close", "", "{}"]
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            sock.sendall("\r\n".join(lines).encode())
+            response = b""
+            while chunk := sock.recv(4096):
+                response += chunk
+        assert response.startswith(b"HTTP/"), response
+        return int(response.split(b" ", 2)[1])
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/../../api/2.0/clusters/list",
+            "/v1/../../api/2.0/clusters/list",
+            "/%2e%2e/%2e%2e/api/2.0/clusters/list",
+            "/v1/%252e%252e/%252e%252e/api/2.0/clusters/list",
+            "/api/2.0/clusters/list",
+        ],
+    )
+    def test_refuses_paths_outside_the_otlp_routes(self, make_gateway, path):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            status = self._raw_request(
+                proxy_url, f"POST {path} HTTP/1.1", f"Host: 127.0.0.1:{port}"
+            )
+        assert status == 404
+        assert gw.requests == []
+
+    @pytest.mark.parametrize("method", ["GET", "DELETE", "PUT"])
+    def test_refuses_methods_other_than_post(self, make_gateway, method):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            status = self._raw_request(
+                proxy_url, f"{method} /v1/traces HTTP/1.1", f"Host: 127.0.0.1:{port}"
+            )
+        assert status == 405
+        assert gw.requests == []
+
+    @pytest.mark.parametrize(
+        "extra_header",
+        [
+            "Origin: https://example.com",
+            "Cookie: session=1",
+            "Sec-Fetch-Site: cross-site",
+            "Host: example.com",
+            "Host: 127.0.0.1:1",
+        ],
+    )
+    def test_refuses_browsers_and_other_hosts(self, make_gateway, extra_header):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            headers = [] if extra_header.startswith("Host") else [f"Host: 127.0.0.1:{port}"]
+            status = self._raw_request(
+                proxy_url, "POST /v1/traces HTTP/1.1", *headers, extra_header
+            )
+        assert status == 403
+        assert gw.requests == []
+
+    def test_accepts_localhost_host_name(self, make_gateway):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            status = self._raw_request(
+                proxy_url, "POST /v1/traces HTTP/1.1", f"Host: localhost:{port}"
+            )
+        assert status == 200
+        assert [req.path for req in gw.requests] == ["/ai-gateway/otel/v1/traces"]
+
 
 @contextlib.contextmanager
 def _running_gateway_auth_proxy(
@@ -340,6 +472,71 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.header("X-Tag") == "t"
         assert req.body == b'{"model":"m"}'
 
+    def test_adds_per_request_headers_from_the_request_over_the_session_ones(self, make_gateway):
+        gw = make_gateway()
+
+        def adder(headers, body):
+            return {"thread-id": f"sub-{len(body)}"} if headers.get("x-kind") == "sub" else {}
+
+        with _running_gateway_auth_proxy(
+            gw,
+            added_headers={"session-id": "s-1", "thread-id": "session-wide"},
+            request_headers_adder=adder,
+        ) as proxy_url:
+            for kind in ("sub", "main"):
+                httpx.post(
+                    f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                    headers={
+                        "Authorization": f"Bearer {_SESSION_SECRET}",
+                        "x-kind": kind,
+                        "thread-id": "from-client",
+                    },
+                    content=b'{"model":"m"}',
+                    timeout=10,
+                )
+        sub, main = gw.requests[-2:]
+        assert sub.header("session-id") == main.header("session-id") == "s-1"
+        assert sub.header("thread-id") == "sub-13"
+        assert main.header("thread-id") == "session-wide"
+        assert sub.names.count("thread-id") == main.names.count("thread-id") == 1
+
+    def test_a_per_request_header_replaces_a_session_one_of_another_case(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw,
+            added_headers={"thread-id": "session-wide", "session-id": "s-1"},
+            request_headers_adder=lambda headers, body: {"Thread-Id": "sub"},
+        ) as proxy_url:
+            httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}", "THREAD-ID": "client"},
+                content=b'{"model":"m"}',
+                timeout=10,
+            )
+        request = gw.requests[-1]
+        assert request.header("thread-id") == "sub"
+        assert request.names.count("thread-id") == 1
+        assert request.header("session-id") == "s-1"
+
+    def test_forwards_the_request_when_the_per_request_headers_fail(self, make_gateway):
+        gw = make_gateway()
+
+        def adder(headers, body):
+            raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+
+        with _running_gateway_auth_proxy(
+            gw, added_headers={"session-id": "s-1"}, request_headers_adder=adder
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b'{"model":"m"}',
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        assert gw.requests[-1].header("session-id") == "s-1"
+        assert gw.requests[-1].body == b'{"model":"m"}'
+
     def test_drops_configured_fields_from_chat_completions_only(self, make_gateway):
         gw = make_gateway()
         body = b'{"model":"gpt-4o-mini","reasoning_effort":"medium","messages":[]}'
@@ -357,7 +554,7 @@ class TestGatewayAuthProxyEndToEnd:
         assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
         assert responses.body == body
 
-    def test_copilot_session_rewords_a_context_overflow(self, make_gateway):
+    def test_copilot_session_rewords_a_context_overflow(self, make_gateway, metrics_recorder):
         from ucode.agents import copilot
 
         overflow = (
@@ -377,6 +574,15 @@ class TestGatewayAuthProxyEndToEnd:
         assert resp.status_code == 400
         assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
         assert resp.headers["Content-Length"] == str(len(resp.content))
+        rows = list(metrics_recorder.pending)
+        assert [v for _, n, v, _ in rows if n == metrics.PROXY_RESPONSE_BYTES] == [
+            len(resp.content)
+        ]
+        assert sum(n == metrics.PROXY_FIRST_BYTE_DURATION_MS for _, n, _, _ in rows) == 1
+        errors = [a for _, n, _, a in rows if n == metrics.UG_CLI_ERROR]
+        assert len(errors) == 1
+        assert errors[0]["http_status_code"] == 400
+        assert errors[0]["error_code"] == "http_400"
 
     def test_copilot_session_rewords_a_compressed_context_overflow(self, make_gateway):
         from ucode.agents import copilot
@@ -456,6 +662,36 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.path == "/ai-gateway/anthropic/v1/messages"
         assert req.header("x-api-key") is None
         assert req.header("Authorization") == "Bearer dbx-token"
+
+    def test_forwards_traces_and_drops_metrics_on_allowed_otel_paths(self, make_gateway):
+        gw = make_gateway()
+        traces, metrics = "/ai-gateway/otel/v1/traces", "/ai-gateway/otel/v1/metrics"
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, traces, metrics),
+            discarded_paths=(metrics,),
+        ) as proxy_url:
+            sent = httpx.post(
+                f"{proxy_url}{traces}",
+                headers={"x-api-key": _SESSION_SECRET, "Content-Type": "application/x-protobuf"},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            dropped = httpx.post(
+                f"{proxy_url}{metrics}",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            unauthenticated = httpx.post(f"{proxy_url}{metrics}", content=b"", timeout=10)
+        assert sent.status_code == 200
+        assert (dropped.status_code, dropped.content) == (200, b"")
+        assert unauthenticated.status_code == 401
+        assert [req.path for req in gw.requests] == [traces]
+        assert gw.requests[0].header("Authorization") == "Bearer dbx-token"
+        assert gw.requests[0].header("x-api-key") is None
+        assert gw.requests[0].body == b"\x0a\x00"
 
     @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
     def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):
