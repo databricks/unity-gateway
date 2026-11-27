@@ -722,8 +722,8 @@
       },
       "E2E CUJs · CUJ 6 · Repeated config and removal": {
         "setup": 55,
-        "run": 1080,
-        "total": 1130
+        "run": 870,
+        "total": 920
       },
       "E2E CUJs · CUJ 7 · Unmanaged model discovery": {
         "setup": 170,
@@ -2379,25 +2379,46 @@
         "samples": 95,
         "distinct_runs": 93,
         "source_set": "C28",
+        "fixed_wait_recalibration": {
+          "previous_seconds": 300,
+          "current_seconds": 90,
+          "phase_reduction_seconds": 210,
+          "statistics_scope": "Projected run/total statistics, not new live measurements: subtract the fixed 210s saving from C28 p50/p95/p99/observed_max; setup is unchanged. Add 210s to recover each original run/total statistic.",
+          "latency_evidence": {
+            "artifacts_reviewed": 100,
+            "usable_runs": 99,
+            "main_runs": 52,
+            "pr_runs": 47,
+            "excluded_run_ids": [45692880320],
+            "excluded_reason": "No JUnit artifact to verify the positive Phase B trace assertion",
+            "first_run_id": 45685517654,
+            "last_run_id": 46022985896,
+            "max_run_id": 45818731592,
+            "p50_seconds": 18.724,
+            "p95_seconds": 27.213,
+            "max_seconds": 30.198,
+            "method": "2026-11-25..27: first successful Phase B /v1/traces request start to the first restarted-files command artifact after wait_for_codex_span, with 2s added for ZIP timestamp rounding; conservative upper bounds, not exact first-positive-poll timestamps; nearest-rank p95"
+          }
+        },
         "p50": {
           "setup": 20.0,
-          "run": 495.0,
-          "total": 515.0
+          "run": 285.0,
+          "total": 305.0
         },
         "p95": {
           "setup": 26.0,
-          "run": 540.0,
-          "total": 564.0
+          "run": 330.0,
+          "total": 354.0
         },
         "p99": {
           "setup": 30.0,
-          "run": 551.0,
-          "total": 573.0
+          "run": 341.0,
+          "total": 363.0
         },
         "observed_max": {
           "setup": 30.0,
-          "run": 551.0,
-          "total": 573.0
+          "run": 341.0,
+          "total": 363.0
         },
         "limited_sample": false,
         "total_only": 0
