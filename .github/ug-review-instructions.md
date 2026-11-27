@@ -22,12 +22,18 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
+   Question new dependencies and generated or lock-file churn when in-repo code or the standard
+   library can do the job. For shared routing or parsing policy, check whether it belongs on the
+   server so fixes reach older clients and remain easier to debug.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
    mix up. Do not demand comments for self-explanatory code.
    Reuse constants for shared metric names, operation names, and version pins when they already
-   exist. Flag new duplicated contract strings that can drift, not every one-off literal.
+   exist, including `AGENT_*` identifiers used for agent dispatch or registration. Flag new
+   duplicated contract strings that can drift, not every one-off literal. Keep imports at module
+   scope and combine imports from one module; suggest local imports only for a concrete optional
+   dependency, startup-cost, or import-cycle reason. Do not repeat import issues already caught by lint.
 3. **Require realistic, valuable evidence.** Ask whether every test adds distinct value and
    suggest removing redundant or low-signal cases. Check that
    externally observable configure, launch, authentication, command-forwarding, recovery, and
@@ -46,6 +52,12 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    recognizer: cover the enabled, disabled, and failed-lookup outcomes with the existing harness.
    Demo links must remain usable after squash merge; branch-only commit links are not durable
    evidence. Keep recordings and review receipts in PR attachments rather than source files.
+   For shared behavior, cover each affected agent and parameterize an existing journey when setup
+   and assertions match. For flows spanning features, extend the existing CUJ with realistic managed
+   or provider state and verify the end-to-end result; a mock proves only its own boundary. Evidence
+   generators must reject output paths inside the checkout, including paths reached through symlinks,
+   before writing or installing tools. Preserve existing links and labels on upload failure, and
+   mark evidence available only after publication succeeds.
    Keep focused component tests for distinct failures and boundary cases; request consolidation
    only when the same behavior is already protected, and name both overlapping tests.
 4. **Preserve compatibility and avoid hard-blocking users.** Look for removed CLI options,
@@ -55,7 +67,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    when possible, and reserve hard failures for cases where continuing would be unsafe or wrong.
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
    Reuse available backend canonical identifiers to avoid duplicating parsing rules across
-   installed client versions.
+   installed client versions. For backend-dependent behavior, verify deployment and flag state in
+   the tested environment; a client-only test cannot establish that users receive backend behavior.
+   When forwarding an upstream harness CLI, avoid hard-coding a copied option schema unless a
+   version-bounded workaround is necessary; prefer its native parser or forwarding path.
    For model discovery or catalog changes, check wildcard sources such as `system.ai.*` as well
    as explicit IDs, preserving usable picker names and defaults after expansion. For cloud/region
    detection, include Arclets when affected; do not assume one VM environment covers them.
@@ -65,18 +80,28 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
    modify only fields it owns, preserve caller/admin state, remove stale state it owns, and
    show errors that tell the user what they can do.
+   Check the effective merge of user and managed settings, including skipped or declined privileged
+   writes. Fallback writers must preserve required timeouts, environment, and auth settings or report
+   that they cannot represent them; recheck expiring state after slow work. When routing decisions
+   move to startup or leave the UI, preserve the explanation in the existing router log and verify
+   it through the relevant journey, not only a transient notice.
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
-   edits for every instrumented call site.
+   edits for every instrumented call site. Keep shared recording and export logic in the existing
+   metrics package, and use its duration and failure helpers for new validation waits and retries.
 7. **Account for latency and visible UX.** Check new startup requests, proxies, locks, retries,
    polling gates, and per-turn hooks for added waiting. Ask for before/after timing when latency
    changes are material or performance is claimed. Separate local/component timing from real
    agent readiness and CI queue time. An optimization must preserve submitted prompts and avoid
-   confusing hook messages; explain the user-visible tradeoff as well as the saved work.
+   confusing hook messages; explain the user-visible tradeoff as well as the saved work. Calibrate
+   CI budgets from representative runs with room for runner variance, cache misses, and artifact
+   downloads. For CI scheduling changes, assess merge-queue critical-path time, flakiness, and shared
+   provider quota under concurrent runs; compare targeted checks with full-suite coverage and measure
+   speed claims against the PR's required checks.
 8. **Preserve supply-chain and CI trust boundaries.** Use internal package sources per
    [go/registry-access](https://go/registry-access). The trusted default-branch
    `.github/workflows/polly-review.yml` records the npm and PyPI proxy endpoints in
@@ -85,6 +110,14 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+   Use commits present in a shallow PR merge checkout or fetch the needed base before diffing; the
+   event's base SHA can move independently. Security gates must not skip jobs that could print
+   credentials just because a PR changes only tests. Base privileged selectors on trusted default
+   branch policy and fail closed when PR identity or selector output cannot be trusted.
+9. **Protect background helpers and optional state.** Helpers started outside the main process must
+   preserve selected workspace headers, TLS setup, auth mode, and the non-interactive contract.
+   Malformed optional config, sidecars, or model catalogs should warn, skip, or retry where safe
+   instead of breaking startup or silently caching an empty result.
 
 ## Voice and tone
 
