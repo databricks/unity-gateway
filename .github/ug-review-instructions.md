@@ -30,10 +30,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
    mix up. Do not demand comments for self-explanatory code.
    Reuse constants for shared metric names, operation names, and version pins when they already
-   exist, including `AGENT_*` identifiers used for agent dispatch or registration. Flag new
-   duplicated contract strings that can drift, not every one-off literal. Keep imports at module
-   scope and combine imports from one module; suggest local imports only for a concrete optional
-   dependency, startup-cost, or import-cycle reason. Do not repeat import issues already caught by lint.
+   exist, including agent identifier constants in `ucode.constants` (such as `AGENT_CLAUDE` and
+   `AGENT_CODEX`) used for dispatch or registration. Flag new duplicated contract strings that can
+   drift, not every one-off literal. Keep imports at module scope and combine imports from one
+   module; suggest local imports only for an optional dependency, startup requirement, or import cycle.
 3. **Require realistic, valuable evidence.** Ask whether every test adds distinct value and
    suggest removing redundant or low-signal cases. Check that
    externally observable configure, launch, authentication, command-forwarding, recovery, and
@@ -83,8 +83,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Check the effective merge of user and managed settings, including skipped or declined privileged
    writes. Fallback writers must preserve required timeouts, environment, and auth settings or report
    that they cannot represent them; recheck expiring state after slow work. When routing decisions
-   move to startup or leave the UI, preserve the explanation in the existing router log and verify
-   it through the relevant journey, not only a transient notice.
+   move to startup or leave the UI, preserve the explanation in the existing Smart Router logs
+   (`smart-router-logs`, implemented in `session_log.py`) and verify it through the relevant
+   journey, not only a transient notice.
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
@@ -111,13 +112,14 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
    Use commits present in a shallow PR merge checkout or fetch the needed base before diffing; the
-   event's base SHA can move independently. Security gates must not skip jobs that could print
-   credentials just because a PR changes only tests. Base privileged selectors on trusted default
-   branch policy and fail closed when PR identity or selector output cannot be trusted.
+   event's base SHA can move independently. Path filters must not exempt test-only PRs from the
+   authorization gate on secret-bearing jobs; PR tests can print credentials. Base privileged
+   selectors on trusted default-branch policy and fail closed when PR identity or selector output
+   cannot be trusted.
 9. **Protect background helpers and optional state.** Helpers started outside the main process must
-   preserve selected workspace headers, TLS setup, auth mode, and the non-interactive contract.
-   Malformed optional config, sidecars, or model catalogs should warn, skip, or retry where safe
-   instead of breaking startup or silently caching an empty result.
+   follow the existing `AGENTS.md` guidance for workspace headers, TLS setup, auth, and non-interactive
+   behavior. Malformed optional config, sidecars, or model catalogs should warn, skip, or retry where
+   safe instead of breaking startup or silently caching an empty result.
 
 ## Voice and tone
 
