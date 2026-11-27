@@ -60,6 +60,7 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
+from ucode.agents import pi as pi_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
@@ -693,11 +694,12 @@ def configure_shared_state(
         state.pop(SELF_MANAGED_AGENTS_KEY, None)
     if previous_key != key:
         dest_block = load_full_state().get("workspaces", {}).get(key, {})
-        dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
-        if dest_catalog:
-            state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
-        else:
-            state.pop(copilot_agent.CATALOG_STATE_KEY, None)
+        for catalog_key in (copilot_agent.CATALOG_STATE_KEY, pi_agent.MODEL_LIMITS_STATE_KEY):
+            dest_catalog = dest_block.get(catalog_key)
+            if dest_catalog:
+                state[catalog_key] = dest_catalog
+            else:
+                state.pop(catalog_key, None)
     if profile:
         state["profile"] = profile
     else:
@@ -817,6 +819,9 @@ def configure_shared_state(
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
+    # Pi's model entries take their limits from the gateway's Anthropic listing, like Copilot's.
+    want_pi = fetch_all or "pi" in tools
+    gateway_listing: AnthropicModelCatalog | None = None
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -862,11 +867,13 @@ def configure_shared_state(
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
+            if want_copilot or want_pi:
+                gateway_listing = list_anthropic_model_catalog(workspace, token)
             if want_copilot:
                 copilot_models = copilot_agent.catalog_from_listings(
                     cached_model_service_entries(workspace),
                     [*claude_models.values(), *codex_models],
-                    list_anthropic_model_catalog(workspace, token),
+                    gateway_listing,
                 )
                 copilot_reason = ms_reason or claude_reason or codex_reason
         if claude_models:
@@ -898,6 +905,9 @@ def configure_shared_state(
                 f"Copilot model discovery failed ({copilot_reason}); "
                 "using the models found last time."
             )
+        if want_pi and gateway_listing is not None and gateway_listing.error_msg is None:
+            # A failed listing keeps the limits saved last time; Pi falls back to name-based ones.
+            state[pi_agent.MODEL_LIMITS_STATE_KEY] = pi_agent.model_limits_state(gateway_listing)
         if fetch_all or "opencode" in tools or "kilo" in tools:
             # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models

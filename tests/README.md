@@ -1467,8 +1467,11 @@ through POSIX parsing, including spaces, apostrophes, profile names, and PAT mod
 They do not launch Pi or Git Bash on Windows.
 
 `test_agent_pi.py` also checks the `contextWindow` and `maxTokens` written for each
-Claude model in Pi's `models.json`. It does not establish that Pi or the gateway
-accepts a 1M-token request.
+Claude model in Pi's `models.json`: limits listed by the gateway's Anthropic route win,
+then the name-based ones. `TestConfigureSharedStatePiModelLimits` in `test_cli.py`
+checks that configure saves those listed limits per workspace and keeps the saved ones
+when the listing fails. Both use stubbed listings; they do not establish that Pi or the
+gateway accepts a 1M-token request.
 
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
