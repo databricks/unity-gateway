@@ -62,6 +62,7 @@ def sign_in(monkeypatch):
             raise urllib_error.HTTPError(request.full_url, result, "test error", {}, None)
         body = result if isinstance(result, bytes) else json.dumps(result).encode()
         response = io.BytesIO(body)
+        response.status = 200
         response.headers = {"X-Databricks-Org-Id": "12345"}
         return response
 
@@ -69,7 +70,7 @@ def sign_in(monkeypatch):
         launches.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+    monkeypatch.setattr(db_mod, "_http_open", urlopen)
     monkeypatch.setattr(browser_cross_os.subprocess_cross_os, "run", launch)
     return states, requests, launches, metadata
 
@@ -257,9 +258,13 @@ class TestRunConnectionLogin:
 
     def test_missing_workspace_id_does_not_open_wrong_workspace(self, sign_in, monkeypatch):
         _, _, launches, _ = sign_in
-        monkeypatch.setattr(
-            db_mod.urllib_request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"{}")
-        )
+
+        def urlopen(request, **kwargs):
+            response = io.BytesIO(b"{}")
+            response.status = 200
+            return response
+
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
         ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
         assert not ok and "workspace ID" in message
         assert not launches
@@ -323,7 +328,7 @@ class TestRunConnectionLogin:
 
     def test_poll_finishing_after_deadline_never_reports_success(self, sign_in, monkeypatch):
         _, _, launches, _ = sign_in
-        original = db_mod.urllib_request.urlopen
+        original = db_mod._http_open
         timeouts = []
 
         def slow_poll(request, **kwargs):
@@ -332,7 +337,7 @@ class TestRunConnectionLogin:
                 mcl.time.sleep(7)
             return original(request, **kwargs)
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", slow_poll)
+        monkeypatch.setattr(db_mod, "_http_open", slow_poll)
         ok, detail = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
         assert not ok and "timed out" in detail
         assert timeouts == [6]

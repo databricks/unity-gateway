@@ -14,6 +14,7 @@ from pathlib import Path
 
 import questionary
 
+from ucode import metrics
 from ucode.databricks import get_databricks_token, workspace_org_id
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
 from ucode.skills_api import (
@@ -46,9 +47,9 @@ from ucode.ui import (
     print_note,
     print_success,
     print_warning,
-    progress_bar,
     prompt_yes_no,
     scrolling_checkbox,
+    spinner,
 )
 from ucode.ui.interactive_picker import CatalogChoice, picker_details
 
@@ -194,7 +195,7 @@ def _fetch_bundles(
 ) -> dict[str, tuple[dict[str, bytes] | None, str | None]]:
     """Fetch every skill's bundle concurrently, keyed by FQN.
 
-    Renders a ``k/n`` progress bar labeled ``label`` that advances as each fetch
+    Renders a spinner with a ``k/n`` count labeled ``label`` that advances as each fetch
     completes. Keying on the FQN keeps a cross-schema batch's securables apart,
     since a securable name is unique only within its own schema. Stops waiting once
     ``deadline`` (a ``time.monotonic()`` value) passes, leaving out skills still in flight.
@@ -204,17 +205,21 @@ def _fetch_bundles(
     results: dict[str, tuple[dict[str, bytes] | None, str | None]] = {}
     timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
     pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs)))
-    futures = {
-        pool.submit(
-            fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
-        ): ref.fqn
-        for ref in refs
-    }
     try:
-        with progress_bar(label, len(refs)) as advance, suppress(TimeoutError):
+        with spinner(lambda: f"{label}... ({len(results)}/{len(refs)})"), suppress(TimeoutError):
+            futures = {
+                pool.submit(
+                    fetch_skill_bundle,
+                    workspace,
+                    token,
+                    ref.catalog,
+                    ref.schema,
+                    ref.securable_name,
+                ): ref.fqn
+                for ref in refs
+            }
             for future in as_completed(futures, timeout=timeout):
                 results[futures[future]] = future.result()
-                advance()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     return results
@@ -434,10 +439,11 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
     # An empty selector only removes prior managed skills, a local no-auth op, so skip the token.
-    token = get_databricks_token(workspace, state.get("profile")) if selector else ""
     roots = skill_dir_roots(None)
     base = str(Path.home())
-    refs, desired = _resolve_managed_skills(workspace, token, selector)
+    with spinner("Loading workspace skills..."):
+        token = get_databricks_token(workspace, state.get("profile")) if selector else ""
+        refs, desired = _resolve_managed_skills(workspace, token, selector)
     refs = _reject_bundle_name_collisions(refs)
 
     removed: list[str] = []
@@ -593,14 +599,23 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             (deleted if _record_dirs_all_missing(record) else present).append(record)
         forget(deleted)
         if present:
-            print_note("Checking Unity Catalog for downloaded skill updates...")
-            token = get_databricks_token(workspace, state.get("profile"))
-            deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
-            pairs = _refs_needing_refresh(workspace, token, present, deadline)
-            updated = _update_stale_skills(workspace, token, pairs, deadline)
-            if updated:
-                print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
+            with metrics.measure(
+                metrics.SKILLS_REFRESH_DURATION_MS,
+                workspace=workspace,
+                operation=metrics.SKILLS_REFRESH_OPERATION,
+                deadline_reached=False,
+                continued_with_fallback=True,
+            ):
+                print_note("Checking Unity Catalog for downloaded skill updates...")
+                token = get_databricks_token(workspace, state.get("profile"))
+                deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
+                pairs = _refs_needing_refresh(workspace, token, present, deadline)
+                updated = _update_stale_skills(workspace, token, pairs, deadline)
+                metrics.annotate(deadline_reached=time.monotonic() >= deadline)
+                if updated:
+                    print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
+        metrics.failure(metrics.SKILLS_REFRESH_OPERATION, exc, continued_with_fallback=True)
         print_note(f"Skipped checking for skill updates: {exc}")
 
 

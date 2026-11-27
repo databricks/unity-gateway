@@ -1,6 +1,7 @@
 """Smart-routing CUJ: execute once, then report each contract assertion separately."""
 
 import hashlib
+import json
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,24 +16,32 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from ucode.smart_routing import routing
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_AUTO_V0,
+    SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
     SUBAGENT_ORCH_V0,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
     SUBAGENT_ORCH_V0_CLAUDE_ONLY,
     SUBAGENT_ORCH_V1,
     resolve_environment,
+    subagent_model_visible,
 )
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS, CodingAgent
 from .helpers.evidence import (
     SessionEvidence,
     SessionObservation,
+    assert_inference_evidence,
     canonical_model,
     claude_file_task,
     served_inference_request,
+    task_inference_request,
 )
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
@@ -50,6 +59,8 @@ SMART_ROUTER_CONFIG_VERSIONS = (
     SUBAGENT_ONLY_V1,
     SUBAGENT_ORCH_V0,
     SUBAGENT_ORCH_V1,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
     SUBAGENT_ORCH_V0_CLAUDE_ONLY,
 )
 
@@ -155,91 +166,6 @@ def _run_session(session, recorder, agent, task, launch_args):
     return evidence.observe(task), recorder.requests_after(checkpoint)
 
 
-def _task_inference_request(requests, agent, prompt, *, after=0):
-    """Match exact task prompts, including Codex child assignment envelopes."""
-    prompts = {prompt}
-    if agent == CLAUDE and after:
-        prompts.add(prompt + "\n")
-    for request in requests:
-        if (
-            request.sequence <= after
-            or request.method != "POST"
-            or request.path != INFERENCE_PATHS[agent]
-        ):
-            continue
-        payload = request.payload
-        entries = payload.get("messages" if agent == CLAUDE else "input", [])
-        tools = payload.get("tools")
-        if agent == CODEX and not tools and isinstance(entries, list):
-            # Responses Lite carries tool definitions in developer input items.
-            tools = next(
-                (
-                    entry.get("tools")
-                    for entry in entries
-                    if isinstance(entry, dict)
-                    and entry.get("type") == "additional_tools"
-                    and entry.get("role") == "developer"
-                ),
-                None,
-            )
-        if not isinstance(tools, list) or not tools:
-            continue
-        if isinstance(entries, str):
-            if entries in prompts:
-                return request
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            content = entry.get("content", [])
-            if (
-                agent == CODEX
-                and after
-                and entry.get("type") == "agent_message"
-                and isinstance(entry.get("recipient"), str)
-                and isinstance(content, list)
-            ):
-                # Encrypted Codex child instructions leave only task_name readable.
-                if entry["recipient"].rsplit("/", 1)[-1] == prompt and any(
-                    isinstance(part, dict)
-                    and part.get("type") == "encrypted_content"
-                    and isinstance(part.get("encrypted_content"), str)
-                    and part["encrypted_content"]
-                    for part in content
-                ):
-                    return request
-                author = entry.get("author")
-                if isinstance(author, str) and author and entry["recipient"]:
-                    # Match the native envelope exactly so notifications cannot qualify.
-                    assignment = (
-                        f"Message Type: NEW_TASK\nTask name: {entry['recipient']}\n"
-                        f"Sender: {author}\nPayload:\n{prompt}"
-                    )
-                    if any(
-                        isinstance(part, dict)
-                        and part.get("type") == "input_text"
-                        and part.get("text") == assignment
-                        for part in content
-                    ):
-                        return request
-            if entry.get("role") != "user":
-                continue
-            if isinstance(content, str):
-                if content in prompts:
-                    return request
-            elif isinstance(content, list) and any(
-                isinstance(part, dict)
-                and part.get("type") in {"text", "input_text"}
-                and isinstance(part.get("text"), str)
-                and part.get("text") in prompts
-                for part in content
-            ):
-                return request
-    raise AssertionError("No tool-capable inference request contained the exact task prompt")
-
-
 def _assert_published_config_matches_expectations(published):
     assert published["spec_version"] == 1
     assert published["default_agent"] == CodingAgent.CLAUDE_CODE
@@ -288,7 +214,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
     for agent in AGENTS:
         task = _file_task(session, agent)
         observation, requests = _run_session(session, recorder, agent, task, (agent,))
-        inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         no_model_override[agent] = SessionCase(
             agent=agent,
@@ -303,7 +229,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         task = _file_task(session, agent)
         launch_args = (agent, "--model", overrides[agent])
         observation, requests = _run_session(session, recorder, agent, task, launch_args)
-        inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         with_model_override[agent] = SessionCase(
             agent=agent,
@@ -330,11 +256,281 @@ def completed_smart_routing_runs(cuj):
     return run_smart_routing_journeys(cuj)
 
 
+class TestCujAutoModelPicker(BaseCujTest):
+    WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    def test_codex_auto_picker_selects_main_model_for_completed_task(self, cuj):
+        """Scenario: select Auto in Codex's native picker and choose a main model and effort.
+
+        Expected: the chosen model and effort complete a file task while subagent routing stays on.
+        After switching to a manual model, selecting Auto opens the main-model chooser again.
+        The synthetic Auto ID never reaches gateway inference.
+        """
+        with smart_router_preset(cuj, SUBAGENT_AUTO_V0) as (session, _, recorder, configs):
+            default = configs[CODEX]["default_models"]["default_model"]
+            alternate = next(
+                model for model in configs[CODEX]["models"]["model_services"] if model != default
+            )
+            catalog = session.app_server_handshake(
+                ["app-server", "--listen", "stdio://"],
+                request=("model/list", {"cursor": None, "limit": 1000, "includeHidden": False}),
+                name="codex-auto-model-labels",
+            )["result"]["data"]
+            alternate_row = next(row for row in catalog if row["model"] == alternate)
+            alternate_label = alternate_row["displayName"]
+            alternate_effort = alternate_row["supportedReasoningEfforts"][-1]["reasoningEffort"]
+            assert alternate_label != alternate
+            evidence = SessionEvidence(session.home, CODEX)
+            recorder.prepare_launch()
+            with Terminal(session, "codex-auto-picker", [CODEX]) as tui:
+                tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({default})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto selected at launch",
+                )
+                tui.submit("/model")
+                tui.wait_for(
+                    lambda screen: (
+                        "select model" in screen.lower()
+                        and re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+(\S+)", screen)[:1]
+                        == ["Auto"]
+                        and "All models" not in screen
+                        and len(re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+[.)]\s+\S", screen))
+                        >= len(configs[CODEX]["models"]["model_services"]) + 1
+                    ),
+                    "Auto above all regular models in Codex's picker",
+                )
+                tui.choose("Select", "Auto")
+                tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
+                tui.wait_for(
+                    lambda screen: (
+                        f"Auto ({alternate})" in screen and "smart router on" in screen.lower()
+                    ),
+                    "Auto footer with routing on and the selected main model",
+                )
+                task = _file_task(session, CODEX)
+                checkpoint = recorder.checkpoint()
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                assert_inference_evidence(recorder, checkpoint, CODEX, task, alternate)
+                model_requests = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.path == INFERENCE_PATHS[CODEX]
+                    and request.payload.get("model") == alternate
+                ]
+                assert model_requests
+                assert all(
+                    request.payload.get("reasoning", {}).get("effort") == alternate_effort
+                    for request in model_requests
+                )
+                assert not any(
+                    request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+                tui.submit("/model")
+                tui.choose("Select", alternate_label)
+                tui.wait_for(
+                    lambda screen: (
+                        "Select Reasoning Level" in screen or "smart router off" in screen.lower()
+                    ),
+                    "manual model selection",
+                )
+                if "Select Reasoning Level" in tui.visible:
+                    tui.send("\r", "accept the default reasoning level")
+                tui.wait_for(
+                    lambda screen: "smart router off" in screen.lower(),
+                    "manual model with routing off",
+                )
+                tui.submit("/model")
+                tui.choose("Select", "Auto")
+                tui.choose("Choose the main model", alternate_label)
+                tui.choose("Choose the reasoning effort", alternate_effort)
+                tui.wait_for(
+                    lambda screen: (
+                        "smart router on" in screen.lower()
+                        and "Select Reasoning Level" not in screen
+                    ),
+                    "Auto selected again with routing on",
+                )
+                tui.exit_normally()
+
+    def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
+        """Scenario: select the Auto preset, launch Claude, switch to manual, then back.
+
+        Expected: Auto starts with the managed default and ON in its band and footer.
+        Both show OFF for a regular model and ON after selecting a different Auto main model.
+        Launch preserves model metadata while retargeting the recording proxy.
+        Model selections preserve the launched managed settings.
+        The selected alternate main model serves a file task before and after restarting
+        Claude without a model override. The existing
+        preset journey also exercises Auto main/subagent inference and routing decisions.
+        """
+        with smart_router_preset(cuj, SUBAGENT_AUTO_V0_CLAUDE_ONLY) as (
+            session,
+            workspace,
+            recorder,
+            configs,
+        ):
+            default = configs[CLAUDE]["default_models"]["default_model"]
+            settings = json.loads(MANAGED_PATHS[0].read_text())
+            assert settings["modelPicker"]["replaceBuiltInOptions"] is True
+            picker_rows = settings["modelPicker"]["options"]
+            auto_rows = [row for row in picker_rows if row["model"].startswith("ug-auto-")]
+            assert len(auto_rows) == 1 and auto_rows[0]["label"] == "Auto"
+            assert settings["modelOverrides"][auto_rows[0]["model"]] == default
+            rows = [row for row in picker_rows if not row["model"].startswith("ug-auto-")]
+            row = next(row for row in rows if row["model"] == default)
+            label = row["label"].removeprefix("Claude ")
+            alternate = next(row for row in rows if row["model"] != default)
+            assert canonical_model(alternate["model"]) in {
+                canonical_model(model) for model in configs[CLAUDE]["models"]["model_services"]
+            }
+            alternate_label = alternate["label"].removeprefix("Claude ")
+            neighbor_label = next(
+                row["label"].removeprefix("Claude ")
+                for row in rows
+                if row["model"] != alternate["model"]
+            )
+
+            def check_main_model_turn(tui):
+                checkpoint = recorder.checkpoint()
+                task = _file_task(session, CLAUDE)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                assert_inference_evidence(recorder, checkpoint, CLAUDE, task, alternate["model"])
+                assert not any(
+                    request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+
+            recorder.prepare_launch()
+            evidence = SessionEvidence(session.home, CLAUDE)
+            with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
+                tui.boot(timeout=150)
+                expected_settings = {
+                    **settings,
+                    "apiKeyHelper": settings["apiKeyHelper"].replace(
+                        workspace.url.rstrip("/"), recorder.url
+                    ),
+                    "env": {
+                        **settings["env"],
+                        "ANTHROPIC_BASE_URL": settings["env"]["ANTHROPIC_BASE_URL"].replace(
+                            workspace.url.rstrip("/"), recorder.url
+                        ),
+                    },
+                }
+                managed_before = MANAGED_PATHS[0].read_bytes()
+                assert json.loads(managed_before) == expected_settings
+                tui.wait_for(
+                    lambda s: (
+                        f"Auto ({label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "startup Auto with the managed default and ON band and footer",
+                )
+                tui.submit("/model")
+                tui.wait_for(lambda s: "Select model" in s, "the native model picker")
+                auto_rows = [
+                    line for line in tui.visible.splitlines() if re.search(r"\d+\.\s+Auto\b", line)
+                ]
+                assert len(auto_rows) == 1 and "✔" in auto_rows[0], tui.visible
+                tui.choose("Select model", label)
+                tui.wait_for(
+                    lambda s: (
+                        "Set model to" in s
+                        and "Auto (" not in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=False, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=False)
+                    ),
+                    "manual model with OFF band and footer",
+                )
+                tui.submit("/model auto")
+
+                def main_model_focused(label):
+                    # Claude draws the focused Select option in reverse video.
+                    return any(
+                        "".join(
+                            cell.data for _, cell in sorted(line.items()) if cell.reverse
+                        ).strip()
+                        == label
+                        for line in tui.screen.buffer.values()
+                    )
+
+                tui.wait_for(
+                    lambda s: "Auto mode: Choose" in s and main_model_focused(label),
+                    "the Auto selector focused on the current main model",
+                )
+                menu = tui.visible.split("Subagents will be smart routed.", 1)[1].splitlines()
+                assert label in menu[1] and "▴" not in menu[1], tui.visible
+                tui.send("\x1b[B", "focus " + alternate_label)
+                tui.wait_for(
+                    lambda _: main_model_focused(alternate_label), "the alternate main model"
+                )
+                tui.send("\r", "save " + alternate_label + " as the Auto main model")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto mode: Choose" not in s
+                        and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the restored Auto ON band and footer",
+                )
+                assert "Auto mode: main model" not in " ".join(tui.visible.split())
+                # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
+                # assert "ug-auto" not in tui.visible
+                check_main_model_turn(tui)
+                tui.submit("/model auto")
+                tui.wait_for(
+                    lambda s: "Auto mode: Choose" in s and main_model_focused(alternate_label),
+                    "the current Auto main model",
+                )
+                tui.send("\x1b[B", "focus another main model without selecting it")
+                tui.wait_for(lambda s: main_model_focused(neighbor_label), "another model's focus")
+                tui.send("\x1b", "dismiss the chooser without saving")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto mode: Choose" not in s
+                        and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                    ),
+                    "the unchanged model after Escape",
+                )
+                tui.submit("/model auto")
+                tui.wait_for(lambda s: main_model_focused(alternate_label), "the unchanged model")
+                tui.send("\r", "save the unchanged Auto main model")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto mode: Choose" not in s and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the unchanged Auto selection saved without reopening its selector",
+                )
+                assert "re-read the full conversation" not in " ".join(tui.visible.split())
+                tui.exit_normally()
+            recorder.prepare_launch()
+            with Terminal(session, "auto-preset-restarted", [CLAUDE]) as tui:
+                tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda s: (
+                        f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the saved Auto main model after restart",
+                )
+                check_main_model_turn(tui)
+                tui.exit_normally()
+            assert MANAGED_PATHS[0].read_bytes() == managed_before
+
+
 class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     @pytest.mark.parametrize("agent", AGENTS)
-    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION", (*SMART_ROUTER_CONFIG_VERSIONS, SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    )
     def test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent(
         self, cuj, agent, SMART_ROUTER_CONFIG_VERSION
     ):
@@ -342,13 +538,17 @@ class TestCujSmartRouting(BaseCujTest):
 
         Expected: the agent's resolved flags determine whether the first prompt is routed
         (one HTTP 200 decision matching the prompt, and the routed model serves inference),
-        whether orchestrator context and the smart-router recipe header/field are present,
+        whether orchestrator context and smart-router attribution are present,
         and that no child session exists after the first prompt. A second prompt then makes
         a native child complete the delegated file task even when routing is disabled.
         When subagent routing is on, a decision correlated with the child task is recorded,
         the child's inference uses the selected model, and the recipe correlates with the
         launch turn; when off, no decision, recipe, or orchestrator context appears. Claude
-        then reports no running background tasks and exits cleanly.
+        then reports no running background tasks. Blind presets show no routed-model
+        notices or cards while the child runs or after it completes. For every Claude preset,
+        /smart-router logs shows a nonempty session decision list, including when inline
+        model details are hidden.
+        The agent exits cleanly after closing the logs pane.
         """
         with smart_router_preset(cuj, SMART_ROUTER_CONFIG_VERSION) as (
             session,
@@ -369,7 +569,13 @@ class TestCujSmartRouting(BaseCujTest):
             task.prompt += " Do not delegate."
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
-            with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", [agent]) as tui:
+            # A reminder scheduled to check on the subagent outlives it and blocks /exit.
+            launch = (
+                [agent, "--", "--disallowedTools", "ScheduleWakeup,CronCreate"]
+                if agent == CLAUDE
+                else [agent]
+            )
+            with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", launch) as tui:
                 tui.boot(timeout=150)
                 tui.submit(task.prompt)
                 tui.task(evidence, task)
@@ -390,14 +596,36 @@ class TestCujSmartRouting(BaseCujTest):
                     assert offered <= {canonical_model(model) for model in supported}
                     selected = canonical_model(expected_model)
                     assert selected in offered and selected.startswith("system.ai."), selected
-                inference = _task_inference_request(requests, agent, task.prompt)
+                inference = task_inference_request(requests, agent, task.prompt)
                 inference = served_inference_request(recorder, requests, inference, agent)
                 assert canonical_model(inference.payload["model"]) == canonical_model(
                     expected_model
                 )
                 evidence.assert_applied(task, supported, expected=expected_model)
-                if agent == CLAUDE:
-                    launch_recipe = inference.payload.get("smart_router_recipe_name")
+                if agent == CODEX:
+                    if subagent_routed:
+                        assert "x-codex-turn-metadata" in inference.headers, (
+                            f"{agent}: missing x-codex-turn-metadata on parent inference"
+                        )
+                    launch_metadata = json.loads(
+                        inference.headers.get("x-codex-turn-metadata", "{}")
+                    )
+                    assert "smart_router_recipe_name" not in inference.payload
+                    if subagent_routed:
+                        assert launch_metadata["agent_name"] == "/root"
+                        assert launch_metadata["smart_router_state"] == "on"
+                    else:
+                        assert "smart_router_state" not in launch_metadata
+                    assert inference.headers.get(
+                        "databricks-smart-router-recipe"
+                    ) == launch_metadata.get("smart_router_recipe_name")
+                elif agent == CLAUDE:
+                    launch_metadata = inference.payload
+                    assert "databricks-smart-router-recipe" not in inference.headers
+                else:
+                    raise AssertionError(f"Unsupported agent: {agent}")
+                launch_recipe = launch_metadata.get("smart_router_recipe_name")
+                if subagent_routed:
                     assert (
                         isinstance(launch_recipe, str)
                         and launch_recipe.strip()
@@ -405,11 +633,8 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                     if first_prompt_routed:
                         assert routes[0].payload["route_selector"]["router_name"] == launch_recipe
-                    assert "databricks-smart-router-recipe" not in inference.headers
                 else:
-                    assert (
-                        "databricks-smart-router-recipe" in inference.headers
-                    ) == subagent_routed, agent
+                    assert "smart_router_recipe_name" not in launch_metadata
                 assert (ORCHESTRATOR_CONTEXT.encode() in inference.body) == orchestrator_enabled, (
                     agent
                 )
@@ -424,6 +649,21 @@ class TestCujSmartRouting(BaseCujTest):
                 decision_count = len(read_jsonl(decisions_path))
                 checkpoint = recorder.checkpoint()
                 existing_sessions = set(agent_sessions(session, agent))
+                show_subagent_model = subagent_model_visible(
+                    resolve_environment(
+                        {"SMART_ROUTER_CONFIG_VERSION": SMART_ROUTER_CONFIG_VERSION}, agent=agent
+                    )
+                )
+
+                def check_subagent_screen(screen):
+                    if not show_subagent_model:
+                        assert not re.search(
+                            r"Selected Model\s*:|Launched Model\s*:|"
+                            r"Using Unity Gateway Smart Router - Subagent|Smart Routing verified",
+                            screen,
+                        ), screen
+                    return False
+
                 tui.submit(child_task.prompt)
                 # The parent can resume a finished child before replying; wait for its
                 # reply so /tasks sees that run.
@@ -433,7 +673,9 @@ class TestCujSmartRouting(BaseCujTest):
                         and child_task.completed(session, agent)
                     ),
                     "completed native subagent file task and parent reply",
+                    on_screen=check_subagent_screen,
                 )
+                check_subagent_screen("\n".join(tui.screen.display))
                 children = {
                     path: records
                     for path, records in agent_sessions(session, agent).items()
@@ -481,7 +723,7 @@ class TestCujSmartRouting(BaseCujTest):
                     assert response.status_code == 200
                     selections = response.payload["route_selection"]
                     assert len(selections) == 1
-                    inference = _task_inference_request(
+                    inference = task_inference_request(
                         requests,
                         agent,
                         route_prompt,
@@ -491,12 +733,24 @@ class TestCujSmartRouting(BaseCujTest):
                     assert canonical_model(inference.payload["model"]) == canonical_model(
                         selections[0]["route_option"]["model"]
                     )
-                    if agent == CLAUDE:
-                        assert routes[0].payload["route_selector"]["router_name"] == launch_recipe
-                        assert inference.payload.get("smart_router_recipe_name") == launch_recipe
+                    assert routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                    if agent == CODEX:
+                        assert "x-codex-turn-metadata" in inference.headers, (
+                            f"{agent}: missing x-codex-turn-metadata on child inference"
+                        )
+                        child_metadata = json.loads(inference.headers["x-codex-turn-metadata"])
+                        assert child_metadata["agent_name"].startswith("/root/")
+                        assert child_metadata["agent_name"].endswith("__sr_on")
+                        assert "smart_router_recipe_name" not in inference.payload
+                        assert (
+                            inference.headers.get("databricks-smart-router-recipe") == launch_recipe
+                        )
+                    elif agent == CLAUDE:
+                        child_metadata = inference.payload
                         assert "databricks-smart-router-recipe" not in inference.headers
                     else:
-                        assert "databricks-smart-router-recipe" in inference.headers
+                        raise AssertionError(f"Unsupported agent: {agent}")
+                    assert child_metadata.get("smart_router_recipe_name") == launch_recipe
                 else:
                     assert read_jsonl(decisions_path) == original_decisions
                     assert not any(
@@ -505,11 +759,41 @@ class TestCujSmartRouting(BaseCujTest):
                         or ORCHESTRATOR_CONTEXT.encode() in request.body
                         for request in requests
                     ), agent
+                    if agent == CODEX:
+                        for request in requests:
+                            metadata = json.loads(
+                                request.headers.get("x-codex-turn-metadata", "{}")
+                            )
+                            assert "smart_router_recipe_name" not in metadata
+                            assert "smart_router_state" not in metadata
                 if agent == CLAUDE:
                     tui.wait_for_background_tasks()
+                    tui.submit("/smart-router logs")
+                    routed_count = r"\b[1-9]\d* routed prompts? this session\b"
+                    tui.wait_for(
+                        lambda screen: (
+                            "Smart Router logs" in screen and re.search(routed_count, screen)
+                        ),
+                        "Smart Router logs with at least one recorded decision",
+                    )
+                    tui.send("\x1b", "close Smart Router logs")
+                    tui.wait_for(
+                        lambda screen: not re.search(routed_count, screen),
+                        "the prompt after closing Smart Router logs",
+                    )
                 tui.exit_normally()
 
-    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION",
+        (
+            FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+            SUBAGENT_ONLY_V0,
+            SUBAGENT_ONLY_V1,
+            SUBAGENT_ORCH_V0,
+            SUBAGENT_ORCH_V1,
+            SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        ),
+    )
     def test_smart_router_preset_claude_status_band_and_hint_row_follow_launch_and_toggles(
         self, cuj, SMART_ROUTER_CONFIG_VERSION
     ):
@@ -581,6 +865,49 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                 tui.exit_normally()
 
+    @pytest.mark.parametrize(
+        ("agent", "version"), [(CLAUDE, SUBAGENT_ORCH_V0_CLAUDE_ONLY), (CODEX, SUBAGENT_ORCH_V0)]
+    )
+    def test_supported_model_list_passes_startup_route_validation_and_routing_stays_on(
+        self, cuj, agent, version
+    ):
+        """Scenario: launch the agent with the published model list.
+
+        Expected: ug sends one routes:validate request with the session's route options for that
+        agent, the Gateway answers HTTP 200 with is_supported true, and Smart Router stays ON
+        without the unsupported warning (Claude's band and prompt hint row, Codex's footer).
+        """
+        with smart_router_preset(cuj, version) as (session, _, recorder, _):
+            checkpoint = recorder.checkpoint()
+            recorder.prepare_launch()
+            with Terminal(session, f"startup-route-validation-supported-{agent}", [agent]) as tui:
+                tui.boot(timeout=150)
+                if agent == CLAUDE:
+                    tui.wait_for(
+                        lambda _: (
+                            _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                            and _smart_router_hint_shown(tui, enabled=True)
+                        ),
+                        "the ON Smart Router band and smart router ON in the prompt hint row",
+                    )
+                else:
+                    tui.wait_for(
+                        lambda _: any(
+                            re.search(r"smart router\s+ON\b", line) for line in tui.screen.display
+                        ),
+                        "smart router ON in the Codex footer",
+                    )
+                assert not any("isn't supported" in line for line in tui.screen.display)
+                tui.exit_normally()
+            [request] = [
+                r for r in recorder.requests_after(checkpoint) if r.path == routing.VALIDATION_PATH
+            ]
+            options = request.payload["route_options"]
+            assert options and {option["harness"] for option in options} == {agent}
+            response = recorder.response_for(request)
+            assert response.status_code == 200
+            assert response.payload["is_supported"] is True
+
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(
         self, completed_smart_routing_runs, agent
@@ -598,19 +925,18 @@ class TestCujSmartRouting(BaseCujTest):
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
         assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
 
-    def test_managed_smart_routing_leaves_codex_unrouted_and_unorchestrated(
+    def test_managed_smart_routing_orchestrates_codex_without_routing_the_first_prompt(
         self, completed_smart_routing_runs
     ):
-        """Scenario: launch Codex with only the managed config's smart_routing.enabled, which
-        selects the Claude-only default preset, and run a no-delegation file task.
+        """Scenario: launch supported Codex with managed smart routing and run a no-delegation task.
 
-        Expected: Codex sends no routing request, its inference carries no Smart Router recipe
-        header, and its inference input has no Smart Router Orchestrator context.
+        Expected: Codex's first prompt completes on the managed default without a routing
+        request. Its inference carries the selected recipe and Smart Router Orchestrator context.
         """
         case = completed_smart_routing_runs.no_model_override[CODEX]
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
-        assert "databricks-smart-router-recipe" not in case.inference_request.headers
-        assert ORCHESTRATOR_CONTEXT.encode() not in case.inference_request.body
+        assert case.inference_request.headers["databricks-smart-router-recipe"]
+        assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_admin_default_model_serves_the_first_prompt(self, completed_smart_routing_runs, agent):

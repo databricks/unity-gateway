@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -184,6 +185,38 @@ def test_absent_cli_fails_before_starting_a_process(monkeypatch, interactive):
     with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="Databricks CLI"):
         desktop_auth.get_claude_desktop_databricks_token(HOST, PROFILE)
     run.assert_not_called()
+
+
+def test_gui_path_finds_user_local_cli_and_fetches_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(databricks.sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    monkeypatch.setenv("PATHEXT", ".exe")
+    name = "databricks.exe" if os.name == "nt" else "databricks"
+    cli_path = tmp_path / ".local" / "bin" / name
+    cli_path.parent.mkdir(parents=True)
+    cli_path.write_text("")
+    cli_path.chmod(0o755)
+    monkeypatch.setattr(
+        databricks.os.path, "isfile", lambda value: os.path.normpath(value) == str(cli_path)
+    )
+    monkeypatch.setattr(databricks, "_read_databricks_cli_version", lambda value: (1, 20, 0))
+    run = Mock(return_value=_result(token="desktop-token"))
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    assert desktop_auth.get_claude_desktop_databricks_token(HOST, PROFILE) == "desktop-token"
+    assert run.call_args.args[0] == [
+        str(cli_path),
+        "auth",
+        "token",
+        "--host",
+        HOST,
+        "--profile",
+        PROFILE,
+        "--output",
+        "json",
+    ]
 
 
 @pytest.mark.parametrize("expired", [False, True])

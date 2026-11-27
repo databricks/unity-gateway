@@ -1,0 +1,199 @@
+name: Security Gate
+
+# Adapted from omnigent-ai/omnigent (Apache-2.0). Each caller waits for the
+# independent security-scan.yml run; this workflow never checks out PR code.
+# Missing results, API errors and timeouts block CI, just like scan findings.
+# An organization ruleset must require this workflow from protected main;
+# requiring only its check name does not protect the gate from PR edits.
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: PR number for a comment-triggered run.
+        type: number
+        required: false
+      head-sha:
+        description: Commit selected by the caller's authorization job.
+        type: string
+        required: false
+  pull_request:
+  merge_group:
+
+permissions:
+  actions: read
+
+jobs:
+  gate:
+    name: Security Gate
+    # PR workflow definitions are editable, so every PR gate uses a hosted runner.
+    # Only main's authorized comment path needs the allowlisted pool.
+    runs-on: >-
+      ${{ fromJSON(
+        github.event_name == 'issue_comment' &&
+        '{"group":"databricks-protected-runner-group","labels":"linux-ubuntu-latest"}' ||
+        '"ubuntu-latest"'
+      ) }}
+    timeout-minutes: 25
+    steps:
+      - name: Start the gate budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_GATE_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Wait for the shared Security Scan
+        # Queue runs rely on PR admission checks and invalidation after head updates.
+        # Live verification blocks rollout; see tests/README.md#security-scan-rollout.
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        env:
+          GH_TOKEN: ${{ github.event_name == 'issue_comment' && github.token || '' }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
+          # Comments reuse an existing scan; their timestamp must not exclude it.
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+        run: |
+          python3 - <<'PY'
+          import http.client
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo, pr, sha, updated = (os.environ[key] for key in (
+              "REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"
+          ))
+          if not re.fullmatch(r"[1-9][0-9]*", pr) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+              sys.exit("::error::Security Gate requires a PR number and an authorized commit SHA.")
+          secondary_backoff = 60
+          last_api_error = None
+          explicit_reset = False
+          def workflow_runs(endpoint):
+              global secondary_backoff, last_api_error, explicit_reset
+              token = os.environ.get("GH_TOKEN")
+              headers = {"Authorization": f"Bearer {token}"} if token else {}
+              pages = []
+              while True:
+                  url = f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
+                  request = urllib.request.Request(url, headers=headers)
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          pages.append(json.load(response))
+                  except urllib.error.HTTPError as error:
+                      error_headers = error.headers or {}
+                      if 500 <= error.code <= 599:
+                          last_api_error = f"HTTP {error.code}"
+                          print(f"GitHub API returned HTTP {error.code}; the Security Scan remains pending.", flush=True)
+                          return None, None
+                      secondary_limit = False
+                      if error.code == 403 and not (
+                          error_headers.get("X-RateLimit-Remaining") == "0"
+                          or error_headers.get("Retry-After")
+                      ):
+                          try:
+                              secondary_limit = b"secondary rate limit" in error.read(4096).lower()
+                          except (OSError, http.client.IncompleteRead):
+                              sys.exit("::error::Could not read GitHub's error response; tests remain blocked.")
+                      if error.code == 429 or (error.code == 403 and (
+                          error_headers.get("X-RateLimit-Remaining") == "0"
+                          or error_headers.get("Retry-After")
+                          or secondary_limit
+                      )):
+                          # https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately
+                          reset = error_headers.get("X-RateLimit-Reset", "")
+                          retry_after = error_headers.get("Retry-After", "")
+                          explicit_reset = retry_after.isdecimal() or (
+                              error_headers.get("X-RateLimit-Remaining") == "0" and reset.isdecimal()
+                          )
+                          if retry_after.isdecimal():
+                              reset_at = time.time() + int(retry_after)
+                          elif error_headers.get("X-RateLimit-Remaining") == "0" and reset.isdecimal():
+                              reset_at = int(reset) + 1
+                          else:
+                              reset_at = time.time() + secondary_backoff
+                              secondary_backoff = min(secondary_backoff * 2, 1200)
+                          reset_detail = (
+                              f"reported reset {reset}, retry after {int(reset_at)}"
+                              if not retry_after.isdecimal() and reset.isdecimal()
+                              else f"retry after {int(reset_at)}"
+                          )
+                          last_api_error = f"HTTP {error.code}, {reset_detail} UTC epoch seconds"
+                          print("GitHub API rate limited; the Security Scan remains pending.", flush=True)
+                          return None, reset_at
+                      sys.exit(f"::error::GitHub API returned HTTP {error.code}; tests remain blocked. "
+                               "Check API access and GitHub status, then re-run failed CI jobs.")
+                  except (urllib.error.URLError, TimeoutError) as error:
+                      sys.exit(f"::error::GitHub API request failed ({error}); tests remain blocked. "
+                               "Check connectivity and GitHub status, then re-run failed CI jobs.")
+                  if len(pages[-1]["workflow_runs"]) < 100:
+                      break
+              secondary_backoff = 60
+              return [run for page in pages for run in page["workflow_runs"]], None
+
+          request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
+          print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
+          request = None
+          # Bound polling to 27 attempts and 1,200 seconds of scheduled sleep.
+          delays = [10] * 12 + [30] * 6 + [60] + [120] * 7
+          reset_at = None
+          remaining = sum(delays)
+          for attempt in range(len(delays) + 1):
+              if attempt:
+                  if remaining <= 0:
+                      break
+                  delay = delays[attempt - 1]
+                  if reset_at is not None:
+                      if explicit_reset and reset_at - time.time() > remaining:
+                          sys.exit(f"::error::GitHub API rate limit outlasts the 20-minute wait; {last_api_error}. Tests remain blocked.")
+                      delay = max(delay, reset_at - time.time())
+                  delay = min(delay, remaining)
+                  time.sleep(delay)
+                  remaining -= delay
+                  if reset_at is not None and time.time() < reset_at:
+                      break
+              reset_at = None
+              if request is None:
+                  requests, reset_at = workflow_runs(request_endpoint)
+                  if requests is None:
+                      continue
+                  requests = [run for run in requests
+                              if run["event"] == "pull_request"
+                              and run["path"] == ".github/workflows/ci.yml"
+                              and run["display_title"] == f"CI #{pr}"
+                              and run["head_sha"] == sha and run["created_at"] >= updated]
+                  request = max(requests, key=lambda run: run["id"], default=None)
+              if request is None:
+                  continue
+              scan_endpoint = (f"repos/{repo}/actions/workflows/security-scan.yml/runs"
+                               f"?event=workflow_run&created=%3E%3D{request['created_at']}&per_page=100")
+              # workflow_run definitions come from main. A PR-authored check with
+              # the same name cannot satisfy this provenance and request-ID check.
+              runs, reset_at = workflow_runs(scan_endpoint)
+              if runs is None:
+                  continue
+              runs = [run for run in runs
+                      if run["event"] == "workflow_run"
+                      and run["path"] == ".github/workflows/security-scan.yml"
+                      and run["display_title"] == f"Security Scan for CI run {request['id']}"
+                      and run["created_at"] >= request["created_at"]]
+              latest = max(runs, key=lambda run: run["id"], default=None)
+              if latest and latest["status"] == "completed":
+                  conclusion = latest["conclusion"]
+                  print(f"Security Scan: {conclusion}. {latest['html_url']}")
+                  if conclusion != "success":
+                      print("::error::Security Scan must succeed before CI can run. "
+                            "Resolve or approve the scan, then re-run failed CI jobs.")
+                  sys.exit(0 if conclusion == "success" else 1)
+          detail = f" Last GitHub API error: {last_api_error}." if last_api_error else ""
+          sys.exit("::error::Security Scan did not complete within 20 minutes." + detail +
+                   " Check its run, then re-run failed CI jobs.")
+          PY
+      - name: Check the gate time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        run: |
+          elapsed=$(( $(date +%s) - BUDGET_GATE_STARTED ))
+          echo "Security Gate setup: 0s / 10s, run: ${elapsed}s / 1060s, total: ${elapsed}s / 1060s"
+          if [ "$elapsed" -gt 1060 ]; then
+            echo "::error::Security Gate exceeded its 1060s budget."
+            exit 1
+          fi

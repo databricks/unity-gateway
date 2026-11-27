@@ -1,4 +1,4 @@
-"""Windows launch settings lifetime and command length, with process boundaries controlled."""
+"""Claude launch settings and Windows command-line handling."""
 
 from __future__ import annotations
 
@@ -14,9 +14,37 @@ import pytest
 
 from ucode import gateway_proxy, launcher
 from ucode.agents import LaunchOptions, claude
+from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+from ucode.databricks import AnthropicModelCatalog
 from ucode.managed_files import OS
 
 PINNED_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def test_auto_window_respects_limits_and_native_settings(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(claude, "native_settings_paths", lambda: (path,))
+    models = ["small", "large", "managed", "unlisted-limit"]
+    rows = [{"model": model, "autoModel": auto_variant({"model": model})} for model in models]
+    catalog = AnthropicModelCatalog(
+        models, {}, model_id_to_limits={"small": (32_000, 4096), "large": (2_000_000, 8192)}
+    )
+    managed = {"modelSettings": {"managed": {"autoCompactWindow": 175_000}}}
+    settings = {}
+    apply_auto_context_windows(settings, managed, rows, catalog)
+    assert settings == {
+        "modelSettings": {
+            rows[1]["autoModel"]: {"autoCompactWindow": 1_000_000},
+            rows[2]["autoModel"]: {"autoCompactWindow": 175_000},
+            rows[3]["autoModel"]: {"autoCompactWindow": 200_000},
+        }
+    }
+
+    for contents in ('{"autoCompactWindow": 150000}', "invalid JSON"):
+        path.write_text(contents)
+        settings = {}
+        apply_auto_context_windows(settings, managed, rows, catalog)
+        assert settings == {}
 
 
 @pytest.fixture
@@ -102,7 +130,9 @@ def test_windows_relayed_settings_and_proxy_are_cleaned_up(
     cache = SimpleNamespace(stop=Mock())
     client = SimpleNamespace(close=Mock())
     monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-    monkeypatch.setattr(gateway_proxy, "start_relay_proxy", lambda *args: (server, cache, client))
+    monkeypatch.setattr(
+        gateway_proxy, "start_relay_proxy", lambda *args, **_kwargs: (server, cache, client)
+    )
     seen = []
     caller = {
         "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo caller"}]}]}
@@ -112,7 +142,16 @@ def test_windows_relayed_settings_and_proxy_are_cleaned_up(
         settings_path = Path(argv[argv.index("--settings") + 1])
         seen.append(settings_path)
         merged = json.loads(settings_path.read_text(encoding="utf-8"))
-        assert merged == {**original, **caller}
+        assert merged == {
+            **original,
+            "apiKeyHelper": "",
+            "env": {
+                **original["env"],
+                "ANTHROPIC_AUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "",
+            },
+            **caller,
+        }
         assert argv[1:3] == ["--setting-sources", "project,local"]
         if spawn_failure:
             raise OSError("could not start Claude")
@@ -211,6 +250,27 @@ def test_posix_launch_keeps_inline_settings(large_settings, monkeypatch, platfor
     with claude._claude_launch_argv("claude", ["--settings", "{}", "--print", "hello"]) as argv:
         assert json.loads(argv[argv.index("--settings") + 1]) == original
         assert argv[-2:] == ["--print", "hello"]
+
+
+@pytest.mark.parametrize("platform", [OS.LINUX, OS.MACOS, OS.WINDOWS])
+def test_relayed_inline_settings_are_private_and_cleaned_up(large_settings, monkeypatch, platform):
+    saved_path, _ = large_settings
+    saved_path.write_text(json.dumps({"env": {"UNRELATED_SECRET": "saved-secret"}}))
+    monkeypatch.setattr(claude, "current_os", lambda: platform)
+    caller = {"hooks": {"SessionStart": [{"hooks": [{"type": "command"}]}]}}
+
+    with claude._claude_launch_argv(
+        "claude", ["--settings", json.dumps(caller)], relayed=True
+    ) as argv:
+        settings_path = Path(argv[argv.index("--settings") + 1])
+        assert all("saved-secret" not in argument for argument in argv)
+        assert not argv[argv.index("--settings") + 1].startswith("{")
+        if sys.platform != "win32":
+            assert settings_path.stat().st_mode & 0o777 == 0o600
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert settings["env"]["UNRELATED_SECRET"] == "saved-secret"
+        assert settings["hooks"] == caller["hooks"]
+    assert not settings_path.parent.exists()
 
 
 def test_short_windows_launch_keeps_inline_settings(large_settings):

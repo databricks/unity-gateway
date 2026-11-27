@@ -8,6 +8,47 @@ from pathlib import Path
 from .agents import _evidence_id, antigravity, claude, codex, copilot
 
 _AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
+_CLAUDE_TELEMETRY = re.compile(
+    r"otel|opentelemetry|telemetry|export.{0,30}(?:span|trace)|(?:span|trace).{0,30}export",
+    re.IGNORECASE,
+)
+_CLAUDE_TELEMETRY_FAILURE = re.compile(
+    r"error|fail|timeout|timed out|retry|reject|drop|disable", re.IGNORECASE
+)
+_CLAUDE_HTTP_STATUS = re.compile(r"\b(?:status|http)[^\n]{0,12}\b([1-5][0-9]{2})\b", re.IGNORECASE)
+
+
+def claude_telemetry_debug_summary(path: Path) -> dict:
+    """Count telemetry diagnostics without copying prompts or credentials from Claude's debug log."""
+    if not path.is_file():
+        return {"debug_file_present": False}
+    size = path.stat().st_size
+    window = 2_000_000
+    with path.open("rb") as log:
+        log.seek(max(0, size - window))
+        data = log.read(window)
+    if size > window:
+        data = data.partition(b"\n")[2]
+    telemetry_lines = 0
+    failure_lines = 0
+    http_statuses: dict[str, int] = {}
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        if not _CLAUDE_TELEMETRY.search(line):
+            continue
+        telemetry_lines += 1
+        if _CLAUDE_TELEMETRY_FAILURE.search(line):
+            failure_lines += 1
+        if match := _CLAUDE_HTTP_STATUS.search(line):
+            status = match.group(1)
+            http_statuses[status] = http_statuses.get(status, 0) + 1
+    return {
+        "debug_file_present": True,
+        "debug_bytes": size,
+        "tail_truncated": size > window,
+        "telemetry_lines": telemetry_lines,
+        "telemetry_failure_lines": failure_lines,
+        "telemetry_http_statuses": http_statuses,
+    }
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
@@ -147,6 +188,11 @@ def assert_no_bearer_on_disk(session) -> None:
         assert "OAUTH_TOKEN" not in text
 
 
+def copilot_ref(provider: str, model: str) -> str:
+    """The ``<provider>/<id>`` ref ug's Copilot registry gives ``model``: ids drop ``system.ai.``."""
+    return f"{provider}/{model.removeprefix('system.ai.')}"
+
+
 def copilot_selected_models(session) -> list[str]:
     """Every registry ref Copilot sessions under this home started on or switched to."""
     return [
@@ -185,7 +231,7 @@ class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
     def __init__(self, session):
-        self.value = fresh_id()
+        self.value = fresh_id()[:6]
         self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
         # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
@@ -292,8 +338,8 @@ class SubagentCalculation:
 
     def __init__(self, expression: str, expected: str):
         # Codex exposes task_name, rather than the child message, to its routing hook.
-        # Keep the correlation marker valid as a native task name for both agents.
-        self.marker = "ug_subagent_" + fresh_id()
+        # Keep copied task names short for both the child and parent answers.
+        self.marker = "ug_" + fresh_id()[:6]
         self.value = f"{self.marker}={expected}"
         self.prompt = (
             f'Please spawn exactly one subagent with task name "{self.marker}" '
@@ -320,6 +366,7 @@ def assert_subagent_routed(
     task: FileTask | SubagentCalculation,
     *,
     decision_ids: set[str] | None = None,
+    child_ids: set[str] | None = None,
 ) -> None:
     """Require a real gateway decision correlated with an actual child start."""
     root = session.home / ".ucode"
@@ -344,6 +391,8 @@ def assert_subagent_routed(
             metadata = next(
                 (row["payload"] for row in records if row.get("type") == "session_meta"), {}
             )
+            if child_ids is not None and metadata.get("id") not in child_ids:
+                continue
             source = metadata.get("source")
             if not isinstance(source, dict):
                 continue
@@ -397,6 +446,10 @@ def assert_subagent_routed(
         assert {row["decision_id"] for row in linked} == {
             row["decision_id"] for row in decisions
         }, "A routing decision had no matching completed child turn"
+        if child_ids is not None:
+            assert {row["child_id"] for row in linked} == child_ids, (
+                "An assignment's child did not complete on its routed model"
+            )
         return
     decision_ids = {decision["decision_id"] for decision in decisions}
     routed_starts = [row for row in audit if row.get("decision_id") in decision_ids]

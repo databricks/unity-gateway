@@ -9,6 +9,7 @@ import re
 import urllib.error
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,13 @@ SPEC = importlib.util.spec_from_file_location("ug_review_auth", AUTH_PATH)
 assert SPEC is not None and SPEC.loader is not None
 gateway_auth = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gateway_auth)
+RECOMMENDATION_PATH = ROOT / ".github" / "scripts" / "ug-review" / "recommendation.py"
+RECOMMENDATION_SPEC = importlib.util.spec_from_file_location(
+    "ug_review_recommendation", RECOMMENDATION_PATH
+)
+assert RECOMMENDATION_SPEC is not None and RECOMMENDATION_SPEC.loader is not None
+recommendation = importlib.util.module_from_spec(RECOMMENDATION_SPEC)
+RECOMMENDATION_SPEC.loader.exec_module(recommendation)
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ug-review.yml"
 
 
@@ -128,11 +136,13 @@ def test_workflow_keeps_authorized_comment_trusted_checkout_and_existing_credent
 
 def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
     workflow = WORKFLOW_PATH.read_text()
-    assert "pull_request:\n    types: [labeled]" in workflow
+    assert "pull_request:\n    types: [labeled, ready_for_review]" in workflow
     assert "github.event_name == 'pull_request' &&" in workflow
     assert "github.event.pull_request.head.repo.full_name == github.repository &&" in workflow
     assert (
-        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+        "(github.event.action == 'labeled' &&\n"
+        '              contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)'
+        in workflow
     )
     assert "github.event_name == 'issue_comment' &&" in workflow
     assert (
@@ -141,6 +151,55 @@ def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
     assert "pr_number: ${{ steps.pr.outputs.number }}" in workflow
     assert "base_ref: ${{ steps.pr.outputs.base }}" in workflow
     assert "head_sha: ${{ steps.pr.outputs.head }}" in workflow
+
+
+def _review_runs_on_pull_request_event(workflow: str, action: str, label, in_repo: bool) -> bool:
+    text = (ROOT / ".github" / "workflows" / workflow).read_text().split("\n  review:\n", 1)[1]
+    guard = re.search(r"if: >-\s*\$\{\{(.*?)\}\}", text, re.S)
+    assert guard is not None
+    expression = " ".join(guard[1].replace("&&", " and ").replace("||", " or ").split())
+    event = SimpleNamespace(
+        action=action,
+        label=SimpleNamespace(name=label) if label else None,
+        pull_request=SimpleNamespace(
+            head=SimpleNamespace(
+                repo=SimpleNamespace(full_name="databricks/unity-gateway" if in_repo else "x/fork")
+            )
+        ),
+    )
+    github = SimpleNamespace(
+        event_name="pull_request", event=event, repository="databricks/unity-gateway"
+    )
+    # The guard uses only boolean operators, equality, contains, and fromJSON.
+    return bool(
+        eval(
+            expression,
+            {"__builtins__": {}},
+            {
+                "github": github,
+                "contains": lambda items, value: value in items,
+                "fromJSON": json.loads,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("workflow", ["ug-review.yml", "polly-review.yml"])
+@pytest.mark.parametrize(
+    ("action", "label", "in_repo", "runs"),
+    [
+        ("ready_for_review", None, True, True),
+        ("ready_for_review", None, False, False),
+        ("labeled", "ug-review", True, True),
+        ("labeled", "code-review", True, True),
+        ("labeled", "code-review", False, False),
+        ("labeled", "bug", True, False),
+    ],
+)
+def test_pull_request_guard_runs_ready_for_review_and_review_labels_only_in_repo(
+    workflow, action, label, in_repo, runs
+):
+    assert _review_runs_on_pull_request_event(workflow, action, label, in_repo) == runs
 
 
 def test_workflow_uses_pinned_open_code_review_action_and_cli():
@@ -176,7 +235,7 @@ def test_workflow_routes_review_through_gateway_with_service_principal_token():
     assert "llm_auth_token: ${{ steps.gateway-auth.outputs.token }}" in workflow
     assert "llm_auth_header: Authorization" in workflow
     assert 'llm_use_anthropic: "true"' in workflow
-    assert "llm_model: system.ai.claude-opus-5-5" in workflow
+    assert "llm_model: ${{ env.GATEWAY_MODEL }}" in workflow
     assert '"thinking":{"type":"adaptive"}' in workflow
     assert "llm_extra_headers: x-databricks-use-coding-agent-mode=true" in workflow
     assert "UG_CI_REVIEW_MODEL" not in workflow
@@ -216,3 +275,144 @@ def test_workflow_passes_trusted_rubric_as_background_and_checks_completeness():
     assert "OCR review is incomplete" in workflow
     assert "OCR result does not match the requested commit." in workflow
     assert not (AUTH_PATH.parent / "review.py").exists()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("RECOMMENDATION: APPROVE", "approve"),
+        ("RECOMMENDATION: REJECT", "reject"),
+        ("the verdict is RECOMMENDATION: APPROVE on this line", None),
+        ("RECOMMENDATION: MAYBE", None),
+    ],
+)
+def test_recommendation_marker_parses_only_on_its_own_line(text, expected):
+    assert recommendation.parse_recommendation(text) == expected
+
+
+def _recommendation_environment(monkeypatch, tmp_path, result, model_output):
+    result_path = tmp_path / "ocr-result.json"
+    result_path.write_text(json.dumps(result))
+    output_path = tmp_path / "github-output"
+    output_path.write_text("")
+    body_path = tmp_path / "recommendation-body.md"
+    monkeypatch.setenv("OCR_RESULT_PATH", str(result_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("BODY_PATH", str(body_path))
+    monkeypatch.setenv("RECOMMENDATION_RUN", "run-1")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("GATEWAY_TOKEN", "access-token")
+    calls = []
+
+    def request(host, token, model, briefs):
+        calls.append((host, token, briefs))
+        if isinstance(model_output, Exception):
+            raise model_output
+        return model_output
+
+    monkeypatch.setattr(recommendation, "request_recommendation", request)
+    return output_path, body_path, calls
+
+
+def test_zero_finding_complete_review_approves_without_a_model_call(monkeypatch, tmp_path):
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "summary": {"files_reviewed": 4}, "comments": []},
+        AssertionError("A clean review must not request a recommendation."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=approve\n" in output_path.read_text()
+    assert "**RECOMMENDATION: APPROVE**" in body_path.read_text()
+    assert calls == []
+
+
+def test_findings_reach_the_model_and_a_reject_marker_parses(monkeypatch, tmp_path):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 2, "severity": "high"}
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "comments": [finding]},
+        "RECOMMENDATION: REJECT\nREASONS:\n- drops user state\n",
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=reject\n" in output_path.read_text()
+    body = body_path.read_text()
+    assert "**RECOMMENDATION: REJECT**" in body
+    assert "- drops user state" in body
+    assert calls[0][2][0]["path"] == "a.py"
+
+
+@pytest.mark.parametrize(
+    "model_output",
+    ["Looks fine to me overall.", recommendation.RecommendationError("gateway down")],
+)
+def test_unparseable_or_failed_model_output_gives_no_recommendation(
+    monkeypatch, tmp_path, model_output
+):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}
+    output_path, body_path, _ = _recommendation_environment(
+        monkeypatch, tmp_path, {"status": "complete", "comments": [finding]}, model_output
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    body = body_path.read_text()
+    assert "**No recommendation**" in body
+    assert "ready-to-approve` label is removed" in body
+
+
+def test_findings_with_warnings_do_not_recommend(monkeypatch, tmp_path):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}
+    output_path, _, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "comments": [finding], "warnings": [{"Type": "review_limit"}]},
+        AssertionError("A warned review must not reach the model."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    assert calls == []
+
+
+def test_truncation_keeps_the_most_severe_findings():
+    comments = [
+        {"path": f"f{i}.py", "start_line": 1, "end_line": 1, "severity": "low"}
+        for i in range(recommendation.MAX_PROMPT_FINDINGS)
+    ]
+    comments.append({"path": "late.py", "start_line": 1, "end_line": 1, "severity": "critical"})
+
+    briefs = recommendation.finding_briefs(comments)
+
+    assert len(briefs) == recommendation.MAX_PROMPT_FINDINGS
+    assert briefs[0]["path"] == "late.py"
+
+
+def test_gateway_response_without_a_content_list_is_a_handled_failure(monkeypatch):
+    monkeypatch.setattr(
+        recommendation.urllib.request,
+        "urlopen",
+        lambda request, timeout: BytesIO(b'{"error": {"message": "denied"}}'),
+    )
+
+    with pytest.raises(recommendation.RecommendationError, match="no content list"):
+        recommendation.request_recommendation("https://example.databricks.com", "t", "m", [])
+
+
+def test_workflow_posts_recommendation_and_syncs_ready_to_approve_label():
+    workflow = WORKFLOW_PATH.read_text()
+    copy = 'cp .github/scripts/ug-review/recommendation.py "$RUNNER_TEMP/ug-recommendation.py"'
+    run = 'run: python3 "$RUNNER_TEMP/ug-recommendation.py"'
+    # The review action's checkout deletes .ug-review-trusted, so copy before it runs.
+    assert workflow.index(copy) < workflow.index("alibaba/open-code-review@") < workflow.index(run)
+    publish = workflow.split("      - name: Publish the review recommendation\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "RECOMMENDATION_LABEL: ready-to-approve" in publish
+    assert "updateComment" in publish
+    assert "createComment" in publish
+    assert "addLabels({ ...args, labels: [label] })" in publish
+    assert "removeLabel({ ...args, name: label })" in publish

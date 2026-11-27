@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -19,7 +20,7 @@ from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
-AGENT_BINARIES = {"antigravity": "agy"}
+AGENT_BINARIES = {"antigravity": "agy", "vscode": "code"}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -31,13 +32,57 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity", "vscode")
         ):
             deselected.append(item)
         else:
             selected.append(item)
-    items[:] = selected
+    kept = selected
+    if os.environ.get("UG_LIVE_SHARD"):
+        # The suite runs with only this directory on sys.path; the live shard planner lives
+        # beside the unit one at the repository root.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tests import live_shard
+
+        kept, dropped, report = live_shard.plan_items(
+            os.environ["UG_LIVE_SHARD_LANE"], os.environ["UG_LIVE_SHARD"], selected
+        )
+        deselected.extend(dropped)
+        _live_shard_state.update(
+            report=report,
+            mine={item.nodeid for item in deselected},
+            marker_deselected={},
+        )
+    items[:] = kept
     config.hook.pytest_deselected(items=deselected)
+
+
+# Under UG_LIVE_SHARD, the marker filter (and --deselect) still runs after this conftest, so the
+# observer records those drops per file for the coverage proof.
+_live_shard_state: dict = {}
+
+
+def pytest_deselected(items):
+    if not _live_shard_state or not os.environ.get("UG_LIVE_SHARD_REPORT"):
+        return
+    marker_deselected = _live_shard_state["marker_deselected"]
+    for item in items:
+        if item.nodeid in _live_shard_state["mine"]:
+            continue
+        path = item.nodeid.split("::", 1)[0]
+        marker_deselected[path] = marker_deselected.get(path, 0) + 1
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _live_shard_state or not os.environ.get("UG_LIVE_SHARD_REPORT"):
+        return
+    from tests import live_shard
+
+    live_shard.write_report(
+        os.environ["UG_LIVE_SHARD_REPORT"],
+        _live_shard_state["report"],
+        _live_shard_state["marker_deselected"],
+    )
 
 
 @pytest.fixture(scope="session")
@@ -144,8 +189,51 @@ def session(request, installed_binary):
                 if value := os.environ.get(key):
                     user.env[key] = value
             user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        provisioning_before = None
+        if request.node.get_closest_marker("windows_desktop"):
+            from utils.windows_app import windows_sandbox_provisioning_snapshot
+
+            provisioning_before = windows_sandbox_provisioning_snapshot(user.home)
         try:
-            yield user
+            try:
+                yield user
+            finally:
+                if request.node.get_closest_marker("windows_desktop"):
+                    from utils.windows_app import (
+                        record_windows_proxy_diagnostics,
+                        record_windows_sandbox_selection,
+                    )
+
+                    record_windows_sandbox_selection(user)
+                    record_windows_proxy_diagnostics(user)
+                    user.record(
+                        "windows-sandbox-provisioning.json",
+                        {
+                            "before": provisioning_before,
+                            "after": windows_sandbox_provisioning_snapshot(user.home),
+                        },
+                    )
+                if os.environ.get("UG_MODEL_LEDGER"):
+                    from utils.traffic_ledger import record_case_usage
+
+                    workspace_label = (
+                        None
+                        if request.node.get_closest_marker("workspace_switch")
+                        else "staging"
+                        if os.environ.get("UG_MODEL_LEDGER") == "staging"
+                        else "managed-primary"
+                    )
+                    try:
+                        record_case_usage(user, workspace=workspace_label)
+                    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                        user.record(
+                            "model-ledger.json",
+                            {
+                                "coverage": "unmapped",
+                                "responses": [],
+                                "error": type(error).__name__,
+                            },
+                        )
         finally:
             try:
                 # Restore machine-level settings through the same public CLI that
@@ -185,6 +273,16 @@ def live_session(session, workspace):
             pytest.fail(f"Required integration binary is missing: {binary}")
     session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_BEARER"]
     return session
+
+
+@pytest.fixture
+def version_aware_codex_session(live_session):
+    old_bin = os.environ.get("UG_INTEGRATION_OLD_CODEX_BIN_DIR")
+    if os.environ.get("UG_MODEL_LEDGER") == "smart":
+        assert old_bin, "The smart lane requires its isolated old Codex prefix"
+    if old_bin:
+        live_session.env["PATH"] = os.pathsep.join((old_bin, live_session.env["PATH"]))
+    return live_session
 
 
 @pytest.fixture(scope="session")
@@ -319,6 +417,22 @@ def antigravity_provider_models():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_relayed_provider():
+    return os.environ["UG_INTEGRATION_CODEX_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_access_token():
+    # Real Codex access token (ChatGPT Business/Enterprise admin console); the relayed launch needs
+    # it to run headless. Missing means the launch would fall back to a browser login, so fail
+    # rather than silently pass a degraded run — the suite has no capability skips.
+    token = os.environ.get("UG_INTEGRATION_CODEX_ACCESS_TOKEN", "").strip()
+    if not token:
+        pytest.fail("Set CODEX_ACCESS_TOKEN (a Codex access token) to run the relayed CUJ.")
+    return token
 
 
 @pytest.fixture(scope="session")

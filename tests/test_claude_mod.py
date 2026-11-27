@@ -1,6 +1,7 @@
 """Generated plugin contents for the native Claude mod entry point."""
 
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import config, v2
+from ucode.smart_routing import config, routing, v2
 
 
 def test_plugin_contains_mod_entry_point(tmp_path):
@@ -19,28 +20,23 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
     # The entry point imports these, so they ship beside it unmodified.
-    for name in (
+    filenames = (
         "register.ts",
+        "auto-model.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
+        "routing-logs.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
-    ):
+    )
+    for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
-    assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
-        "constants.ts",
-        "extra-body.ts",
-        "hooks.json",
-        "isaac-feedback.ts",
-        "register.ts",
-        "routing-state.ts",
-        "smart-routing-status.ts",
-        "subagent-routing.ts",
-        "subagent-statusline.py",
-    ]
+    setters = set(re.findall(r"\$\.env\.set\('([^']+)'", (mods / "register.ts").read_text()))
+    assert set(SMART_ROUTING_ENV_KEYS) <= setters
+    assert {path.name for path in (tmp_path / "hooks").iterdir()} == {*filenames, "hooks.json"}
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings == {
         "subagentStatusLine": {
@@ -50,6 +46,16 @@ def test_plugin_contains_mod_entry_point(tmp_path):
             ),
         }
     }
+
+
+def test_the_mods_default_recipe_matches_the_launch_default():
+    """The recipe mod bundles these constants, and it is the only extra-body writer: its fallback
+    recipe must not drift from the launch-side default in ``routing.ROUTER_NAME``."""
+    constants = (
+        Path(v2.__file__).parents[1] / "agents" / "claude_mods" / "constants.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"export const DEFAULT_RECIPE = '([^']+)'", constants)
+    assert match and match.group(1) == routing.ROUTER_NAME
 
 
 def test_native_subagent_statusline_command(tmp_path):
@@ -112,6 +118,26 @@ def test_native_subagent_statusline_command(tmp_path):
             "content": "Otter · Latestprogress[31m · 2,345 tokens · 0s",
         }
     ]
+    display_label = "Otter — selected-model"
+    (names / "agent-child-a.json").write_text(
+        json.dumps(
+            {"session_id": "s1", "name": display_label, "description": "Otter — prelaunch-model"}
+        )
+    )
+    for label, suffix in (
+        (display_label, ""),
+        ("Otter — prelaunch-model", ""),
+        ("Reading files", " · Reading files"),
+        (None, ""),
+    ):
+        task["description"] = "Otter — prelaunch-model"
+        payload["tasks"] = [{**task, "id": "child-a", "label": label}]
+        assert render(payload) == [
+            {
+                "id": "child-a",
+                "content": f"{display_label}{suffix} · 1,234 tokens · 0s",
+            }
+        ]
     for invalid in (None, [], {}, {"session_id": "s1", "tasks": None}):
         assert render(invalid) == []
 
@@ -123,6 +149,8 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "0",
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
@@ -133,11 +161,12 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
     assert v2._claude_mod_launch_options(env) == {
         **expected,
         "unset": [],
-        "recipe": "custom_recipe",
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
+        "startupValidation": "1",
     }
     # Taking the baseline must not alter the caller's launch environment.
     assert env == before
@@ -149,10 +178,31 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
-        "recipe": "stable",
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "",
+        "unset": [
+            key
+            for key in SMART_ROUTING_ENV_KEYS
+            if key not in ("ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTER_AUTO_MODE")
+        ],
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
+        "startupValidation": "1",
     }
+
+
+@pytest.mark.parametrize("version", [None, "", "unknown_v99", *config._VERSIONS])
+def test_mod_auto_flag_is_derived_only_from_version(version):
+    env = {"ENABLE_SMART_ROUTER_AUTO_MODE": "1"}
+    if version is not None:
+        env["SMART_ROUTER_CONFIG_VERSION"] = version
+    before = env.copy()
+    options = v2._claude_mod_launch_options(env)
+    assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == (
+        "1" if version in (config.SUBAGENT_AUTO_V0, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY) else "0"
+    )
+    assert "ENABLE_SMART_ROUTER_AUTO_MODE" not in options["unset"]
+    assert env == before

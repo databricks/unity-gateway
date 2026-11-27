@@ -8,6 +8,7 @@
         "models": {
           "model_services": [
             "system.ai.gpt-6-sol",
+            "system.ai.gpt-6-1-sol",
             "system.ai.gpt-6-luna"
           ]
         },

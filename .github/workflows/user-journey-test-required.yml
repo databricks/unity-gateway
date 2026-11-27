@@ -40,6 +40,9 @@ jobs:
       labels: linux-ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Start the budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - name: Check out the trusted gate from the default branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -49,6 +52,20 @@ jobs:
             tests/AGENTS.md
           sparse-checkout-cone-mode: false
           persist-credentials: false
+
+      # The PR checkout supplies only budget data; the gate continues to execute trusted code.
+      - name: Read the PR's time budget
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: budget-source
+          sparse-checkout: .github/ci-time-budgets.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Mark setup done
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Require meaningful user-journey coverage
         id: gate
@@ -91,3 +108,30 @@ jobs:
             -f target_url="$RUN_URL" >/dev/null
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --body "User-journey check $OUTCOME on ${sha:0:7}: $RUN_URL"
+      - name: Check this job's time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        run: |
+          export BUDGET_ENDED="$(date +%s)"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('budget-source/.github/ci-time-budgets.json')
+          if path.is_symlink() or path.parent.is_symlink():
+              raise SystemExit('::error::The budget file must not be a symlink')
+          budgets = json.loads(path.read_text(encoding='utf-8'))
+          budget = budgets.get('user-journey-test-required', {}).get('require-user-journey-test', {}).get('User Journey Test Required')
+          if budget is None:
+              raise SystemExit('::error::No time budget for user-journey-test-required/require-user-journey-test/User Journey Test Required')
+          start, run, end = (int(os.environ[name]) for name in
+                             ('BUDGET_JOB_STARTED', 'BUDGET_RUN_STARTED', 'BUDGET_ENDED'))
+          times = {'setup': run - start, 'run': end - run, 'total': end - start}
+          if any(value < 0 for value in times.values()):
+              raise SystemExit('::error::CI budget clock moved backwards')
+          print(', '.join(f'{phase}: {elapsed}s / {budget[phase]}s' for phase, elapsed in times.items()))
+          over = [f'{phase} {elapsed}s > {budget[phase]}s' for phase, elapsed in times.items()
+                  if elapsed > budget[phase]]
+          if over:
+              raise SystemExit('::error::Over budget: ' + ', '.join(over))
+          PY

@@ -1,10 +1,12 @@
 name: CI
+run-name: 'CI #${{ github.event.pull_request.number || github.run_id }}'
 
 on:
   schedule:
     - cron: '5 * * * *'
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
   push:
     branches: [main]
@@ -20,95 +22,359 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    env:
-      # See the test job: hosted runners can't reach the internal pypi-proxy,
-      # so resolve against public PyPI (paired with the `uv lock` step below).
-      UV_INDEX_URL: https://pypi.org/simple
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b  # v3
-        with:
-          just-version: 1.58.0
-      - run: uv lock
-      # Same recipe developers run locally, so lint stays identical in both places.
-      - run: just lint
+  security-gate:
+    name: Security Gate
+    permissions:
+      actions: read
+    uses: ./.github/workflows/security-gate.yml
 
-  test:
-    name: Unit tests · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
-    runs-on: ${{ matrix.os }}
-    needs: lint
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    defaults:
-      run:
-        shell: bash
+  # Lint, format and types in one job that reports every failing check, not just the first.
+  checks:
+    name: Checks
+    needs: security-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Checks
       # uv.lock pins packages to Databricks' internal pypi-proxy, which hosted
-      # GitHub runners can't reach (downloads time out). Re-resolve against
+      # GitHub runners can't reach (downloads time out). On a cache miss, re-resolve against
       # public PyPI at CI time: UV_INDEX_URL + a `uv lock` before install.
       UV_INDEX_URL: https://pypi.org/simple
+      UV_PYTHON: '3.12'
+      VENV_BIN: .venv/bin
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - &budget-start
+        name: Start the budget clock
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: &budget-secret-free
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+        run: echo "BUDGET_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - &checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - name: Install dependencies
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          filter: blob:none
+      # Main saves this environment and pull requests restore it, so a PR installs nothing unless
+      # it changes uv.lock or pyproject.toml; uv itself is only needed to build it.
+      - &python-cache
+        id: python-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            .venv
+            ${{ runner.temp }}/uv-python-dir
+          key: python-env-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+      - &setup-uv
+        if: ${{ steps.python-cache.outputs.cache-hit != 'true' }}
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - &install
+        name: Install dependencies
+        if: ${{ steps.python-cache.outputs.cache-hit != 'true' }}
+        shell: bash
         run: |
           uv lock
           uv sync
-      - run: uv run --no-sync pytest --ignore=tests/test_e2e.py
+      - &budget-setup-done
+        name: Mark setup done
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env: *budget-secret-free
+        run: echo "BUDGET_RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      # The same three checks `just lint` runs locally.
+      - name: Run every check and list each failure
+        run: |
+          failed=()
+          "$VENV_BIN/ruff" check src/ tests/ || failed+=("ruff check")
+          "$VENV_BIN/ruff" format --check src/ tests/ || failed+=("ruff format --check")
+          "$VENV_BIN/ty" check src/ || failed+=("ty check")
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::Failed checks: ${failed[*]}"
+          fi
+          test ${#failed[@]} -eq 0
+
+      - &budget-check
+        name: Check this job's time budget
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          UCODE_TEST_WORKSPACE: ''
+          UCODE_TEST_SECOND_WORKSPACE: ''
+          DATABRICKS_HOST: ''
+          DATABRICKS_BEARER: ''
+          DATABRICKS_SECOND_BEARER: ''
+          DATABRICKS_CLIENT_ID: ''
+          DATABRICKS_CLIENT_SECRET: ''
+          CLAUDE_CODE_OAUTH_TOKEN: ''
+          CODEX_ACCESS_TOKEN: ''
+          UG_CUJ1_WORKSPACE: ''
+          UG_CUJ_SP_CLIENT_ID: ''
+          UG_CUJ_SP_CLIENT_SECRET: ''
+          UG_BUDGET_CUJ_SP_CLIENT_ID: ''
+          UG_BUDGET_CUJ_SP_CLIENT_SECRET: ''
+          DATABRICKS_BEARER_COMMAND: ''
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- uv.lock pyproject.toml)
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          "$python" scripts/ci_time_budget.py --budgets .github/ci-time-budgets.json \
+            --workflow "$BUDGET_WORKFLOW" --job "$GITHUB_JOB" --name "$BUDGET_JOB_NAME" \
+            --started "$BUDGET_JOB_STARTED" --run-started "${BUDGET_RUN_STARTED:-$BUDGET_JOB_STARTED}" \
+            --ended "$(date +%s)" --changed-files "$changed"
+
+  managed-quota-probe:
+    name: Managed quota probe (advisory)
+    needs: [security-gate, integration]
+    if: ${{ always() && !cancelled() && needs.security-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Managed quota probe (advisory)
+      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+    steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+      - *budget-setup-done
+      - name: Inspect limits and run the bounded probe
+        shell: bash
+        run: uv run --no-project --python 3.12 python scripts/managed_quota_diagnostics.py | tee "$RUNNER_TEMP/managed-quota-probe.jsonl"
+      - name: Upload quota probe evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: managed-quota-probe
+          path: ${{ runner.temp }}/managed-quota-probe.jsonl
+      - *budget-check
+
+  # Each shard runs its time-balanced files and chunks of the slow files (tests/shard.py), so the
+  # shards together run every unit test once. Main uploads JUnit reports and coverage counts
+  # so `Unit test times` can record fresh timings and prove nothing was missed.
+  unit-linux:
+    name: Unit tests · Linux · ${{ matrix.shard }}/24
+    needs: security-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Unit tests · Linux · ${{ matrix.shard }}/24
+      UV_INDEX_URL: https://pypi.org/simple
+      UV_PYTHON: '3.12'
+      UG_TEST_SHARD: ${{ matrix.shard }}/24
+      VENV_BIN: .venv/bin
+    steps:
+      - *budget-start
+      - *checkout
+      - *python-cache
+      - *setup-uv
+      - *install
+      - *budget-setup-done
+      - &unit-plan
+        name: Plan this shard
+        id: plan
+        shell: bash
+        run: |
+          "$VENV_BIN/python" -m tests.shard files "$UG_TEST_SHARD" | tr -d '\r' > "$RUNNER_TEMP/files.txt"
+          if grep -qx tests/test_tls_https.py "$RUNNER_TEMP/files.txt"; then
+            echo "tls=true" >> "$GITHUB_OUTPUT"
+          fi
+      - &unit-run
+        name: Run this shard
+        shell: bash
+        # Only this shard's files, so it imports and collects only what it runs.
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/files.txt"
+          UG_TEST_SHARD_REPORT="$RUNNER_TEMP/shard-report.json" \
+            "$VENV_BIN/python" -m pytest "${files[@]}" --junitxml="$RUNNER_TEMP/junit.xml"
+      - &unit-report
+        name: Upload this shard's timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: unit-shard-${{ runner.os }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/shard-report.json
+      - *budget-check
+
+  unit-windows:
+    name: Unit tests · Windows · ${{ matrix.shard }}/64
+    needs: security-gate
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+                25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+                49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Unit tests · Windows · ${{ matrix.shard }}/64
+      UV_INDEX_URL: https://pypi.org/simple
+      UV_PYTHON: '3.12'
+      UG_TEST_SHARD: ${{ matrix.shard }}/64
+      VENV_BIN: .venv/Scripts
+    steps:
+      - *budget-start
+      - *checkout
+      - *python-cache
+      - *setup-uv
+      - *install
+      - *budget-setup-done
+      - *unit-plan
+      - name: Trust a disposable test CA in the Windows certificate store
+        # tests/test_tls_https.py checks that ug verifies a server whose root is only in the OS
+        # trust store. On Linux that store is a CA bundle file the test points OpenSSL at.
+        if: ${{ steps.plan.outputs.tls == 'true' }}
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP "ug-test-ca"
+          & "$env:VENV_BIN/python" tests/tls_ca.py $directory
+          certutil -addstore -f Root (Join-Path $directory "ca.pem")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "UG_TEST_OS_TRUSTED_CA_DIR=$directory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - *unit-run
+      - *unit-report
+      - *budget-check
+
+  windows-provisioning:
+    name: Windows provisioning helpers
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Windows provisioning helpers
+    needs: security-gate
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - *budget-start
+      - *checkout
+      - *budget-setup-done
+      - name: Windows provisioning helpers (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tests/mdm/windows-provision.Tests.ps1
+      - name: Windows provisioning helpers (PowerShell 7)
+        shell: pwsh
+        run: ./tests/mdm/windows-provision.Tests.ps1
+
+      - *budget-check
+
+  # Checks every shard's slice added up to the whole collected suite and records per-file timings.
+  # It runs wherever the shards do, and `test` requires it, so every run proves each unit test
+  # ran exactly once. Commit main's artifact to tests/unit_test_times.json when shards drift.
+
+  unit-test-times:
+    name: Unit test times
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Unit test times
+    if: ${{ !cancelled() && needs.security-gate.result == 'success' }}
+    needs: [security-gate, unit-linux, unit-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - *budget-start
+      - *checkout
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: unit-shard-*
+          path: ${{ runner.temp }}/shards
+      - *budget-setup-done
+      - run: python3 scripts/unit_test_times.py "$RUNNER_TEMP/shards" "$RUNNER_TEMP/unit_test_times.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: unit-test-times
+          path: ${{ runner.temp }}/unit_test_times.json
+      - *budget-check
 
   claude-mod:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
-    needs: lint
+    needs: security-gate
     timeout-minutes: 10
     env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: Claude mod · 2.1.290
       UV_INDEX_URL: https://pypi.org/simple
       UCODE_TEST_CLAUDE_VERSION: 2.1.290
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - run: npm install -g @anthropic-ai/claude-code@2.1.290
       - run: uv lock
+      - *budget-setup-done
       - name: Validate and test the mod entry point
         run: |
           export UCODE_TEST_CLAUDE_BINARY="$(command -v claude)"
           uv run pytest tests/native_claude/test_mod.py tests/native_claude/test_credentials.py -q
+      - *budget-check
 
   vscode-extension:
     name: VS Code extension
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: VS Code extension
+    needs: security-gate
     runs-on: ubuntu-latest
-    needs: lint
     timeout-minutes: 10
     defaults:
       run:
         working-directory: vscode-extension
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
       - run: npm ci --no-audit --no-fund
+      - *budget-setup-done
       - run: npm run typecheck
       - run: npm test
+      - name: GitHub Copilot app plugin tests
+        run: node --test ../tests/*.test.mjs
       # ug packs the extension from these committed files, so they must match the sources.
       - name: Check the committed bundle is up to date
         run: |
@@ -117,13 +383,14 @@ jobs:
             echo "::error::The VS Code extension bundle is stale. Run \`just vscode-build\` and commit the result."
             exit 1
           }
+      - *budget-check
 
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
-    needs: lint
+    needs: security-gate
     # The merge queue runs only lint and unit tests; e2e already ran on the PR.
-    if: ${{ github.event_name != 'merge_group' }}
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     defaults:
       run:
         shell: bash
@@ -135,11 +402,11 @@ jobs:
         include:
           - group: gateway
             name: Gateway API tests
-            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestModelProviderLaunch or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
+            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
             package: ''
           - group: claude
             name: Agent launch tests · Claude
-            keyword: TestClaudeLaunch or TestConfigureSubset or (TestModelProviderLaunch and not codex)
+            keyword: TestClaudeLaunch or TestConfigureSubset
             package: '@anthropic-ai/claude-code'
           - group: codex
             name: Agent launch tests · Codex
@@ -162,6 +429,8 @@ jobs:
             keyword: TestPiLaunch
             package: '@earendil-works/pi-coding-agent'
     env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
       # See the test job: hosted runners can't reach the internal pypi-proxy,
       # so resolve against public PyPI (paired with the `uv lock` step below).
       UV_INDEX_URL: https://pypi.org/simple
@@ -179,9 +448,11 @@ jobs:
       AGENT_PACKAGE: ${{ matrix.package }}
       TEST_KEYWORD: ${{ matrix.keyword }}
     steps:
+      - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
@@ -198,6 +469,7 @@ jobs:
           uv lock
           uv tool install .
           uv sync
+      - *budget-setup-done
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
@@ -213,52 +485,109 @@ jobs:
             --only-rerun TEMPORARILY_UNAVAILABLE \
             --only-rerun REQUEST_LIMIT_EXCEEDED \
             < /dev/null
+      - *budget-check
 
   e2e:
     name: All agent tests
-    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
-    needs: e2e-shards
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: All agent tests
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && needs.security-gate.result == 'success' }}
+    needs: [security-gate, e2e-shards]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - *budget-setup-done
       - name: Require every e2e shard to pass
         env:
           RESULT: ${{ needs.e2e-shards.result }}
         run: test "$RESULT" = success
+      - *budget-check
 
   integration:
     name: Integration
-    needs: lint
-    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
-    if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
+    needs: security-gate
+    # Integration needs CI secrets, so it runs only after the security gate passes.
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.security-gate.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
+    with:
+      mode: required
+    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
+
+  integration-advisory:
+    name: Integration advisory
+    needs: [security-gate, integration]
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && needs.security-gate.result == 'success' }}
+    uses: ./.github/workflows/integration.yml
+    with:
+      mode: advisory
     secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
 
   # Preserve the exact contexts required by the repository's branch rules.
   # Keep these aliases until the rules and all active branches migrate together.
   required-tests:
     name: test
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: test
     if: ${{ !cancelled() }}
-    needs: [test, vscode-extension]
+    needs: [security-gate, checks, unit-linux, unit-windows, unit-test-times, windows-provisioning, vscode-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require unit and VS Code extension tests to pass
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - *budget-setup-done
+      - name: Require checks, every unit shard, the coverage proof and the VS Code extension tests
         env:
-          RESULT: ${{ needs.test.result }}
+          GATE_RESULT: ${{ needs.security-gate.result }}
+          COVERAGE_RESULT: ${{ needs.unit-test-times.result }}
+          LINT_RESULT: ${{ needs.checks.result }}
+          RESULT: ${{ needs.unit-linux.result }}
+          WINDOWS_RESULT: ${{ needs.unit-windows.result }}
+          PROVISIONING_RESULT: ${{ needs.windows-provisioning.result }}
           VSCODE_EXTENSION_RESULT: ${{ needs.vscode-extension.result }}
-        run: test "$RESULT" = success && test "$VSCODE_EXTENSION_RESULT" = success
+        run: |
+          test "$GATE_RESULT" = success && test "$LINT_RESULT" = success && test "$RESULT" = success &&
+            test "$WINDOWS_RESULT" = success && test "$PROVISIONING_RESULT" = success &&
+            test "$VSCODE_EXTENSION_RESULT" = success && test "$COVERAGE_RESULT" = success
+      - *budget-check
 
   required-e2e:
     name: e2e
-    if: ${{ !cancelled() }}
-    needs: [e2e, integration]
+    env:
+      BUDGET_WORKFLOW: ci
+      BUDGET_JOB_NAME: e2e
+    if: ${{ always() && (github.event_name == 'pull_request' || !cancelled()) }}
+    needs: [security-gate, e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - *budget-start
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          persist-credentials: false
+          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      - *budget-setup-done
       - name: Require all agent and integration tests to pass
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GATE_RESULT: ${{ needs.security-gate.result }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }
+        run: test "$GATE_RESULT" = success && { test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }; }
+      - *budget-check

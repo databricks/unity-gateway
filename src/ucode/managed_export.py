@@ -62,12 +62,42 @@ def build_export_payload() -> dict:
             "No managed configuration found locally. Run `ug configure` against a workspace that "
             "publishes one to install its policy, then re-run `ug export`."
         )
-    errors = validate_manifest(normalize_managed_config(config), None)
+    errors = validate_manifest(normalize_managed_config(config), None) + _raw_sources_errors(config)
     if errors:
         detail = "\n".join(f"  - {error}" for error in errors)
         raise RuntimeError(f"The managed config is not valid, so it was not exported:\n{detail}")
     config = {key: value for key, value in config.items() if key not in _SERVER_OWNED_FIELDS}
     return {"workspace": workspace, "spec_version": EXPORT_SPEC_VERSION, **config}
+
+
+def _raw_sources_errors(config: dict) -> list[str]:
+    """Check the raw ``sources`` lists that :func:`validate_manifest` can't see.
+
+    Export emits the raw config, but normalization drops blank, non-string and padded
+    ``mcp_servers.sources`` entries, and drops ``skills.sources`` entirely, before validation. Flag
+    exactly those; well-formed-but-invalid entries are reported by ``validate_manifest``.
+    """
+    errors: list[str] = []
+    skills = config.get("skills")
+    if isinstance(skills, dict) and skills.get("sources"):
+        errors.append("skills.sources is not supported; use names or unity_catalog_location.")
+    mcp_servers = config.get("mcp_servers")
+    sources = mcp_servers.get("sources") if isinstance(mcp_servers, dict) else None
+    if sources is None:
+        return errors
+    if not isinstance(sources, list):
+        return [*errors, "mcp_servers.sources must be a list."]
+    dropped = [
+        repr(source)
+        for source in sources
+        if not isinstance(source, str) or not source.strip() or source != source.strip()
+    ]
+    if dropped:
+        errors.append(
+            f"mcp_servers.sources entries must be non-empty strings without padding (got: "
+            f"{', '.join(dropped)})."
+        )
+    return errors
 
 
 def export_command(file_path: str | None = None) -> None:

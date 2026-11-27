@@ -4,12 +4,14 @@ import copy
 import json
 import shutil
 import subprocess
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from ucode import managed_files
-from ucode.agents import claude
+from ucode.agents import LaunchOptions, claude
 from ucode.managed_files import CLAUDE_HEADER_MOD_FILES, CLAUDE_HEADER_MOD_ROOTS, OS
 
 WS = "https://example.cloud.databricks.com"
@@ -57,22 +59,33 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     return managed_path, root, writes
 
 
-def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch):
+@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch, routing):
     managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", routing)
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
     state = {"workspace": WS, "codex_models": []}
 
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
-    for path, text in claude._header_mod_files(root).items():
+    for path, text in claude.managed_mod_files(root).items():
         assert path.read_text() == text
     doc = json.loads(managed_path.read_text())
     assert doc["extraKnownMarketplaces"]["ucode-managed"] == {
         "source": {"source": "directory", "path": str(root)}
     }
-    assert doc["enabledPlugins"] == {"ug-headers@ucode-managed": True}
-    # The built-in guard is the default list, so naming the mod there must keep it.
-    assert doc["prependPlugins"] == ["ug-headers@ucode-managed", "sec-default@builtin"]
+    assert doc["enabledPlugins"] == {
+        "ug-headers@ucode-managed": True,
+        "ug-smart-router-recipe@ucode-managed": True,
+    }
+    # The guard is the default `prependPlugins` list, which naming the mods there must keep.
+    assert doc["prependPlugins"] == [
+        "ug-headers@ucode-managed",
+        "ug-smart-router-recipe@ucode-managed",
+        "sec-default@builtin",
+    ]
     assert claude.header_mod_active()
+    assert claude.header_mod_active(require_current=True)
 
     count = len(writes)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -129,6 +142,7 @@ def test_admin_prepend_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert json.loads(managed_path.read_text())["prependPlugins"] == [
         "ug-headers@ucode-managed",
+        "ug-smart-router-recipe@ucode-managed",
         "acme-guard@acme",
     ]
 
@@ -146,7 +160,7 @@ def test_mod_entries_never_count_as_conflicts():
 
 def test_mod_files_are_on_the_sudo_allowlist():
     for os_family, root in CLAUDE_HEADER_MOD_ROOTS.items():
-        files = set(claude._header_mod_files(root))
+        files = set(claude.managed_mod_files(root))
         assert files == {root / name for name in CLAUDE_HEADER_MOD_FILES}
         assert files <= managed_files._SUDO_REPLACE_TARGETS[os_family]
 
@@ -195,6 +209,7 @@ def test_revert_removes_the_mod_files_and_folders(tmp_path, monkeypatch):
     _managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert (root / "ug-headers/hooks/register.ts").is_file()
+    assert (root / f"{claude.CLAUDE_ROUTER_MOD_NAME}/hooks/register.ts").is_file()
 
     claude.revert_managed_settings()
 
@@ -210,7 +225,8 @@ def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkey
 
     claude.revert_managed_settings()
 
-    # A non-empty list without the guard would turn it off, so revert keeps it.
+    # A non-empty list without the guard would turn it off, so revert keeps it there; both of
+    # ug's mods left the list the same way.
     assert json.loads(managed_path.read_text())["prependPlugins"] == [
         "sec-default@builtin",
         "acme-guard@acme",
@@ -243,8 +259,11 @@ def test_headless_configure_installs_and_enables_beside_an_existing_managed_file
 
     assert (root / "ug-headers/hooks/register.ts").is_file()
     doc = json.loads(managed_path.read_text())
-    assert doc["enabledPlugins"] == {"ug-headers@ucode-managed": True}
-    # Only the mod's entries: a headless run still leaves the rest of ug's settings out.
+    assert doc["enabledPlugins"] == {
+        "ug-headers@ucode-managed": True,
+        "ug-smart-router-recipe@ucode-managed": True,
+    }
+    # Only the mods' entries: a headless run still leaves the rest of ug's settings out.
     assert set(doc) == {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"}
     assert claude.header_mod_active()
 
@@ -292,7 +311,7 @@ def windows(tmp_path, monkeypatch):
 
 def test_windows_installs_and_removes_the_mod_beside_the_managed_file(windows, monkeypatch):
     assert managed_files.claude_header_mod_root() == windows
-    files = claude._header_mod_files(windows)
+    files = claude.managed_mod_files(windows)
 
     managed_files.reconcile_privileged_files(files, display="Claude Code")
     for path, text in files.items():
@@ -314,7 +333,7 @@ def test_windows_writes_only_the_mod_files_and_needs_an_administrator(windows, m
     monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
     with pytest.raises(PermissionError):
         managed_files.reconcile_privileged_files(
-            claude._header_mod_files(windows), display="Claude Code"
+            claude.managed_mod_files(windows), display="Claude Code"
         )
 
 
@@ -325,6 +344,7 @@ def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_
     )
     assert not root.exists()
     assert claude.header_mod_active()
+    assert not claude.header_mod_active(require_current=True)
 
 
 def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
@@ -341,3 +361,107 @@ def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path
     ):
         managed_path.write_text(json.dumps(doc), encoding="utf-8")
         assert not claude.header_mod_active()
+        assert not claude.header_mod_active(require_current=True)
+
+
+@pytest.mark.parametrize(
+    ("installed", "routed"),
+    [
+        ("missing", True),
+        ("stale", True),
+        ("other", True),
+        ("stale-other", True),
+        ("current", True),
+        ("missing", False),
+    ],
+)
+def test_routed_launch_warns_without_current_managed_mods_and_keeps_launching(
+    tmp_path, monkeypatch, installed, routed
+):
+    managed_path, root, writes = _managed_env(tmp_path, monkeypatch, {})
+    if installed in {"current", "stale", "stale-other"}:
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+    if installed in {"stale", "stale-other"}:
+        (root / "ug-headers/hooks/register.ts").write_text("// old version\n", encoding="utf-8")
+    if installed in {"other", "stale-other"}:
+        settings = json.loads(managed_path.read_text())
+        settings.setdefault("enabledPlugins", {})["ug-headers@other-managed"] = True
+        managed_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    assert claude.header_mod_active() == (installed in {"current", "other", "stale-other"})
+    assert claude.header_mod_active(require_current=True) == (installed == "current")
+    assert claude.recipe_mod_active() == (installed in {"current", "stale", "stale-other"})
+    monkeypatch.setattr(claude, "_explicit_configure", False)
+    writes.clear()
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    warning = Mock()
+    routed_launch = Mock()
+    plain_launch = Mock()
+    monkeypatch.setattr(claude, "print_warning", warning)
+    monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+    monkeypatch.setattr(claude, "_external_web_search_args", lambda _state, args: args)
+    monkeypatch.setattr(claude, "_use_server_side_web_search", lambda _state: False)
+    monkeypatch.setattr(claude, "_resolve_launch_binary", lambda _binary: "native-claude")
+    monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", routed_launch)
+    monkeypatch.setattr(claude, "exec_or_spawn", plain_launch)
+    monkeypatch.setattr(
+        claude, "_claude_launch_argv", lambda binary, args, **_kwargs: nullcontext([binary, *args])
+    )
+    args = ["-p", "Inspect this task"]
+
+    claude.launch({}, args, options=LaunchOptions(launch_smart_routing=routed))
+
+    if routed:
+        routed_launch.assert_called_once()
+        assert routed_launch.call_args.args == ({}, args)
+        assert routed_launch.call_args.kwargs["binary"] == "native-claude"
+        plain_launch.assert_not_called()
+    else:
+        routed_launch.assert_not_called()
+        plain_launch.assert_called_once_with(["native-claude", *args])
+    if routed and installed != "current":
+        # A stale header mod leaves the recipe mod verifiable, so the warning names only it.
+        unverifiable = (
+            "Smart Router language inheritance and the request recipe"
+            if installed in {"missing", "other"}
+            else "Smart Router language inheritance"
+        )
+        warning.assert_called_once_with(
+            f"Cannot verify {unverifiable}: it requires the current UG managed mods. Run "
+            "`ug configure` without `--user` or UG_SKIP_OS_SETTINGS. Routing continues."
+        )
+    else:
+        warning.assert_not_called()
+    assert writes == []
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("managed_run", [False, True], ids=["merge", "managed-run"])
+def test_launch_warns_when_ug_headers_cannot_reach_claude(monkeypatch, managed_run):
+    warnings: list[str] = []
+    monkeypatch.setenv("UG_HEADERS", "X-Team: eng")
+    monkeypatch.setattr(claude, "header_mod_active", lambda: False)
+    monkeypatch.setattr(claude, "published_agent_config_used", lambda: managed_run)
+    monkeypatch.setattr(claude, "print_warning", warnings.append)
+    claude._warn_if_launch_headers_dropped()
+    assert len(warnings) == 1
+    if managed_run:
+        assert "published agent configuration" in warnings[0]
+        assert "`http_headers`" in warnings[0]
+        assert "Run `ug configure`" not in warnings[0]
+    else:
+        assert "Run `ug configure`" in warnings[0]
+
+
+def test_launch_without_ug_headers_or_with_an_active_mod_says_nothing(monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(claude, "print_warning", warnings.append)
+    monkeypatch.setattr(claude, "published_agent_config_used", lambda: True)
+    monkeypatch.delenv("UG_HEADERS", raising=False)
+    claude._warn_if_launch_headers_dropped()
+    monkeypatch.setenv("UG_HEADERS", "X-Team: eng")
+    monkeypatch.setattr(claude, "header_mod_active", lambda: True)
+    claude._warn_if_launch_headers_dropped()
+    assert warnings == []

@@ -1,9 +1,22 @@
 import type { EngineInterface, On } from 'claude-code';
-import { envBool } from './constants.ts';
+import { envBool, SMART_ROUTER_OFF_REPLY } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+// Pass this with /smart-router off when the reason was already collected outside this form and
+// saved through Isaac, so the form doesn't ask again. Currently only honored when ISAAC_LAUNCH_MODE=omni.
+const FEEDBACK_COLLECTED_FLAG = '--feedback-collected';
 type FeedbackCategory = 'smart-routing' | 'other';
+
+type SmartRouterCommand = { action: 'on' | 'off'; feedbackCollected: boolean };
+
+export function parseSmartRouterCommand(args: string): SmartRouterCommand | undefined {
+  const [action, flag, ...rest] = args.trim().split(/\s+/);
+  if (action !== 'on' && action !== 'off') return undefined;
+  if (flag === undefined) return { action, feedbackCollected: false };
+  if (action === 'off' && flag === FEEDBACK_COLLECTED_FLAG && !rest.length) return { action, feedbackCollected: true };
+  return undefined;
+}
 
 function feedbackSuffix(feedbackId: string): string {
   return feedbackId ? ` Feedback ID: ${feedbackId}` : '';
@@ -31,6 +44,8 @@ type FeedbackState = {
   turnOff?: boolean;
   readRoutingEnabled?: () => Promise<boolean>;
   disableRouting?: (sessionControlArgs: readonly string[]) => Promise<void>;
+  paneId?: 'auto-main';
+  openRoutingOff?: () => Promise<string | undefined>;
 };
 
 export function createIsaacFeedbackState(): FeedbackState {
@@ -114,6 +129,7 @@ async function submitFeedback(
   state.submitted = true;
   const feedbackId = state.category === 'smart-routing' ? crypto.randomUUID() : '';
   const { turnOff, disableRouting } = state;
+  const offRetry = state.paneId === 'auto-main' ? 'selecting a model in /model' : '/smart-router off';
   let env: Record<string, string> | undefined;
   let promptId: string | null | undefined;
   let args = ['--category', 'other'];
@@ -131,7 +147,7 @@ async function submitFeedback(
     state.submitted = false;
     return 'Could not prepare feedback. Nothing was uploaded; retry /isaac-feedback.';
   }
-  await $.ui.close({ id: FEEDBACK_PANE }).catch(() => {});
+  await $.ui.close({ id: state.paneId ?? FEEDBACK_PANE }).catch(() => {});
   showSending($, feedbackId);
   if (feedbackId && promptId === null) {
     $.ui.log('No earlier task was found. This feedback can help diagnose setup or controls, but has no task or model request to analyze.');
@@ -141,8 +157,9 @@ async function submitFeedback(
     try {
       if (!disableRouting) throw new Error('Smart Router controls are unavailable.');
       await disableRouting(['--smart-router-feedback', message]);
+      $.ui.log(SMART_ROUTER_OFF_REPLY);
     } catch {
-      $.ui.log('Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
+      $.ui.log(`Could not turn Smart Router off. Feedback is still being sent; retry ${offRetry} or restart through UG.`);
     }
   }
   state.submitted = false;
@@ -155,23 +172,55 @@ async function openFeedbackForm(
   if (state.category !== 'other') await prepareFeedbackTarget($, state, isaacExecutable);
   $.ui.invalidate('ui.render');
   const pane = await $.ui.open({
-    id: FEEDBACK_PANE, title: state.turnOff ? 'Turn Smart Router off' : 'Isaac feedback',
+    id: state.paneId ?? FEEDBACK_PANE, title: state.turnOff ? 'Turn Smart Router off' : 'Isaac feedback',
     focus: true, closeOnEscape: true, rows: 6, columns: 56,
   });
   if (pane.isPlaced) return true;
-  await $.ui.close({ id: FEEDBACK_PANE });
+  await $.ui.close({ id: state.paneId ?? FEEDBACK_PANE });
   return false;
+}
+
+async function openRoutingOff(
+  $: EngineInterface, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
+): Promise<string | undefined> {
+  if (state.submitted) return 'Feedback is being prepared.';
+  const offRetry = state.paneId === 'auto-main' ? 'selecting a model in /model' : '/smart-router off';
+  try {
+    if (!state.readRoutingEnabled || !state.disableRouting) {
+      throw new Error('Smart Router controls are unavailable.');
+    }
+    if (!await state.readRoutingEnabled()) return SMART_ROUTER_OFF_REPLY;
+    state.submitted = false;
+    state.reason = '';
+    state.category = 'smart-routing';
+    state.turnOff = true;
+    if (await openFeedbackForm($, state, isaacExecutable, isaacFeedbackDirectory)) return;
+  } catch {
+    // No reason was collected, so leave routing unchanged.
+  }
+  return `Could not open the feedback form. Smart Router is still on; retry ${offRetry}.`;
 }
 
 export function registerIsaacFeedback(
   on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): void {
+  on('session.append', {door:'command'}, ($, e, next) => {
+    // Keep the engine-bound callback in this module for the native mod compiler.
+    state.openRoutingOff = () => openRoutingOff($, state, isaacExecutable, isaacFeedbackDirectory);
+    return next(e);
+  });
+  on('ui.close', ($, e, next) => {
+    if (e.id === (state.paneId ?? FEEDBACK_PANE)) state.paneId = undefined;
+    return next(e);
+  });
   on('session.append', { door: 'prompt' }, ($, e, next) => {
     if (!e.agentId && !e.message.isMeta) state.lastPromptId = e.uuid;
     return next(e);
   });
   on('session.end', ($, e, next) => {
     state.lastPromptId = undefined;
+    state.paneId = undefined;
+    state.openRoutingOff = undefined;
     return next(e);
   });
   on('command.run', { command: 'isaac-feedback' }, async ($, e, next) => {
@@ -206,6 +255,7 @@ export function registerIsaacFeedback(
             || (action === 'status' && feedbackId && !rest.length && FEEDBACK_ID.test(feedbackId))) return next(e);
       }
     }
+    state.paneId = undefined;
     state.turnOff = false;
     state.category = category;
     state.reason = message;
@@ -222,29 +272,21 @@ export function registerIsaacFeedback(
     return { text: 'Could not open the feedback form. Retry /isaac-feedback in the Claude terminal.' };
   });
 
+  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (e.args.trim() !== 'off') return next(e);
+    const command = parseSmartRouterCommand(e.args);
+    if (command?.action !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
-    if (!feedbackRequired) return next(e);
-    if (state.submitted) return { text: 'Feedback is being prepared.' };
-    try {
-      if (!state.readRoutingEnabled || !state.disableRouting) {
-        throw new Error('Smart Router controls are unavailable.');
-      }
-      if (!await state.readRoutingEnabled()) return {text: 'Smart Router is off'};
-      state.submitted = false;
-      state.reason = '';
-      state.category = 'smart-routing';
-      state.turnOff = true;
-      if (await openFeedbackForm($, state, isaacExecutable, isaacFeedbackDirectory)) return {};
-    } catch {
-      // No reason was collected, so leave routing unchanged.
+    if (!feedbackRequired || (command.feedbackCollected && await $.env.get('ISAAC_LAUNCH_MODE') === 'omni')) {
+      return next(e);
     }
-    return {text: 'Could not open the feedback form. Smart Router is still on; retry /smart-router off.'};
+    state.paneId = undefined;
+    const error = await openRoutingOff($, state, isaacExecutable, isaacFeedbackDirectory);
+    return error ? {text:error} : {};
   });
 
   on('ui.render', { component: 'Pane' }, ($, e, next) => {
-    if (e.requestId !== FEEDBACK_PANE || e.surface === 'mobile') return next(e);
+    if (e.requestId !== (state.paneId ?? FEEDBACK_PANE) || e.surface === 'mobile') return next(e);
     const { Box, Text, Input, Button } = $.ui.resolve(e);
     if (!state.category) {
       const choose = async (category: FeedbackCategory) => {
@@ -259,7 +301,7 @@ export function registerIsaacFeedback(
         Text({ children: ['What is your feedback about?'] }),
         Button({ key: 'routing', label: 'Smart routing (with session details)', autoFocus: true, onPress: () => choose('smart-routing') }),
         Button({ key: 'other', label: 'Other (text only)', onPress: () => choose('other') }),
-        Button({ key: 'cancel', label: 'Cancel', onPress: () => $.ui.close({ id: FEEDBACK_PANE }) }),
+        Button({ key: 'cancel', label: 'Cancel', onPress: () => $.ui.close({ id: state.paneId ?? FEEDBACK_PANE }) }),
       ] });
     }
     return Box({
@@ -283,7 +325,7 @@ export function registerIsaacFeedback(
             if (error) $.ui.toast(error);
           },
         }),
-        Button({ key: 'cancel', label: state.turnOff ? 'Cancel (keep routing on)' : 'Cancel', onPress: () => $.ui.close({ id: FEEDBACK_PANE }) }),
+        Button({ key: 'cancel', label: state.turnOff ? 'Cancel (keep routing on)' : 'Cancel', onPress: () => $.ui.close({ id: state.paneId ?? FEEDBACK_PANE }) }),
       ],
     });
   });

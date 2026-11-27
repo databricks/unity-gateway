@@ -1,7 +1,9 @@
 name: Fork integration
 
-# Org members can run any PR; prior contributors can run their own PR with CI secrets.
+# Only org members can run it, on any PR; outside contributors ask a member,
+# who reviews the changes first.
 # `/integration-test [sha]` pins the current head, or requires the named reviewed commit.
+# The shared Security Scan must pass for that commit before CI secrets are supplied.
 # Workflow definitions always come from the default branch.
 on:
   issue_comment:
@@ -18,9 +20,7 @@ jobs:
         github.event.issue.pull_request &&
         (github.event.comment.body == '/integration-test' ||
           startsWith(github.event.comment.body, '/integration-test ')) &&
-        (contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) ||
-          (github.event.comment.author_association == 'CONTRIBUTOR' &&
-            github.event.comment.user.id == github.event.issue.user.id))
+        contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
     runs-on:
       group: databricks-protected-runner-group
@@ -72,9 +72,7 @@ jobs:
         github.event.issue.pull_request &&
         (github.event.comment.body == '/integration-test' ||
           startsWith(github.event.comment.body, '/integration-test ')) &&
-        !(contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) ||
-          (github.event.comment.author_association == 'CONTRIBUTOR' &&
-            github.event.comment.user.id == github.event.issue.user.id))
+        !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
     runs-on:
       group: databricks-protected-runner-group
@@ -90,11 +88,21 @@ jobs:
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
-            "Sorry @$COMMENTER, only Databricks org members can run integration tests on any PR. Prior contributors can run integration tests on their own PR. A maintainer can run \`/integration-test\` after reviewing the changes."
+            "Sorry @$COMMENTER, only Databricks org members can run integration tests. A maintainer can run \`/integration-test\` after reviewing the changes."
+
+  security-gate:
+    name: Security Gate
+    needs: authorize
+    permissions:
+      actions: read
+    uses: ./.github/workflows/security-gate.yml
+    with:
+      pr-number: ${{ github.event.issue.number }}
+      head-sha: ${{ needs.authorize.outputs.sha }}
 
   integration:
     name: Integration
-    needs: authorize
+    needs: [authorize, security-gate]
     # Job-level so ordinary PR comments, which skip this job, never cancel a run.
     concurrency:
       group: fork-integration-${{ github.event.issue.number }}
@@ -106,7 +114,7 @@ jobs:
 
   report:
     name: Report fork integration
-    needs: [authorize, integration]
+    needs: [authorize, security-gate, integration]
     if: ${{ always() && needs.authorize.result == 'success' }}
     runs-on:
       group: databricks-protected-runner-group
@@ -122,9 +130,13 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           SHA: ${{ needs.authorize.outputs.sha }}
           RESULT: ${{ needs.integration.result }}
+          SCAN_RESULT: ${{ needs.security-gate.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ "$SCAN_RESULT" != success ]; then
+            RESULT="blocked by Security Scan ($SCAN_RESULT)"
+          fi
           state=$([ "$RESULT" = success ] && echo success || echo failure)
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
             -f state="$state" -f context="Fork integration" \

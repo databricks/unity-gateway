@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError, NotFound
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, assert_subagent_routed
 from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
     assert_codex_default_models,
 )
 from tests.integration.utils.terminal import TerminalProcess
+from ucode.smart_routing.config import SUBAGENT_AUTO_V0_CLAUDE_ONLY
 
 from .base import BaseCujTest, bearer
 from .helpers.constants import (
@@ -23,15 +24,21 @@ from .helpers.constants import (
     CLAUDE_SONNET_MODEL_SERVICE,
     CODEX,
     CODEX_LUNA_MODEL_SERVICE,
+    INFERENCE_PATHS,
     MANAGED_PATHS,
+    MODEL_PROVIDER_SERVICE_FIXTURES,
     MODEL_SERVICE_SCHEMA,
+    PROVIDER_HEADER,
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
+    canonical_model,
     claude_file_task,
+    served_inference_request,
+    task_inference_request,
 )
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
@@ -140,23 +147,26 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
 
     @pytest.mark.claude
     @pytest.mark.tui
-    def test_case_07_configured_claude_discovers_system_models(self, live_session):
+    def test_case_07_configured_claude_discovers_system_models(
+        self, live_session, request_recorder
+    ):
         """Scenario: configure Claude, then launch without source overrides or discovery flags.
 
         Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-        gateway aliases and shows a discovered picker entry.
+        gateway aliases and shows a discovered picker entry. Reconfigure with the Auto version,
+        save a personal Auto selection, then restart without Auto and complete inference on the
+        same real main model.
         """
         session = live_session
-        session.configure(
+        request_recorder.configure_session(
+            session,
             [
                 "configure",
                 "--agents",
                 CLAUDE,
-                "--workspace",
-                self.workspace.config.host,
                 "--skip-upgrade",
                 "--disable-databricks-ai-tools",
-            ]
+            ],
         )
         with Terminal(session, "case-07-system-models", [CLAUDE]) as tui:
             tui.boot()
@@ -165,6 +175,74 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             )
             tui.exit_normally()
         assert_claude_system_models_in_picker(session, screen)
+
+        main_model = session.workspace_state()["claude_models"]["sonnet"]
+        supported = set(session.workspace_state()["claude_models"].values())
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_AUTO_V0_CLAUDE_ONLY
+        request_recorder.configure_session(
+            session,
+            [
+                "configure",
+                "--agents",
+                CLAUDE,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ],
+        )
+        evidence = SessionEvidence(session.home, CLAUDE)
+        with Terminal(session, "case-07-personal-auto", [CLAUDE]) as tui:
+            tui.boot()
+            tui.submit("/model " + main_model)
+            tui.wait_for(
+                lambda screen: (
+                    "Set model to" in screen and "Auto (" not in "\n".join(screen.splitlines()[-4:])
+                ),
+                "the regular main model",
+            )
+            tui.submit("/model auto")
+            tui.wait_for(
+                lambda screen: "Auto mode: Choose" in screen,
+                "Auto main-model selection",
+                stable_for=0.5,
+            )
+            tui.send("\r", "save the current main model in Auto")
+            tui.wait_for(
+                lambda screen: (
+                    "Auto mode: Choose" not in screen
+                    and "Auto (" in "\n".join(screen.splitlines()[-4:])
+                ),
+                "saved Auto model",
+            )
+            task = claude_file_task(session)
+            checkpoint = request_recorder.checkpoint()
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            evidence.assert_applied(task, supported, expected=main_model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, main_model)
+            tui.exit_normally()
+        saved = json.loads((session.home / ".claude/settings.json").read_text())["model"]
+        assert saved.startswith("ug-auto-")
+        for path in (session.home / ".claude/ucode-settings.json", *MANAGED_PATHS):
+            if path.is_file():
+                assert saved not in json.loads(path.read_text()).get("modelOverrides", {})
+        session.env.pop("SMART_ROUTER_CONFIG_VERSION")
+        request_recorder.prepare_launch()
+        checkpoint = request_recorder.checkpoint()
+        evidence = SessionEvidence(session.home, CLAUDE)
+        with Terminal(
+            session, "case-07-restart-without-auto", [CLAUDE, "--disable-smart-routing"]
+        ) as tui:
+            tui.boot()
+            task = claude_file_task(session)
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            evidence.assert_applied(task, supported, expected=main_model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, main_model)
+            assert not any(
+                request.path.endswith("/routes:select")
+                for request in request_recorder.requests_after(checkpoint)
+            )
+            tui.exit_normally()
 
     @pytest.mark.codex
     def test_case_08_configured_codex_uses_default_models(self, live_session):
@@ -188,6 +266,81 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
         assert_codex_default_models(session, models)
+
+    @pytest.mark.claude
+    @pytest.mark.tui
+    def test_ug_claude_saved_provider_smart_routing(self, live_session, request_recorder):
+        """Scenario: configure a personal Claude provider in this unmanaged workspace, then route.
+
+        Expected: the saved provider reaches the router and inference, the selected offered model
+        serves a completed native child file task, and the parent returns the hidden file value.
+        """
+        session = live_session
+        provider = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
+        request_recorder.configure_session(
+            session,
+            ["configure", "--agent", CLAUDE, "--provider", provider, "--skip-upgrade"],
+        )
+        assert session.workspace_state()["provider_services"][CLAUDE] == provider
+        request_recorder.prepare_launch()
+        task = FileTask(session)
+        task.prompt = task.delegate_prompt + (
+            " Use a fresh general-purpose Agent subagent; do not fork or resume."
+        )
+        checkpoint = request_recorder.checkpoint()
+        with Terminal(
+            session, "cuj7-claude-saved-provider-routing", [CLAUDE, "--enable-smart-routing"]
+        ) as tui:
+            tui.boot(timeout=150)
+            tui.submit(task.prompt)
+            tui.wait_until(
+                lambda: (
+                    task.completed(session, CLAUDE, child=True) and task.completed(session, CLAUDE)
+                ),
+                "completed routed child file task and parent reply",
+            )
+            _assert_saved_provider_routing(
+                session, request_recorder, checkpoint, CLAUDE, provider, task
+            )
+            tui.wait_for_background_tasks()
+            tui.exit_normally()
+
+    @pytest.mark.codex
+    @pytest.mark.tui
+    def test_ug_codex_saved_provider_smart_routing(self, live_session, request_recorder):
+        """Scenario: configure a personal Codex provider in this unmanaged workspace, then route.
+
+        Expected: the saved provider reaches the router and inference, every selected offered
+        model matches a completed native child, and the parent returns the hidden file value.
+        """
+        session = live_session
+        provider = MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0]
+        request_recorder.configure_session(
+            session,
+            ["configure", "--agent", CODEX, "--provider", provider, "--skip-upgrade"],
+        )
+        assert session.workspace_state()["provider_services"][CODEX] == provider
+        request_recorder.prepare_launch()
+        task = FileTask(session)
+        task.prompt = task.delegate_prompt
+        checkpoint = request_recorder.checkpoint()
+        # TODO: remove once the latest recipe supports codex
+        session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
+        with Terminal(
+            session, "cuj7-codex-saved-provider-routing", [CODEX, "--enable-smart-routing"]
+        ) as tui:
+            tui.boot(timeout=150)
+            tui.submit(task.prompt)
+            tui.wait_until(
+                lambda: (
+                    task.completed(session, CODEX, child=True) and task.completed(session, CODEX)
+                ),
+                "completed routed child file task and parent reply",
+            )
+            _assert_saved_provider_routing(
+                session, request_recorder, checkpoint, CODEX, provider, task
+            )
+            tui.exit_normally()
 
     @pytest.mark.claude
     @pytest.mark.parametrize("model_owner", ["ug", "claude"])
@@ -305,3 +458,48 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             request_recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
         )
         session.assert_not_routed()
+
+
+def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provider, task):
+    requests = recorder.requests_after(checkpoint)
+    routes = [
+        request
+        for request in requests
+        if request.method == "POST"
+        and request.path.endswith("/routes:select")
+        and task.filename in request.payload.get("task", {}).get("prompt", "")
+    ]
+    assert routes, "No routing request matched the delegated file task"
+    for route in routes:
+        assert route.headers[PROVIDER_HEADER] == provider
+        options = route.payload["route_options"]
+        assert 1 <= len(options) <= 128
+        response = recorder.response_for(route)
+        assert response.status_code == 200, {"request": route.payload, "response": response.payload}
+        selections = response.payload["route_selection"]
+        assert len(selections) == 1, selections
+        selected = selections[0]["route_option"]
+        assert selected in options
+        assert selected["harness"] == agent, selected
+        child = task_inference_request(
+            requests, agent, route.payload["task"]["prompt"], after=route.sequence
+        )
+        child = served_inference_request(recorder, requests, child, agent)
+        assert canonical_model(child.payload["model"]) == canonical_model(selected["model"]), (
+            child.payload["model"],
+            selected,
+        )
+    inference = [
+        request
+        for request in requests
+        if request.method == "POST"
+        and request.path == INFERENCE_PATHS[agent]
+        and task.filename in json.dumps(request.payload)
+    ]
+    assert inference, "No provider inference request matched the delegated file task"
+    for request in inference:
+        assert request.headers[PROVIDER_HEADER] == provider
+        served_inference_request(recorder, inference, request, agent)
+    task.assert_completed(session, agent, child=True)
+    task.assert_completed(session, agent)
+    assert_subagent_routed(session, agent, task)

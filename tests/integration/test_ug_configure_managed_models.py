@@ -6,7 +6,10 @@ tests/AGENTS.md rule 4.
 """
 
 import json
+import os
 import re
+import sys
+from pathlib import Path
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
@@ -17,7 +20,8 @@ from utils.terminal import AgentTerminal, TerminalProcess
 
 # The picker fixture lists sonnet-5 but not haiku-4-5, which the managed workspace's own list has.
 LIVE_ONLY = "haiku-4-5"
-CODEX_DEFAULT = "system.ai.gpt-5-6-sol"
+CODEX_DEFAULT = "system.ai.gpt-5-6-terra"
+CODEX_SECOND_MODEL = "system.ai.gpt-6-luna"
 CODEX_WITHOUT_BUNDLED_METADATA = "system.ai.gpt-99"
 MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_fable_model": "ANTHROPIC_DEFAULT_FABLE_MODEL",
@@ -25,6 +29,20 @@ MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+if sys.platform == "win32":
+    CLAUDE_MANAGED_SETTINGS_PATH = (
+        Path(
+            os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+        )
+        / "ClaudeCode"
+        / "managed-settings.json"
+    )
+elif sys.platform == "darwin":
+    CLAUDE_MANAGED_SETTINGS_PATH = Path(
+        "/Library/Application Support/ClaudeCode/managed-settings.json"
+    )
+else:
+    CLAUDE_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 FIRST_PROMPT_SELECTOR = "first_prompt_and_subagent_no_orch_v0"
@@ -32,6 +50,7 @@ FIRST_PROMPT_SELECTOR = "first_prompt_and_subagent_no_orch_v0"
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
+@pytest.mark.anthropic_mps
 def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace):
     """Scenario: launch Claude under an injected config with defaults and MPS discovery.
 
@@ -62,11 +81,7 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
         terminal.finish(timeout=240)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-    os_managed_settings = json.loads(
-        session.run(
-            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
-        ).stdout
-    )
+    os_managed_settings = json.loads(CLAUDE_MANAGED_SETTINGS_PATH.read_text(encoding="utf-8"))
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
@@ -124,11 +139,7 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         terminal.finish(timeout=240)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-    os_managed_settings = json.loads(
-        session.run(
-            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
-        ).stdout
-    )
+    os_managed_settings = json.loads(CLAUDE_MANAGED_SETTINGS_PATH.read_text(encoding="utf-8"))
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
@@ -204,14 +215,19 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     models = catalog.get("models", [])
     listed = [model.get("slug") for model in models if model.get("visibility") == "list"]
-    assert listed == [CODEX_DEFAULT, CODEX_WITHOUT_BUNDLED_METADATA], catalog
+    assert listed == [CODEX_DEFAULT, CODEX_SECOND_MODEL, CODEX_WITHOUT_BUNDLED_METADATA], catalog
     fallback = next(
         model for model in models if model.get("slug") == CODEX_WITHOUT_BUNDLED_METADATA
     )
     assert fallback.get("tool_mode") is None, fallback
     assert fallback.get("input_modalities") == ["text"], fallback
     assert fallback.get("context_window") == 32768, fallback
-    assert fallback.get("default_reasoning_level") == "none", fallback
+    assert fallback.get("default_reasoning_level") == "medium", fallback
+    assert fallback.get("supported_reasoning_levels") == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ], fallback
 
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
     with AgentTerminal(
@@ -278,7 +294,7 @@ def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
     Expected: `ug configure` applies the config without the personal agent selector, and the
     selector routes the first real prompt: the TUI shows the Unity Gateway Smart Router banner
     naming the selected model, the routed answer completes the file task, and the session exits
-    normally. The managed default alone leaves Codex unrouted; its launch-only test covers it.
+    normally. The managed default routes only subagents on supported Codex versions.
     """
     session = live_session
     task = FileTask(session)
