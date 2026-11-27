@@ -250,9 +250,13 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 installed UG through its CLI, and asserts a completed exact-answer task through macOS
 Accessibility for each model source: Databricks Hosted, the Anthropic MPS, and the
 Anthropic relay MPS (see `scripts/cowork-inference/README.md`). Both jobs block the
-integration gate. The macOS job also runs the file, skill, and MCP web search tasks described
-below. Apple Silicon, Code-tab, MCP services other than `system.ai.web_search`, and file writes
-remain uncovered.
+integration gate. Each macOS model source has three parallel matrix legs: inference then
+file read, inference then skill execution, and inference then MCP web search. First-launch
+onboarding and the skill task's account directory stay on the same runner; each leg uploads
+separate evidence and retains its source's blocking time budget. Contract coverage in
+`test_integration_contract.py` checks the capability matrix and inference prerequisite;
+these local contracts do not establish a live macOS pass. Apple Silicon, Code-tab, MCP
+services other than `system.ai.web_search`, and file writes remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
 provider-service and relay-helper profile checks, model-picker switching from Desktop's
