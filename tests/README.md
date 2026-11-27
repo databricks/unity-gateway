@@ -1696,7 +1696,9 @@ ambiguous roots fail, and successful child evidence cannot satisfy a failed or i
 These are offline parser checks; live desktop coverage requires the native CI jobs.
 `test_windows_uia.py` runs the PowerShell helper's command paths against stub UI controls using
 PowerShell Core (`pwsh` on PATH); on Windows it additionally drives a real WPF window with
-Windows PowerShell and native UI Automation. The native-Windows case is skipped on other platforms.
+Windows PowerShell and native UI Automation. It waits for the enabled, on-screen window, button,
+and edit controls within one 30-second deadline, then exercises the same native interactions; it does
+not require WPF's separate `ContentRendered` event. The native-Windows case is skipped on other platforms.
 Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
 in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;

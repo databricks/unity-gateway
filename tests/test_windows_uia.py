@@ -3,12 +3,14 @@
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -277,15 +279,21 @@ def test_optional_composer_probe_failure_does_not_block_typing(tmp_path, monkeyp
         helper.close()
 
 
-def _wait_for_form_shown(app, ready, timeout):
+def _wait_for_form_shown(app, helper, timeout):
     deadline = time.monotonic() + timeout
-    while not ready.is_file():
+    button_metrics = {}
+    for role, name in (
+        ("ControlType.Window", "UG UIA contract"),
+        ("ControlType.Button", "Press"),
+        ("ControlType.Edit", ""),
+    ):
         if (code := app.poll()) is not None:
             raise AssertionError(f"Window process exited with {code} before showing its window")
-        if time.monotonic() >= deadline:
-            raise AssertionError("Test window did not become visible")
-        time.sleep(0.05)
-    return max(0.0, deadline - time.monotonic())
+        remaining = max(0.0, min(timeout, deadline - time.monotonic()))
+        assert int(helper.request("wait", role, name, str(remaining))) >= 1
+        if role == "ControlType.Button":
+            button_metrics = dict(helper.last_metrics)
+    return button_metrics
 
 
 def _native_failure_details(app, helper, stderr):
@@ -306,13 +314,75 @@ def _native_failure_details(app, helper, stderr):
     return details
 
 
-def test_native_form_wait_stops_immediately_if_the_form_process_exits(tmp_path):
+@pytest.mark.parametrize(
+    "missing", [None, "ControlType.Window", "ControlType.Button", "ControlType.Edit"]
+)
+def test_native_form_wait_requires_visible_window_button_and_edit_without_render_event(
+    missing, monkeypatch
+):
+    monkeypatch.setattr(sys.modules[__name__], "time", SimpleNamespace(monotonic=lambda: 123.456))
+
+    class Form:
+        def poll(self):
+            return None
+
+    class Helper:
+        last_metrics = {"wait_ms": 12}
+
+        def __init__(self):
+            self.controls = []
+
+        def request(self, command, role, name, timeout):
+            assert command == "wait"
+            assert 0 <= float(timeout) <= 30
+            self.controls.append((role, name))
+            if role == missing:
+                raise AssertionError(f"No enabled {role}")
+            return "1"
+
+    helper = Helper()
+    expected = [
+        ("ControlType.Window", "UG UIA contract"),
+        ("ControlType.Button", "Press"),
+        ("ControlType.Edit", ""),
+    ]
+    if missing:
+        with pytest.raises(AssertionError, match=rf"^No enabled {re.escape(missing)}$"):
+            _wait_for_form_shown(Form(), helper, timeout=30)
+        assert (
+            helper.controls
+            == expected[: next(i + 1 for i, row in enumerate(expected) if row[0] == missing)]
+        )
+    else:
+        _wait_for_form_shown(Form(), helper, timeout=30)
+        assert helper.controls == expected
+
+
+def test_native_form_wait_shares_one_deadline_across_controls(monkeypatch):
+    clock = iter([100.0, 103.0, 110.0, 129.0])
+    monkeypatch.setattr(
+        sys.modules[__name__], "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
+    timeouts = []
+
+    class Helper:
+        last_metrics = {}
+
+        def request(self, command, role, name, timeout):
+            timeouts.append(float(timeout))
+            return "1"
+
+    _wait_for_form_shown(SimpleNamespace(poll=lambda: None), Helper(), timeout=30)
+    assert timeouts == [27.0, 20.0, 1.0]
+
+
+def test_native_form_wait_stops_immediately_if_the_form_process_exits():
     class Form:
         def poll(self):
             return 17
 
     with pytest.raises(AssertionError, match="exited.*17"):
-        _wait_for_form_shown(Form(), tmp_path / "ready", timeout=30)
+        _wait_for_form_shown(Form(), None, timeout=30)
 
 
 def test_native_failure_details_preserve_form_exit_stderr_and_wait_metrics(monkeypatch):
@@ -394,7 +464,6 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
     powershell = shutil.which("powershell.exe")
     assert powershell, "Windows PowerShell is required for the UIA helper contract"
     marker = tmp_path / "clicked.txt"
-    ready = tmp_path / "shown.txt"
     form = tmp_path / "form.ps1"
     form.write_text(
         textwrap.dedent(
@@ -405,7 +474,6 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
             $form.Topmost = $true
             $form.Width = 400
             $form.Height = 200
-            $form.Add_ContentRendered({ [IO.File]::WriteAllText($env:UIA_TEST_READY, 'shown') })
             $panel = [Windows.Controls.StackPanel]::new()
             $button = [Windows.Controls.Button]::new()
             $button.Content = 'Press'
@@ -419,7 +487,7 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
         ),
         encoding="utf-8",
     )
-    env = {**os.environ, "UIA_TEST_MARKER": str(marker), "UIA_TEST_READY": str(ready)}
+    env = {**os.environ, "UIA_TEST_MARKER": str(marker)}
     form_stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace")
     try:
         app = subprocess.Popen(
@@ -447,10 +515,9 @@ def test_powershell_uia_commands_drive_a_real_windows_form(tmp_path, record_prop
             ]
         )
         try:
-            remaining = _wait_for_form_shown(app, ready, timeout=30)
-            assert int(helper.request("wait", "ControlType.Button", "Press", f"{remaining:g}")) >= 1
+            button_metrics = _wait_for_form_shown(app, helper, timeout=30)
             record_property(
-                "windows_powershell_5_1_startup", json.dumps(helper.last_metrics, sort_keys=True)
+                "windows_powershell_5_1_startup", json.dumps(button_metrics, sort_keys=True)
             )
             assert "ControlType.Button\tPress" in helper.request("tree")
             helper.request("click", "ControlType.Button", "Press", "30")
