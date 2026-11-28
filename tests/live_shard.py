@@ -94,3 +94,41 @@ def write_report(path: str, report: dict, marker_deselected: dict) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def verify_shard(report_path: str, junit_path: str) -> None:
+    """Fail unless one shard's JUnit ran exactly the cases its shard report owns.
+
+    CI runs this in every launch-shard leg: the report exists only when the collection
+    hook planned the lane, and its ``expected`` counts are this shard's slice, so a leg
+    that ran another shard's case, lost one, or never sharded at all fails here. The
+    offline contract tests prove the shards' plans partition the lane, so every case
+    runs exactly once. Reruns write duplicate JUnit cases, so each case counts once.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    ran: dict[str, set[str]] = {}
+    for case in ElementTree.parse(junit_path).getroot().iter("testcase"):
+        parts = case.get("classname", "").split(".")
+        path = "/".join(parts[:2]) + ".py" if parts[:1] == ["tests"] else parts[0] + ".py"
+        ran.setdefault(path, set()).add(case.get("name", ""))
+    problems = []
+    for path, owned in report["expected"].items():
+        marker_dropped = report.get("marker_deselected", {}).get(path, 0)
+        seen = ran.pop(path, set())
+        if len(seen) != owned - marker_dropped:
+            problems.append(f"{path}: ran {len(seen)} of {owned - marker_dropped} owned")
+    for path in ran:
+        problems.append(f"ran foreign file {path}")
+    if problems:
+        raise SystemExit("::error::Shard ran the wrong cases:\n" + "\n".join(problems))
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] and sys.argv[1] == "verify" and len(sys.argv) == 4:
+        verify_shard(sys.argv[2], sys.argv[3])
+    else:
+        raise SystemExit("usage: python -m tests.live_shard verify <shard-report> <junit>")

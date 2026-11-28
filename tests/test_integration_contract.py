@@ -3064,6 +3064,148 @@ def test_live_shard_matrix_matches_the_recorded_shard_count(lane, job_name):
     assert "${{ matrix.shard && '-shard' || '' }}${{ matrix.shard_index || '' }}" in jobs[job_name]
 
 
+LAUNCH_SHARD_LANE = "launch-opencode"
+
+
+def test_e2e_launch_shards_own_every_recorded_case_once():
+    """The recorded weights partition the lane: every case in exactly one shard.
+
+    The live catalog parametrizes the per-model cases, so the suite cannot be collected
+    offline; the in-CI proof is each shard leg's `tests.live_shard verify` step plus the
+    coverage job's recording, and this pins the committed plan they rely on.
+    """
+    from tests import live_shard
+
+    times = live_shard.lane_times(LAUNCH_SHARD_LANE, "Windows")
+    assert times["files"], "record fresh times from the live-test-times artifact"
+    files = sorted(times["files"])
+    recorded = sorted(times["slow"])
+    assert recorded, "the launch lane's cases are all slower than the chunk threshold"
+    owners = []
+    for index in range(1, times["shards"] + 1):
+        units = live_shard.units_for(
+            LAUNCH_SHARD_LANE, f"{index}/{times['shards']}", files, "Windows"
+        )
+        assert units, "every shard owns part of the lane"
+        owners.append(units)
+    units = [unit for owned in owners for unit in owned]
+    assert len(units) == len(set(units))
+    owned_cases = sorted(unit[1] for unit in units if unit[0] == "test")
+    assert owned_cases == recorded
+    # The cases too fast to schedule individually still get exactly one chunk slot each.
+    chunk_slots = sum(unit[3] for unit in units if unit[0] == "chunk")
+    assert chunk_slots == times["files"][files[0]][1] - len(recorded)
+
+
+def test_e2e_launch_shard_loads_stay_balanced():
+    from tests import live_shard, shard
+
+    lane = LAUNCH_SHARD_LANE
+    times = live_shard.lane_times(lane, "Windows")
+    files = sorted(times["files"])
+    total = times["shards"]
+    plan = [
+        live_shard.units_for(lane, f"{index}/{total}", files, "Windows")
+        for index in range(1, total + 1)
+    ]
+    units = sorted(unit for owned in plan for unit in owned)
+    assert len(units) == len(set(units))
+    weights = []
+    for owned in plan:
+        load = 0.0
+        for unit in owned:
+            if unit[0] == "test":
+                load += times["slow"][unit[1]]
+            else:
+                slow = sum(v for k, v in times["slow"].items() if shard.file_of(k) == unit[1])
+                load += max(times["files"].get(unit[1], [1.0])[0] - slow, 0.0) / unit[3]
+        weights.append(load)
+    assert max(weights) - min(weights) <= max(times["slow"].values()), weights
+
+
+def test_e2e_launch_shard_matrix_matches_the_recorded_shard_count():
+    from tests import live_shard
+
+    job = _workflow("ci.yml").split("\n  e2e-shards:\n", 1)[1].split("\n  e2e:\n", 1)[0]
+    total = live_shard.lane_times(LAUNCH_SHARD_LANE, "Windows")["shards"]
+    legs = re.findall(r"(?m)^            shard: (\d+)/(\d+)$", job)
+    assert sorted(legs, key=lambda leg: int(leg[0])) == [
+        (str(index), str(total)) for index in range(1, total + 1)
+    ]
+    # Only the Windows OpenCode leg splits; the plain single leg no longer runs.
+    assert "os: windows-latest\n            group: opencode\n            shard: ''" in job
+    # The shard legs target the lane's class directly and feed the spec to the conftest hook.
+    assert "UG_E2E_SHARD: ${{ matrix.shard || '' }}" in job
+    assert "UG_E2E_SHARD_LANE: ${{ matrix.shard_lane || '' }}" in job
+    assert f"shard_lane: {LAUNCH_SHARD_LANE}" in job
+    assert "target: tests/test_e2e.py::TestOpencodeLaunch" in job
+    # Each leg proves it ran exactly its slice and uploads the evidence the coverage
+    # job (live-shard-times in integration.yml) records fresh times from.
+    assert (
+        'uv run --no-sync python -m tests.live_shard verify "$RUNNER_TEMP/e2e-shard-report.json" '
+        '"$RUNNER_TEMP/junit.xml"' in job
+    )
+    assert (
+        "name: e2e-launch-${{ matrix.group }}-${{ matrix.os }}-shard${{ matrix.shard_index }}"
+        in job
+    )
+
+
+JUNIT_LAUNCH_CASES = (
+    '<?xml version="1.0" encoding="utf-8"?><testsuite name="x" tests="{count}">{cases}</testsuite>'
+)
+
+
+def _launch_shard_evidence(tmp_path, report, cases):
+    junit = tmp_path / "junit.xml"
+    body = "".join(
+        f'<testcase classname="tests.test_e2e.TestOpencodeLaunch" name="{name}" time="1.0"/>'
+        for name in cases
+    )
+    junit.write_text(JUNIT_LAUNCH_CASES.format(count=len(cases), cases=body))
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return str(path), str(junit)
+
+
+def test_live_shard_verify_accepts_the_owned_slice_and_ignores_reruns(tmp_path):
+    from tests import live_shard
+
+    report = {
+        "lane": LAUNCH_SHARD_LANE,
+        "os": "Windows",
+        "shard": "1/2",
+        "units": [],
+        "files": {"tests/test_e2e.py": 12},
+        "expected": {"tests/test_e2e.py": 2},
+        "marker_deselected": {},
+    }
+    report_path, junit = _launch_shard_evidence(tmp_path, report, ["a", "b"])
+    live_shard.verify_shard(report_path, junit)
+    # A rerun records the case again; it still counts once.
+    live_shard.verify_shard(*_launch_shard_evidence(tmp_path, report, ["a", "a", "b"]))
+
+
+@pytest.mark.parametrize(
+    ("cases", "report", "message"),
+    [
+        (["a"], {"expected": {"tests/test_e2e.py": 2}}, "ran 1 of 2"),
+        (["a", "b", "c"], {"expected": {"tests/test_e2e.py": 2}}, "ran 3 of 2"),
+        (["a"], {"expected": {"tests/test_e2e.py": 2, "other.py": 1}}, "other.py: ran 0 of 1"),
+    ],
+)
+def test_live_shard_verify_rejects_wrong_slices(tmp_path, cases, report, message):
+    from tests import live_shard
+
+    evidence = _launch_shard_evidence(
+        tmp_path,
+        {**report, "marker_deselected": {}},
+        cases,
+    )
+    with pytest.raises(SystemExit, match=re.escape(message)):
+        live_shard.verify_shard(*evidence)
+
+
 def test_cuj_shards_run_every_case_exactly_once():
     from tests import live_shard, shard
 
@@ -3190,6 +3332,7 @@ def test_live_shard_coverage_gate_downloads_every_shard_artifact():
         "integration-full-claude-windows-latest-shard*",
         "integration-anthropic-mps-claude-windows-latest-shard*",
         "e2e-cujs-*shard*",
+        "e2e-launch-*",
     ):
         assert f"pattern: {pattern}" in job
     assert "python3 scripts/live_shard_times.py" in job

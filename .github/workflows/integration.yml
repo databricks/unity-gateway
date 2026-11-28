@@ -1390,6 +1390,15 @@ jobs:
       - name: Mark CUJ-shard download complete
         if: ${{ github.event_name == 'pull_request' }}
         run: echo "BUDGET_COVERAGE_CUJ_DONE=$(date +%s)" >> "$GITHUB_ENV"
+      # The agent-launch-test shards the CI workflow runs (tests/test_e2e.py) record their
+      # times in the same file, so this proof covers them too.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: e2e-launch-*
+          path: ${{ runner.temp }}/shards
+      - name: Mark launch-shard download complete
+        if: ${{ github.event_name == 'pull_request' }}
+        run: echo "BUDGET_COVERAGE_LAUNCH_DONE=$(date +%s)" >> "$GITHUB_ENV"
       - *budget-setup-done
       - name: Summarize live-shard setup
         if: ${{ github.event_name == 'pull_request' }}
@@ -1403,7 +1412,8 @@ jobs:
             printf '| Full-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_FULL_DONE - BUDGET_COVERAGE_CHECKOUT_DONE))"
             printf '| MPS-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_MPS_DONE - BUDGET_COVERAGE_FULL_DONE))"
             printf '| CUJ-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_CUJ_DONE - BUDGET_COVERAGE_MPS_DONE))"
-            printf '| Other setup | %s |\n' "$((BUDGET_RUN_STARTED - BUDGET_COVERAGE_CUJ_DONE))"
+            printf '| Launch-test-shard artifacts | %s |\n' "$((BUDGET_COVERAGE_LAUNCH_DONE - BUDGET_COVERAGE_CUJ_DONE))"
+            printf '| Other setup | %s |\n' "$((BUDGET_RUN_STARTED - BUDGET_COVERAGE_LAUNCH_DONE))"
             echo 'Intervals include runner scheduling and timing-marker overhead.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Prove the shards ran every case once and record fresh times

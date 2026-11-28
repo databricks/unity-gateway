@@ -157,5 +157,29 @@
     "test_ug_smart_routing_hooks.py::test_smart_routing_claude_route_subagent_hook[legacy-env]": 2.42
    }
   }
+ },
+ "launch-opencode": {
+  "Windows": {
+   "files": {
+    "tests/test_e2e.py": [
+     486.85,
+     12
+    ]
+   },
+   "shards": 2,
+   "slow": {
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[anthropic-system.ai.claude-haiku-5-5]": 37.6,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[anthropic-system.ai.claude-opus-5-5]": 48.73,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[anthropic-system.ai.claude-sonnet-5-5]": 41.62,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-3-5-flash]": 37.67,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-3-6-flash]": 49.68,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-3-8-flash]": 40.4,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-4-argon]": 43.67,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-4-carbon]": 56.93,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-4-hydrogen]": 38.77,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_launch_opencode_per_model[gemini-system.ai.gemini-4-neon]": 39.1,
+    "tests/test_e2e.py::TestOpencodeLaunch::test_recovers_from_rejected_initial_token": 52.3
+   }
+  }
  }
 }

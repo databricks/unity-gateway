@@ -399,7 +399,32 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         group: [gateway, claude, codex, gemini, opencode, copilot, pi]
+        # Only the Windows OpenCode leg is slow enough to split (8+ minutes of tests for
+        # 12 cases): it runs as two shards balanced by recorded case time
+        # (tests/live_shard.py), so the shards together run its cases exactly once. Every
+        # other leg stays a single job with an empty shard.
+        shard: ['']
+        exclude:
+          - os: windows-latest
+            group: opencode
+            shard: ''
         include:
+          - os: windows-latest
+            group: opencode
+            shard: 1/2
+            shard_index: 1
+            shard_lane: launch-opencode
+            target: tests/test_e2e.py::TestOpencodeLaunch
+            name: Agent launch tests · OpenCode
+            package: opencode-ai@1
+          - os: windows-latest
+            group: opencode
+            shard: 2/2
+            shard_index: 2
+            shard_lane: launch-opencode
+            target: tests/test_e2e.py::TestOpencodeLaunch
+            name: Agent launch tests · OpenCode
+            package: opencode-ai@1
           - group: gateway
             name: Gateway API tests
             keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
@@ -447,6 +472,13 @@ jobs:
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       AGENT_PACKAGE: ${{ matrix.package }}
       TEST_KEYWORD: ${{ matrix.keyword }}
+      # The Windows OpenCode shards: `target` collects the lane's class directly, so the
+      # live-shard planner (tests/live_shard.py) sees only the lane's cases, and the shard
+      # envs split them by recorded case time. Unsharded legs leave them empty and keep
+      # using -k above.
+      TEST_TARGET: ${{ matrix.target || '' }}
+      UG_E2E_SHARD: ${{ matrix.shard || '' }}
+      UG_E2E_SHARD_LANE: ${{ matrix.shard_lane || '' }}
     steps:
       - *budget-start
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -477,7 +509,11 @@ jobs:
       # Rerun a case once only for live-service timeouts and transient upstream errors;
       # every other failure fails on the first attempt. `-rfER` lists reruns in the summary.
       - run: |
-          uv run --no-sync pytest tests/test_e2e.py -v -rfER -k "$TEST_KEYWORD" \
+          selection=(tests/test_e2e.py)
+          if [ -n "$TEST_TARGET" ]; then selection=($TEST_TARGET); elif [ -n "$TEST_KEYWORD" ]; then selection+=(-k "$TEST_KEYWORD"); fi
+          UG_E2E_SHARD_REPORT="$RUNNER_TEMP/e2e-shard-report.json" \
+          uv run --no-sync pytest "${selection[@]}" -v -rfER \
+            --junitxml="$RUNNER_TEMP/junit.xml" \
             --reruns 1 --reruns-delay 5 \
             --only-rerun TimeoutExpired \
             --only-rerun 'timed out after [0-9]+s' \
@@ -485,6 +521,19 @@ jobs:
             --only-rerun TEMPORARILY_UNAVAILABLE \
             --only-rerun REQUEST_LIMIT_EXCEEDED \
             < /dev/null
+      - name: Check this shard ran exactly its cases
+        # The report exists only when the collection hook planned this shard, and its
+        # owned counts must match the cases this shard's JUnit actually ran.
+        if: ${{ matrix.shard != '' && !cancelled() }}
+        run: uv run --no-sync python -m tests.live_shard verify "$RUNNER_TEMP/e2e-shard-report.json" "$RUNNER_TEMP/junit.xml"
+      - name: Upload this shard's timings
+        if: ${{ matrix.shard != '' && !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: e2e-launch-${{ matrix.group }}-${{ matrix.os }}-shard${{ matrix.shard_index }}
+          path: |
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/e2e-shard-report.json
       - *budget-check
 
   e2e:
