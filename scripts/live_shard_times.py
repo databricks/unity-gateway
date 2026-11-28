@@ -20,12 +20,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests import live_shard, shard  # noqa: E402
 
 
-def nodeid(case: ElementTree.Element) -> str:
-    """JUnit classname ``test_x.TestY`` (or ``tests.test_x.TestY``) and name -> ``test_x.py::TestY::name``."""
+def nodeid(case: ElementTree.Element, files: dict | None = None) -> str:
+    """JUnit classname ``test_x.TestY`` (or ``tests.test_x.TestY``) and name -> ``test_x.py::TestY::name``.
+
+    ``files`` is the lane's collected files (from the shard report). A suite that runs from
+    the repository root (``tests/test_e2e.py``) collects that path, while tests/integration
+    and tests/e2e_cuj collect without the ``tests/`` prefix, so the nodeid follows the lane.
+    """
     parts = case.get("classname", "").split(".")
-    parts = parts[1:] if parts and parts[0] == "tests" else parts
+    candidates = []
+    if parts and parts[0] == "tests":
+        module, *classes = parts[1:]
+        candidates.append("::".join([f"tests/{module}.py", *classes, case.get("name", "")]))
+        parts = parts[1:]
     module, *classes = parts or [""]
-    return "::".join([f"{module}.py", *classes, case.get("name", "")])
+    candidates.append("::".join([f"{module}.py", *classes, case.get("name", "")]))
+    for candidate in candidates:
+        if files and candidate.split("::", 1)[0] in files:
+            return candidate
+    return candidates[-1]
 
 
 def main() -> None:
@@ -82,7 +95,7 @@ def main() -> None:
             expected = report["expected"]
             ran = Counter()
             for case in cases:
-                test = nodeid(case)
+                test = nodeid(case, report["files"])
                 path = shard.file_of(test)
                 ran[path] += 1
                 by_case[test] += 1

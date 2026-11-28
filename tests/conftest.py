@@ -25,6 +25,7 @@ def pytest_collection_modifyitems(config, items):
     """Under UG_TEST_SHARD=<index>/<total>, keep only this CI shard's files and chunks."""
     spec = os.environ.get("UG_TEST_SHARD")
     if not spec:
+        _keep_launch_lane_shard(config, items)
         return
     from tests import shard
 
@@ -54,6 +55,32 @@ def pytest_collection_modifyitems(config, items):
                 },
                 output,
             )
+
+
+# CI runs a slow Windows launch-test leg (tests/test_e2e.py) as several time-balanced
+# shards (tests/live_shard.py); each shard keeps only its cases so the shards together
+# run the lane's cases exactly once.
+_launch_shard_report: dict = {}
+
+
+def _keep_launch_lane_shard(config, items) -> None:
+    """Under UG_E2E_SHARD=<index>/<total>, keep only this shard of UG_E2E_SHARD_LANE."""
+    spec = os.environ.get("UG_E2E_SHARD")
+    if not spec:
+        return
+    from tests import live_shard
+
+    keep, drop, report = live_shard.plan_items(os.environ["UG_E2E_SHARD_LANE"], spec, list(items))
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
+    _launch_shard_report.update(report)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _launch_shard_report and os.environ.get("UG_E2E_SHARD_REPORT"):
+        from tests import live_shard
+
+        live_shard.write_report(os.environ["UG_E2E_SHARD_REPORT"], _launch_shard_report, {})
 
 
 def pytest_xdist_auto_num_workers(config):

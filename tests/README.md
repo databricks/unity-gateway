@@ -1741,7 +1741,13 @@ so the fable ping-pong itself is covered by unit tests.
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
 its own CLI. Configure-subset checks run in the Claude shard because configuration
-invokes the Claude CLI. The `All agent tests` check requires every shard to pass.
+invokes the Claude CLI. The Windows OpenCode leg runs as two time-balanced shards
+(`launch-opencode` in `tests/live_test_times.json`, planned by `tests/live_shard.py`
+from recorded case times): each leg collects only `TestOpencodeLaunch`, keeps the
+cases its shard owns, verifies its JUnit ran exactly that slice
+(`python -m tests.live_shard verify`), and uploads the JUnit and shard report the
+`Live shard coverage` job proves and records. The `All agent tests` check requires
+every shard to pass.
 Copilot's per-model greeting smoke uses Anthropic Messages for Claude, Responses for
 GPT-5+, and Chat Completions for other models. Existing
 Codex-specific, and Grok exclusions remain. `test_agent_copilot.py` covers API

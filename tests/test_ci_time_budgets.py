@@ -101,6 +101,8 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
         "Mark MPS-shard download complete",
         "pattern: e2e-cujs-*shard*",
         "Mark CUJ-shard download complete",
+        "pattern: e2e-launch-*",
+        "Mark launch-shard download complete",
         "*budget-setup-done",
         "Summarize live-shard setup",
         "*budget-check",
@@ -118,7 +120,8 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
         "BUDGET_COVERAGE_FULL_DONE": "234",
         "BUDGET_COVERAGE_MPS_DONE": "235",
         "BUDGET_COVERAGE_CUJ_DONE": "236",
-        "BUDGET_RUN_STARTED": "237",
+        "BUDGET_COVERAGE_LAUNCH_DONE": "237",
+        "BUDGET_RUN_STARTED": "238",
     }
     bash = shutil.which("bash")
     assert bash is not None
@@ -129,6 +132,7 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
         "| Full-shard artifacts | 130 |",
         "| MPS-shard artifacts | 1 |",
         "| CUJ-shard artifacts | 1 |",
+        "| Launch-test-shard artifacts | 1 |",
         "| Other setup | 1 |",
     ):
         assert row in text
@@ -153,16 +157,16 @@ def test_live_shard_setup_summary_shows_download_stalls_without_weakening_budget
             "--started",
             "100",
             "--run-started",
-            "237",
-            "--ended",
             "238",
+            "--ended",
+            "239",
         ],
         text=True,
         capture_output=True,
         check=False,
     )
     assert result.returncode != 0
-    assert "setup 137s > 20s" in result.stdout
+    assert "setup 138s > 20s" in result.stdout
 
 
 def test_job_within_budget_passes(tmp_path):
@@ -347,7 +351,9 @@ def test_every_dynamic_ci_shard_has_a_budget():
     shard_job = jobs["e2e-shards"]
     groups = re.search(r"group: \[([^\]]+)\]", shard_job).group(1).split(", ")
     names = re.findall(r"(?m)^            name: (.+)$", shard_job)
-    assert len(groups) == len(names)
+    # The Windows OpenCode leg runs as two shards of the same name, so `names` repeats
+    # it; both shard legs report the one shared budget entry.
+    assert len(groups) <= len(names)
     expected = {f"{name} · {os_name}" for name in names for os_name in ("Linux", "Windows")}
     assert set(budgets["ci"]["e2e-shards"]) == expected
 
